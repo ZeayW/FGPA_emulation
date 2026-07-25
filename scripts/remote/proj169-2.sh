@@ -13,6 +13,8 @@ KNOWN_HOSTS="${EMUFLOW_REMOTE_KNOWN_HOSTS:-/tmp/emuflow_proj169_known_hosts}"
 VIVADO_ROOT="${EMUFLOW_VIVADO_ROOT:-/data2/vivado/2025.2/Vivado}"
 YOSYS_PATH="${EMUFLOW_YOSYS:-/data/zhpei/oss-cad-suite/bin/yosys}"
 CONTROL_PATH="${EMUFLOW_CONTROL_PATH:-}"
+OPENPARF_SOURCE="${EMUFLOW_OPENPARF_SOURCE:-$REPO_ROOT/../OpenPARF-src}"
+OPENPARF_REMOTE_ROOT="${EMUFLOW_OPENPARF_REMOTE_ROOT:-/home/ziyiwang21/work/tools}"
 
 usage() {
   cat <<'EOF'
@@ -30,6 +32,12 @@ Commands:
   phase2     Export OpenPARF input and create a checked reference placement.
   phase2-vivado
              Apply the checked placement and route it with Vivado.
+  openparf-sync
+             Upload an existing local OpenPARF source checkout.
+  openparf-build
+             Build a CPU OpenPARF in the server deepgate environment.
+  openparf-run
+             Run OpenPARF and re-import its placement through Phase 2.
   phase2-all Run sync, Phase 1, ArchitectureDB, Phase 2, and Vivado validation.
   all        Run sync, bootstrap, test, synth, and phase1.
 
@@ -42,6 +50,8 @@ Environment overrides:
   EMUFLOW_VIVADO_ROOT
   EMUFLOW_YOSYS
   EMUFLOW_CONTROL_PATH
+  EMUFLOW_OPENPARF_SOURCE
+  EMUFLOW_OPENPARF_REMOTE_ROOT
 EOF
 }
 
@@ -317,6 +327,76 @@ test -s build/remote/phase2/vivado/routed.dcp
 REMOTE
 }
 
+sync_openparf() {
+  local remote_root_quoted
+  local unpack_command
+
+  if [ ! -f "$OPENPARF_SOURCE/CMakeLists.txt" ]; then
+    echo "error: OpenPARF source not found at $OPENPARF_SOURCE" >&2
+    return 1
+  fi
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  unpack_command="$(inner_ssh_command \
+    "mkdir -p $remote_root_quoted/OpenPARF-src && tar -xf - -C $remote_root_quoted/OpenPARF-src")"
+  tar -cf - \
+    --exclude=.git \
+    --exclude='*/.git' \
+    --exclude=build \
+    -C "$OPENPARF_SOURCE" . | gateway_ssh "$unpack_command"
+}
+
+build_openparf_remote() {
+  local remote_root_quoted
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+openparf_root=$remote_root_quoted
+python=/research/d4/gds/ziyiwang21/miniconda3/envs/deepgate/bin/python
+test -x "\$python"
+test -f "\$openparf_root/OpenPARF-src/CMakeLists.txt"
+mkdir -p "\$openparf_root/OpenPARF-build" "\$openparf_root/OpenPARF-install"
+CUDA_VISIBLE_DEVICES="" cmake \
+  -S "\$openparf_root/OpenPARF-src" \
+  -B "\$openparf_root/OpenPARF-build" \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="\$python" \
+  -DPYTHON_EXECUTABLE="\$python" \
+  -DCMAKE_INSTALL_PREFIX="\$openparf_root/OpenPARF-install" \
+  -DENABLE_ROUTER=OFF
+CUDA_VISIBLE_DEVICES="" cmake --build "\$openparf_root/OpenPARF-build" \
+  --target install --parallel 4
+REMOTE
+}
+
+run_openparf_remote() {
+  local remote_root_quoted
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+openparf_root=$remote_root_quoted
+python=/research/d4/gds/ziyiwang21/miniconda3/envs/deepgate/bin/python
+cd "\$remote_dir"
+test -s build/remote/phase2/run/openparf/openparf.json
+export CUDA_VISIBLE_DEVICES=""
+export PYTHONPATH="\$remote_dir/scripts/openparf/shims:\$openparf_root/OpenPARF-install"
+"\$python" "\$openparf_root/OpenPARF-install/openparf.py" \
+  --config build/remote/phase2/run/openparf/openparf.json \
+  --log build/remote/phase2/openparf.log
+result=build/remote/phase2/run/openparf/results/counter.pl
+test -s "\$result"
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/phase2/counter.emuir.json \
+  --arch build/remote/phase2/xcvu3p.arch.json \
+  --openparf-result "\$result" \
+  --out build/remote/phase2/run-openparf
+REMOTE
+}
+
 command="${1:-}"
 cd "$REPO_ROOT"
 case "$command" in
@@ -346,6 +426,15 @@ case "$command" in
     ;;
   phase2-vivado)
     phase2_vivado_remote
+    ;;
+  openparf-sync)
+    sync_openparf
+    ;;
+  openparf-build)
+    build_openparf_remote
+    ;;
+  openparf-run)
+    run_openparf_remote
     ;;
   phase2-all)
     sync_project
