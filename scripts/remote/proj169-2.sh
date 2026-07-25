@@ -10,7 +10,8 @@ INNER_HOST="${EMUFLOW_INNER_HOST:-ziyiwang21@projgw}"
 INNER_PORT="${EMUFLOW_INNER_PORT:-2369}"
 REMOTE_DIR="${EMUFLOW_REMOTE_DIR:-/home/ziyiwang21/work/FGPA_emulation}"
 KNOWN_HOSTS="${EMUFLOW_REMOTE_KNOWN_HOSTS:-/tmp/emuflow_proj169_known_hosts}"
-VIVADO_ROOT="${EMUFLOW_VIVADO_ROOT:-/nfs/share/Xilinx/Vivado/2024.2}"
+VIVADO_ROOT="${EMUFLOW_VIVADO_ROOT:-/data2/vivado/2025.2/Vivado}"
+CONTROL_PATH="${EMUFLOW_CONTROL_PATH:-}"
 
 usage() {
   cat <<'EOF'
@@ -32,6 +33,7 @@ Environment overrides:
   EMUFLOW_REMOTE_DIR
   EMUFLOW_REMOTE_KNOWN_HOSTS
   EMUFLOW_VIVADO_ROOT
+  EMUFLOW_CONTROL_PATH
 EOF
 }
 
@@ -39,15 +41,35 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+resolve_control_path() {
+  local candidate
+
+  if [ -n "$CONTROL_PATH" ]; then
+    return
+  fi
+  for candidate in "$HOME"/.ssh/control/*; do
+    if [ -S "$candidate" ] &&
+      ssh -S "$candidate" -O check "$SSH_ALIAS" >/dev/null 2>&1; then
+      CONTROL_PATH="$candidate"
+      return
+    fi
+  done
+}
+
 gateway_ssh() {
-  ssh \
-    -A \
-    -o RemoteCommand=none \
-    -o RequestTTY=no \
-    -o BatchMode=yes \
-    -o ConnectTimeout=20 \
-    "$SSH_ALIAS" \
-    "$@"
+  local -a options=(
+    -A
+    -o RemoteCommand=none
+    -o RequestTTY=no
+    -o BatchMode=yes
+    -o ConnectTimeout=20
+  )
+
+  resolve_control_path
+  if [ -n "$CONTROL_PATH" ]; then
+    options+=(-S "$CONTROL_PATH")
+  fi
+  ssh "${options[@]}" "$SSH_ALIAS" "$@"
 }
 
 inner_ssh_command() {

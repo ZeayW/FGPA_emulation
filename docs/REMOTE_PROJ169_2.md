@@ -48,15 +48,19 @@ EMUFLOW_REMOTE_DIR=/some/other/path \
 Supported overrides are `EMUFLOW_SSH_ALIAS`, `EMUFLOW_INNER_HOST`,
 `EMUFLOW_INNER_PORT`, `EMUFLOW_REMOTE_DIR`, and
 `EMUFLOW_REMOTE_KNOWN_HOSTS`. `EMUFLOW_VIVADO_ROOT` defaults to
-`/nfs/share/Xilinx/Vivado/2024.2`.
+`/data2/vivado/2025.2/Vivado`. `EMUFLOW_CONTROL_PATH` can select an
+existing SSH ControlMaster socket. When it is unset, the wrapper checks
+`~/.ssh/control/` and reuses a live master before opening a new gateway
+connection.
 
 ## Current environment observation
 
 At the time this integration was added, the final node reported host
 name `proj169`. Python 3.10, Git, CMake, and Ninja were available.
 System-level Yosys, Vivado, and OpenPARF were not present in the
-non-interactive SSH session's default `PATH`. Vivado is installed on the
-shared filesystem under `/nfs/share/Xilinx/Vivado/2024.2`; the wrapper
-checks that executable explicitly. The project-local Yosys bootstrap
-handles the Phase 1 synthesis dependency. OpenPARF remains a later-phase
-dependency.
+non-interactive SSH session's default `PATH`. Vivado 2025.2 is installed
+locally under `/data2/vivado/2025.2/Vivado`; the wrapper checks that
+executable explicitly. PPro's LSF synthesis configuration separately
+references `/nfs/share/Xilinx/Vivado/2024.2` on cluster workers. The
+project-local Yosys bootstrap handles the Phase 1 synthesis dependency.
+OpenPARF remains a later-phase dependency.
