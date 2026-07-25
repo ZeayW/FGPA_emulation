@@ -1,0 +1,27 @@
+diff --git a/openparf/util/torch.h b/openparf/util/torch.h
+index c30b617..3085291 100644
+--- a/openparf/util/torch.h
++++ b/openparf/util/torch.h
+@@ -35,17 +35,8 @@
+   AT_ASSERTM(x.is_contiguous(), #x "must be contiguous")
+ 
+ /// As the API for torch changes, customize a DREAMPlace version to remove
+-/// warnings
+-#define OPENPARF_DISPATCH_FLOATING_TYPES(TYPE, NAME, ...)                      \
+-  [&] {                                                                        \
+-    const auto &the_type = TYPE;                                               \
+-    (void)the_type;                                                            \
+-    at::ScalarType _st = OPENPARF_TENSOR_SCALARTYPE(TYPE);                     \
+-    switch (_st) {                                                             \
+-      AT_PRIVATE_CASE_TYPE(at::ScalarType::Double, double, __VA_ARGS__)        \
+-      AT_PRIVATE_CASE_TYPE(at::ScalarType::Float, float, __VA_ARGS__)          \
+-    default:                                                                   \
+-      AT_ERROR(#NAME, " not implemented for '", toString(_st), "'");           \
+-    }                                                                          \
+-  }()
++/// warnings. Use PyTorch's public dispatch API; AT_PRIVATE_CASE_TYPE changed
++/// signature across supported PyTorch releases.
++#define OPENPARF_DISPATCH_FLOATING_TYPES(TYPE, NAME, ...) \
++  AT_DISPATCH_FLOATING_TYPES(OPENPARF_TENSOR_SCALARTYPE(TYPE), NAME, __VA_ARGS__)
+ 
+ #endif

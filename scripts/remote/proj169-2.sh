@@ -353,9 +353,17 @@ set -eu
 remote_dir="\$1"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 openparf_root=$remote_root_quoted
-python=/research/d4/gds/ziyiwang21/miniconda3/envs/deepgate/bin/python
+python=/home/ziyiwang21/anaconda3/envs/deepgate/bin/python
 test -x "\$python"
 test -f "\$openparf_root/OpenPARF-src/CMakeLists.txt"
+# macOS archive metadata can appear as AppleDouble files on Linux and may be
+# captured by upstream CMake source globs.
+find "\$openparf_root/OpenPARF-src" -type f -name '._*' -delete
+if grep -q AT_PRIVATE_CASE_TYPE \
+  "\$openparf_root/OpenPARF-src/openparf/util/torch.h"; then
+  patch -d "\$openparf_root/OpenPARF-src" -p1 \
+    < "\$remote_dir/scripts/openparf/patches/torch-public-dispatch.patch"
+fi
 mkdir -p "\$openparf_root/OpenPARF-build" "\$openparf_root/OpenPARF-install"
 CUDA_VISIBLE_DEVICES="" cmake \
   -S "\$openparf_root/OpenPARF-src" \
@@ -379,7 +387,7 @@ set -eu
 remote_dir="\$1"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 openparf_root=$remote_root_quoted
-python=/research/d4/gds/ziyiwang21/miniconda3/envs/deepgate/bin/python
+python=/home/ziyiwang21/anaconda3/envs/deepgate/bin/python
 cd "\$remote_dir"
 test -s build/remote/phase2/run/openparf/openparf.json
 export CUDA_VISIBLE_DEVICES=""
