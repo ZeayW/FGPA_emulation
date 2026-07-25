@@ -173,6 +173,18 @@ def _area_type_for_cell(cell_type: str) -> str:
     raise ValueError(f"OpenPARF adapter does not support cell type {cell_type!r}")
 
 
+def _lut_size(cell_type: str) -> int:
+    if not cell_type.startswith("LUT"):
+        return 0
+    try:
+        size = int(cell_type[3:])
+    except ValueError as error:
+        raise ValueError(f"invalid LUT model name {cell_type!r}") from error
+    if size < 2 or size > 6:
+        raise ValueError(f"OpenPARF supports LUT2 through LUT6, got {cell_type!r}")
+    return size
+
+
 def _render_config(
     ir: EmuIR, architecture: ArchitectureDB, output_dir: Path
 ) -> Dict[str, Any]:
@@ -195,7 +207,7 @@ def _render_config(
                 f"sqrt(1/{site_capacity})",
                 f"sqrt(1/{site_capacity})",
             ],
-            "isLUT": int(cell_type.startswith("LUT")),
+            "isLUT": _lut_size(cell_type),
             "isFF": int(cell_type.startswith("FD")),
         }
         model_map[cell_type] = entry

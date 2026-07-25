@@ -125,6 +125,12 @@ class Phase2PipelineTest(unittest.TestCase):
             )
             self.assertIn("PIN CE INPUT CTRL_CE", library)
             self.assertIn("PIN R INPUT CTRL_SR", library)
+            config = json.loads(
+                (output / "openparf/openparf.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                config["gp_model2area_types_map"]["LUT2"]["isLUT"], 2
+            )
 
 
 if __name__ == "__main__":
