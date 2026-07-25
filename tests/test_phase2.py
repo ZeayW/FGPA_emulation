@@ -132,6 +132,7 @@ class Phase2PipelineTest(unittest.TestCase):
                 config["gp_model2area_types_map"]["LUT2"]["isLUT"], 2
             )
             self.assertEqual(config["architecture_name"], "ultrascale")
+            self.assertEqual(config["dtype"], "float64")
             self.assertEqual(config["plot_target_at_names"], ["FF", "LUT"])
 
 

@@ -224,6 +224,7 @@ def _render_config(
         "architecture_name": "ultrascale",
         "aux_input": str(output_dir / "design.aux"),
         "gpu": 0,
+        "dtype": "float64",
         "target_density": 0.8,
         "random_seed": 1000,
         "max_global_place_iters": 100,
