@@ -135,14 +135,28 @@ Acceptance:
 - the design is compared with effective per-FPGA capacities;
 - all tests run with Python 3.9 and no external packages.
 
-### Phase 2 — UltraScale+ physical-backend risk spike
+### Phase 2 — UltraScale+ physical-backend risk spike (in progress)
 
-Use public `xcvu3p` FPGA Interchange collateral to implement:
+The first executable increment implements:
+
+- ArchitectureDB v1 and Placement v1;
+- Vivado Site/BEL inventory to ArchitectureDB;
+- EmuIR to OpenPARF Bookshelf;
+- OpenPARF `x/y/z` result to legal UltraScale+ Site/BEL placement;
+- one-instance/one-BEL, compatibility, completeness, and collision checks;
+- LOC/BEL XDC generation;
+- a real `xcvu3p` Vivado DCP/route validation harness.
+
+The initial compatibility policy exposes only `*6LUT` and primary `*FF` BELs.
+This is intentionally conservative: it avoids accepting a placement that
+requires LUT input sharing or control-set repair that the flow does not yet
+implement.
+
+The remainder of Phase 2 uses public `xcvu3p` FPGA Interchange collateral to
+implement:
 
 - DeviceResources to cached ArchitectureDB;
-- FPGAIF logical netlist to OpenPARF Bookshelf/Flexshelf;
 - fixed IO/clock/macro placement import;
-- OpenPARF `x/y/BEL` result to FPGAIF `CellPlacement`;
 - detailed pin mapping and intra-site routing repair;
 - placed physical-netlist validation;
 - RapidWright conversion to placed DCP;

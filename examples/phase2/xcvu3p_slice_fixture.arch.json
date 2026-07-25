@@ -1,0 +1,63 @@
+{
+  "part": "xcvu3p-ffvc1517-2-e",
+  "policy": {
+    "description": "Two-site regression fixture using only conservative 6LUT and primary FF BELs.",
+    "name": "conservative-slice-v1"
+  },
+  "schema": "emuflow.archdb/v1",
+  "sites": [
+    {
+      "bels": [
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "A6LUT", "type": "LUT6", "z": 0},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "B6LUT", "type": "LUT6", "z": 1},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "C6LUT", "type": "LUT6", "z": 2},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "D6LUT", "type": "LUT6", "z": 3},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "E6LUT", "type": "LUT6", "z": 4},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "F6LUT", "type": "LUT6", "z": 5},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "G6LUT", "type": "LUT6", "z": 6},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "H6LUT", "type": "LUT6", "z": 7},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "AFF", "type": "FF", "z": 0},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "BFF", "type": "FF", "z": 1},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "CFF", "type": "FF", "z": 2},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "DFF", "type": "FF", "z": 3},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "EFF", "type": "FF", "z": 4},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "FFF", "type": "FF", "z": 5},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "GFF", "type": "FF", "z": 6},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "HFF", "type": "FF", "z": 7}
+      ],
+      "name": "SLICE_X0Y0",
+      "type": "SLICEL",
+      "x": 0,
+      "y": 0
+    },
+    {
+      "bels": [
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "A6LUT", "type": "LUT6", "z": 0},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "B6LUT", "type": "LUT6", "z": 1},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "C6LUT", "type": "LUT6", "z": 2},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "D6LUT", "type": "LUT6", "z": 3},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "E6LUT", "type": "LUT6", "z": 4},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "F6LUT", "type": "LUT6", "z": 5},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "G6LUT", "type": "LUT6", "z": 6},
+        {"compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"], "name": "H6LUT", "type": "LUT6", "z": 7},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "AFF", "type": "FF", "z": 0},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "BFF", "type": "FF", "z": 1},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "CFF", "type": "FF", "z": 2},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "DFF", "type": "FF", "z": 3},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "EFF", "type": "FF", "z": 4},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "FFF", "type": "FF", "z": 5},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "GFF", "type": "FF", "z": 6},
+        {"compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"], "name": "HFF", "type": "FF", "z": 7}
+      ],
+      "name": "SLICE_X1Y0",
+      "type": "SLICEL",
+      "x": 1,
+      "y": 0
+    }
+  ],
+  "source": {
+    "format": "emuflow-regression-fixture/v1",
+    "tool": "fixture",
+    "tool_version": "1"
+  }
+}

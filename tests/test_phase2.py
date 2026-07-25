@@ -1,0 +1,122 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.architecture import ArchitectureDB
+from emuflow.errors import ImportError, ValidationError
+from emuflow.ir import EmuIR
+from emuflow.phase2 import run_phase2
+from emuflow.placement import Placement
+from emuflow.yosys import import_yosys_json
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ARCH_PATH = ROOT / "examples/phase2/xcvu3p_slice_fixture.arch.json"
+IR_FIXTURE = ROOT / "examples/yosys/counter.json"
+
+
+class ArchitectureDBTest(unittest.TestCase):
+    def test_fixture_summary(self) -> None:
+        architecture = ArchitectureDB.load(ARCH_PATH)
+        summary = architecture.summary()
+        self.assertEqual(summary["part"], "xcvu3p-ffvc1517-2-e")
+        self.assertEqual(summary["sites"], 2)
+        self.assertEqual(summary["cell_slots"]["LUT2"], 16)
+        self.assertEqual(summary["cell_slots"]["FDRE"], 16)
+
+    def test_import_vivado_tsv(self) -> None:
+        content = "\n".join(
+            [
+                "META\tpart\txcvu3p-ffvc1517-2-e",
+                "META\tvivado_version\t2025.2",
+                "SITE\tSLICE_X4Y7\tSLICEL\t4\t7",
+                "BEL\tA6LUT\tLUT6\t0",
+                "BEL\tAFF\tFF\t0",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "arch.tsv"
+            path.write_text(content + "\n", encoding="utf-8")
+            architecture = ArchitectureDB.from_vivado_tsv(path)
+        self.assertEqual(architecture.summary()["sites"], 1)
+        self.assertEqual(
+            architecture.site_at(4, 7)["name"],  # type: ignore[index]
+            "SLICE_X4Y7",
+        )
+
+
+class PlacementTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.architecture = ArchitectureDB.load(ARCH_PATH)
+        self.ir = import_yosys_json(IR_FIXTURE, top="counter", clocks=["clk"])
+
+    def test_openparf_round_trip_and_xdc(self) -> None:
+        reference = Placement.greedy_reference(self.architecture, self.ir)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "result.pl"
+            path.write_text(reference.to_openparf_pl(), encoding="utf-8")
+            imported = Placement.from_openparf_pl(
+                path, self.architecture, self.ir
+            )
+        self.assertEqual(imported.summary()["status"], "legal")
+        self.assertEqual(imported.summary()["cells"], 8)
+        self.assertIn("set_property LOC", imported.to_xdc())
+        self.assertIn(r"next_lut\[0\]", imported.to_xdc())
+
+    def test_illegal_openparf_coordinate_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "bad.pl"
+            path.write_text("next_lut[0] 99 99 0\n", encoding="utf-8")
+            with self.assertRaisesRegex(ImportError, "no architecture site"):
+                Placement.from_openparf_pl(path, self.architecture, self.ir)
+
+    def test_bel_collision_is_rejected(self) -> None:
+        reference = Placement.greedy_reference(
+            self.architecture, self.ir
+        ).to_dict()
+        reference["cells"][1]["site"] = reference["cells"][0]["site"]
+        reference["cells"][1]["bel"] = reference["cells"][0]["bel"]
+        reference["cells"][1]["x"] = reference["cells"][0]["x"]
+        reference["cells"][1]["y"] = reference["cells"][0]["y"]
+        reference["cells"][1]["z"] = reference["cells"][0]["z"]
+        reference["cells"][1]["cell_type"] = reference["cells"][0]["cell_type"]
+        with self.assertRaises(ValidationError):
+            Placement(reference, self.architecture)
+
+
+class Phase2PipelineTest(unittest.TestCase):
+    def test_pipeline_writes_adapter_and_placement_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir = EmuIR(
+                import_yosys_json(
+                    IR_FIXTURE, top="counter", clocks=["clk"]
+                ).to_dict()
+            )
+            ir_path = root / "counter.emuir.json"
+            ir_path.write_text(
+                json.dumps(ir.to_dict(), indent=2) + "\n", encoding="utf-8"
+            )
+            output = root / "phase2"
+            report = run_phase2(ir_path, ARCH_PATH, output)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["provider"], "emuflow-greedy-reference")
+            for filename in (
+                "phase2_report.json",
+                "placement.json",
+                "placement.xdc",
+                "normalized.pl",
+                "openparf/design.aux",
+                "openparf/design.lib",
+                "openparf/design.nets",
+                "openparf/design.nodes",
+                "openparf/design.scl",
+                "openparf/openparf.json",
+                "openparf/manifest.json",
+            ):
+                self.assertTrue((output / filename).is_file(), filename)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -30,6 +30,10 @@ to synchronize a dirty worktree, records the source commit in
 | `test` | Run all Python unit tests and byte-compile the source. |
 | `synth` | Run a real Yosys process with `synth_xilinx -family xcup` on `counter.v`. |
 | `phase1` | Import the synthesized JSON and run the Phase 1 platform/resource checks. |
+| `phase2-arch` | Use Vivado to export 64 real `xcvu3p` SLICE sites and import them as ArchitectureDB. |
+| `phase2` | Export Bookshelf input and validate a deterministic reference Site/BEL placement. |
+| `phase2-vivado` | Apply the checked LOC/BEL constraints, complete placement, route, DRC, and write a DCP. |
+| `phase2-all` | Run the complete Phase 1 plus Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
 
 The default Yosys executable is
@@ -66,4 +70,7 @@ locally under `/data2/vivado/2025.2/Vivado`; the wrapper checks that
 executable explicitly. PPro's LSF synthesis configuration separately
 references `/nfs/share/Xilinx/Vivado/2024.2` on cluster workers. The
 server OSS CAD Suite provides the Phase 1 synthesis dependency.
-OpenPARF remains a later-phase dependency.
+The Phase 2 adapter and Vivado closed-loop harness are available. OpenPARF is
+not installed in the default environment; a real OpenPARF run therefore needs
+the separately built upstream package. The `phase2` command never labels its
+deterministic fallback as OpenPARF.

@@ -4,10 +4,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
+from .architecture import ArchitectureDB
 from .errors import EmuFlowError
 from .io import write_json
 from .ir import EmuIR
 from .phase1 import run_phase1
+from .phase2 import run_phase2
+from .placement import Placement
 from .platform import Platform
 from .synthesis import VALID_XILINX_FAMILIES, run_yosys
 from .yosys import import_yosys_json
@@ -71,6 +74,55 @@ def _build_parser() -> argparse.ArgumentParser:
     phase1.add_argument("--out", type=Path, required=True)
     phase1.add_argument("--top")
     phase1.add_argument("--clock", action="append", default=[])
+
+    arch_parser = subparsers.add_parser(
+        "arch", help="UltraScale+ ArchitectureDB operations"
+    )
+    arch_subparsers = arch_parser.add_subparsers(
+        dest="arch_command", required=True
+    )
+    arch_validate = arch_subparsers.add_parser(
+        "validate", help="validate and summarize an ArchitectureDB"
+    )
+    arch_validate.add_argument("path", type=Path)
+    arch_import = arch_subparsers.add_parser(
+        "import-vivado-tsv", help="import Vivado Site/BEL inventory TSV"
+    )
+    arch_import.add_argument("input", type=Path)
+    arch_import.add_argument("--output", "-o", type=Path, required=True)
+
+    placement_parser = subparsers.add_parser(
+        "placement", help="physical placement operations"
+    )
+    placement_subparsers = placement_parser.add_subparsers(
+        dest="placement_command", required=True
+    )
+    placement_validate = placement_subparsers.add_parser(
+        "validate", help="validate a placement against ArchitectureDB and EmuIR"
+    )
+    placement_validate.add_argument("path", type=Path)
+    placement_validate.add_argument("--arch", type=Path, required=True)
+    placement_validate.add_argument("--ir", type=Path)
+    placement_import = placement_subparsers.add_parser(
+        "import-openparf", help="convert OpenPARF .pl to legal Site/BEL placement"
+    )
+    placement_import.add_argument("input", type=Path)
+    placement_import.add_argument("--arch", type=Path, required=True)
+    placement_import.add_argument("--ir", type=Path, required=True)
+    placement_import.add_argument("--output", "-o", type=Path, required=True)
+    placement_import.add_argument("--xdc", type=Path)
+
+    phase2 = subparsers.add_parser(
+        "phase2", help="run the UltraScale+ physical-backend risk spike"
+    )
+    phase2.add_argument("--ir", type=Path, required=True)
+    phase2.add_argument("--arch", type=Path, required=True)
+    phase2.add_argument("--out", type=Path, required=True)
+    phase2.add_argument(
+        "--openparf-result",
+        type=Path,
+        help="OpenPARF output .pl; omit only for deterministic adapter testing",
+    )
     return parser
 
 
@@ -132,6 +184,42 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
+
+    if args.command == "arch":
+        if args.arch_command == "import-vivado-tsv":
+            architecture = ArchitectureDB.from_vivado_tsv(args.input)
+            write_json(args.output, architecture.to_dict())
+        else:
+            architecture = ArchitectureDB.load(args.path)
+        _print_json(architecture.summary())
+        return 0
+
+    if args.command == "placement":
+        architecture = ArchitectureDB.load(args.arch)
+        ir = EmuIR.load(args.ir) if args.ir is not None else None
+        if args.placement_command == "import-openparf":
+            assert ir is not None
+            placement = Placement.from_openparf_pl(
+                args.input, architecture, ir
+            )
+            write_json(args.output, placement.to_dict())
+            if args.xdc is not None:
+                args.xdc.parent.mkdir(parents=True, exist_ok=True)
+                args.xdc.write_text(placement.to_xdc(), encoding="utf-8")
+        else:
+            placement = Placement.load(args.path, architecture, ir)
+        _print_json(placement.summary())
+        return 0
+
+    if args.command == "phase2":
+        report = run_phase2(
+            ir_path=args.ir,
+            architecture_path=args.arch,
+            output_dir=args.out,
+            openparf_result=args.openparf_result,
+        )
+        _print_json(report)
+        return 0
 
     raise AssertionError(f"unhandled command {args.command!r}")
 

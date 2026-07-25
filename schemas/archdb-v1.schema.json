@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/archdb-v1.schema.json",
+  "title": "EmuFlow ArchitectureDB v1",
+  "type": "object",
+  "required": ["schema", "part", "source", "policy", "sites"],
+  "properties": {
+    "schema": {"const": "emuflow.archdb/v1"},
+    "part": {"type": "string", "minLength": 1},
+    "source": {"type": "object"},
+    "policy": {"type": "object"},
+    "sites": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "type", "x", "y", "bels"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "type": {"type": "string", "minLength": 1},
+          "x": {"type": "integer", "minimum": 0},
+          "y": {"type": "integer", "minimum": 0},
+          "bels": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["name", "type", "z", "compatible_cells"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "type": {"type": "string", "minLength": 1},
+                "z": {"type": "integer", "minimum": 0},
+                "compatible_cells": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

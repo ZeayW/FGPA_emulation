@@ -25,6 +25,12 @@ Commands:
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
+  phase2-arch
+             Export a real xcvu3p Site/BEL inventory with Vivado.
+  phase2     Export OpenPARF input and create a checked reference placement.
+  phase2-vivado
+             Apply the checked placement and route it with Vivado.
+  phase2-all Run sync, Phase 1, ArchitectureDB, Phase 2, and Vivado validation.
   all        Run sync, bootstrap, test, synth, and phase1.
 
 Environment overrides:
@@ -249,6 +255,61 @@ PYTHONPATH=src python3 -m emuflow phase1 \
 REMOTE
 }
 
+phase2_arch_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+mkdir -p build/remote/phase2
+"$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/export_architecture.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  build/remote/phase2/xcvu3p.sites.tsv 64 \
+  > build/remote/phase2/vivado-arch.log 2>&1
+PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
+  build/remote/phase2/xcvu3p.sites.tsv \
+  --output build/remote/phase2/xcvu3p.arch.json
+REMOTE
+}
+
+phase2_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+test -s build/remote/phase1/design.emuir.json
+test -s build/remote/phase2/xcvu3p.arch.json
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/phase1/design.emuir.json \
+  --arch build/remote/phase2/xcvu3p.arch.json \
+  --out build/remote/phase2/run
+REMOTE
+}
+
+phase2_vivado_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+test -s build/remote/phase2/run/placement.xdc
+"$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/validate_phase2.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  examples/rtl/phase2_primitives.v \
+  build/remote/phase2/run/placement.xdc \
+  build/remote/phase2/vivado \
+  > build/remote/phase2/vivado-validation.log 2>&1
+grep 'EMUFLOW_PHASE2_VIVADO status=pass' \
+  build/remote/phase2/vivado-validation.log
+test -s build/remote/phase2/vivado/routed.dcp
+REMOTE
+}
+
 command="${1:-}"
 cd "$REPO_ROOT"
 case "$command" in
@@ -269,6 +330,25 @@ case "$command" in
     ;;
   phase1)
     phase1_remote
+    ;;
+  phase2-arch)
+    phase2_arch_remote
+    ;;
+  phase2)
+    phase2_remote
+    ;;
+  phase2-vivado)
+    phase2_vivado_remote
+    ;;
+  phase2-all)
+    sync_project
+    bootstrap
+    test_remote
+    synth_remote
+    phase1_remote
+    phase2_arch_remote
+    phase2_remote
+    phase2_vivado_remote
     ;;
   all)
     sync_project

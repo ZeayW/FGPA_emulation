@@ -5,7 +5,8 @@ UltraScale+ devices. The long-term flow covers logic synthesis, partitioning,
 board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
 FPGA routing, and vendor-assisted bitstream generation.
 
-The repository currently implements **Phase 1: board-independent frontend**:
+The repository implements the Phase 1 frontend and the first executable
+Phase 2 physical-backend risk spike:
 
 - versioned EmuIR and Virtual BoardDB formats;
 - strict validation without third-party Python dependencies;
@@ -13,6 +14,11 @@ The repository currently implements **Phase 1: board-independent frontend**:
 - UltraScale+ primitive resource classification;
 - a runnable Phase 1 pipeline and machine-readable report;
 - a virtual two-FPGA `xcvu3p` reference platform.
+- ArchitectureDB and placement artifact validation;
+- Vivado Site/BEL inventory import for `xcvu3p-ffvc1517-2-e`;
+- EmuIR to OpenPARF Bookshelf export;
+- OpenPARF `x/y/z` to legal UltraScale+ Site/BEL conversion;
+- LOC/BEL XDC generation and a Vivado placement/route validation harness.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria.
@@ -50,6 +56,30 @@ Run the tests:
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
+## Phase 2 adapter smoke test
+
+The checked-in two-SLICE ArchitectureDB fixture exercises the physical
+artifact contracts without requiring Vivado or OpenPARF:
+
+```bash
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/phase1-demo/design.emuir.json \
+  --arch examples/phase2/xcvu3p_slice_fixture.arch.json \
+  --out build/phase2-demo
+```
+
+Omitting `--openparf-result` intentionally uses the deterministic reference
+placer. It validates the adapter and checker, but is not reported as an
+OpenPARF run. To import a real OpenPARF result:
+
+```bash
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/phase1-demo/design.emuir.json \
+  --arch build/xcvu3p.arch.json \
+  --openparf-result results/counter.pl \
+  --out build/phase2-openparf
+```
+
 ## Using a real Yosys installation
 
 Phase 1 can invoke Yosys directly when it is installed:
@@ -75,6 +105,7 @@ Yosys, and runs synthesis plus Phase 1:
 ```bash
 scripts/remote/proj169-2.sh probe
 scripts/remote/proj169-2.sh all
+scripts/remote/proj169-2.sh phase2-all
 ```
 
 See [docs/REMOTE_PROJ169_2.md](docs/REMOTE_PROJ169_2.md) for the command
@@ -82,6 +113,7 @@ breakdown, remote paths, and environment overrides. The wrapper also
 discovers the Vivado 2025.2 installation under
 `/data2/vivado/2025.2/Vivado`.
 
-The first phase deliberately stops at the logical IR. UltraScale+ site packing,
-FPGA Interchange conversion, OpenPARF placement, and DCP generation are
-subsequent phases described in the flow plan.
+Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
+and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,
+secondary FF, carry/macro packing, FPGA Interchange physical-netlist patching,
+and RapidWright DCP conversion remain explicit follow-on work.
