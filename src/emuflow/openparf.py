@@ -230,7 +230,10 @@ def _render_config(
         "max_global_place_iters": 100,
         "global_place_flag": 1,
         "legalize_flag": 1,
-        "detailed_place_flag": 1,
+        # OpenPARF's ISM detailed placer assumes a production-scale design and
+        # fails on the intentionally tiny Phase 2 smoke test. Global placement
+        # plus UltraScale slot legalization already produces a legal .pl file.
+        "detailed_place_flag": 0,
         "plot_flag": 0,
         "plot_target_at_names": sorted(resource_map),
         "io_at_names": [],

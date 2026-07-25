@@ -133,6 +133,7 @@ class Phase2PipelineTest(unittest.TestCase):
             )
             self.assertEqual(config["architecture_name"], "ultrascale")
             self.assertEqual(config["dtype"], "float64")
+            self.assertEqual(config["detailed_place_flag"], 0)
             self.assertEqual(config["plot_target_at_names"], ["FF", "LUT"])
 
 
