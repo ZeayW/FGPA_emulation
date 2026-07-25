@@ -243,6 +243,7 @@ def _render_config(
         "num_ControlSets_per_CLB": 4,
         "gp_adjust_area": 0,
         "gp_adjust_area_types": [],
+        "gp_adjust_packing_rule": "ultrascale",
         "gp_adjust_route_area": 0,
         "gp_adjust_pin_area": 0,
         "gp_adjust_resource_area": 0,

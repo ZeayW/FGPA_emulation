@@ -131,6 +131,7 @@ class Phase2PipelineTest(unittest.TestCase):
             self.assertEqual(
                 config["gp_model2area_types_map"]["LUT2"]["isLUT"], 2
             )
+            self.assertEqual(config["gp_adjust_packing_rule"], "ultrascale")
 
 
 if __name__ == "__main__":
