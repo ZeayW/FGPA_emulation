@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/emuir-v1.schema.json",
+  "title": "EmuFlow logical IR v1",
+  "type": "object",
+  "required": ["schema", "design", "ports", "instances", "nets", "clocks"],
+  "properties": {
+    "schema": {"const": "emuflow.emuir/v1"},
+    "design": {
+      "type": "object",
+      "required": ["name", "top", "source_format"],
+      "properties": {
+        "name": {"type": "string"},
+        "top": {"type": "string"},
+        "source_format": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "ports": {"type": "array", "items": {"type": "object"}},
+    "instances": {"type": "array", "items": {"type": "object"}},
+    "nets": {"type": "array", "items": {"type": "object"}},
+    "clocks": {"type": "array", "items": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

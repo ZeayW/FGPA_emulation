@@ -1,0 +1,45 @@
+{
+  "schema": "emuflow.boarddb/v1",
+  "platform": {
+    "name": "virtual_xcvu3p_2fpga_p2p",
+    "kind": "virtual",
+    "description": "Reference platform for board-independent flow development"
+  },
+  "fpgas": [
+    {
+      "id": "fpga0",
+      "part": "xcvu3p-ffvc1517-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 394080,
+        "ff": 788160,
+        "bram18k": 1440,
+        "uram288": 320,
+        "dsp48": 2280
+      }
+    },
+    {
+      "id": "fpga1",
+      "part": "xcvu3p-ffvc1517-2-e",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 394080,
+        "ff": 788160,
+        "bram18k": 1440,
+        "uram288": 320,
+        "dsp48": 2280
+      }
+    }
+  ],
+  "links": [
+    {
+      "id": "link_0_1",
+      "endpoints": ["fpga0", "fpga1"],
+      "direction": "full_duplex",
+      "mode": "source_synchronous",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    }
+  ]
+}
