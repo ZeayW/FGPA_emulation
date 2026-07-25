@@ -79,7 +79,7 @@ inner_ssh_command() {
     "$(shell_quote "$KNOWN_HOSTS")" \
     "$(shell_quote "$INNER_PORT")" \
     "$(shell_quote "$INNER_HOST")" \
-    "$command"
+    "$(shell_quote "$command")"
 }
 
 remote_script() {
