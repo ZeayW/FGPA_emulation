@@ -7,3 +7,4 @@ __pycache__/
 .venv/
 build/
 dist/
+third_party/rtl/

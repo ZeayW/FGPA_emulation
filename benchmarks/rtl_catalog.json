@@ -1,0 +1,92 @@
+{
+  "schema": "emuflow.rtl-catalog/v1",
+  "updated": "2026-07-25",
+  "designs": [
+    {
+      "id": "serv",
+      "name": "SERV",
+      "repository": "https://github.com/olofk/serv.git",
+      "revision": "41e8aeedfd1e9ad5f95902c5b0dfc83d1c99e5d2",
+      "license": "ISC",
+      "language": "Verilog",
+      "tops": ["serv_rf_top", "serv_synth_wrapper"],
+      "sparse_paths": ["/LICENSE", "/serv.core", "/rtl"],
+      "scale": "small",
+      "upstream_size": "Artix-7: about 125 LUT and 164 FF; architecture-dependent",
+      "priority": 1,
+      "flow_readiness": "near-term",
+      "notes": "Best fast regression after the eight-cell fixture. The external-register-file synthesis wrapper can isolate LUT/FF placement before RAM support."
+    },
+    {
+      "id": "picorv32",
+      "name": "PicoRV32",
+      "repository": "https://github.com/YosysHQ/picorv32.git",
+      "revision": "87c89acc18994c8cf9a2311e871818e87d304568",
+      "license": "ISC",
+      "language": "Verilog",
+      "tops": ["picorv32"],
+      "sparse_paths": ["/LICENSE", "/picorv32.core", "/picorv32.v"],
+      "scale": "medium",
+      "upstream_size": "7-series: 761-2019 LUT, 442-1085 FF, plus 48-88 LUTRAM",
+      "priority": 2,
+      "flow_readiness": "recommended-mainline",
+      "notes": "Single-file RTL and an upstream xcvu3p implementation result make this the preferred Phase 2 growth target. Requires a larger ArchitectureDB window and either LUTRAM/carry support or a logic-only synthesis policy."
+    },
+    {
+      "id": "secworks_aes",
+      "name": "secworks AES",
+      "repository": "https://github.com/secworks/aes.git",
+      "revision": "80dc4718e1dcbbdb4b0dd1bdb393d8f7b98981dc",
+      "license": "BSD-2-Clause",
+      "language": "Verilog",
+      "tops": ["aes_core", "aes"],
+      "sparse_paths": ["/LICENSE", "/aes.core", "/src/rtl"],
+      "scale": "medium-large",
+      "upstream_size": "Kintex-7: about 3020 LUT and 2992 FF",
+      "priority": 3,
+      "flow_readiness": "after-picorv32",
+      "notes": "Mature iterative AES-128/256 core. Good density and routing stress test once the architecture window grows beyond the current 512 LUT/FF slots."
+    },
+    {
+      "id": "ibex",
+      "name": "Ibex",
+      "repository": "https://github.com/lowRISC/ibex.git",
+      "revision": "8ed87e07e3331561bce93af1568d9b376948e701",
+      "license": "Apache-2.0",
+      "language": "SystemVerilog",
+      "tops": ["ibex_top"],
+      "sparse_paths": ["/LICENSE", "/*.core", "/rtl", "/vendor/lowrisc_ip/ip/prim"],
+      "scale": "large",
+      "upstream_size": "Yosys ASIC estimates: 16.85-66.02 kGE depending on configuration",
+      "priority": 4,
+      "flow_readiness": "later",
+      "notes": "Production-quality CPU with packages, parameters, primitive dependencies and memories. Use after the SystemVerilog/FuseSoC frontend and macro handling are stable."
+    },
+    {
+      "id": "vtr_classic",
+      "name": "VTR classic Verilog benchmarks",
+      "repository": "https://github.com/verilog-to-routing/vtr-verilog-to-routing.git",
+      "revision": "95f5c6de9e158371ba7185bf97c07a84153735d6",
+      "license": "MIT with component-specific exceptions",
+      "language": "Verilog",
+      "tops": [
+        "diffeq_paj_convert",
+        "sha1",
+        "or1200_flat",
+        "sv_chip0_hierarchy_no_mem"
+      ],
+      "sparse_paths": [
+        "/LICENSE.md",
+        "/vtr_flow/benchmarks/verilog/diffeq1.v",
+        "/vtr_flow/benchmarks/verilog/or1200.v",
+        "/vtr_flow/benchmarks/verilog/sha.v",
+        "/vtr_flow/benchmarks/verilog/stereovision0.v"
+      ],
+      "scale": "mixed",
+      "upstream_size": "Varies by benchmark",
+      "priority": 5,
+      "flow_readiness": "research-suite",
+      "notes": "Useful flattened CAD benchmarks. Review per-benchmark provenance and exclude latch/multiclock cases from the initial single-clock semantic envelope."
+    }
+  ]
+}
