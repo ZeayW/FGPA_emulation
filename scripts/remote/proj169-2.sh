@@ -359,14 +359,14 @@ test -f "\$openparf_root/OpenPARF-src/CMakeLists.txt"
 # macOS archive metadata can appear as AppleDouble files on Linux and may be
 # captured by upstream CMake source globs.
 find "\$openparf_root/OpenPARF-src" -type f -name '._*' -delete
-if grep -q AT_PRIVATE_CASE_TYPE \
+if grep -q 'AT_PRIVATE_CASE_TYPE(at::' \
   "\$openparf_root/OpenPARF-src/openparf/util/torch.h"; then
-  patch -d "\$openparf_root/OpenPARF-src" -p1 \
+  patch --batch --forward -d "\$openparf_root/OpenPARF-src" -p1 \
     < "\$remote_dir/scripts/openparf/patches/torch-public-dispatch.patch"
 fi
 if grep -q 'at::rfft' \
   "\$openparf_root/OpenPARF-src/openparf/ops/dct/src/dct2_fft2.cpp"; then
-  patch -d "\$openparf_root/OpenPARF-src" -p1 \
+  patch --batch --forward -d "\$openparf_root/OpenPARF-src" -p1 \
     < "\$remote_dir/scripts/openparf/patches/torch-fft-api.patch"
 fi
 mkdir -p "\$openparf_root/OpenPARF-build" "\$openparf_root/OpenPARF-install"
