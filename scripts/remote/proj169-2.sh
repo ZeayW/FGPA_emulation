@@ -337,8 +337,8 @@ sync_openparf() {
   fi
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
   unpack_command="$(inner_ssh_command \
-    "mkdir -p $remote_root_quoted/OpenPARF-src && tar -xf - -C $remote_root_quoted/OpenPARF-src")"
-  tar -cf - \
+    "mkdir -p $remote_root_quoted/OpenPARF-src && tar -xzf - -C $remote_root_quoted/OpenPARF-src")"
+  COPYFILE_DISABLE=1 tar -czf - \
     --exclude=.git \
     --exclude='*/.git' \
     --exclude=build \
