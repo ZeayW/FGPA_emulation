@@ -8,6 +8,12 @@ set site_limit 0
 if {$argc >= 3} {
     set site_limit [lindex $argv 2]
 }
+set site_side 0
+if {$site_limit > 0} {
+    while {$site_side * $site_side < $site_limit} {
+        incr site_side
+    }
+}
 
 create_project -in_memory -part $part
 # Device queries require an open design in Vivado. Synthesize the small,
@@ -23,11 +29,16 @@ puts $output "# Conservative Phase 2 inventory: 6LUT and primary FF BELs only."
 
 set emitted 0
 foreach site [lsort -dictionary [get_sites -filter {SITE_TYPE =~ SLICE*}]] {
-    if {$site_limit > 0 && $emitted >= $site_limit} {
-        break
-    }
     if {![regexp {^SLICE_X([0-9]+)Y([0-9]+)$} $site match x y]} {
         continue
+    }
+    # A single-column device sample is numerically degenerate for the
+    # two-dimensional electrostatic placer. Keep a compact square window.
+    if {$site_limit > 0 && ($x >= $site_side || $y >= $site_side)} {
+        continue
+    }
+    if {$site_limit > 0 && $emitted >= $site_limit} {
+        break
     }
     set site_type [get_property SITE_TYPE $site]
     puts $output "SITE\t$site\t$site_type\t$x\t$y"
