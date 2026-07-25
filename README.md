@@ -5,8 +5,8 @@ UltraScale+ devices. The long-term flow covers logic synthesis, partitioning,
 board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
 FPGA routing, and vendor-assisted bitstream generation.
 
-The repository implements the Phase 1 frontend and the first executable
-Phase 2 physical-backend risk spike:
+The repository implements the Phase 1 frontend and an executable Phase 2
+physical-backend risk spike:
 
 - versioned EmuIR and Virtual BoardDB formats;
 - strict validation without third-party Python dependencies;
@@ -18,10 +18,14 @@ Phase 2 physical-backend risk spike:
 - Vivado Site/BEL inventory import for `xcvu3p-ffvc1517-2-e`;
 - EmuIR to OpenPARF Bookshelf export;
 - OpenPARF `x/y/z` to legal UltraScale+ Site/BEL conversion;
-- LOC/BEL XDC generation and a Vivado placement/route validation harness.
+- LOC/BEL XDC generation and a Vivado placement/route validation harness;
+- reproducible CPU-only OpenPARF build/run support for `proj169-2`;
+- a validated OpenPARF-to-Vivado routed-DCP smoke-test path.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
-phase boundaries, artifacts, and acceptance criteria.
+phase boundaries, artifacts, and acceptance criteria. The exact remote
+toolchain and observed Phase 2 results are recorded in
+[docs/PHASE2_VALIDATION.md](docs/PHASE2_VALIDATION.md).
 
 ## Quick start
 
@@ -105,6 +109,8 @@ Yosys, and runs synthesis plus Phase 1:
 ```bash
 scripts/remote/proj169-2.sh probe
 scripts/remote/proj169-2.sh all
+scripts/remote/proj169-2.sh openparf-sync
+scripts/remote/proj169-2.sh openparf-build
 scripts/remote/proj169-2.sh phase2-all
 ```
 
@@ -116,4 +122,7 @@ discovers the Vivado 2025.2 installation under
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,
 secondary FF, carry/macro packing, FPGA Interchange physical-netlist patching,
-and RapidWright DCP conversion remain explicit follow-on work.
+and RapidWright DCP conversion remain explicit follow-on work. The tiny
+eight-cell smoke test runs OpenPARF global placement and UltraScale
+legalization; its optional ISM detailed-placement pass is disabled because
+the upstream implementation assumes a production-scale design.

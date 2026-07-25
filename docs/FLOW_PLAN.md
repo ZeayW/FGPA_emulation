@@ -135,7 +135,7 @@ Acceptance:
 - the design is compared with effective per-FPGA capacities;
 - all tests run with Python 3.9 and no external packages.
 
-### Phase 2 — UltraScale+ physical-backend risk spike (in progress)
+### Phase 2 — UltraScale+ physical-backend risk spike (executable increment implemented)
 
 The first executable increment implements:
 
@@ -147,13 +147,31 @@ The first executable increment implements:
 - LOC/BEL XDC generation;
 - a real `xcvu3p` Vivado DCP/route validation harness.
 
+The executable increment has been validated on `proj169-2`:
+
+- Vivado 2025.2 exported an 8-by-8 window containing 64 real `xcvu3p`
+  SLICEL/SLICEM sites;
+- a CPU-only OpenPARF build parsed the generated Bookshelf library, nodes,
+  nets, sites, and configuration;
+- OpenPARF global placement plus UltraScale slot legalization produced a
+  legal placement for four LUT2 and four FDRE cells;
+- EmuFlow independently re-imported the result and checked completeness,
+  compatibility, and BEL collisions;
+- Vivado preserved all eight OpenPARF LOC/BEL constraints, routed the design
+  with zero unrouted nets, and wrote a routed DCP.
+
+For this deliberately tiny regression, OpenPARF's optional ISM detailed
+placement is disabled after legalization because the upstream pass raises a
+small-design allocation error. This does not replace the independent
+legality check or the final Vivado route validation.
+
 The initial compatibility policy exposes only `*6LUT` and primary `*FF` BELs.
 This is intentionally conservative: it avoids accepting a placement that
 requires LUT input sharing or control-set repair that the flow does not yet
 implement.
 
-The remainder of Phase 2 uses public `xcvu3p` FPGA Interchange collateral to
-implement:
+The full Phase 2 acceptance target remains in progress. It uses public
+`xcvu3p` FPGA Interchange collateral to implement:
 
 - DeviceResources to cached ArchitectureDB;
 - fixed IO/clock/macro placement import;
