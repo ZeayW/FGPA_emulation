@@ -66,6 +66,20 @@ PYTHONPATH=src python3 -m emuflow synth-yosys \
 Then replace `examples/yosys/counter.json` in the Phase 1 command with
 `build/counter.json`.
 
+## Running on `proj169-2`
+
+The remote wrapper handles the server's two-hop SSH configuration,
+uploads the current committed snapshot, bootstraps a project-local
+Yosys, and runs synthesis plus Phase 1:
+
+```bash
+scripts/remote/proj169-2.sh probe
+scripts/remote/proj169-2.sh all
+```
+
+See [docs/REMOTE_PROJ169_2.md](docs/REMOTE_PROJ169_2.md) for the command
+breakdown, remote paths, and environment overrides.
+
 The first phase deliberately stops at the logical IR. UltraScale+ site packing,
 FPGA Interchange conversion, OpenPARF placement, and DCP generation are
 subsequent phases described in the flow plan.
