@@ -280,10 +280,17 @@ set -eu
 remote_dir="$1"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd "$remote_dir"
-test -s build/remote/phase1/design.emuir.json
 test -s build/remote/phase2/xcvu3p.arch.json
+# Phase 2 deliberately starts from a mapped primitive fixture. The server's
+# bootstrap Yosys emits CARRY4 for this RTL; converting that cell into a legal
+# UltraScale+ CARRY8 site macro belongs to the later site-packing milestone.
+PYTHONPATH=src python3 -m emuflow import-yosys \
+  examples/yosys/counter.json \
+  --top counter \
+  --clock clk \
+  --output build/remote/phase2/counter.emuir.json
 PYTHONPATH=src python3 -m emuflow phase2 \
-  --ir build/remote/phase1/design.emuir.json \
+  --ir build/remote/phase2/counter.emuir.json \
   --arch build/remote/phase2/xcvu3p.arch.json \
   --out build/remote/phase2/run
 REMOTE
