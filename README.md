@@ -27,7 +27,10 @@ phase boundaries, artifacts, and acceptance criteria. The exact remote
 toolchain and observed Phase 2 results are recorded in
 [docs/PHASE2_VALIDATION.md](docs/PHASE2_VALIDATION.md).
 Larger open-source RTL candidates and pinned fetch instructions are in
-[docs/RTL_BENCHMARKS.md](docs/RTL_BENCHMARKS.md).
+[docs/RTL_BENCHMARKS.md](docs/RTL_BENCHMARKS.md). The ordered end-to-end
+campaign, from real RTL through forced multi-FPGA TDM and per-FPGA routing, is
+defined in
+[docs/BENCHMARK_VALIDATION_PLAN.md](docs/BENCHMARK_VALIDATION_PLAN.md).
 
 ## Quick start
 

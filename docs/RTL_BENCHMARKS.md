@@ -20,13 +20,18 @@ python3 scripts/benchmarks/fetch.py fetch picorv32
 
 ## Recommended progression
 
-| Order | Design | Approximate upstream scale | Role |
+The complete gate-by-gate campaign is defined in
+`docs/BENCHMARK_VALIDATION_PLAN.md`. The source catalog and fetcher cover the
+following progression:
+
+| Level | Design | Approximate upstream scale | Role |
 | --- | --- | --- | --- |
-| 1 | SERV | about 125 LUT and 164 FF on Artix-7 | Fast multi-hundred-cell regression |
-| 2 | PicoRV32 | 761-2019 LUT and 442-1085 FF, plus LUTRAM | Main Phase 2 growth target |
-| 3 | secworks AES | about 3020 LUT and 2992 FF on Kintex-7 | Medium routing/density stress |
-| 4 | Ibex | 16.85-66.02 kGE depending on configuration | SystemVerilog and dependency stress |
-| 5 | VTR classic/Koios | mixed | CAD research and later large-scale tests |
+| L1 | SERV | about 125 LUT and 164 FF on Artix-7 | Fast real-RTL regression |
+| L2 | PicoRV32 | 761-2019 LUT and 442-1085 FF, plus LUTRAM | Main Phase 2 growth target |
+| L3 | secworks AES | about 3020 LUT and 2992 FF on Kintex-7 | Medium routing/density and forced partition stress |
+| L4 | VTR classic and Ibex | mixed; Ibex is 16.85-66.02 kGE by configuration | Frontend diversity, SystemVerilog and dependency stress |
+| L5-L6 | Koios 2.0 | 40 medium and large DL designs | Large RTL, BRAM/DSP and multi-FPGA system stress |
+| L7 | NVDLA nvdlav1 | 2048 INT8 MACs plus memories/control | Final very-large hierarchy/runtime stress |
 
 PicoRV32 is the preferred next integration because its CPU RTL is contained in
 one Verilog file, it has an ISC license, and upstream reports results for the
@@ -52,3 +57,8 @@ DSP, BRAM, LUTRAM, SRL, and wide-LUT inference. That provides a large LUT/FF
 placement test while the native UltraScale+ packer is implemented. It should
 be treated as a placement regression configuration, not as the final QoR
 configuration.
+
+Koios is preferred over pre-synthesized placement suites for the large-design
+campaign because it supplies editable RTL and explicit soft-logic versus hard
+memory/DSP modes. Compile one Koios source file at a time: several variants
+reuse top-level module names.

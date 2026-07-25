@@ -14,6 +14,7 @@ class RtlCatalogTest(unittest.TestCase):
         self.assertEqual(catalog["schema"], "emuflow.rtl-catalog/v1")
         identifiers = set()
         priorities = set()
+        tiers = set()
         for design in catalog["designs"]:
             self.assertNotIn(design["id"], identifiers)
             self.assertNotIn(design["priority"], priorities)
@@ -23,6 +24,11 @@ class RtlCatalogTest(unittest.TestCase):
             self.assertTrue(design["repository"].startswith("https://github.com/"))
             self.assertTrue(design["tops"])
             self.assertTrue(design["sparse_paths"])
+            self.assertRegex(design["validation_tier"], re.compile(r"^L[1-7](-L[1-7])?$"))
+            self.assertTrue(design["feature_tags"])
+            tiers.add(design["validation_tier"])
+        self.assertIn("L1", tiers)
+        self.assertIn("L7", tiers)
 
 
 if __name__ == "__main__":

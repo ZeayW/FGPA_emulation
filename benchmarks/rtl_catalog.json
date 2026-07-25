@@ -14,6 +14,8 @@
       "scale": "small",
       "upstream_size": "Artix-7: about 125 LUT and 164 FF; architecture-dependent",
       "priority": 1,
+      "validation_tier": "L1",
+      "feature_tags": ["single-clock", "lut", "ff", "cpu"],
       "flow_readiness": "near-term",
       "notes": "Best fast regression after the eight-cell fixture. The external-register-file synthesis wrapper can isolate LUT/FF placement before RAM support."
     },
@@ -29,6 +31,8 @@
       "scale": "medium",
       "upstream_size": "7-series: 761-2019 LUT, 442-1085 FF, plus 48-88 LUTRAM",
       "priority": 2,
+      "validation_tier": "L2",
+      "feature_tags": ["single-clock", "lut", "ff", "carry", "lutram", "cpu"],
       "flow_readiness": "recommended-mainline",
       "notes": "Single-file RTL and an upstream xcvu3p implementation result make this the preferred Phase 2 growth target. Requires a larger ArchitectureDB window and either LUTRAM/carry support or a logic-only synthesis policy."
     },
@@ -44,6 +48,8 @@
       "scale": "medium-large",
       "upstream_size": "Kintex-7: about 3020 LUT and 2992 FF",
       "priority": 3,
+      "validation_tier": "L3",
+      "feature_tags": ["single-clock", "lut", "ff", "crypto"],
       "flow_readiness": "after-picorv32",
       "notes": "Mature iterative AES-128/256 core. Good density and routing stress test once the architecture window grows beyond the current 512 LUT/FF slots."
     },
@@ -59,6 +65,8 @@
       "scale": "large",
       "upstream_size": "Yosys ASIC estimates: 16.85-66.02 kGE depending on configuration",
       "priority": 4,
+      "validation_tier": "L4",
+      "feature_tags": ["systemverilog", "cpu", "memory", "hierarchy"],
       "flow_readiness": "later",
       "notes": "Production-quality CPU with packages, parameters, primitive dependencies and memories. Use after the SystemVerilog/FuseSoC frontend and macro handling are stable."
     },
@@ -85,8 +93,70 @@
       "scale": "mixed",
       "upstream_size": "Varies by benchmark",
       "priority": 5,
+      "validation_tier": "L4",
+      "feature_tags": ["verilog", "mixed-clock", "hierarchy", "cad-suite"],
       "flow_readiness": "research-suite",
       "notes": "Useful flattened CAD benchmarks. Review per-benchmark provenance and exclude latch/multiclock cases from the initial single-clock semantic envelope."
+    },
+    {
+      "id": "koios",
+      "name": "Koios 2.0 deep-learning benchmarks",
+      "repository": "https://github.com/verilog-to-routing/vtr-verilog-to-routing.git",
+      "revision": "95f5c6de9e158371ba7185bf97c07a84153735d6",
+      "license": "VTR MIT license",
+      "language": "Verilog and SystemVerilog",
+      "tops": ["gemm_layer", "attention_layer", "conv_layer", "DLA", "top"],
+      "sparse_paths": [
+        "/LICENSE.md",
+        "/vtr_flow/benchmarks/verilog/koios"
+      ],
+      "scale": "large",
+      "upstream_size": "40 medium and large DL/CAD designs; variants include small, medium, and large source files",
+      "priority": 6,
+      "validation_tier": "L5-L6",
+      "feature_tags": [
+        "dsp",
+        "bram",
+        "deep-learning",
+        "high-fanout",
+        "wide-datapath",
+        "hierarchy"
+      ],
+      "flow_readiness": "after-hard-block-support",
+      "notes": "Primary large open-RTL suite. Start with gemm_layer and attention_layer in soft-logic mode, then enable inferred BRAM/DSP, and finally use dla_like.medium/large and tpu_like.large variants. Each source file is compiled separately because several files intentionally reuse module names such as top and DLA."
+    },
+    {
+      "id": "nvdla",
+      "name": "NVDLA nvdlav1",
+      "repository": "https://github.com/nvdla/hw.git",
+      "revision": "8e06b1b9d85aab65b40d43d08eec5ea4681ff715",
+      "license": "NVIDIA Open NVDLA License and Agreement v1.0",
+      "language": "Verilog",
+      "tops": ["NV_NVDLA_top"],
+      "sparse_paths": [
+        "/LICENSE",
+        "/README.md",
+        "/Makefile",
+        "/VERSION",
+        "/spec",
+        "/syn",
+        "/tools",
+        "/vmod"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Full-precision nvdlav1 implements 2048 8-bit MACs or 1024 16-bit MACs, plus memories and control",
+      "priority": 7,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "dsp",
+        "memory",
+        "deep-learning",
+        "multi-clock",
+        "generated-rtl",
+        "very-large"
+      ],
+      "flow_readiness": "final-stress-only",
+      "notes": "Final frontend, hierarchy, memory, partition-capacity, and runtime stress test. It is not an early bring-up design and its custom license must be preserved. The nvdlav1 branch is deliberately pinned because it is the stable full-precision release."
     }
   ]
 }
