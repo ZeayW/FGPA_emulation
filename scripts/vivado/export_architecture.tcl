@@ -10,6 +10,12 @@ if {$argc >= 3} {
 }
 
 create_project -in_memory -part $part
+# Device queries require an open design in Vivado. Synthesize the small,
+# primitive-only regression design to establish the target device context.
+set script_dir [file dirname [file normalize [info script]]]
+set probe_rtl [file normalize "$script_dir/../../examples/rtl/phase2_primitives.v"]
+read_verilog $probe_rtl
+synth_design -top phase2_primitives -part $part -flatten_hierarchy none
 set output [open $output_path w]
 puts $output "META\tpart\t$part"
 puts $output "META\tvivado_version\t[version -short]"
