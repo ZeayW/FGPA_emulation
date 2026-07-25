@@ -231,6 +231,8 @@ def _render_config(
         "legalize_flag": 1,
         "detailed_place_flag": 1,
         "plot_flag": 0,
+        "plot_target_at_names": sorted(resource_map),
+        "io_at_names": [],
         "num_threads": 8,
         "gp_model2area_types_map": model_map,
         "gp_resource2area_types_map": resource_map,
