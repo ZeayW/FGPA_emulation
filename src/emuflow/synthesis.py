@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,11 +9,21 @@ from .errors import EmuFlowError
 
 
 VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
+YOSYS_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
 
 def _yosys_quote(value: str) -> str:
     # Yosys accepts double-quoted strings with JSON-compatible escaping.
     return json.dumps(value)
+
+
+def _yosys_identifier(value: str) -> str:
+    if not YOSYS_IDENTIFIER.fullmatch(value):
+        raise EmuFlowError(
+            f"unsupported Yosys identifier {value!r}; "
+            "expected a simple Verilog module name"
+        )
+    return value
 
 
 def build_yosys_script(
@@ -29,16 +40,15 @@ def build_yosys_script(
             f"unsupported Xilinx family {family!r}; "
             f"expected one of {sorted(VALID_XILINX_FAMILIES)}"
         )
-    if not top:
-        raise EmuFlowError("synthesis top module must not be empty")
+    top_identifier = _yosys_identifier(top)
 
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
     return "; ".join(
         (
             f"read_verilog -sv {read_sources}",
-            f"hierarchy -check -top {_yosys_quote(top)}",
+            f"hierarchy -check -top {top_identifier}",
             (
-                f"synth_xilinx -family {family} -top {_yosys_quote(top)} "
+                f"synth_xilinx -family {family} -top {top_identifier} "
                 "-noiopad -noclkbuf"
             ),
             f"write_json {_yosys_quote(str(output))}",

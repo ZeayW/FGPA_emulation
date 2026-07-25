@@ -15,6 +15,8 @@ class SynthesisTest(unittest.TestCase):
         )
         self.assertIn("read_verilog -sv", script)
         self.assertIn("synth_xilinx -family xcup", script)
+        self.assertIn("-top counter", script)
+        self.assertNotIn('-top "counter"', script)
         self.assertIn("-noiopad -noclkbuf", script)
         self.assertIn('write_json "build/counter.json"', script)
 
@@ -23,6 +25,14 @@ class SynthesisTest(unittest.TestCase):
             build_yosys_script(
                 [],
                 top="counter",
+                output=Path("build/counter.json"),
+            )
+
+    def test_unsafe_top_identifier_is_rejected(self) -> None:
+        with self.assertRaisesRegex(EmuFlowError, "simple Verilog module name"):
+            build_yosys_script(
+                [Path("rtl/counter.sv")],
+                top="counter; delete",
                 output=Path("build/counter.json"),
             )
 
