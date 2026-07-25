@@ -120,6 +120,11 @@ class Phase2PipelineTest(unittest.TestCase):
             self.assertIn("LUT LUT2", scl)
             self.assertIn("FF FDRE", scl)
             self.assertNotIn("FDCE", scl)
+            library = (output / "openparf/design.lib").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("PIN CE INPUT CTRL_CE", library)
+            self.assertIn("PIN R INPUT CTRL_SR", library)
 
 
 if __name__ == "__main__":

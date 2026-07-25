@@ -10,12 +10,24 @@ from .ir import EmuIR
 
 OPENPARF_MANIFEST_SCHEMA = "emuflow.openparf-manifest/v1"
 
+_KNOWN_CELL_PINS: Dict[str, Dict[str, str]] = {
+    "FDRE": {
+        "C": "INPUT",
+        "CE": "INPUT",
+        "D": "INPUT",
+        "Q": "OUTPUT",
+        "R": "INPUT",
+    },
+}
+
 
 def _pins_by_cell_type(ir: EmuIR) -> Dict[str, Dict[str, str]]:
     instance_types = {
         instance["id"]: instance["type"] for instance in ir.value["instances"]
     }
     result: Dict[str, Dict[str, str]] = defaultdict(dict)
+    for cell_type in instance_types.values():
+        result[cell_type].update(_KNOWN_CELL_PINS.get(cell_type, {}))
     for net in ir.value["nets"]:
         for endpoint in net["drivers"]:
             instance = endpoint.get("instance")
@@ -48,14 +60,15 @@ def _render_lib(ir: EmuIR) -> str:
             qualifier = ""
             if direction == "INPUT" and pin in {"C", "CLK"}:
                 qualifier = " CLOCK"
+            elif direction == "INPUT" and pin == "CE":
+                qualifier = " CTRL_CE"
             elif direction == "INPUT" and pin in {
-                "CE",
                 "R",
                 "S",
                 "CLR",
                 "PRE",
             }:
-                qualifier = " CTRL"
+                qualifier = " CTRL_SR"
             lines.append(f"  PIN {pin} {direction}{qualifier}")
         lines.append("END CELL")
         blocks.append("\n".join(lines))
