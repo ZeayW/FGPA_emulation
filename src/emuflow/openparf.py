@@ -101,7 +101,7 @@ def _site_resource_counts(site: Mapping[str, Any]) -> Dict[str, int]:
     return {resource: len(bels) for resource, bels in slots.items()}
 
 
-def _render_scl(architecture: ArchitectureDB) -> str:
+def _render_scl(ir: EmuIR, architecture: ArchitectureDB) -> str:
     by_site_type: Dict[str, Dict[str, int]] = {}
     for site in architecture.sites:
         resources = _site_resource_counts(site)
@@ -117,12 +117,7 @@ def _render_scl(architecture: ArchitectureDB) -> str:
             lines.append(f"  {resource} {count}")
         lines.extend(["END SITE", ""])
     cell_types = sorted(
-        {
-            instance_type
-            for site in architecture.sites
-            for bel in site["bels"]
-            for instance_type in bel["compatible_cells"]
-        }
+        {instance["type"] for instance in ir.value["instances"]}
     )
     resource_cells: Dict[str, List[str]] = defaultdict(list)
     for cell_type in cell_types:
@@ -242,7 +237,7 @@ def export_bookshelf(
     _write_text(output_dir / "design.nodes", _render_nodes(ir))
     _write_text(output_dir / "design.nets", nets)
     _write_text(output_dir / "design.lib", _render_lib(ir))
-    _write_text(output_dir / "design.scl", _render_scl(architecture))
+    _write_text(output_dir / "design.scl", _render_scl(ir, architecture))
     _write_text(output_dir / "design.pl", "")
     _write_text(
         output_dir / "design.aux",

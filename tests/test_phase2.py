@@ -116,6 +116,10 @@ class Phase2PipelineTest(unittest.TestCase):
                 "openparf/manifest.json",
             ):
                 self.assertTrue((output / filename).is_file(), filename)
+            scl = (output / "openparf/design.scl").read_text(encoding="utf-8")
+            self.assertIn("LUT LUT2", scl)
+            self.assertIn("FF FDRE", scl)
+            self.assertNotIn("FDCE", scl)
 
 
 if __name__ == "__main__":
