@@ -369,6 +369,11 @@ if grep -q 'at::rfft' \
   patch --batch --forward -d "\$openparf_root/OpenPARF-src" -p1 \
     < "\$remote_dir/scripts/openparf/patches/torch-fft-api.patch"
 fi
+if grep -q 'view_as_complex(buf), {M, N}' \
+  "\$openparf_root/OpenPARF-src/openparf/ops/dct/src/dct2_fft2.cpp"; then
+  patch --batch --forward -d "\$openparf_root/OpenPARF-src" -p1 \
+    < "\$remote_dir/scripts/openparf/patches/torch-fft-shape.patch"
+fi
 mkdir -p "\$openparf_root/OpenPARF-build" "\$openparf_root/OpenPARF-install"
 CUDA_VISIBLE_DEVICES="" cmake \
   -S "\$openparf_root/OpenPARF-src" \
