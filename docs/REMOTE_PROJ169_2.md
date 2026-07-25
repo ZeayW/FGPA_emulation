@@ -47,13 +47,16 @@ EMUFLOW_REMOTE_DIR=/some/other/path \
 
 Supported overrides are `EMUFLOW_SSH_ALIAS`, `EMUFLOW_INNER_HOST`,
 `EMUFLOW_INNER_PORT`, `EMUFLOW_REMOTE_DIR`, and
-`EMUFLOW_REMOTE_KNOWN_HOSTS`.
+`EMUFLOW_REMOTE_KNOWN_HOSTS`. `EMUFLOW_VIVADO_ROOT` defaults to
+`/nfs/share/Xilinx/Vivado/2024.2`.
 
 ## Current environment observation
 
 At the time this integration was added, the final node reported host
 name `proj169`. Python 3.10, Git, CMake, and Ninja were available.
-System-level Yosys, Vivado, and OpenPARF were not present in the default
-`PATH` or the standard tool directories that were checked. The
-project-local Yosys bootstrap handles the Phase 1 synthesis dependency;
-Vivado and OpenPARF remain later-phase dependencies.
+System-level Yosys, Vivado, and OpenPARF were not present in the
+non-interactive SSH session's default `PATH`. Vivado is installed on the
+shared filesystem under `/nfs/share/Xilinx/Vivado/2024.2`; the wrapper
+checks that executable explicitly. The project-local Yosys bootstrap
+handles the Phase 1 synthesis dependency. OpenPARF remains a later-phase
+dependency.

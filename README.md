@@ -78,7 +78,9 @@ scripts/remote/proj169-2.sh all
 ```
 
 See [docs/REMOTE_PROJ169_2.md](docs/REMOTE_PROJ169_2.md) for the command
-breakdown, remote paths, and environment overrides.
+breakdown, remote paths, and environment overrides. The wrapper also
+discovers the shared Vivado 2024.2 installation under
+`/nfs/share/Xilinx/Vivado/2024.2`.
 
 The first phase deliberately stops at the logical IR. UltraScale+ site packing,
 FPGA Interchange conversion, OpenPARF placement, and DCP generation are

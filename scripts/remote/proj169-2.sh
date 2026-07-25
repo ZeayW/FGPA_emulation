@@ -10,6 +10,7 @@ INNER_HOST="${EMUFLOW_INNER_HOST:-ziyiwang21@projgw}"
 INNER_PORT="${EMUFLOW_INNER_PORT:-2369}"
 REMOTE_DIR="${EMUFLOW_REMOTE_DIR:-/home/ziyiwang21/work/FGPA_emulation}"
 KNOWN_HOSTS="${EMUFLOW_REMOTE_KNOWN_HOSTS:-/tmp/emuflow_proj169_known_hosts}"
+VIVADO_ROOT="${EMUFLOW_VIVADO_ROOT:-/nfs/share/Xilinx/Vivado/2024.2}"
 
 usage() {
   cat <<'EOF'
@@ -30,6 +31,7 @@ Environment overrides:
   EMUFLOW_INNER_PORT
   EMUFLOW_REMOTE_DIR
   EMUFLOW_REMOTE_KNOWN_HOSTS
+  EMUFLOW_VIVADO_ROOT
 EOF
 }
 
@@ -60,10 +62,12 @@ inner_ssh_command() {
 
 remote_script() {
   local remote_dir_quoted
+  local vivado_root_quoted
   local command
   remote_dir_quoted="$(shell_quote "$REMOTE_DIR")"
+  vivado_root_quoted="$(shell_quote "$VIVADO_ROOT")"
   command="$(inner_ssh_command \
-    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted")"
+    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted $vivado_root_quoted")"
   gateway_ssh "$command"
 }
 
@@ -71,18 +75,32 @@ probe() {
   remote_script <<'REMOTE'
 set -eu
 remote_dir="$1"
+vivado_root="$2"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 printf 'host=%s\n' "$(hostname)"
 printf 'user=%s\n' "$(id -un)"
 printf 'remote_dir=%s\n' "$remote_dir"
-for tool in python3 git yosys vivado openparf openparf.py cmake ninja; do
+for tool in python3 git yosys openparf openparf.py cmake ninja; do
   if command -v "$tool" >/dev/null 2>&1; then
     printf '%s=%s\n' "$tool" "$(command -v "$tool")"
   else
     printf '%s=MISSING\n' "$tool"
   fi
 done
+if command -v vivado >/dev/null 2>&1; then
+  vivado_bin="$(command -v vivado)"
+elif [ -x "$vivado_root/bin/vivado" ]; then
+  vivado_bin="$vivado_root/bin/vivado"
+else
+  vivado_bin=""
+fi
+if [ -n "$vivado_bin" ]; then
+  printf 'vivado=%s\n' "$vivado_bin"
+  "$vivado_bin" -version | head -4
+else
+  printf 'vivado=NOT_FOUND_AT_%s\n' "$vivado_root"
+fi
 if [ -x "$remote_dir/.venv/bin/yowasp-yosys" ]; then
   printf 'project_yosys=%s\n' "$remote_dir/.venv/bin/yowasp-yosys"
   "$remote_dir/.venv/bin/yowasp-yosys" -V
