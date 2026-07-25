@@ -32,6 +32,8 @@ Commands:
   phase2     Export OpenPARF input and create a checked reference placement.
   phase2-vivado
              Apply the checked placement and route it with Vivado.
+  phase2-vivado-openparf
+             Apply the re-imported OpenPARF placement and route it with Vivado.
   openparf-sync
              Upload an existing local OpenPARF source checkout.
   openparf-build
@@ -327,6 +329,27 @@ test -s build/remote/phase2/vivado/routed.dcp
 REMOTE
 }
 
+phase2_vivado_openparf_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+test -s build/remote/phase2/run-openparf/placement.xdc
+"$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/validate_phase2.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  examples/rtl/phase2_primitives.v \
+  build/remote/phase2/run-openparf/placement.xdc \
+  build/remote/phase2/vivado-openparf \
+  > build/remote/phase2/vivado-openparf-validation.log 2>&1
+grep 'EMUFLOW_PHASE2_VIVADO status=pass' \
+  build/remote/phase2/vivado-openparf-validation.log
+test -s build/remote/phase2/vivado-openparf/routed.dcp
+REMOTE
+}
+
 sync_openparf() {
   local remote_root_quoted
   local unpack_command
@@ -444,6 +467,9 @@ case "$command" in
     ;;
   phase2-vivado)
     phase2_vivado_remote
+    ;;
+  phase2-vivado-openparf)
+    phase2_vivado_openparf_remote
     ;;
   openparf-sync)
     sync_openparf
