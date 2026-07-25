@@ -1,0 +1,43 @@
+diff --git a/openparf/ops/dct/src/dct2_fft2.cpp b/openparf/ops/dct/src/dct2_fft2.cpp
+index 98e29fd..b0e27db 100644
+--- a/openparf/ops/dct/src/dct2_fft2.cpp
++++ b/openparf/ops/dct/src/dct2_fft2.cpp
+@@ -33,7 +33,7 @@ void dct2Forward(at::Tensor x, at::Tensor expkM, at::Tensor expkN,
+         OPENPARF_TENSOR_DATA_PTR(x, scalar_t),
+         OPENPARF_TENSOR_DATA_PTR(out, scalar_t), M, N, at::get_num_threads());
+ 
+-    buf = at::rfft(out, 2, false, true);
++    buf = at::view_as_real(torch::fft::rfft2(out));
+ 
+     dct2dPostprocessCpuLauncher<scalar_t>(
+         OPENPARF_TENSOR_DATA_PTR(buf, scalar_t),
+@@ -67,7 +67,8 @@ void idct2Forward(at::Tensor x, at::Tensor expkM, at::Tensor expkN,
+         OPENPARF_TENSOR_DATA_PTR(expkM, scalar_t),
+         OPENPARF_TENSOR_DATA_PTR(expkN, scalar_t), at::get_num_threads());
+ 
+-    auto y = at::irfft(buf, 2, false, true, {M, N});
++    auto y =
++        torch::fft::irfft2(at::view_as_complex(buf), {M, N});
+ 
+     idct2PostprocessCpuLauncher<scalar_t>(
+         OPENPARF_TENSOR_DATA_PTR(y, scalar_t),
+@@ -99,7 +100,8 @@ void idctIdxstForward(at::Tensor x, at::Tensor expkM, at::Tensor expkN,
+         OPENPARF_TENSOR_DATA_PTR(expkM, scalar_t),
+         OPENPARF_TENSOR_DATA_PTR(expkN, scalar_t), at::get_num_threads());
+ 
+-    auto y = at::irfft(buf, 2, false, true, {M, N});
++    auto y =
++        torch::fft::irfft2(at::view_as_complex(buf), {M, N});
+ 
+     idctIdxstPostprocessCpuLauncher<scalar_t>(
+         OPENPARF_TENSOR_DATA_PTR(y, scalar_t),
+@@ -131,7 +133,8 @@ void idxstIdctForward(at::Tensor x, at::Tensor expkM, at::Tensor expkN,
+         OPENPARF_TENSOR_DATA_PTR(expkM, scalar_t),
+         OPENPARF_TENSOR_DATA_PTR(expkN, scalar_t), at::get_num_threads());
+ 
+-    auto y = at::irfft(buf, 2, false, true, {M, N});
++    auto y =
++        torch::fft::irfft2(at::view_as_complex(buf), {M, N});
+ 
+     idxstIdctPostprocessCpuLauncher<scalar_t>(
+         OPENPARF_TENSOR_DATA_PTR(y, scalar_t),
