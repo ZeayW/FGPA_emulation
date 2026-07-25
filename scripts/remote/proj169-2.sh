@@ -11,6 +11,7 @@ INNER_PORT="${EMUFLOW_INNER_PORT:-2369}"
 REMOTE_DIR="${EMUFLOW_REMOTE_DIR:-/home/ziyiwang21/work/FGPA_emulation}"
 KNOWN_HOSTS="${EMUFLOW_REMOTE_KNOWN_HOSTS:-/tmp/emuflow_proj169_known_hosts}"
 VIVADO_ROOT="${EMUFLOW_VIVADO_ROOT:-/data2/vivado/2025.2/Vivado}"
+YOSYS_PATH="${EMUFLOW_YOSYS:-/data/zhpei/oss-cad-suite/bin/yosys}"
 CONTROL_PATH="${EMUFLOW_CONTROL_PATH:-}"
 
 usage() {
@@ -20,7 +21,7 @@ Usage: scripts/remote/proj169-2.sh COMMAND
 Commands:
   probe      Inspect the remote host and available FPGA tools.
   sync       Upload the current committed Git snapshot.
-  bootstrap  Create .venv and install a user-space Yosys when needed.
+  bootstrap  Select server Yosys or install a user-space fallback.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -33,6 +34,7 @@ Environment overrides:
   EMUFLOW_REMOTE_DIR
   EMUFLOW_REMOTE_KNOWN_HOSTS
   EMUFLOW_VIVADO_ROOT
+  EMUFLOW_YOSYS
   EMUFLOW_CONTROL_PATH
 EOF
 }
@@ -85,11 +87,13 @@ inner_ssh_command() {
 remote_script() {
   local remote_dir_quoted
   local vivado_root_quoted
+  local yosys_path_quoted
   local command
   remote_dir_quoted="$(shell_quote "$REMOTE_DIR")"
   vivado_root_quoted="$(shell_quote "$VIVADO_ROOT")"
+  yosys_path_quoted="$(shell_quote "$YOSYS_PATH")"
   command="$(inner_ssh_command \
-    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted $vivado_root_quoted")"
+    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted $vivado_root_quoted $yosys_path_quoted")"
   gateway_ssh "$command"
 }
 
@@ -98,18 +102,32 @@ probe() {
 set -eu
 remote_dir="$1"
 vivado_root="$2"
+yosys_path="$3"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 printf 'host=%s\n' "$(hostname)"
 printf 'user=%s\n' "$(id -un)"
 printf 'remote_dir=%s\n' "$remote_dir"
-for tool in python3 git yosys openparf openparf.py cmake ninja; do
+for tool in python3 git openparf openparf.py cmake ninja; do
   if command -v "$tool" >/dev/null 2>&1; then
     printf '%s=%s\n' "$tool" "$(command -v "$tool")"
   else
     printf '%s=MISSING\n' "$tool"
   fi
 done
+if command -v yosys >/dev/null 2>&1; then
+  yosys_bin="$(command -v yosys)"
+elif [ -x "$yosys_path" ]; then
+  yosys_bin="$yosys_path"
+else
+  yosys_bin=""
+fi
+if [ -n "$yosys_bin" ]; then
+  printf 'yosys=%s\n' "$yosys_bin"
+  "$yosys_bin" -V
+else
+  printf 'yosys=NOT_FOUND_AT_%s\n' "$yosys_path"
+fi
 if command -v vivado >/dev/null 2>&1; then
   vivado_bin="$(command -v vivado)"
 elif [ -x "$vivado_root/bin/vivado" ]; then
@@ -157,9 +175,14 @@ bootstrap() {
   remote_script <<'REMOTE'
 set -eu
 remote_dir="$1"
+yosys_path="$3"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd "$remote_dir"
 
+if [ -x "$yosys_path" ]; then
+  "$yosys_path" -V
+  exit 0
+fi
 if [ ! -x .venv/bin/python ]; then
   python3 -m venv .venv
 fi
@@ -186,14 +209,25 @@ synth_remote() {
   remote_script <<'REMOTE'
 set -eu
 remote_dir="$1"
+yosys_path="$3"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd "$remote_dir"
 mkdir -p build/remote
+if [ -x "$yosys_path" ]; then
+  yosys_bin="$yosys_path"
+elif [ -x .venv/bin/yowasp-yosys ]; then
+  yosys_bin=.venv/bin/yowasp-yosys
+elif command -v yosys >/dev/null 2>&1; then
+  yosys_bin="$(command -v yosys)"
+else
+  echo "error: no usable Yosys executable found" >&2
+  exit 1
+fi
 PYTHONPATH=src python3 -m emuflow synth-yosys \
   examples/rtl/counter.v \
   --top counter \
   --family xcup \
-  --yosys .venv/bin/yowasp-yosys \
+  --yosys "$yosys_bin" \
   --output build/remote/counter.json \
   --log build/remote/counter-yosys.log
 test -s build/remote/counter.json

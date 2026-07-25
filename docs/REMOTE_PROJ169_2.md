@@ -26,15 +26,18 @@ to synchronize a dirty worktree, records the source commit in
 | --- | --- |
 | `probe` | Report the final host name and discover Python, Git, Yosys, Vivado, OpenPARF, CMake, and Ninja. |
 | `sync` | Stream `git archive HEAD` into the remote deployment directory. |
-| `bootstrap` | Create a project-local virtual environment and install `yowasp-yosys` if no project-local Yosys exists. |
+| `bootstrap` | Use the server OSS CAD Suite Yosys, or install `yowasp-yosys` as a fallback. |
 | `test` | Run all Python unit tests and byte-compile the source. |
 | `synth` | Run a real Yosys process with `synth_xilinx -family xcup` on `counter.v`. |
 | `phase1` | Import the synthesized JSON and run the Phase 1 platform/resource checks. |
 | `all` | Execute the complete sequence above. |
 
-`yowasp-yosys` is installed under the remote project's `.venv`; no root
-permission or global package modification is required. The generated
-artifacts are placed under `build/remote/`.
+The default Yosys executable is
+`/data/zhpei/oss-cad-suite/bin/yosys` (Yosys `0.33+103`, with `xcup`
+support). If that executable is unavailable, `yowasp-yosys` can be
+installed under the remote project's `.venv`; no root permission or
+global package modification is required. The generated artifacts are
+placed under `build/remote/`.
 
 ## Configuration
 
@@ -51,7 +54,7 @@ Supported overrides are `EMUFLOW_SSH_ALIAS`, `EMUFLOW_INNER_HOST`,
 `/data2/vivado/2025.2/Vivado`. `EMUFLOW_CONTROL_PATH` can select an
 existing SSH ControlMaster socket. When it is unset, the wrapper checks
 `~/.ssh/control/` and reuses a live master before opening a new gateway
-connection.
+connection. `EMUFLOW_YOSYS` overrides the server Yosys executable.
 
 ## Current environment observation
 
@@ -62,5 +65,5 @@ non-interactive SSH session's default `PATH`. Vivado 2025.2 is installed
 locally under `/data2/vivado/2025.2/Vivado`; the wrapper checks that
 executable explicitly. PPro's LSF synthesis configuration separately
 references `/nfs/share/Xilinx/Vivado/2024.2` on cluster workers. The
-project-local Yosys bootstrap handles the Phase 1 synthesis dependency.
+server OSS CAD Suite provides the Phase 1 synthesis dependency.
 OpenPARF remains a later-phase dependency.
