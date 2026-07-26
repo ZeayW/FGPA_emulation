@@ -44,6 +44,8 @@ Commands:
              Run the PicoRV32 logic-only RTL-to-routed-DCP validation.
   picorv32-l2-all
              Sync project and PicoRV32, test, export ArchitectureDB, and run L2.
+  picorv32-x32-synth
+             Synthesize 32 PicoRV32 cores and require 100,000 mapped cells.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -559,6 +561,55 @@ test -s build/remote/benchmarks/picorv32-l2/vivado/routed.dcp
 REMOTE
 }
 
+picorv32_x32_synth_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+yosys_path="$3"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+test -x "$yosys_path"
+test -f third_party/rtl/picorv32/picorv32.v
+test -f benchmarks/rtl/picorv32_x32_top.v
+rm -rf build/remote/benchmarks/picorv32-x32-l5
+
+PYTHONPATH=src python3 -m emuflow benchmark \
+  benchmarks/runs/picorv32_x32_l5.json \
+  --source-root . \
+  --out build/remote/benchmarks/picorv32-x32-l5 \
+  --yosys "$yosys_path"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-x32-l5")
+design = json.loads(
+    (root / "phase1/design.emuir.json").read_text(encoding="utf-8")
+)
+counts = {}
+for instance in design["instances"]:
+    cell_type = instance["type"]
+    counts[cell_type] = counts.get(cell_type, 0) + 1
+total = len(design["instances"])
+print(
+    "EMUFLOW_PICORV32_X32_SYNTH "
+    f"status={'pass' if total >= 100000 else 'fail'} "
+    f"cells={total} types={json.dumps(counts, sort_keys=True)}"
+)
+if total < 100000:
+    raise SystemExit(
+        f"mapped design has {total} cells; expected at least 100000"
+    )
+PY
+
+du -sh \
+  build/remote/benchmarks/picorv32-x32-l5 \
+  build/remote/benchmarks/picorv32-x32-l5/synthesis/*
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -781,6 +832,9 @@ case "$command" in
     test_remote
     phase2_arch_remote
     picorv32_l2_remote
+    ;;
+  picorv32-x32-synth)
+    picorv32_x32_synth_remote
     ;;
   koios-sync)
     sync_koios_source
