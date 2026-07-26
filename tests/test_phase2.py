@@ -70,6 +70,12 @@ class PlacementTest(unittest.TestCase):
         self.assertIn(r"\x6e\x65\x78\x74\x5f\x6c\x75\x74", imported.to_xdc())
         self.assertNotIn("\nif {", imported.to_xdc())
         self.assertEqual(imported.to_xdc().count("set_property BEL"), 4)
+        tsv_lines = imported.to_vivado_tsv().splitlines()
+        self.assertEqual(len(tsv_lines), 9)
+        fields = tsv_lines[1].split("\t")
+        self.assertEqual(int(fields[0]), 0)
+        self.assertTrue(bytes.fromhex(fields[1]).decode("utf-8"))
+        self.assertTrue(fields[2].startswith("SLICE_"))
 
     def test_vivado_mapped_name_doubles_yosys_backslashes(self) -> None:
         encoded = _vivado_regexp_literal("$flatten\\cpu")
@@ -134,6 +140,7 @@ class Phase2PipelineTest(unittest.TestCase):
                 "phase2_report.json",
                 "placement.json",
                 "placement.xdc",
+                "placement.vivado.tsv",
                 "normalized.pl",
                 "openparf/design.aux",
                 "openparf/design.lib",

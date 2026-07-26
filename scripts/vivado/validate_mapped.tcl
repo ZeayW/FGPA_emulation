@@ -1,11 +1,11 @@
 if {$argc < 6} {
-    error "usage: vivado -mode batch -source validate_mapped.tcl -tclargs PART MAPPED_VERILOG TOP PLACEMENT_XDC OUTPUT_DIR EXPECTED_CELLS ?CLOCK_PORT PERIOD_NS?"
+    error "usage: vivado -mode batch -source validate_mapped.tcl -tclargs PART MAPPED_VERILOG TOP PLACEMENT_CONSTRAINTS OUTPUT_DIR EXPECTED_CELLS ?CLOCK_PORT PERIOD_NS?"
 }
 
 set part [lindex $argv 0]
 set netlist_path [file normalize [lindex $argv 1]]
 set top [lindex $argv 2]
-set placement_xdc [file normalize [lindex $argv 3]]
+set placement_constraints [file normalize [lindex $argv 3]]
 set output_dir [file normalize [lindex $argv 4]]
 set expected_cells [lindex $argv 5]
 file mkdir $output_dir
@@ -19,7 +19,55 @@ foreach cell [lsort -dictionary [get_cells -hier]] {
     puts $cell_inventory [get_property NAME $cell]
 }
 close $cell_inventory
-read_xdc $placement_xdc
+if {[file extension $placement_constraints] eq ".tsv"} {
+    set placement_start_ms [clock milliseconds]
+    set cells_by_name [dict create]
+    foreach cell [get_cells -hier] {
+        set name [get_property NAME $cell]
+        if {[dict exists $cells_by_name $name]} {
+            error "duplicate mapped cell name $name"
+        }
+        dict set cells_by_name $name $cell
+    }
+
+    set placement_input [open $placement_constraints r]
+    set placement_count 0
+    while {[gets $placement_input line] >= 0} {
+        if {$line eq "" || [string index $line 0] eq "#"} {
+            continue
+        }
+        set fields [split $line "\t"]
+        if {[llength $fields] != 5} {
+            error "malformed placement TSV row: $line"
+        }
+        set index [lindex $fields 0]
+        if {$index != $placement_count} {
+            error "placement TSV index $index; expected $placement_count"
+        }
+        set name [encoding convertfrom utf-8 \
+            [binary decode hex [lindex $fields 1]]]
+        if {![dict exists $cells_by_name $name]} {
+            error "placement TSV cell $name does not exist in mapped design"
+        }
+        set variable "emuflow_cell_$index"
+        set cell [dict get $cells_by_name $name]
+        set $variable $cell
+        set_property LOC [lindex $fields 2] $cell
+        set cell_type [lindex $fields 4]
+        if {![string match "FD*" $cell_type]} {
+            set_property BEL [lindex $fields 3] $cell
+        }
+        incr placement_count
+    }
+    close $placement_input
+    if {$placement_count != $expected_cells} {
+        error "placement TSV has $placement_count cells; expected $expected_cells"
+    }
+    set placement_elapsed_ms [expr {[clock milliseconds] - $placement_start_ms}]
+    puts "EMUFLOW_PLACEMENT_TSV status=pass cells=$placement_count elapsed_ms=$placement_elapsed_ms"
+} else {
+    read_xdc $placement_constraints
+}
 if {$argc >= 8} {
     set clock_port [lindex $argv 6]
     set clock_period [lindex $argv 7]

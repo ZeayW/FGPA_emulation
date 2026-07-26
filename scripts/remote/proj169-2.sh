@@ -712,7 +712,14 @@ cd "$remote_dir"
 
 root=build/remote/benchmarks/picorv32-x32-l5
 test -s "$root/synthesis/mapped.v"
-test -s "$root/phase2-openparf/placement.xdc"
+result="$root/phase2-reference/openparf/results/picorv32_x32_top.pl"
+test -s "$result"
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir "$root/phase1/design.emuir.json" \
+  --arch build/remote/phase2-large/xcvu3p.arch.json \
+  --openparf-result "$result" \
+  --out "$root/phase2-openparf"
+test -s "$root/phase2-openparf/placement.vivado.tsv"
 expected_cells="$(python3 -c \
   'import json,sys; print(len(json.load(open(sys.argv[1]))["instances"]))' \
   "$root/phase1/design.emuir.json")"
@@ -725,7 +732,7 @@ rm -f "$root/vivado-validation.log"
   -tclargs xcvu3p-ffvc1517-2-e \
   "$root/synthesis/mapped.v" \
   picorv32_x32_top \
-  "$root/phase2-openparf/placement.xdc" \
+  "$root/phase2-openparf/placement.vivado.tsv" \
   "$root/vivado" \
   "$expected_cells" clk 10.0 \
   > "$root/vivado-validation.log" 2>&1

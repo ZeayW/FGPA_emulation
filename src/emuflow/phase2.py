@@ -35,6 +35,9 @@ def run_phase2(
     (output_dir / "placement.xdc").write_text(
         placement.to_xdc(), encoding="utf-8"
     )
+    (output_dir / "placement.vivado.tsv").write_text(
+        placement.to_vivado_tsv(), encoding="utf-8"
+    )
     (output_dir / "normalized.pl").write_text(
         placement.to_openparf_pl(), encoding="utf-8"
     )
@@ -53,6 +56,7 @@ def run_phase2(
             "placement": "placement.json",
             "normalized_openparf_placement": "normalized.pl",
             "vivado_constraints": "placement.xdc",
+            "vivado_placement_table": "placement.vivado.tsv",
             "report": "phase2_report.json",
         },
     }

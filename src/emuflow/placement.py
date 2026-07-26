@@ -22,11 +22,16 @@ from .openparf import openparf_instance_names
 PLACEMENT_SCHEMA = "emuflow.placement/v1"
 
 
+def _vivado_mapped_name(value: str) -> str:
+    """Return the exact NAME property Vivado exposes for a Yosys identifier."""
+    return value.replace("\\", "\\\\")
+
+
 def _vivado_regexp_literal(value: str) -> str:
     """Encode a Yosys mapped name as Vivado exposes it to get_cells."""
     # Vivado preserves Yosys escaped identifiers but exposes every embedded
     # backslash as two characters in the NAME property.
-    vivado_name = value.replace("\\", "\\\\")
+    vivado_name = _vivado_mapped_name(value)
     return "".join(f"\\x{byte:02x}" for byte in vivado_name.encode("utf-8"))
 
 
@@ -323,6 +328,21 @@ class Placement:
                 lines.append(
                     f"set_property BEL {cell['bel']} ${variable}"
                 )
+        return "\n".join(lines) + "\n"
+
+    def to_vivado_tsv(self) -> str:
+        """Render a placement for O(1) exact-name lookup inside Vivado Tcl."""
+        lines = ["# index\tvivado_name_utf8_hex\tsite\tbel\tcell_type"]
+        for index, cell in enumerate(
+            sorted(self.value["cells"], key=lambda item: item["instance"])
+        ):
+            name_hex = _vivado_mapped_name(cell["instance"]).encode(
+                "utf-8"
+            ).hex()
+            lines.append(
+                f"{index}\t{name_hex}\t{cell['site']}\t{cell['bel']}\t"
+                f"{cell['cell_type']}"
+            )
         return "\n".join(lines) + "\n"
 
     def to_dict(self) -> Dict[str, Any]:
