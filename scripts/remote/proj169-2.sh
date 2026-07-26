@@ -66,6 +66,8 @@ Commands:
              Emit, place, and route both FPGA partitions with Vivado.
   picorv32-phase7c
              Build/verify the virtual runtime contract and reroute with both clocks.
+  picorv32-phase7c-finalize
+             Recheck existing runtime-constrained DCPs and aggregate QoR.
   picorv32-phase7c-all
              Rebuild Phase 6/7A, then run the complete Phase 7C validation.
   koios-sync Upload the pinned Koios DLA small/medium sources.
@@ -1601,6 +1603,13 @@ for fpga in ("fpga0", "fpga1"):
             "unrouted_nets": int(metrics["unrouted_nets"]),
             "drc_violations": int(metrics["drc_violations"]),
             "wns_ns": float(metrics["wns_ns"]),
+            "timing": {
+                "dut_wns_ns": float(metrics["dut_wns_ns"]),
+                "fabric_wns_ns": float(metrics["fabric_wns_ns"]),
+                "fabric_to_dut_wns_ns": float(
+                    metrics["fabric_to_dut_wns_ns"]
+                ),
+            },
             "clocks": {
                 "fabric_period_ns": float(metrics["fabric_period_ns"]),
                 "dut_period_ns": float(metrics["dut_period_ns"]),
@@ -1661,6 +1670,35 @@ print(
     f"worst_wns_ns={physical['worst_wns_ns']}"
 )
 PY
+
+repeat="$root/phase7c-repeat"
+rm -rf "$repeat"
+PYTHONPATH=src python3 -m emuflow phase7c \
+  --schedule "$root/phase5/schedule.json" \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --phase3-report "$root/phase3/phase3_report.json" \
+  --phase4-report "$root/phase4/phase4_report.json" \
+  --phase5-report "$root/phase5/phase5_report.json" \
+  --phase6-report "$root/phase6/phase6_report.json" \
+  --simulation-frames 64 \
+  --out "$repeat" \
+  > "$root/phase7c-repeat-stdout.json"
+for artifact in \
+  runtime_contract.json \
+  runtime_timing.xdc \
+  virtual_runtime_controller.sv \
+  virtual_runtime_controller_tb.sv; do
+  cmp "$phase7c/$artifact" "$repeat/$artifact"
+done
+runtime_hash="$(
+  sha256sum \
+    "$phase7c/runtime_contract.json" \
+    "$phase7c/runtime_timing.xdc" \
+    "$phase7c/virtual_runtime_controller.sv" \
+    "$phase7c/virtual_runtime_controller_tb.sv" |
+  awk '{print $1}' | sha256sum | awk '{print $1}'
+)"
+printf 'phase7c_runtime_artifact_set_sha256=%s\n' "$runtime_hash"
 REMOTE
 }
 
@@ -1925,6 +1963,9 @@ case "$command" in
     ;;
   picorv32-phase7c)
     picorv32_phase7c_remote
+    ;;
+  picorv32-phase7c-finalize)
+    picorv32_phase7c_finalize_remote
     ;;
   picorv32-phase7c-all)
     picorv32_phase6_remote

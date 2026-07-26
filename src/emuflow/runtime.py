@@ -362,6 +362,9 @@ def validate_physical_summary(
     total_original = 0
     total_transport = 0
     worst_slack = None
+    worst_dut_slack = None
+    worst_fabric_slack = None
+    worst_cross_slack = None
     for fpga_id in sorted(by_id):
         item = by_id[fpga_id]
         for field in (
@@ -414,11 +417,51 @@ def validate_physical_summary(
             raise ValidationError(
                 f"physical summary {fpga_id}.wns_ns must be numeric"
             )
+        timing = item.get("timing")
+        if not isinstance(timing, dict):
+            raise ValidationError(
+                f"physical summary {fpga_id}.timing must be an object"
+            )
+        timing_values = {}
+        for field in (
+            "dut_wns_ns",
+            "fabric_wns_ns",
+            "fabric_to_dut_wns_ns",
+        ):
+            value = timing.get(field)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value < 0
+            ):
+                raise ValidationError(
+                    f"physical summary {fpga_id}.timing.{field} "
+                    "must be non-negative"
+                )
+            timing_values[field] = float(value)
         total_cells += item["routed_cells"]
         total_original += item["original_cells"]
         total_transport += item["transport_cells"]
         worst_slack = float(slack) if worst_slack is None else min(
             worst_slack, float(slack)
+        )
+        worst_dut_slack = (
+            timing_values["dut_wns_ns"]
+            if worst_dut_slack is None
+            else min(worst_dut_slack, timing_values["dut_wns_ns"])
+        )
+        worst_fabric_slack = (
+            timing_values["fabric_wns_ns"]
+            if worst_fabric_slack is None
+            else min(worst_fabric_slack, timing_values["fabric_wns_ns"])
+        )
+        worst_cross_slack = (
+            timing_values["fabric_to_dut_wns_ns"]
+            if worst_cross_slack is None
+            else min(
+                worst_cross_slack,
+                timing_values["fabric_to_dut_wns_ns"],
+            )
         )
     return {
         "status": "pass",
@@ -429,6 +472,9 @@ def validate_physical_summary(
         "unrouted_nets": 0,
         "drc_violations": 0,
         "worst_wns_ns": worst_slack,
+        "worst_dut_wns_ns": worst_dut_slack,
+        "worst_fabric_wns_ns": worst_fabric_slack,
+        "worst_fabric_to_dut_wns_ns": worst_cross_slack,
     }
 
 

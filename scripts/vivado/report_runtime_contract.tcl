@@ -44,6 +44,24 @@ set wns [get_property SLACK $timing_paths]
 if {$wns < 0.0} {
     error "runtime timing failed with WNS $wns ns"
 }
+proc emuflow_clock_pair_wns {from_clock to_clock label} {
+    set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+        -from $from_clock -to $to_clock]
+    if {[llength $paths] != 1} {
+        error "$label did not produce a worst timing path"
+    }
+    set slack [get_property SLACK $paths]
+    if {$slack < 0.0} {
+        error "$label timing failed with WNS $slack ns"
+    }
+    return $slack
+}
+set dut_wns [emuflow_clock_pair_wns \
+    $dut_clocks $dut_clocks "DUT clock"]
+set fabric_wns [emuflow_clock_pair_wns \
+    $fabric_clocks $fabric_clocks "fabric clock"]
+set fabric_to_dut_wns [emuflow_clock_pair_wns \
+    $fabric_clocks $dut_clocks "fabric-to-DUT stable-data window"]
 
 set metrics [open "$output_dir/runtime_metrics.tsv" w]
 puts $metrics "metric\tvalue"
@@ -55,6 +73,9 @@ puts $metrics "drc_violations\t[llength $drc_violations]"
 puts $metrics "dut_period_ns\t$dut_period"
 puts $metrics "fabric_period_ns\t$fabric_period"
 puts $metrics "wns_ns\t$wns"
+puts $metrics "dut_wns_ns\t$dut_wns"
+puts $metrics "fabric_wns_ns\t$fabric_wns"
+puts $metrics "fabric_to_dut_wns_ns\t$fabric_to_dut_wns"
 close $metrics
 
-puts "EMUFLOW_RUNTIME_VIVADO status=pass cells=[llength $cells] unrouted_nets=0 drc_violations=0 dut_period_ns=$dut_period fabric_period_ns=$fabric_period wns_ns=$wns"
+puts "EMUFLOW_RUNTIME_VIVADO status=pass cells=[llength $cells] unrouted_nets=0 drc_violations=0 dut_period_ns=$dut_period fabric_period_ns=$fabric_period wns_ns=$wns dut_wns_ns=$dut_wns fabric_wns_ns=$fabric_wns fabric_to_dut_wns_ns=$fabric_to_dut_wns"

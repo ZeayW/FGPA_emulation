@@ -131,6 +131,11 @@ class Phase7CTest(unittest.TestCase):
                     "unrouted_nets": 0,
                     "drc_violations": 0,
                     "wns_ns": 1.25,
+                    "timing": {
+                        "dut_wns_ns": 120.0,
+                        "fabric_wns_ns": 1.25,
+                        "fabric_to_dut_wns_ns": 98.0,
+                    },
                     "clocks": {
                         "fabric_period_ns": 4.0,
                         "dut_period_ns": 128.0,
@@ -144,6 +149,11 @@ class Phase7CTest(unittest.TestCase):
                     "unrouted_nets": 0,
                     "drc_violations": 0,
                     "wns_ns": 0.75,
+                    "timing": {
+                        "dut_wns_ns": 121.0,
+                        "fabric_wns_ns": 0.75,
+                        "fabric_to_dut_wns_ns": 98.5,
+                    },
                     "clocks": {
                         "fabric_period_ns": 4.0,
                         "dut_period_ns": 128.0,
@@ -191,6 +201,11 @@ class Phase7CTest(unittest.TestCase):
         self.assertEqual(result["routed_cells"], 120)
         self.assertEqual(result["transport_cells"], 20)
         self.assertEqual(result["worst_wns_ns"], 0.75)
+        self.assertEqual(result["worst_dut_wns_ns"], 120.0)
+        self.assertEqual(result["worst_fabric_wns_ns"], 0.75)
+        self.assertEqual(
+            result["worst_fabric_to_dut_wns_ns"], 98.0
+        )
         qor = aggregate_qor(
             runtime,
             self.reports["phase3"],
