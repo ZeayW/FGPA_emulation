@@ -50,6 +50,8 @@ Commands:
              Synthesize 32 PicoRV32 cores and require 100,000 mapped cells.
   picorv32-x32-openparf
              Place the synthesized 32-core design with OpenPARF.
+  picorv32-x32-vivado
+             Route the 32-core OpenPARF placement with Vivado.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -700,6 +702,40 @@ du -sh build/remote/benchmarks/picorv32-x32-l5
 REMOTE
 }
 
+picorv32_x32_vivado_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-x32-l5
+test -s "$root/synthesis/mapped.v"
+test -s "$root/phase2-openparf/placement.xdc"
+expected_cells="$(python3 -c \
+  'import json,sys; print(len(json.load(open(sys.argv[1]))["instances"]))' \
+  "$root/phase1/design.emuir.json")"
+test "$expected_cells" -ge 100000
+rm -rf "$root/vivado"
+rm -f "$root/vivado-validation.log"
+
+"$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/validate_mapped.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  "$root/synthesis/mapped.v" \
+  picorv32_x32_top \
+  "$root/phase2-openparf/placement.xdc" \
+  "$root/vivado" \
+  "$expected_cells" clk 10.0 \
+  > "$root/vivado-validation.log" 2>&1
+grep 'EMUFLOW_MAPPED_VIVADO status=pass' \
+  "$root/vivado-validation.log"
+test -s "$root/vivado/routed.dcp"
+du -sh "$root/vivado"
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -931,6 +967,9 @@ case "$command" in
     ;;
   picorv32-x32-openparf)
     picorv32_x32_openparf_remote
+    ;;
+  picorv32-x32-vivado)
+    picorv32_x32_vivado_remote
     ;;
   koios-sync)
     sync_koios_source
