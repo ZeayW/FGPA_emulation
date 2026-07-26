@@ -102,9 +102,10 @@ multi-FPGA complete flow:
 - RTL-to-mapped sequential equivalence is not yet an automated gate;
 - constant pins and primary terminals need explicit Bookshelf terminal models;
 - native CARRY8/LUTRAM packing is not enabled;
-- partitioning, system routing, TDM, transport RTL, and lane assignment are
-  later phases and are not exercised by this single-FPGA L1 run.
+- partitioning is now implemented and validated on PicoRV32; system routing,
+  TDM, transport RTL, and lane assignment remain later phases and are not
+  exercised by this single-FPGA L1 run.
 
-PicoRV32 has now completed the larger L2 logic-only physical regression; see
-`docs/PICORV32_L2_VALIDATION.md`. Before moving to forced multi-FPGA AES, the
-partitioning implementation must provide G4 artifacts and independent checks.
+PicoRV32 has now completed both the larger L2 logic-only physical regression
+and the Phase 3 G4 partition regression; see
+`docs/PICORV32_L2_VALIDATION.md` and `docs/PHASE3_VALIDATION.md`.

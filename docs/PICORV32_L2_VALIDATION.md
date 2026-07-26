@@ -102,9 +102,9 @@ build/remote/benchmarks/picorv32-l2/vivado/routed.dcp
 ## Interpretation and remaining work
 
 L2 proves that the current physical bridge scales from hundreds to thousands
-of primitives and can route a dense register-file CPU. It does not yet prove
-native UltraScale+ QoR or the multi-FPGA flow. The next physical-backend work
-is explicit OpenPARF control-set modeling, native CARRY8/LUTRAM packing, and
-automated sequential equivalence. The next benchmark is secworks AES, but it
-should be paired with Phase 3 partitioning so it exercises a real multi-FPGA
-boundary rather than only a larger single-FPGA placement.
+of primitives and can route a dense register-file CPU. Phase 3 now forces this
+same connected design across two virtual FPGAs using 140 legal register-output
+cut nets; see `docs/PHASE3_VALIDATION.md`. It does not yet prove native
+UltraScale+ QoR or system routing/TDM. The next physical-backend work remains
+explicit OpenPARF control-set modeling, native CARRY8/LUTRAM packing, and
+automated sequential equivalence.

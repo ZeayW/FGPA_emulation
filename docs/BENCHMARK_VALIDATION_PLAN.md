@@ -104,9 +104,10 @@ The immediate sequence is:
 3. pass a strict 100,000-cell frontend and physical scale gate — completed
    with 121,984-cell PicoRV32 x32; fully routed and DRC-clean, but 100 MHz
    setup timing remains open;
-4. implement Phase 3 partitioning and force PicoRV32/AES onto 2 and 4 virtual
-   FPGAs;
-5. implement system routing, TDM, transport, and lane planning, then require
+4. implement Phase 3 partitioning and force PicoRV32 onto 2 virtual FPGAs —
+   completed with 140 legal register-output cuts and zero illegal cuts; AES
+   and 4-FPGA QoR remain follow-on coverage;
+5. implement system routing, then TDM, transport, and lane planning; require
    AES to pass G4-G7 plus cycle equivalence;
 6. close G8-G9 independently for every generated per-FPGA netlist;
 7. introduce Koios with native BRAM/DSP preservation; the current logic-only

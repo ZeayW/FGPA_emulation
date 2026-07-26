@@ -5,8 +5,8 @@ UltraScale+ devices. The long-term flow covers logic synthesis, partitioning,
 board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
 FPGA routing, and vendor-assisted bitstream generation.
 
-The repository implements the Phase 1 frontend and an executable Phase 2
-physical-backend risk spike:
+The repository implements the Phase 1 frontend, an executable Phase 2
+physical-backend risk spike, and the Phase 3 multi-FPGA partitioner:
 
 - versioned EmuIR and Virtual BoardDB formats;
 - strict validation without third-party Python dependencies;
@@ -21,6 +21,9 @@ physical-backend risk spike:
 - LOC/BEL XDC generation and a Vivado placement/route validation harness;
 - reproducible CPU-only OpenPARF build/run support for `proj169-2`;
 - a validated OpenPARF-to-Vivado routed-DCP smoke-test path.
+- combinationally safe sequential clustering and hard-macro/group closure;
+- deterministic multi-resource partitioning with fixed constraints;
+- independent G4 coverage, capacity, constraint, and cut-legality checking.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
@@ -135,6 +138,9 @@ recorded in
 The first 100k-scale result, a 121,984-cell PicoRV32 x32 run with a fully
 routed and DRC-clean checkpoint, is recorded in
 [docs/PICORV32_X32_100K_VALIDATION.md](docs/PICORV32_X32_100K_VALIDATION.md).
+The completed Phase 3 implementation and the real two-FPGA partition
+experiments are recorded in
+[docs/PHASE3_VALIDATION.md](docs/PHASE3_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,
