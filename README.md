@@ -34,6 +34,8 @@ board-independent Phase 6 split increment:
 - two-ended logical lane maps and virtual IO-region anchors;
 - generated per-FPGA transport mux/capture RTL;
 - mapped LUT/FF cycle-equivalence checking across the partition boundary.
+- real transport synthesis and per-FPGA placement-IR stitching;
+- independent OpenPARF placement and Site/BEL legality for both partitions.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
@@ -160,6 +162,9 @@ simulation are recorded in
 The Phase 6 per-FPGA split, endpoint/lane agreement checks, generated
 transport RTL, and 64-cycle mapped PicoRV32 equivalence result are recorded in
 [docs/PHASE6_VALIDATION.md](docs/PHASE6_VALIDATION.md).
+The Phase 7A real transport overhead and two-partition OpenPARF placement
+results are recorded in
+[docs/PHASE7A_VALIDATION.md](docs/PHASE7A_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,

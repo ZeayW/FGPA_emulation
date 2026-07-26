@@ -327,6 +327,16 @@ Acceptance:
 - setup/hold and board-interface timing are reported separately;
 - reproducible QoR reports include placement, route, TDM, and emulation speed.
 
+The Phase 7A placement increment is implemented. It synthesizes each generated
+transport module with real Yosys, stitches the mapped transport graph into its
+per-FPGA partition, and runs OpenPARF plus the independent Site/BEL checker on
+both results. Connected PicoRV32 produces legal 3,734-cell and 463-cell
+placements, including 385 real mapped transport cells. Two complete runs are
+byte-identical. See `docs/PHASE7A_VALIDATION.md`.
+
+Physical IO-net preservation, routed DCP validation, timing, and bitstream
+generation remain Phase 7B/7C work and are not implied by the placement gate.
+
 ### Phase 8 — Open synthesis/packing completion and hardware bring-up
 
 Replace bootstrap mapped DCPs with:
