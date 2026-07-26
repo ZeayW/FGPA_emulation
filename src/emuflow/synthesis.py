@@ -87,11 +87,17 @@ def build_yosys_script(
         *post_mapping,
         "opt_clean",
         "check",
+        # Vivado otherwise re-optimizes some mapped primitives (for example,
+        # redundant PicoRV32 register-file bits) and breaks the one-to-one
+        # identity contract between EmuIR, OpenPARF, XDC, and the routed
+        # design. Emit preservation attributes on every mapped cell.
+        "setattr -set keep 1 c:*",
+        "setattr -set dont_touch 1 c:*",
         f"write_json {_yosys_quote(str(output))}",
     ]
     if verilog_output is not None:
         commands.append(
-            "write_verilog -noattr -norename "
+            "write_verilog -norename "
             f"{_yosys_quote(str(verilog_output))}"
         )
     return "; ".join(commands)

@@ -47,9 +47,10 @@ class SynthesisTest(unittest.TestCase):
             output=Path("build/design.json"),
             verilog_output=Path("build/design.v"),
         )
-        self.assertIn(
-            'write_verilog -noattr -norename "build/design.v"', script
-        )
+        self.assertIn("setattr -set keep 1 c:*", script)
+        self.assertIn("setattr -set dont_touch 1 c:*", script)
+        self.assertIn('write_verilog -norename "build/design.v"', script)
+        self.assertNotIn("write_verilog -noattr", script)
 
     def test_unknown_policy_is_rejected(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "synthesis policy"):
