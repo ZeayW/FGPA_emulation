@@ -56,6 +56,8 @@ Commands:
              Validate G4 scale on x32 and legal cuts on connected PicoRV32.
   picorv32-phase4
              Route connected PicoRV32 cut nets over the virtual BoardDB.
+  picorv32-phase5
+             Schedule and simulate connected PicoRV32 TDM transport.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -979,6 +981,105 @@ du -sh "$output" "$repeat"
 REMOTE
 }
 
+picorv32_phase5_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+routes="$root/phase4/routes.json"
+platform=platforms/virtual/xcvu3p_2fpga_p2p.json
+output="$root/phase5"
+repeat="$root/phase5-repeat"
+test -s "$routes"
+test -x /usr/bin/iverilog
+test -x /usr/bin/vvp
+
+/usr/bin/time -v -o "$root/phase5-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase5 \
+    --routes "$routes" \
+    --platform "$platform" \
+    --out "$output" \
+    --simulation-frames 64 \
+    > "$root/phase5-stdout.json"
+
+PYTHONPATH=src python3 -m emuflow schedule validate \
+  "$output/schedule.json" \
+  --routes "$routes" \
+  --platform "$platform" \
+  > "$root/phase5-independent-check.json"
+
+PYTHONPATH=src python3 -m emuflow phase5 \
+  --routes "$routes" \
+  --platform "$platform" \
+  --out "$repeat" \
+  --simulation-frames 64 \
+  > "$root/phase5-repeat-stdout.json"
+
+first_hash="$(sha256sum "$output/schedule.json" | awk '{print $1}')"
+repeat_hash="$(sha256sum "$repeat/schedule.json" | awk '{print $1}')"
+test "$first_hash" = "$repeat_hash"
+
+/usr/bin/iverilog -g2012 -s transport_schedule_tb \
+  -o "$output/transport_schedule_simv" \
+  rtl/transport/emuflow_tdm_link.sv \
+  "$output/transport_schedule_tb.sv"
+/usr/bin/vvp "$output/transport_schedule_simv" \
+  > "$output/transport_schedule_sim.log"
+grep 'EMUFLOW_TDM_RTL_SIM status=pass' \
+  "$output/transport_schedule_sim.log"
+
+/usr/bin/iverilog -g2012 -s emuflow_frame_barrier \
+  -o "$output/frame_barrier_compile" \
+  rtl/transport/emuflow_frame_barrier.sv
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2")
+report = json.loads((root / "phase5/phase5_report.json").read_text())
+validation = report["validation"]
+simulation = report["simulation"]
+if report["status"] != "pass":
+    raise SystemExit("Phase 5 report did not pass")
+if validation["demands"] != 140:
+    raise SystemExit("Phase 5 did not schedule all 140 real demands")
+if validation["scheduled_bit_hops"] != 140:
+    raise SystemExit("Phase 5 did not schedule every routed bit-hop")
+if validation["routed_sinks"] != 140:
+    raise SystemExit("Phase 5 did not complete every remote sink")
+if validation["collisions"] != 0:
+    raise SystemExit("Phase 5 contains a lane/slot collision")
+if validation["completion_slot"] >= validation["frame_slots"]:
+    raise SystemExit("Phase 5 does not complete within the virtual frame")
+if simulation["frames"] != 64:
+    raise SystemExit("Phase 5 transport simulation frame count mismatch")
+if simulation["delivered_sink_values"] != 64 * 140:
+    raise SystemExit("Phase 5 transport simulation lost sink values")
+print(
+    "EMUFLOW_PICORV32_PHASE5 "
+    f"status=pass demands={validation['demands']} "
+    f"scheduled_bit_hops={validation['scheduled_bit_hops']} "
+    f"routed_sinks={validation['routed_sinks']} "
+    f"frame_slots={validation['frame_slots']} "
+    f"completion_slot={validation['completion_slot']} "
+    f"max_domain_utilization="
+    f"{validation['max_domain_utilization']:.6f} "
+    f"collisions={validation['collisions']} "
+    f"simulation_frames={simulation['frames']} "
+    f"delivered_sink_values={simulation['delivered_sink_values']} "
+    f"trace_sha256={simulation['trace_sha256']}"
+)
+PY
+
+printf 'schedule_sha256=%s\n' "$first_hash"
+du -sh "$output" "$repeat"
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -1219,6 +1320,9 @@ case "$command" in
     ;;
   picorv32-phase4)
     picorv32_phase4_remote
+    ;;
+  picorv32-phase5)
+    picorv32_phase5_remote
     ;;
   koios-sync)
     sync_koios_source

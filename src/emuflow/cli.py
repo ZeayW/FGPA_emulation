@@ -13,6 +13,7 @@ from .phase1 import run_phase1
 from .phase2 import run_phase2
 from .phase3 import run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
+from .phase5 import run_phase5, validate_phase5
 from .placement import Placement
 from .platform import Platform
 from .synthesis import (
@@ -196,6 +197,27 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument("--constraints", type=Path)
     phase4.add_argument("--frame-slots", type=int)
     phase4.add_argument("--max-iterations", type=int)
+
+    schedule_parser = subparsers.add_parser(
+        "schedule", help="TDM schedule artifact operations"
+    )
+    schedule_subparsers = schedule_parser.add_subparsers(
+        dest="schedule_command", required=True
+    )
+    schedule_validate = schedule_subparsers.add_parser(
+        "validate", help="independently validate a Phase 5 TDM schedule"
+    )
+    schedule_validate.add_argument("schedule", type=Path)
+    schedule_validate.add_argument("--routes", type=Path, required=True)
+    schedule_validate.add_argument("--platform", type=Path, required=True)
+
+    phase5 = subparsers.add_parser(
+        "phase5", help="schedule routed bit-hops into TDM lanes and slots"
+    )
+    phase5.add_argument("--routes", type=Path, required=True)
+    phase5.add_argument("--platform", type=Path, required=True)
+    phase5.add_argument("--out", type=Path, required=True)
+    phase5.add_argument("--simulation-frames", type=int, default=16)
     return parser
 
 
@@ -352,6 +374,25 @@ def _dispatch(args: argparse.Namespace) -> int:
             constraints_path=args.constraints,
             frame_slots=args.frame_slots,
             max_iterations=args.max_iterations,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
+
+    if args.command == "schedule":
+        report = validate_phase5(
+            routes_path=args.routes,
+            platform_path=args.platform,
+            schedule_path=args.schedule,
+        )
+        _print_json(report)
+        return 0
+
+    if args.command == "phase5":
+        report = run_phase5(
+            routes_path=args.routes,
+            platform_path=args.platform,
+            output_dir=args.out,
+            simulation_frames=args.simulation_frames,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
