@@ -72,6 +72,11 @@ if {[file extension $placement_constraints] eq ".tsv"} {
     foreach site [array names lut_cells_by_site] {
         set_property LOC $site $lut_cells_by_site($site)
     }
+    # A rejected FF LOC is an expected signal from the incomplete OpenPARF
+    # control-set model, not a fatal implementation error. Keep Tcl's error
+    # return for catch-based repair, but do not poison route_design's global
+    # message state with an ERROR severity.
+    set_msg_config -id {Vivado 12-1410} -new_severity WARNING
     set initial_ff_loc_rejects 0
     foreach site [array names ff_cells_by_site] {
         if {[catch {set_property LOC $site $ff_cells_by_site($site)}]} {
