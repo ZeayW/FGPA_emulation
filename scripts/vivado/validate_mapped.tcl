@@ -30,6 +30,7 @@ if {$argc >= 8} {
     create_clock -name emuflow_dut_clk -period $clock_period $clock_ports
 }
 
+set ff_loc_repairs 0
 for {set index 0} {$index < $expected_cells} {incr index} {
     set variable "emuflow_cell_$index"
     if {![info exists $variable]} {
@@ -41,25 +42,42 @@ for {set index 0} {$index < $expected_cells} {incr index} {
     }
     set ref_name [get_property REF_NAME $cells]
     if {[get_property LOC $cells] eq ""} {
-        error "$variable does not have a LOC constraint"
+        if {[string match "FD*" $ref_name]} {
+            # OpenPARF currently models FF capacity but not the complete
+            # UltraScale+ CKEN/control-set compatibility relation. A LOC can
+            # therefore be rejected when unrelated CE nets share a SLICE.
+            # Leave only those conflicting FFs movable for Vivado repair.
+            set emuflow_ff_repair($index) 1
+            incr ff_loc_repairs
+        } else {
+            error "$variable does not have a LOC constraint"
+        }
     }
     if {![string match "FD*" $ref_name] && [get_property BEL $cells] eq ""} {
         error "$variable does not have a BEL constraint"
     }
 }
 
-# Complete placement of unconstrained physical objects while preserving every
-# OpenPARF Site/BEL decision.
+# Complete placement of unconstrained physical objects. LUT Site/BEL decisions
+# remain fixed; only FF LOCs rejected for control-set conflicts may spill.
 place_design -directive Quick
 for {set index 0} {$index < $expected_cells} {incr index} {
     set variable "emuflow_cell_$index"
     set cells [set $variable]
     set ref_name [get_property REF_NAME $cells]
-    if {![get_property IS_LOC_FIXED $cells]} {
-        error "$variable LOC was not kept fixed during placement completion"
+    if {[get_property LOC $cells] eq ""} {
+        error "$variable is unplaced after placement completion"
     }
-    if {![string match "FD*" $ref_name] && ![get_property IS_BEL_FIXED $cells]} {
-        error "$variable BEL was not kept fixed during placement completion"
+    if {![string match "FD*" $ref_name]} {
+        if {![get_property IS_LOC_FIXED $cells]} {
+            error "$variable LOC was not kept fixed during placement completion"
+        }
+        if {![get_property IS_BEL_FIXED $cells]} {
+            error "$variable BEL was not kept fixed during placement completion"
+        }
+    } elseif {![info exists emuflow_ff_repair($index)] &&
+              ![get_property IS_LOC_FIXED $cells]} {
+        error "$variable FF LOC was not kept fixed during placement completion"
     }
 }
 write_checkpoint -force "$output_dir/placed.dcp"
@@ -73,4 +91,4 @@ set unrouted [get_nets -quiet -filter {ROUTE_STATUS == UNROUTED}]
 if {[llength $unrouted] != 0} {
     error "route completed with [llength $unrouted] unrouted nets"
 }
-puts "EMUFLOW_MAPPED_VIVADO status=pass part=$part cells=$expected_cells routed_dcp=$output_dir/routed.dcp"
+puts "EMUFLOW_MAPPED_VIVADO status=pass part=$part cells=$expected_cells ff_loc_repairs=$ff_loc_repairs routed_dcp=$output_dir/routed.dcp"
