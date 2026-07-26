@@ -1154,7 +1154,9 @@ for fpga in fpga0 fpga1; do
   /usr/bin/iverilog -g2012 \
     -s "emuflow_transport_${fpga}" \
     -o "$output/$fpga/transport_compile" \
-    "$output/$fpga/transport_schedule.sv"
+    "$output/$fpga/transport_schedule.sv" \
+    > "$output/$fpga/transport_compile.log" 2>&1
+  test -x "$output/$fpga/transport_compile"
 done
 
 first_hash="$(
@@ -1165,7 +1167,7 @@ first_hash="$(
     "$output/fpga0/transport.json" \
     "$output/fpga1/netlist.json" \
     "$output/fpga1/transport.json" |
-  sha256sum | awk '{print $1}'
+  awk '{print $1}' | sha256sum | awk '{print $1}'
 )"
 repeat_hash="$(
   sha256sum \
@@ -1175,7 +1177,7 @@ repeat_hash="$(
     "$repeat/fpga0/transport.json" \
     "$repeat/fpga1/netlist.json" \
     "$repeat/fpga1/transport.json" |
-  sha256sum | awk '{print $1}'
+  awk '{print $1}' | sha256sum | awk '{print $1}'
 )"
 test "$first_hash" = "$repeat_hash"
 
