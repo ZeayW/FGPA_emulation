@@ -12,6 +12,7 @@ from .ir import EmuIR
 from .phase1 import run_phase1
 from .phase2 import run_phase2
 from .phase3 import run_phase3, validate_phase3
+from .phase4 import run_phase4, validate_phase4
 from .placement import Placement
 from .platform import Platform
 from .synthesis import (
@@ -172,6 +173,29 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--seed", type=int, default=0)
     phase3.add_argument("--min-used-fpgas", type=int)
     phase3.add_argument("--balance-tolerance", type=float)
+
+    route_parser = subparsers.add_parser(
+        "route", help="board-level system route artifact operations"
+    )
+    route_subparsers = route_parser.add_subparsers(
+        dest="route_command", required=True
+    )
+    route_validate = route_subparsers.add_parser(
+        "validate", help="independently validate Phase 4 system routes"
+    )
+    route_validate.add_argument("routes", type=Path)
+    route_validate.add_argument("--assignment", type=Path, required=True)
+    route_validate.add_argument("--platform", type=Path, required=True)
+
+    phase4 = subparsers.add_parser(
+        "phase4", help="route partition cut nets over BoardDB links"
+    )
+    phase4.add_argument("--assignment", type=Path, required=True)
+    phase4.add_argument("--platform", type=Path, required=True)
+    phase4.add_argument("--out", type=Path, required=True)
+    phase4.add_argument("--constraints", type=Path)
+    phase4.add_argument("--frame-slots", type=int)
+    phase4.add_argument("--max-iterations", type=int)
     return parser
 
 
@@ -307,6 +331,27 @@ def _dispatch(args: argparse.Namespace) -> int:
             seed=args.seed,
             min_used_fpgas=args.min_used_fpgas,
             balance_tolerance=args.balance_tolerance,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
+
+    if args.command == "route":
+        report = validate_phase4(
+            assignment_path=args.assignment,
+            platform_path=args.platform,
+            routes_path=args.routes,
+        )
+        _print_json(report)
+        return 0
+
+    if args.command == "phase4":
+        report = run_phase4(
+            assignment_path=args.assignment,
+            platform_path=args.platform,
+            output_dir=args.out,
+            constraints_path=args.constraints,
+            frame_slots=args.frame_slots,
+            max_iterations=args.max_iterations,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

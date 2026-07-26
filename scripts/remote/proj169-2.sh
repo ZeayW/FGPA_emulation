@@ -54,6 +54,8 @@ Commands:
              Route the 32-core OpenPARF placement with Vivado.
   picorv32-x32-phase3
              Validate G4 scale on x32 and legal cuts on connected PicoRV32.
+  picorv32-phase4
+             Route connected PicoRV32 cut nets over the virtual BoardDB.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -893,6 +895,90 @@ du -sh \
 REMOTE
 }
 
+picorv32_phase4_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+assignment="$root/phase3/assignment.json"
+platform=platforms/virtual/xcvu3p_2fpga_p2p.json
+output="$root/phase4"
+repeat="$root/phase4-repeat"
+test -s "$assignment"
+
+/usr/bin/time -v -o "$root/phase4-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase4 \
+    --assignment "$assignment" \
+    --platform "$platform" \
+    --out "$output" \
+    --frame-slots 32 \
+    > "$root/phase4-stdout.json"
+
+PYTHONPATH=src python3 -m emuflow route validate \
+  "$output/routes.json" \
+  --assignment "$assignment" \
+  --platform "$platform" \
+  > "$root/phase4-independent-check.json"
+
+PYTHONPATH=src python3 -m emuflow phase4 \
+  --assignment "$assignment" \
+  --platform "$platform" \
+  --out "$repeat" \
+  --frame-slots 32 \
+  > "$root/phase4-repeat-stdout.json"
+
+first_hash="$(sha256sum "$output/routes.json" | awk '{print $1}')"
+repeat_hash="$(sha256sum "$repeat/routes.json" | awk '{print $1}')"
+test "$first_hash" = "$repeat_hash"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2")
+report = json.loads((root / "phase4/phase4_report.json").read_text())
+validation = report["validation"]
+if report["status"] != "pass":
+    raise SystemExit("Phase 4 report did not pass")
+if validation["demands"] != 140:
+    raise SystemExit(
+        f"expected 140 real cut-net demands, got {validation['demands']}"
+    )
+if validation["routed_sinks"] != 140:
+    raise SystemExit("not every real cut-net sink was routed")
+if validation["overloaded_links"] != 0:
+    raise SystemExit("Phase 4 contains an overloaded link")
+if validation["tree_edges"] != 140:
+    raise SystemExit("two-FPGA route should use one tree edge per demand")
+if validation["max_link_utilization"] > 1.0:
+    raise SystemExit("Phase 4 exceeds modeled frame capacity")
+print(
+    "EMUFLOW_PICORV32_PHASE4 "
+    f"status=pass demands={validation['demands']} "
+    f"routed_sinks={validation['routed_sinks']} "
+    f"tree_edges={validation['tree_edges']} "
+    f"iterations={validation['iterations']} "
+    f"max_link_utilization={validation['max_link_utilization']:.6f} "
+    f"total_link_bit_hops={validation['total_link_bit_hops']} "
+    f"overloaded_links={validation['overloaded_links']}"
+)
+for link in validation["link_utilization"]:
+    print(
+        "EMUFLOW_PHASE4_LINK "
+        f"key={link['key']} used_bits={link['used_bits']} "
+        f"capacity_bits={link['capacity_bits']} "
+        f"utilization={link['utilization']:.6f}"
+    )
+PY
+
+printf 'routes_sha256=%s\n' "$first_hash"
+du -sh "$output" "$repeat"
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -1130,6 +1216,9 @@ case "$command" in
     ;;
   picorv32-x32-phase3)
     picorv32_x32_phase3_remote
+    ;;
+  picorv32-phase4)
+    picorv32_phase4_remote
     ;;
   koios-sync)
     sync_koios_source
