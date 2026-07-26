@@ -38,7 +38,8 @@ if {[file extension $placement_constraints] eq ".tsv"} {
         error "placement TSV has [llength $placement_rows] cells; expected $expected_cells"
     }
     set placement_count 0
-    array set cells_by_site {}
+    array set lut_cells_by_site {}
+    array set ff_cells_by_site {}
     array set cells_by_bel {}
     foreach cell $all_cells actual_name $all_names line $placement_rows {
         set fields [split $line "\t"]
@@ -51,27 +52,38 @@ if {[file extension $placement_constraints] eq ".tsv"} {
         }
         set name [encoding convertfrom utf-8 \
             [binary decode hex [lindex $fields 1]]]
-        set actual_name [lindex $all_names $index]
         if {$name ne $actual_name} {
             error "placement TSV cell $name does not match mapped cell $actual_name at index $index"
         }
         set variable "emuflow_cell_$index"
         set $variable $cell
-        lappend cells_by_site([lindex $fields 2]) $cell
         set cell_type [lindex $fields 4]
-        if {![string match "FD*" $cell_type]} {
+        if {[string match "FD*" $cell_type]} {
+            lappend ff_cells_by_site([lindex $fields 2]) $cell
+        } else {
+            lappend lut_cells_by_site([lindex $fields 2]) $cell
             lappend cells_by_bel([lindex $fields 3]) $cell
         }
         incr placement_count
     }
-    foreach site [array names cells_by_site] {
-        set_property LOC $site $cells_by_site($site)
-    }
     foreach bel [array names cells_by_bel] {
         set_property BEL $bel $cells_by_bel($bel)
     }
+    foreach site [array names lut_cells_by_site] {
+        set_property LOC $site $lut_cells_by_site($site)
+    }
+    set initial_ff_loc_rejects 0
+    foreach site [array names ff_cells_by_site] {
+        if {[catch {set_property LOC $site $ff_cells_by_site($site)}]} {
+            foreach cell $ff_cells_by_site($site) {
+                if {[catch {set_property LOC $site $cell}]} {
+                    incr initial_ff_loc_rejects
+                }
+            }
+        }
+    }
     set placement_elapsed_ms [expr {[clock milliseconds] - $placement_start_ms}]
-    puts "EMUFLOW_PLACEMENT_TSV status=pass cells=$placement_count elapsed_ms=$placement_elapsed_ms"
+    puts "EMUFLOW_PLACEMENT_TSV status=pass cells=$placement_count initial_ff_loc_rejects=$initial_ff_loc_rejects elapsed_ms=$placement_elapsed_ms"
 } else {
     read_xdc $placement_constraints
 }
