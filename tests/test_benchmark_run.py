@@ -9,6 +9,7 @@ from emuflow.errors import EmuFlowError, ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 SERV_SPEC = ROOT / "benchmarks" / "runs" / "serv_l1.json"
+PICORV32_SPEC = ROOT / "benchmarks" / "runs" / "picorv32_l2.json"
 
 
 class BenchmarkRunTest(unittest.TestCase):
@@ -20,6 +21,18 @@ class BenchmarkRunTest(unittest.TestCase):
             sources = spec.resolve_sources(source_root)
             self.assertGreaterEqual(len(sources), 18)
             self.assertTrue(all(path.suffix == ".v" for path in sources))
+
+    def test_picorv32_l2_spec_and_source(self) -> None:
+        spec = BenchmarkRun.load(PICORV32_SPEC)
+        self.assertEqual(spec.value["top"], "picorv32")
+        self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
+        source_root = ROOT / "third_party" / "rtl" / "picorv32"
+        if source_root.is_dir():
+            sources = spec.resolve_sources(source_root)
+            self.assertEqual(
+                [path.name for path in sources],
+                ["picorv32.v"],
+            )
 
     def test_missing_source_pattern_is_rejected(self) -> None:
         spec = BenchmarkRun.load(SERV_SPEC)

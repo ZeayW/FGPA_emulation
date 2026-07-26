@@ -38,6 +38,12 @@ Commands:
   serv-l1    Run the SERV logic-only RTL-to-routed-DCP validation.
   serv-l1-all
              Sync project and SERV, test, export ArchitectureDB, and run SERV L1.
+  picorv32-sync
+             Upload the pinned PicoRV32 source checkout.
+  picorv32-l2
+             Run the PicoRV32 logic-only RTL-to-routed-DCP validation.
+  picorv32-l2-all
+             Sync project and PicoRV32, test, export ArchitectureDB, and run L2.
   openparf-sync
              Upload an existing local OpenPARF source checkout.
   openparf-build
@@ -282,7 +288,7 @@ mkdir -p build/remote/phase2
 "$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
   -source scripts/vivado/export_architecture.tcl \
   -tclargs xcvu3p-ffvc1517-2-e \
-  build/remote/phase2/xcvu3p.sites.tsv 64 \
+  build/remote/phase2/xcvu3p.sites.tsv 512 \
   > build/remote/phase2/vivado-arch.log 2>&1
 PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
   build/remote/phase2/xcvu3p.sites.tsv \
@@ -389,6 +395,23 @@ sync_serv_source() {
     gateway_ssh "$unpack_command"
 }
 
+sync_picorv32_source() {
+  local source="$REPO_ROOT/third_party/rtl/picorv32"
+  local destination_quoted
+  local unpack_command
+
+  python3 "$REPO_ROOT/scripts/benchmarks/fetch.py" fetch picorv32
+  if [ ! -f "$source/picorv32.v" ]; then
+    echo "error: PicoRV32 source is incomplete at $source" >&2
+    return 1
+  fi
+  destination_quoted="$(shell_quote "$REMOTE_DIR/third_party/rtl/picorv32")"
+  unpack_command="$(inner_ssh_command \
+    "mkdir -p $destination_quoted && tar -xf - -C $destination_quoted")"
+  COPYFILE_DISABLE=1 tar -cf - --exclude=.git -C "$source" . |
+    gateway_ssh "$unpack_command"
+}
+
 serv_l1_remote() {
   local remote_root_quoted
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
@@ -445,6 +468,68 @@ PYTHONPATH=src python3 -m emuflow phase2 \
 grep 'EMUFLOW_MAPPED_VIVADO status=pass' \
   build/remote/benchmarks/serv-l1/vivado-validation.log
 test -s build/remote/benchmarks/serv-l1/vivado/routed.dcp
+REMOTE
+}
+
+picorv32_l2_remote() {
+  local remote_root_quoted
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+vivado_root="\$2"
+yosys_path="\$3"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+openparf_root=$remote_root_quoted
+openparf_python=/home/ziyiwang21/anaconda3/envs/deepgate/bin/python
+cd "\$remote_dir"
+
+test -x "\$yosys_path"
+test -x "\$openparf_python"
+test -f "\$openparf_root/OpenPARF-install/openparf.py"
+test -s build/remote/phase2/xcvu3p.arch.json
+test -f third_party/rtl/picorv32/picorv32.v
+
+PYTHONPATH=src python3 -m emuflow benchmark \
+  benchmarks/runs/picorv32_l2.json \
+  --source-root third_party/rtl/picorv32 \
+  --out build/remote/benchmarks/picorv32-l2 \
+  --yosys "\$yosys_path"
+
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/benchmarks/picorv32-l2/phase1/design.emuir.json \
+  --arch build/remote/phase2/xcvu3p.arch.json \
+  --out build/remote/benchmarks/picorv32-l2/phase2-reference
+
+export CUDA_VISIBLE_DEVICES=""
+export PYTHONPATH="\$remote_dir/scripts/openparf/shims:\$openparf_root/OpenPARF-install"
+"\$openparf_python" "\$openparf_root/OpenPARF-install/openparf.py" \
+  --config build/remote/benchmarks/picorv32-l2/phase2-reference/openparf/openparf.json \
+  --log build/remote/benchmarks/picorv32-l2/openparf.log
+
+result=build/remote/benchmarks/picorv32-l2/phase2-reference/openparf/results/picorv32.pl
+test -s "\$result"
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/benchmarks/picorv32-l2/phase1/design.emuir.json \
+  --arch build/remote/phase2/xcvu3p.arch.json \
+  --openparf-result "\$result" \
+  --out build/remote/benchmarks/picorv32-l2/phase2-openparf
+
+expected_cells=\$(python3 -c \
+  'import json,sys; print(len(json.load(open(sys.argv[1]))["instances"]))' \
+  build/remote/benchmarks/picorv32-l2/phase1/design.emuir.json)
+"\$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/validate_mapped.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  build/remote/benchmarks/picorv32-l2/synthesis/mapped.v \
+  picorv32 \
+  build/remote/benchmarks/picorv32-l2/phase2-openparf/placement.xdc \
+  build/remote/benchmarks/picorv32-l2/vivado \
+  "\$expected_cells" clk 10.0 \
+  > build/remote/benchmarks/picorv32-l2/vivado-validation.log 2>&1
+grep 'EMUFLOW_MAPPED_VIVADO status=pass' \
+  build/remote/benchmarks/picorv32-l2/vivado-validation.log
+test -s build/remote/benchmarks/picorv32-l2/vivado/routed.dcp
 REMOTE
 }
 
@@ -563,6 +648,19 @@ case "$command" in
     test_remote
     phase2_arch_remote
     serv_l1_remote
+    ;;
+  picorv32-sync)
+    sync_picorv32_source
+    ;;
+  picorv32-l2)
+    picorv32_l2_remote
+    ;;
+  picorv32-l2-all)
+    sync_project
+    sync_picorv32_source
+    test_remote
+    phase2_arch_remote
+    picorv32_l2_remote
     ;;
   openparf-sync)
     sync_openparf
