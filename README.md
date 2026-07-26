@@ -117,12 +117,17 @@ scripts/remote/proj169-2.sh all
 scripts/remote/proj169-2.sh openparf-sync
 scripts/remote/proj169-2.sh openparf-build
 scripts/remote/proj169-2.sh phase2-all
+scripts/remote/proj169-2.sh serv-l1-all
 ```
 
 See [docs/REMOTE_PROJ169_2.md](docs/REMOTE_PROJ169_2.md) for the command
 breakdown, remote paths, and environment overrides. The wrapper also
 discovers the Vivado 2025.2 installation under
 `/data2/vivado/2025.2/Vivado`.
+
+The first real-RTL physical closure result, including SERV resource, routing,
+DRC, timing, and current semantic limitations, is recorded in
+[docs/SERV_L1_VALIDATION.md](docs/SERV_L1_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,

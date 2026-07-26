@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
 from .architecture import ArchitectureDB
+from .benchmark import run_benchmark
 from .errors import EmuFlowError
 from .io import write_json
 from .ir import EmuIR
@@ -12,7 +13,11 @@ from .phase1 import run_phase1
 from .phase2 import run_phase2
 from .placement import Placement
 from .platform import Platform
-from .synthesis import VALID_XILINX_FAMILIES, run_yosys
+from .synthesis import (
+    VALID_SYNTHESIS_POLICIES,
+    VALID_XILINX_FAMILIES,
+    run_yosys,
+)
 from .yosys import import_yosys_json
 
 
@@ -65,6 +70,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     synthesis.add_argument("--yosys", help="path to the Yosys executable")
     synthesis.add_argument("--log", type=Path)
+    synthesis.add_argument(
+        "--verilog-output",
+        type=Path,
+        help="optional flattened mapped Verilog for downstream physical tools",
+    )
+    synthesis.add_argument(
+        "--policy",
+        choices=sorted(VALID_SYNTHESIS_POLICIES),
+        default="native",
+    )
+
+    benchmark = subparsers.add_parser(
+        "benchmark", help="run a pinned RTL benchmark through Phase 1"
+    )
+    benchmark.add_argument("spec", type=Path)
+    benchmark.add_argument("--source-root", type=Path, required=True)
+    benchmark.add_argument("--out", type=Path, required=True)
+    benchmark.add_argument("--yosys", help="path to the Yosys executable")
 
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -160,19 +183,37 @@ def _dispatch(args: argparse.Namespace) -> int:
             top=args.top,
             output=args.output,
             family=args.family,
+            policy=args.policy,
+            verilog_output=args.verilog_output,
             executable=args.yosys,
             log_path=args.log,
         )
         _print_json(
             {
                 "family": args.family,
+                "policy": args.policy,
                 "output": str(args.output),
+                "verilog_output": (
+                    str(args.verilog_output)
+                    if args.verilog_output is not None
+                    else None
+                ),
                 "sources": [str(source) for source in args.sources],
                 "status": "pass",
                 "top": args.top,
             }
         )
         return 0
+
+    if args.command == "benchmark":
+        report = run_benchmark(
+            spec_path=args.spec,
+            source_root=args.source_root,
+            output_dir=args.out,
+            yosys=args.yosys,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
 
     if args.command == "phase1":
         report = run_phase1(

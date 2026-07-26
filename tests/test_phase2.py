@@ -6,8 +6,9 @@ from pathlib import Path
 from emuflow.architecture import ArchitectureDB
 from emuflow.errors import ImportError, ValidationError
 from emuflow.ir import EmuIR
+from emuflow.openparf import _lut_size, openparf_instance_names
 from emuflow.phase2 import run_phase2
-from emuflow.placement import Placement
+from emuflow.placement import Placement, _vivado_regexp_literal
 from emuflow.yosys import import_yosys_json
 
 
@@ -17,6 +18,9 @@ IR_FIXTURE = ROOT / "examples/yosys/counter.json"
 
 
 class ArchitectureDBTest(unittest.TestCase):
+    def test_lut1_is_supported(self) -> None:
+        self.assertEqual(_lut_size("LUT1"), 2)
+
     def test_fixture_summary(self) -> None:
         architecture = ArchitectureDB.load(ARCH_PATH)
         summary = architecture.summary()
@@ -62,7 +66,31 @@ class PlacementTest(unittest.TestCase):
         self.assertEqual(imported.summary()["status"], "legal")
         self.assertEqual(imported.summary()["cells"], 8)
         self.assertIn("set_property LOC", imported.to_xdc())
-        self.assertIn(r"next_lut\[0\]", imported.to_xdc())
+        self.assertIn("# EmuIR instance: next_lut[0]", imported.to_xdc())
+        self.assertIn(r"\x6e\x65\x78\x74\x5f\x6c\x75\x74", imported.to_xdc())
+        self.assertNotIn("\nif {", imported.to_xdc())
+        self.assertEqual(imported.to_xdc().count("set_property BEL"), 4)
+
+    def test_vivado_mapped_name_doubles_yosys_backslashes(self) -> None:
+        encoded = _vivado_regexp_literal("$flatten\\cpu")
+        self.assertIn(r"\x5c\x5c", encoded)
+
+    def test_bookshelf_safe_names_are_restored(self) -> None:
+        reference = Placement.greedy_reference(self.architecture, self.ir)
+        name_map = openparf_instance_names(self.ir)
+        lines = []
+        for cell in reference.value["cells"]:
+            lines.append(
+                f"{name_map[cell['instance']]} {cell['x']} {cell['y']} "
+                f"{cell['z']}"
+            )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "encoded.pl"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            imported = Placement.from_openparf_pl(
+                path, self.architecture, self.ir
+            )
+        self.assertEqual(imported.summary()["cells"], 8)
 
     def test_illegal_openparf_coordinate_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -114,6 +142,7 @@ class Phase2PipelineTest(unittest.TestCase):
                 "openparf/design.scl",
                 "openparf/openparf.json",
                 "openparf/manifest.json",
+                "openparf/name_map.json",
             ):
                 self.assertTrue((output / filename).is_file(), filename)
             scl = (output / "openparf/design.scl").read_text(encoding="utf-8")
@@ -135,6 +164,14 @@ class Phase2PipelineTest(unittest.TestCase):
             self.assertEqual(config["dtype"], "float64")
             self.assertEqual(config["detailed_place_flag"], 0)
             self.assertEqual(config["plot_target_at_names"], ["FF", "LUT"])
+            nodes = (output / "openparf/design.nodes").read_text(
+                encoding="utf-8"
+            )
+            self.assertTrue(nodes.startswith("i0 "))
+            name_map = json.loads(
+                (output / "openparf/name_map.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(name_map["schema"], "emuflow.openparf-name-map/v1")
 
 
 if __name__ == "__main__":

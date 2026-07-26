@@ -18,7 +18,47 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn("-top counter", script)
         self.assertNotIn('-top "counter"', script)
         self.assertIn("-noiopad -noclkbuf", script)
+        self.assertIn("; flatten; opt_clean; check;", script)
         self.assertIn('write_json "build/counter.json"', script)
+
+    def test_logic_only_policy_disables_hard_mapping(self) -> None:
+        script = build_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/design.json"),
+            policy="logic-only",
+        )
+        for option in (
+            "-nocarry",
+            "-nowidelut",
+            "-nodsp",
+            "-nobram",
+            "-nolutram",
+            "-nosrl",
+        ):
+            self.assertIn(option, script)
+        self.assertIn("techmap -map", script)
+        self.assertIn("logic_only_map.v", script)
+
+    def test_optional_mapped_verilog_preserves_names(self) -> None:
+        script = build_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/design.json"),
+            verilog_output=Path("build/design.v"),
+        )
+        self.assertIn(
+            'write_verilog -noattr -norename "build/design.v"', script
+        )
+
+    def test_unknown_policy_is_rejected(self) -> None:
+        with self.assertRaisesRegex(EmuFlowError, "synthesis policy"):
+            build_yosys_script(
+                [Path("rtl/design.v")],
+                top="design",
+                output=Path("build/design.json"),
+                policy="magic",
+            )
 
     def test_missing_sources_are_rejected(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "at least one RTL source"):

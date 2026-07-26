@@ -9,7 +9,11 @@ from .errors import EmuFlowError
 
 
 VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
+VALID_SYNTHESIS_POLICIES = {"native", "logic-only"}
 YOSYS_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+LOGIC_ONLY_MAP = (
+    Path(__file__).resolve().parents[2] / "scripts" / "yosys" / "logic_only_map.v"
+)
 
 
 def _yosys_quote(value: str) -> str:
@@ -31,6 +35,8 @@ def build_yosys_script(
     top: str,
     output: Path,
     family: str = "xcup",
+    policy: str = "native",
+    verilog_output: Optional[Path] = None,
 ) -> str:
     source_list = list(sources)
     if not source_list:
@@ -40,20 +46,55 @@ def build_yosys_script(
             f"unsupported Xilinx family {family!r}; "
             f"expected one of {sorted(VALID_XILINX_FAMILIES)}"
         )
+    if policy not in VALID_SYNTHESIS_POLICIES:
+        raise EmuFlowError(
+            f"unsupported synthesis policy {policy!r}; "
+            f"expected one of {sorted(VALID_SYNTHESIS_POLICIES)}"
+        )
     top_identifier = _yosys_identifier(top)
 
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
-    return "; ".join(
-        (
-            f"read_verilog -sv {read_sources}",
-            f"hierarchy -check -top {top_identifier}",
-            (
-                f"synth_xilinx -family {family} -top {top_identifier} "
-                "-noiopad -noclkbuf"
-            ),
-            f"write_json {_yosys_quote(str(output))}",
+    synth_options = [
+        f"synth_xilinx -family {family}",
+        f"-top {top_identifier}",
+        "-noiopad",
+        "-noclkbuf",
+    ]
+    if policy == "logic-only":
+        synth_options.extend(
+            [
+                "-nocarry",
+                "-nowidelut",
+                "-nodsp",
+                "-nobram",
+                "-nolutram",
+                "-nosrl",
+            ]
         )
-    )
+    post_mapping = []
+    if policy == "logic-only":
+        post_mapping.append(
+            f"techmap -map {_yosys_quote(str(LOGIC_ONLY_MAP))}"
+        )
+    commands = [
+        f"read_verilog -sv {read_sources}",
+        f"hierarchy -check -top {top_identifier}",
+        " ".join(synth_options),
+        # synth_xilinx preserves hierarchy in some Yosys releases. EmuIR
+        # currently imports one module, so flatten the already mapped
+        # primitives explicitly before writing the interchange JSON.
+        "flatten",
+        *post_mapping,
+        "opt_clean",
+        "check",
+        f"write_json {_yosys_quote(str(output))}",
+    ]
+    if verilog_output is not None:
+        commands.append(
+            "write_verilog -noattr -norename "
+            f"{_yosys_quote(str(verilog_output))}"
+        )
+    return "; ".join(commands)
 
 
 def run_yosys(
@@ -61,6 +102,8 @@ def run_yosys(
     top: str,
     output: Path,
     family: str = "xcup",
+    policy: str = "native",
+    verilog_output: Optional[Path] = None,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
 ) -> None:
@@ -76,7 +119,16 @@ def run_yosys(
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    script = build_yosys_script(source_list, top, output, family)
+    if verilog_output is not None:
+        verilog_output.parent.mkdir(parents=True, exist_ok=True)
+    script = build_yosys_script(
+        source_list,
+        top,
+        output,
+        family,
+        policy,
+        verilog_output=verilog_output,
+    )
     completed = subprocess.run(
         [command, "-p", script],
         stdout=subprocess.PIPE,
@@ -95,4 +147,9 @@ def run_yosys(
     if not output.is_file():
         raise EmuFlowError(
             f"Yosys reported success but did not create expected output: {output}"
+        )
+    if verilog_output is not None and not verilog_output.is_file():
+        raise EmuFlowError(
+            "Yosys reported success but did not create expected mapped "
+            f"Verilog: {verilog_output}"
         )

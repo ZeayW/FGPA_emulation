@@ -34,6 +34,10 @@ Commands:
              Apply the checked placement and route it with Vivado.
   phase2-vivado-openparf
              Apply the re-imported OpenPARF placement and route it with Vivado.
+  serv-sync  Upload the pinned SERV source checkout.
+  serv-l1    Run the SERV logic-only RTL-to-routed-DCP validation.
+  serv-l1-all
+             Sync project and SERV, test, export ArchitectureDB, and run SERV L1.
   openparf-sync
              Upload an existing local OpenPARF source checkout.
   openparf-build
@@ -368,6 +372,82 @@ sync_openparf() {
     -C "$OPENPARF_SOURCE" . | gateway_ssh "$unpack_command"
 }
 
+sync_serv_source() {
+  local source="$REPO_ROOT/third_party/rtl/serv"
+  local destination_quoted
+  local unpack_command
+
+  python3 "$REPO_ROOT/scripts/benchmarks/fetch.py" fetch serv
+  if [ ! -f "$source/rtl/serv_synth_wrapper.v" ]; then
+    echo "error: SERV source is incomplete at $source" >&2
+    return 1
+  fi
+  destination_quoted="$(shell_quote "$REMOTE_DIR/third_party/rtl/serv")"
+  unpack_command="$(inner_ssh_command \
+    "mkdir -p $destination_quoted && tar -xf - -C $destination_quoted")"
+  COPYFILE_DISABLE=1 tar -cf - --exclude=.git -C "$source" . |
+    gateway_ssh "$unpack_command"
+}
+
+serv_l1_remote() {
+  local remote_root_quoted
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+vivado_root="\$2"
+yosys_path="\$3"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+openparf_root=$remote_root_quoted
+openparf_python=/home/ziyiwang21/anaconda3/envs/deepgate/bin/python
+cd "\$remote_dir"
+
+test -x "\$yosys_path"
+test -x "\$openparf_python"
+test -f "\$openparf_root/OpenPARF-install/openparf.py"
+test -s build/remote/phase2/xcvu3p.arch.json
+test -f third_party/rtl/serv/rtl/serv_synth_wrapper.v
+
+PYTHONPATH=src python3 -m emuflow benchmark \
+  benchmarks/runs/serv_l1.json \
+  --source-root third_party/rtl/serv \
+  --out build/remote/benchmarks/serv-l1 \
+  --yosys "\$yosys_path"
+
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/benchmarks/serv-l1/phase1/design.emuir.json \
+  --arch build/remote/phase2/xcvu3p.arch.json \
+  --out build/remote/benchmarks/serv-l1/phase2-reference
+
+export CUDA_VISIBLE_DEVICES=""
+export PYTHONPATH="\$remote_dir/scripts/openparf/shims:\$openparf_root/OpenPARF-install"
+"\$openparf_python" "\$openparf_root/OpenPARF-install/openparf.py" \
+  --config build/remote/benchmarks/serv-l1/phase2-reference/openparf/openparf.json \
+  --log build/remote/benchmarks/serv-l1/openparf.log
+
+result=build/remote/benchmarks/serv-l1/phase2-reference/openparf/results/serv_synth_wrapper.pl
+test -s "\$result"
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/benchmarks/serv-l1/phase1/design.emuir.json \
+  --arch build/remote/phase2/xcvu3p.arch.json \
+  --openparf-result "\$result" \
+  --out build/remote/benchmarks/serv-l1/phase2-openparf
+
+"\$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/validate_mapped.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  build/remote/benchmarks/serv-l1/synthesis/mapped.v \
+  serv_synth_wrapper \
+  build/remote/benchmarks/serv-l1/phase2-openparf/placement.xdc \
+  build/remote/benchmarks/serv-l1/vivado \
+  436 clk 10.0 \
+  > build/remote/benchmarks/serv-l1/vivado-validation.log 2>&1
+grep 'EMUFLOW_MAPPED_VIVADO status=pass' \
+  build/remote/benchmarks/serv-l1/vivado-validation.log
+test -s build/remote/benchmarks/serv-l1/vivado/routed.dcp
+REMOTE
+}
+
 build_openparf_remote() {
   local remote_root_quoted
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
@@ -470,6 +550,19 @@ case "$command" in
     ;;
   phase2-vivado-openparf)
     phase2_vivado_openparf_remote
+    ;;
+  serv-sync)
+    sync_serv_source
+    ;;
+  serv-l1)
+    serv_l1_remote
+    ;;
+  serv-l1-all)
+    sync_project
+    sync_serv_source
+    test_remote
+    phase2_arch_remote
+    serv_l1_remote
     ;;
   openparf-sync)
     sync_openparf

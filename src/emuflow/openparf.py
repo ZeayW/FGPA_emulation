@@ -9,6 +9,7 @@ from .ir import EmuIR
 
 
 OPENPARF_MANIFEST_SCHEMA = "emuflow.openparf-manifest/v1"
+OPENPARF_NAME_MAP_SCHEMA = "emuflow.openparf-name-map/v1"
 
 _KNOWN_CELL_PINS: Dict[str, Dict[str, str]] = {
     "FDRE": {
@@ -45,9 +46,19 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _render_nodes(ir: EmuIR) -> str:
+def openparf_instance_names(ir: EmuIR) -> Dict[str, str]:
+    """Map arbitrary Yosys instance names to Bookshelf-safe stable names."""
+    return {
+        instance["id"]: f"i{index}"
+        for index, instance in enumerate(
+            sorted(ir.value["instances"], key=lambda item: item["id"])
+        )
+    }
+
+
+def _render_nodes(ir: EmuIR, instance_names: Mapping[str, str]) -> str:
     return "".join(
-        f"{instance['id']} {instance['type']}\n"
+        f"{instance_names[instance['id']]} {instance['type']}\n"
         for instance in sorted(ir.value["instances"], key=lambda item: item["id"])
     )
 
@@ -75,26 +86,33 @@ def _render_lib(ir: EmuIR) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
-def _net_endpoints(net: Mapping[str, Any]) -> Iterable[Tuple[str, str]]:
+def _net_endpoints(
+    net: Mapping[str, Any], instance_names: Mapping[str, str]
+) -> Iterable[Tuple[str, str]]:
     for collection in ("drivers", "sinks"):
         for endpoint in net[collection]:
             instance = endpoint.get("instance")
             if instance is not None:
-                yield instance, endpoint["port"]
+                yield instance_names[instance], endpoint["port"]
 
 
-def _render_nets(ir: EmuIR) -> Tuple[str, int]:
+def _render_nets(
+    ir: EmuIR, instance_names: Mapping[str, str]
+) -> Tuple[str, int, Dict[str, str]]:
     lines: List[str] = []
     emitted = 0
+    net_names: Dict[str, str] = {}
     for net in sorted(ir.value["nets"], key=lambda item: item["id"]):
-        endpoints = list(_net_endpoints(net))
+        endpoints = list(_net_endpoints(net, instance_names))
         if len(endpoints) < 2:
             continue
+        safe_name = f"n{emitted}"
+        net_names[net["id"]] = safe_name
         emitted += 1
-        lines.append(f"net {net['id']} {len(endpoints)}")
+        lines.append(f"net {safe_name} {len(endpoints)}")
         lines.extend(f"  {instance} {pin}" for instance, pin in endpoints)
         lines.append("endnet")
-    return "\n".join(lines) + "\n", emitted
+    return "\n".join(lines) + "\n", emitted, net_names
 
 
 def _site_resource_counts(site: Mapping[str, Any]) -> Dict[str, int]:
@@ -180,9 +198,12 @@ def _lut_size(cell_type: str) -> int:
         size = int(cell_type[3:])
     except ValueError as error:
         raise ValueError(f"invalid LUT model name {cell_type!r}") from error
-    if size < 2 or size > 6:
-        raise ValueError(f"OpenPARF supports LUT2 through LUT6, got {cell_type!r}")
-    return size
+    if size < 1 or size > 6:
+        raise ValueError(f"OpenPARF supports LUT1 through LUT6, got {cell_type!r}")
+    # OpenPARF's LUT demand operator asserts that LUT1 does not exist. Model a
+    # physical LUT1 with LUT2 demand during placement; the EmuIR cell type and
+    # final Site/BEL assignment remain LUT1, so functionality is unchanged.
+    return max(2, size)
 
 
 def _render_config(
@@ -265,8 +286,9 @@ def export_bookshelf(
     ir: EmuIR, architecture: ArchitectureDB, output_dir: Path
 ) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    nets, emitted_nets = _render_nets(ir)
-    _write_text(output_dir / "design.nodes", _render_nodes(ir))
+    instance_names = openparf_instance_names(ir)
+    nets, emitted_nets, net_names = _render_nets(ir, instance_names)
+    _write_text(output_dir / "design.nodes", _render_nodes(ir, instance_names))
     _write_text(output_dir / "design.nets", nets)
     _write_text(output_dir / "design.lib", _render_lib(ir))
     _write_text(output_dir / "design.scl", _render_scl(ir, architecture))
@@ -278,6 +300,24 @@ def export_bookshelf(
     write_json(
         output_dir / "openparf.json",
         _render_config(ir, architecture, output_dir.resolve()),
+    )
+    write_json(
+        output_dir / "name_map.json",
+        {
+            "schema": OPENPARF_NAME_MAP_SCHEMA,
+            "instances": [
+                {"openparf": safe, "emuir": original}
+                for original, safe in sorted(
+                    instance_names.items(), key=lambda item: item[1]
+                )
+            ],
+            "nets": [
+                {"openparf": safe, "emuir": original}
+                for original, safe in sorted(
+                    net_names.items(), key=lambda item: item[1]
+                )
+            ],
+        },
     )
     manifest = {
         "schema": OPENPARF_MANIFEST_SCHEMA,
@@ -294,6 +334,7 @@ def export_bookshelf(
             "aux": "design.aux",
             "config": "openparf.json",
             "library": "design.lib",
+            "name_map": "name_map.json",
             "nets": "design.nets",
             "nodes": "design.nodes",
             "placement": "design.pl",

@@ -33,6 +33,10 @@ following progression:
 | L5-L6 | Koios 2.0 | 40 medium and large DL designs | Large RTL, BRAM/DSP and multi-FPGA system stress |
 | L7 | NVDLA nvdlav1 | 2048 INT8 MACs plus memories/control | Final very-large hierarchy/runtime stress |
 
+L1 SERV has completed the current real-RTL single-FPGA physical path. See
+`docs/SERV_L1_VALIDATION.md` for exact metrics and the remaining semantic
+gates.
+
 PicoRV32 is the preferred next integration because its CPU RTL is contained in
 one Verilog file, it has an ISC license, and upstream reports results for the
 same `xcvu3p-ffvc1517-2-e` target family. The first configuration should
