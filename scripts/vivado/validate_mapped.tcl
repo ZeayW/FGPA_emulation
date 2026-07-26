@@ -21,7 +21,8 @@ foreach cell [lsort -dictionary [get_cells -hier]] {
 close $cell_inventory
 if {[file extension $placement_constraints] eq ".tsv"} {
     set placement_start_ms [clock milliseconds]
-    set all_cells [lsort -ascii [get_cells -hier]]
+    set all_cells [lsort -ascii [get_cells -hier -filter \
+        {REF_NAME != GND && REF_NAME != VCC}]]
     set all_names [get_property NAME $all_cells]
     if {[llength $all_cells] != $expected_cells} {
         error "mapped design has [llength $all_cells] cells; expected $expected_cells"
