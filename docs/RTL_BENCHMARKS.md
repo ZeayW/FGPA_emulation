@@ -30,13 +30,15 @@ following progression:
 | L2 | PicoRV32 | 761-2019 LUT and 442-1085 FF, plus LUTRAM | Main Phase 2 growth target |
 | L3 | secworks AES | about 3020 LUT and 2992 FF on Kintex-7 | Medium routing/density and forced partition stress |
 | L4 | VTR classic and Ibex | mixed; Ibex is 16.85-66.02 kGE by configuration | Frontend diversity, SystemVerilog and dependency stress |
+| L5 scale gate | PicoRV32 x32 harness | 121,984 mapped LUT/FF primitives | 100k-cell frontend, OpenPARF and routing scalability |
 | L5-L6 | Koios 2.0 | 40 medium and large DL designs | Large RTL, BRAM/DSP and multi-FPGA system stress |
 | L7 | NVDLA nvdlav1 | 2048 INT8 MACs plus memories/control | Final very-large hierarchy/runtime stress |
 
-L1 SERV and L2 PicoRV32 have completed the current real-RTL single-FPGA
-physical path. See `docs/SERV_L1_VALIDATION.md` and
-`docs/PICORV32_L2_VALIDATION.md` for exact metrics and remaining semantic
-gates.
+L1 SERV, L2 PicoRV32, and the 121,984-cell PicoRV32 x32 scale harness have
+completed the current real-RTL single-FPGA physical path. See
+`docs/SERV_L1_VALIDATION.md`, `docs/PICORV32_L2_VALIDATION.md`, and
+`docs/PICORV32_X32_100K_VALIDATION.md` for exact metrics and remaining
+semantic gates.
 
 The validated PicoRV32 configuration uses its upstream default parameters and
 logic-only mapping. It produced 2215 LUT and 1597 FF. Optional
@@ -65,4 +67,6 @@ configuration.
 Koios is preferred over pre-synthesized placement suites for the large-design
 campaign because it supplies editable RTL and explicit soft-logic versus hard
 memory/DSP modes. Compile one Koios source file at a time: several variants
-reuse top-level module names.
+reuse top-level module names. The first logic-only DLA attempts exceeded
+64-79 GB memory because soft memories expanded into logic, so Koios physical
+validation is deferred until native BRAM/DSP preservation is available.

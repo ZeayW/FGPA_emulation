@@ -31,6 +31,7 @@ to synchronize a dirty worktree, records the source commit in
 | `synth` | Run a real Yosys process with `synth_xilinx -family xcup` on `counter.v`. |
 | `phase1` | Import the synthesized JSON and run the Phase 1 platform/resource checks. |
 | `phase2-arch` | Use Vivado to export a compact window of up to 512 real `xcvu3p` SLICE sites and import it as ArchitectureDB. |
+| `phase2-arch-large` | Export up to 32,768 SLICE sites for 100k-cell placement; the validated VU3P inventory contains 30,038 sites. |
 | `phase2` | Export the locked LUT2/FDRE mapped fixture to Bookshelf and validate a deterministic reference Site/BEL placement. |
 | `phase2-vivado` | Apply the checked LOC/BEL constraints, complete placement, route, DRC, and write a DCP. |
 | `openparf-sync` | Upload the local upstream OpenPARF source checkout. |
@@ -39,6 +40,10 @@ to synchronize a dirty worktree, records the source commit in
 | `phase2-vivado-openparf` | Route the re-imported OpenPARF LOC/BEL placement in Vivado and write a routed DCP. |
 | `serv-sync`, `serv-l1`, `serv-l1-all` | Synchronize or run the 436-cell SERV L1 physical regression. |
 | `picorv32-sync`, `picorv32-l2`, `picorv32-l2-all` | Synchronize or run the 3812-cell PicoRV32 L2 physical regression. |
+| `picorv32-x32-synth` | Synthesize the x32 PicoRV32 harness and require at least 100,000 mapped cells. |
+| `picorv32-x32-openparf` | Place and legalize the 100k-cell design with OpenPARF. |
+| `picorv32-x32-vivado` | Import the 100k-cell placement, route it with Vivado, and require a routed DCP. |
+| `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
 
@@ -105,3 +110,18 @@ Their routed checkpoints are written below `build/remote/benchmarks/`.
 PicoRV32 uses 461 of the 483 exported sites. See
 `docs/PICORV32_L2_VALIDATION.md` for its resource, routing, timing, and
 control-set repair results.
+
+The 100k-cell physical scale regression is:
+
+```bash
+scripts/remote/proj169-2.sh phase2-arch-large
+scripts/remote/proj169-2.sh picorv32-x32-synth
+scripts/remote/proj169-2.sh picorv32-x32-openparf
+scripts/remote/proj169-2.sh picorv32-x32-vivado
+```
+
+It produces a legal 121,984-cell OpenPARF placement and a fully routed,
+DRC-clean checkpoint below
+`build/remote/benchmarks/picorv32-x32-l5/vivado/`. See
+`docs/PICORV32_X32_100K_VALIDATION.md` for exact runtime, congestion, timing,
+and semantic limits.

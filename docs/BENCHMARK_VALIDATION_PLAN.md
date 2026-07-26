@@ -47,6 +47,7 @@ to debug.
 | L2 | PicoRV32 minimal/regular/large | roughly 0.8k-2k LUT plus carry/LUTRAM | 1 FPGA, then forced 2 FPGA | Mapping growth and first partition regression |
 | L3 | secworks AES | roughly 3k LUT + 3k FF | 1 FPGA, then forced 2/4 FPGA | Dense sequential logic, cut quality, TDM simulation |
 | L4 | VTR classic and Ibex | mixed Verilog; parameterized SystemVerilog CPU | 1/2/4 FPGA | Frontend diversity, packages, memories, hierarchy |
+| L5 scale gate | PicoRV32 x32 | 121,984 mapped LUT/FF primitives | 1 FPGA | 100k-cell frontend, OpenPARF, import and routing scalability |
 | L5 | Koios `gemm_layer`, `attention_layer`, `conv_layer` | medium DL datapaths | forced 2/4 FPGA | Wide datapaths, high fanout, early BRAM/DSP work |
 | L6 | Koios `dla_like.medium/large`, `tpu_like.large`, proxy variants | large DL/CAD designs | 4/8 FPGA | Capacity, runtime, hard-block grouping, congestion |
 | L7 | NVDLA `nvdlav1` | 2048 INT8 MACs plus large memory/control hierarchy | 8+ virtual FPGA | Final frontend and system-scale stress test |
@@ -100,13 +101,17 @@ The immediate sequence is:
 1. make SERV pass G0-G3 and the existing G8-G9 single-FPGA path — completed;
 2. make PicoRV32 pass the same logic-only path — completed; native
    carry/LUTRAM remains a separate physical-backend milestone;
-3. implement Phase 3 partitioning and force PicoRV32/AES onto 2 and 4 virtual
+3. pass a strict 100,000-cell frontend and physical scale gate — completed
+   with 121,984-cell PicoRV32 x32; fully routed and DRC-clean, but 100 MHz
+   setup timing remains open;
+4. implement Phase 3 partitioning and force PicoRV32/AES onto 2 and 4 virtual
    FPGAs;
-4. implement system routing, TDM, transport, and lane planning, then require
+5. implement system routing, TDM, transport, and lane planning, then require
    AES to pass G4-G7 plus cycle equivalence;
-5. close G8-G9 independently for every generated per-FPGA netlist;
-6. introduce Koios first in soft-logic mode, then with native BRAM/DSP;
-7. use NVDLA only after Koios large is stable.
+6. close G8-G9 independently for every generated per-FPGA netlist;
+7. introduce Koios with native BRAM/DSP preservation; the current logic-only
+   policy expands DLA soft memories beyond practical server memory;
+8. use NVDLA only after Koios large is stable.
 
 This ordering keeps failures attributable: only one new scale or primitive
 class is introduced at a time.

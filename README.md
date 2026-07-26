@@ -132,6 +132,9 @@ DRC, timing, and current semantic limitations, is recorded in
 The larger 3812-cell PicoRV32 result and the control-set repair boundary are
 recorded in
 [docs/PICORV32_L2_VALIDATION.md](docs/PICORV32_L2_VALIDATION.md).
+The first 100k-scale result, a 121,984-cell PicoRV32 x32 run with a fully
+routed and DRC-clean checkpoint, is recorded in
+[docs/PICORV32_X32_100K_VALIDATION.md](docs/PICORV32_X32_100K_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,
