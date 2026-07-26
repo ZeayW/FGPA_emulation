@@ -44,6 +44,7 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-x32-openparf` | Place and legalize the 100k-cell design with OpenPARF. |
 | `picorv32-x32-vivado` | Import the 100k-cell placement, route it with Vivado, and require a routed DCP. |
 | `picorv32-x32-phase3` | Validate 100k-cell G4 scale and connected-PicoRV32 legal cut extraction on two virtual FPGAs. |
+| `picorv32-phase4` | Route all connected-PicoRV32 cut nets over BoardDB and independently validate G5. |
 | `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
@@ -138,3 +139,14 @@ assignment SHA-256 values, and invokes the independent partition checker. The
 x32 run validates 121,984-cell scale and exact 60,992/60,992 balance; the
 connected PicoRV32 run validates 140 real register-output cut nets and zero
 illegal cuts. See `docs/PHASE3_VALIDATION.md`.
+
+Run the completed Phase 4 G5 regression:
+
+```bash
+scripts/remote/proj169-2.sh picorv32-phase4
+```
+
+It routes all 140 connected-PicoRV32 cut demands, independently validates
+reachability, acyclicity, direction, latency, and link capacity, then repeats
+the run and compares complete route-artifact SHA-256 values. See
+`docs/PHASE4_VALIDATION.md`.

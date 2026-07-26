@@ -107,8 +107,9 @@ The immediate sequence is:
 4. implement Phase 3 partitioning and force PicoRV32 onto 2 virtual FPGAs —
    completed with 140 legal register-output cuts and zero illegal cuts; AES
    and 4-FPGA QoR remain follow-on coverage;
-5. implement system routing, then TDM, transport, and lane planning; require
-   AES to pass G4-G7 plus cycle equivalence;
+5. implement system routing — completed with all 140 connected-PicoRV32 cuts
+   routed and zero overload; next implement TDM, transport, and lane planning,
+   then require AES to pass G4-G7 plus cycle equivalence;
 6. close G8-G9 independently for every generated per-FPGA netlist;
 7. introduce Koios with native BRAM/DSP preservation; the current logic-only
    policy expands DLA soft memories beyond practical server memory;

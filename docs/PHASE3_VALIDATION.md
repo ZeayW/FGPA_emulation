@@ -158,19 +158,13 @@ Local and remote regression suites contain 35 passing tests, including
 infeasible capacity, missing coverage, split atomic cluster, group/fixed
 constraint, deterministic assignment, and forced two-FPGA cases.
 
-## Remaining limitations and Phase 4 plan
+## Remaining limitations and Phase 4 handoff
 
 Phase 3 is a deterministic dependency-free baseline, not yet a TritonPart QoR
 integration. It lacks timing weights, SLR-aware cost, true cascade metadata,
 cluster refinement moves, and an optional external partition provider.
 
-Phase 4 will consume the 140 connected-PicoRV32 cut nets and implement:
-
-1. `emuflow.system-routes/v1`;
-2. BoardDB directed-link graph construction;
-3. deterministic shortest-path unicast and multicast trees;
-4. negotiated congestion with historical link cost;
-5. independent reachability, acyclicity, direction, latency, and capacity
-   reconstruction;
-6. connected PicoRV32 validation on the current two-FPGA link, followed by a
-   synthetic multi-hop virtual BoardDB topology to exercise routing choices.
+Phase 4 now consumes these 140 cut nets and passes G5 with all sinks routed,
+zero overload, and independent reachability/capacity checks. See
+`docs/PHASE4_VALIDATION.md`. Phase 3's remaining work is QoR-oriented:
+TritonPart integration, timing weights, SLR-aware costs, and refinement.

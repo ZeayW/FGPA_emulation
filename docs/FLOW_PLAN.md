@@ -222,7 +222,7 @@ See `docs/PHASE3_VALIDATION.md`.
 TritonPart integration, timing weights, and topology-aware refinement remain
 QoR extensions; they are not required for the validated G4 baseline.
 
-### Phase 4 — Board-level system routing
+### Phase 4 — Board-level system routing (implemented)
 
 Implement a negotiated-congestion router over BoardDB:
 
@@ -238,6 +238,14 @@ Acceptance:
 - no link exceeds modeled capacity;
 - route trees contain no cycles;
 - the checker independently reconstructs link utilization.
+
+The dependency-free negotiated shortest-path baseline is implemented with
+versioned constraint, route, and report artifacts. On `proj169-2`, all 140
+connected-PicoRV32 cut nets route over the virtual full-duplex link with
+zero overload and independently verified reachability, direction, latency,
+acyclicity, and capacity. Four-FPGA diamond, multicast, unavailable-link,
+infeasible-capacity, and half-duplex tests cover non-trivial topology cases.
+See `docs/PHASE4_VALIDATION.md`.
 
 ### Phase 5 — TDM scheduling and cycle-accurate transport
 

@@ -6,7 +6,8 @@ board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
 FPGA routing, and vendor-assisted bitstream generation.
 
 The repository implements the Phase 1 frontend, an executable Phase 2
-physical-backend risk spike, and the Phase 3 multi-FPGA partitioner:
+physical-backend risk spike, the Phase 3 multi-FPGA partitioner, and Phase 4
+board-level system routing:
 
 - versioned EmuIR and Virtual BoardDB formats;
 - strict validation without third-party Python dependencies;
@@ -24,6 +25,8 @@ physical-backend risk spike, and the Phase 3 multi-FPGA partitioner:
 - combinationally safe sequential clustering and hard-macro/group closure;
 - deterministic multi-resource partitioning with fixed constraints;
 - independent G4 coverage, capacity, constraint, and cut-legality checking.
+- directed BoardDB routing with multicast trees and negotiated congestion;
+- independent G5 reachability, cycle, latency, direction, and capacity checks.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
@@ -141,6 +144,9 @@ routed and DRC-clean checkpoint, is recorded in
 The completed Phase 3 implementation and the real two-FPGA partition
 experiments are recorded in
 [docs/PHASE3_VALIDATION.md](docs/PHASE3_VALIDATION.md).
+The completed Phase 4 system router and the 140-net connected-PicoRV32
+experiment are recorded in
+[docs/PHASE4_VALIDATION.md](docs/PHASE4_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,
