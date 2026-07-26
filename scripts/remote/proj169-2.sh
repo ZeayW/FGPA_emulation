@@ -44,6 +44,9 @@ Commands:
              Run the PicoRV32 logic-only RTL-to-routed-DCP validation.
   picorv32-l2-all
              Sync project and PicoRV32, test, export ArchitectureDB, and run L2.
+  koios-sync Upload the pinned Koios DLA-medium source.
+  koios-dla-medium-synth
+             Synthesize DLA-medium and require at least 100,000 mapped cells.
   openparf-sync
              Upload an existing local OpenPARF source checkout.
   openparf-build
@@ -412,6 +415,26 @@ sync_picorv32_source() {
     gateway_ssh "$unpack_command"
 }
 
+sync_koios_source() {
+  local source="$REPO_ROOT/third_party/rtl/koios"
+  local benchmark_source="$source/vtr_flow/benchmarks/verilog/koios"
+  local destination_quoted
+  local unpack_command
+
+  python3 "$REPO_ROOT/scripts/benchmarks/fetch.py" fetch koios
+  if [ ! -f "$benchmark_source/dla_like.medium.v" ]; then
+    echo "error: Koios DLA-medium source is incomplete at $benchmark_source" >&2
+    return 1
+  fi
+  destination_quoted="$(shell_quote \
+    "$REMOTE_DIR/third_party/rtl/koios/vtr_flow/benchmarks/verilog/koios")"
+  unpack_command="$(inner_ssh_command \
+    "mkdir -p $destination_quoted && tar -xf - -C $destination_quoted")"
+  COPYFILE_DISABLE=1 tar -cf - \
+    -C "$benchmark_source" dla_like.medium.v README.md |
+    gateway_ssh "$unpack_command"
+}
+
 serv_l1_remote() {
   local remote_root_quoted
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
@@ -530,6 +553,51 @@ expected_cells=\$(python3 -c \
 grep 'EMUFLOW_MAPPED_VIVADO status=pass' \
   build/remote/benchmarks/picorv32-l2/vivado-validation.log
 test -s build/remote/benchmarks/picorv32-l2/vivado/routed.dcp
+REMOTE
+}
+
+koios_dla_medium_synth_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+yosys_path="$3"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+source_root=third_party/rtl/koios/vtr_flow/benchmarks/verilog/koios
+test -x "$yosys_path"
+test -f "$source_root/dla_like.medium.v"
+
+PYTHONPATH=src python3 -m emuflow benchmark \
+  benchmarks/runs/koios_dla_medium_l5.json \
+  --source-root "$source_root" \
+  --out build/remote/benchmarks/koios-dla-medium-l5 \
+  --yosys "$yosys_path"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path(
+    "build/remote/benchmarks/koios-dla-medium-l5/"
+    "phase1/design.emuir.json"
+)
+design = json.loads(path.read_text(encoding="utf-8"))
+counts = {}
+for instance in design["instances"]:
+    cell_type = instance["type"]
+    counts[cell_type] = counts.get(cell_type, 0) + 1
+total = len(design["instances"])
+print(
+    "EMUFLOW_KOIOS_SYNTH "
+    f"status={'pass' if total >= 100000 else 'fail'} "
+    f"cells={total} types={json.dumps(counts, sort_keys=True)}"
+)
+if total < 100000:
+    raise SystemExit(
+        f"mapped design has {total} cells; expected at least 100000"
+    )
+PY
 REMOTE
 }
 
@@ -661,6 +729,12 @@ case "$command" in
     test_remote
     phase2_arch_remote
     picorv32_l2_remote
+    ;;
+  koios-sync)
+    sync_koios_source
+    ;;
+  koios-dla-medium-synth)
+    koios_dla_medium_synth_remote
     ;;
   openparf-sync)
     sync_openparf

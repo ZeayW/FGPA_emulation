@@ -10,6 +10,9 @@ from emuflow.errors import EmuFlowError, ValidationError
 ROOT = Path(__file__).resolve().parents[1]
 SERV_SPEC = ROOT / "benchmarks" / "runs" / "serv_l1.json"
 PICORV32_SPEC = ROOT / "benchmarks" / "runs" / "picorv32_l2.json"
+KOIOS_DLA_MEDIUM_SPEC = (
+    ROOT / "benchmarks" / "runs" / "koios_dla_medium_l5.json"
+)
 
 
 class BenchmarkRunTest(unittest.TestCase):
@@ -32,6 +35,27 @@ class BenchmarkRunTest(unittest.TestCase):
             self.assertEqual(
                 [path.name for path in sources],
                 ["picorv32.v"],
+            )
+
+    def test_koios_dla_medium_spec_and_source(self) -> None:
+        spec = BenchmarkRun.load(KOIOS_DLA_MEDIUM_SPEC)
+        self.assertEqual(spec.value["top"], "DLA")
+        self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
+        source_root = (
+            ROOT
+            / "third_party"
+            / "rtl"
+            / "koios"
+            / "vtr_flow"
+            / "benchmarks"
+            / "verilog"
+            / "koios"
+        )
+        if source_root.is_dir():
+            sources = spec.resolve_sources(source_root)
+            self.assertEqual(
+                [path.name for path in sources],
+                ["dla_like.medium.v"],
             )
 
     def test_missing_source_pattern_is_rejected(self) -> None:
