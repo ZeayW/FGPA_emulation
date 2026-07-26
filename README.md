@@ -165,6 +165,9 @@ transport RTL, and 64-cycle mapped PicoRV32 equivalence result are recorded in
 The Phase 7A real transport overhead and two-partition OpenPARF placement
 results are recorded in
 [docs/PHASE7A_VALIDATION.md](docs/PHASE7A_VALIDATION.md).
+The Phase 7B structural-netlist export and two fully routed, DRC-clean Vivado
+checkpoints are recorded in
+[docs/PHASE7B_VALIDATION.md](docs/PHASE7B_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,

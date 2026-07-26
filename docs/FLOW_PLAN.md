@@ -335,7 +335,16 @@ placements, including 385 real mapped transport cells. Two complete runs are
 byte-identical. See `docs/PHASE7A_VALIDATION.md`.
 
 Physical IO-net preservation, routed DCP validation, timing, and bitstream
-generation remain Phase 7B/7C work and are not implied by the placement gate.
+generation remain separate gates and are not implied by the placement gate.
+
+Phase 7B now emits complete structural primitive Verilog for both merged
+partitions and applies the OpenPARF placements in Vivado 2025.2. The
+3,734-cell and 463-cell designs are fully routed with zero routing errors and
+zero DRC checks, producing two routed DCPs. See
+`docs/PHASE7B_VALIDATION.md`.
+
+This is out-of-context fabric closure. Hardware BSP pin binding,
+source-synchronous board timing, and bitstream generation remain Phase 7C.
 
 ### Phase 8 — Open synthesis/packing completion and hardware bring-up
 

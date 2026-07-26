@@ -48,6 +48,7 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-phase5` | Schedule all routed PicoRV32 bit-hops and run Python plus compiled RTL transport simulation. |
 | `picorv32-phase6` | Split connected PicoRV32 into per-FPGA netlists, compile transport RTL, and run mapped cycle equivalence. |
 | `picorv32-phase7a` | Synthesize transport, stitch both placement graphs, and run OpenPARF independently per FPGA. |
+| `picorv32-phase7b` | Emit both structural netlists and route the OpenPARF placements with Vivado. |
 | `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
@@ -187,3 +188,14 @@ It maps both generated transport modules with Yosys, stitches the resulting
 LUT/FF graphs into the corresponding partitions, runs OpenPARF twice, and
 checks every resulting Site/BEL assignment. See
 `docs/PHASE7A_VALIDATION.md`.
+
+Run the Phase 7B routed-DCP regression:
+
+```bash
+scripts/remote/proj169-2.sh picorv32-phase7b
+```
+
+It emits complete structural Xilinx primitive Verilog for both merged
+partitions, applies the OpenPARF placement tables, routes both designs, and
+requires exact cell coverage, zero unrouted nets, and routed DCPs. See
+`docs/PHASE7B_VALIDATION.md`.
