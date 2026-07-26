@@ -5,10 +5,10 @@ UltraScale+ devices. The long-term flow covers logic synthesis, partitioning,
 board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
 FPGA routing, and vendor-assisted bitstream generation.
 
-The repository implements the Phase 1 frontend, an executable Phase 2
-physical-backend risk spike, the Phase 3 multi-FPGA partitioner, Phase 4
-board-level system routing, the Phase 5 TDM scheduler, and the
-board-independent Phase 6 split increment:
+The repository implements the board-independent path through Phase 7C:
+frontend synthesis/import, multi-FPGA partitioning, system routing, TDM,
+per-FPGA transport generation, OpenPARF placement, Vivado routing, and the
+virtual runtime/timing contract:
 
 - versioned EmuIR and Virtual BoardDB formats;
 - strict validation without third-party Python dependencies;
@@ -36,6 +36,10 @@ board-independent Phase 6 split increment:
 - mapped LUT/FF cycle-equivalence checking across the partition boundary.
 - real transport synthesis and per-FPGA placement-IR stitching;
 - independent OpenPARF placement and Site/BEL legality for both partitions.
+- structural primitive-netlist emission and routed-DCP validation;
+- integrated lockstep barrier controllers and pausible-clock semantics;
+- separate DUT, fabric, and fabric-to-DUT timing gates;
+- machine-readable end-to-end physical and emulation QoR.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
@@ -168,6 +172,9 @@ results are recorded in
 The Phase 7B structural-netlist export and two fully routed, DRC-clean Vivado
 checkpoints are recorded in
 [docs/PHASE7B_VALIDATION.md](docs/PHASE7B_VALIDATION.md).
+The Phase 7C integrated runtime controller, two-clock timing closure, and
+end-to-end PicoRV32 QoR are recorded in
+[docs/PHASE7C_VALIDATION.md](docs/PHASE7C_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,

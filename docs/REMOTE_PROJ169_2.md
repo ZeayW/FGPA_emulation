@@ -49,6 +49,9 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-phase6` | Split connected PicoRV32 into per-FPGA netlists, compile transport RTL, and run mapped cycle equivalence. |
 | `picorv32-phase7a` | Synthesize transport, stitch both placement graphs, and run OpenPARF independently per FPGA. |
 | `picorv32-phase7b` | Emit both structural netlists and route the OpenPARF placements with Vivado. |
+| `picorv32-phase7c` | Generate/simulate the runtime contract, reroute both partitions with DUT/fabric constraints, and aggregate QoR. |
+| `picorv32-phase7c-finalize` | Reopen existing runtime-constrained DCPs, gate all timing groups, and regenerate QoR. |
+| `picorv32-phase7c-all` | Rebuild Phase 6 and 7A before the complete Phase 7C run. |
 | `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
@@ -199,3 +202,15 @@ It emits complete structural Xilinx primitive Verilog for both merged
 partitions, applies the OpenPARF placement tables, routes both designs, and
 requires exact cell coverage, zero unrouted nets, and routed DCPs. See
 `docs/PHASE7B_VALIDATION.md`.
+
+Run the Phase 7C virtual-runtime regression:
+
+```bash
+scripts/remote/proj169-2.sh picorv32-phase7c-all
+```
+
+It integrates a mapped frame controller into both transports, simulates 64
+frames with an intentional barrier stall, routes 4,223 total cells, and
+independently checks 4 ns fabric timing, 128 ns nominal DUT timing, the 100 ns
+fabric-to-DUT stable-data window, zero unrouted nets, and zero DRC violations.
+The worst routed WNS is +2.642 ns. See `docs/PHASE7C_VALIDATION.md`.

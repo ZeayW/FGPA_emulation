@@ -174,11 +174,14 @@ large-placement importer, legality checker, and Vivado bridge operate on a
 strictly counted 121,984-cell design and can produce a fully routed,
 DRC-clean UltraScale+ checkpoint.
 
-It does not prove the complete multi-FPGA emulation flow:
+This historical 100k-cell run does not by itself prove the complete
+multi-FPGA emulation flow:
 
-- G4 partitioning, G5 system routing, and G6 scheduling/transport are now
-  validated separately; G6 full DUT equivalence and G7 lane/pin assignment
-  are not yet complete;
+- the connected 3,812-cell PicoRV32 has since closed G4-G9, including mapped
+  DUT equivalence, logical lane planning, integrated runtime control, and
+  per-FPGA routed timing; see `docs/PHASE7C_VALIDATION.md`;
+- the 121,984-cell x32 harness still has not run the complete G4-G9 chain
+  because its independent cores partition with zero inter-FPGA traffic;
 - the run is single-FPGA and logic-only;
 - 100 MHz setup timing is not closed;
 - native CARRY8, LUTRAM, BRAM, DSP48E2, clocking, and macro packing remain;

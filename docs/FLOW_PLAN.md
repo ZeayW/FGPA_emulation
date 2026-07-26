@@ -343,8 +343,23 @@ partitions and applies the OpenPARF placements in Vivado 2025.2. The
 zero DRC checks, producing two routed DCPs. See
 `docs/PHASE7B_VALIDATION.md`.
 
-This is out-of-context fabric closure. Hardware BSP pin binding,
-source-synchronous board timing, and bitstream generation remain Phase 7C.
+Phase 7C now integrates one lockstep frame controller per transport and
+formalizes the current pausible-clock runtime. Connected PicoRV32 completes
+its 140 scheduled bit-hops by slot 6 of 32, holds a 100 ns shadow-settle
+window, and advances at a nominal 7.8125 MHz virtual DUT rate. A 64-frame
+two-controller simulation with a three-cycle barrier stall passes.
+
+Both controller-augmented partitions are rerouted with a 4 ns fabric clock,
+128 ns nominal DUT clock, and schedule-derived fabric-to-DUT maximum delay.
+The 3,747-cell and 476-cell DCPs have zero unrouted nets, zero DRC violations,
+and worst fabric WNS of +2.642 ns; the worst fabric-to-DUT window slack is
++98.017 ns. The final QoR report covers partitioning through routed timing.
+See `docs/PHASE7C_VALIDATION.md`.
+
+This closes the board-independent G0-G9 path for the current logic-only,
+single-virtual-clock envelope. Hardware BSP pin binding, source-synchronous
+board timing, dedicated clock-buffer binding, bitstream generation, link
+training, and a golden hardware workload remain Phase 8/G10.
 
 ### Phase 8 — Open synthesis/packing completion and hardware bring-up
 

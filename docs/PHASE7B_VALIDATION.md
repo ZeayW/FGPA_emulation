@@ -96,10 +96,14 @@ mapped transport cells.
 Vivado runs in out-of-context mode. The 10 ns constraint covers the virtual
 DUT `clk`; `fabric_clk`, board-link input/output delay, clock-domain crossing,
 package pins, and source-synchronous timing are not yet constrained. The
-positive WNS values therefore demonstrate DUT-fabric timing only.
+positive WNS values therefore demonstrate DUT-clock timing only.
 
 The virtual BoardDB still has no real package-pin binding. These routed DCPs
 are a per-FPGA fabric closure result, not hardware-ready bitstreams. Phase 7C
 must add a hardware BSP, electrical pin checks, board timing, and bitstream
-generation when a board is selected. A board-independent next increment can
-still add explicit multi-clock/CDC timing contracts and DCP QoR aggregation.
+generation when a board is selected.
+
+Phase 7C has since added the board-independent single-virtual-DUT/fabric
+pausible-clock contract, integrated barrier controllers, separate timing
+groups, and DCP QoR aggregation. See `docs/PHASE7C_VALIDATION.md`. Package
+pins and physical link IO timing still require a hardware BSP.

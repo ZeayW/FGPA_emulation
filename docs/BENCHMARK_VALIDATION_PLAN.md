@@ -107,12 +107,13 @@ The immediate sequence is:
 4. implement Phase 3 partitioning and force PicoRV32 onto 2 virtual FPGAs —
    completed with 140 legal register-output cuts and zero illegal cuts; AES
    and 4-FPGA QoR remain follow-on coverage;
-5. implement system routing — completed with all 140 connected-PicoRV32 cuts
-   routed and zero overload; TDM scheduling/transport is also completed for
-   all 140 bit-hops with zero collision and 64 passing frames; next implement
-   netlist splitting and lane planning, then require AES to pass G4-G7 plus
-   full DUT cycle equivalence;
-6. close G8-G9 independently for every generated per-FPGA netlist;
+5. implement system routing, TDM, splitting, lane planning, and mapped DUT
+   cycle equivalence — completed for all 140 connected-PicoRV32 bit-hops with
+   zero collision and 64 passing virtual cycles;
+6. close G8-G9 independently for every generated per-FPGA netlist — completed
+   for connected PicoRV32 with integrated frame controllers, 4,223 routed
+   cells, zero unrouted nets/DRC violations, and positive DUT, fabric, and
+   cross-domain timing margins;
 7. introduce Koios with native BRAM/DSP preservation; the current logic-only
    policy expands DLA soft memories beyond practical server memory;
 8. use NVDLA only after Koios large is stable.
