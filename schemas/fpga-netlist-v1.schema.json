@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/fpga-netlist-v1.schema.json",
+  "title": "EmuFlow per-FPGA logical netlist v1",
+  "type": "object",
+  "required": [
+    "schema", "design", "platform", "fpga", "ports",
+    "instances", "nets", "resources"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.fpga-netlist/v1"},
+    "design": {"type": "object"},
+    "platform": {"type": "string", "minLength": 1},
+    "fpga": {"type": "string", "minLength": 1},
+    "ports": {"type": "array", "items": {"type": "object"}},
+    "instances": {"type": "array", "items": {"type": "object"}},
+    "nets": {"type": "array", "items": {"type": "object"}},
+    "resources": {"type": "object"}
+  },
+  "additionalProperties": false
+}

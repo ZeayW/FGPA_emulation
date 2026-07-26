@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/virtual-io-anchors-v1.schema.json",
+  "title": "EmuFlow virtual IO anchors v1",
+  "type": "object",
+  "required": [
+    "schema", "platform", "fpga", "part", "anchors",
+    "required_hardware_binding_fields"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.virtual-io-anchors/v1"},
+    "platform": {"type": "string", "minLength": 1},
+    "fpga": {"type": "string", "minLength": 1},
+    "part": {"type": "string", "minLength": 1},
+    "anchors": {"type": "array", "items": {"type": "object"}},
+    "required_hardware_binding_fields": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "additionalProperties": false
+}

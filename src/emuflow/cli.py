@@ -14,6 +14,7 @@ from .phase2 import run_phase2
 from .phase3 import run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
+from .phase6 import run_phase6, validate_phase6
 from .placement import Placement
 from .platform import Platform
 from .synthesis import (
@@ -218,6 +219,33 @@ def _build_parser() -> argparse.ArgumentParser:
     phase5.add_argument("--platform", type=Path, required=True)
     phase5.add_argument("--out", type=Path, required=True)
     phase5.add_argument("--simulation-frames", type=int, default=16)
+
+    split_parser = subparsers.add_parser(
+        "split", help="per-FPGA netlist split artifact operations"
+    )
+    split_subparsers = split_parser.add_subparsers(
+        dest="split_command", required=True
+    )
+    split_validate = split_subparsers.add_parser(
+        "validate", help="independently validate Phase 6 split artifacts"
+    )
+    split_validate.add_argument("manifest", type=Path)
+    split_validate.add_argument("--ir", type=Path, required=True)
+    split_validate.add_argument("--assignment", type=Path, required=True)
+    split_validate.add_argument("--schedule", type=Path, required=True)
+    split_validate.add_argument("--platform", type=Path, required=True)
+
+    phase6 = subparsers.add_parser(
+        "phase6",
+        help="split EmuIR and bind cut signals to logical TDM lanes",
+    )
+    phase6.add_argument("--ir", type=Path, required=True)
+    phase6.add_argument("--assignment", type=Path, required=True)
+    phase6.add_argument("--schedule", type=Path, required=True)
+    phase6.add_argument("--platform", type=Path, required=True)
+    phase6.add_argument("--out", type=Path, required=True)
+    phase6.add_argument("--equivalence-cycles", type=int, default=16)
+    phase6.add_argument("--equivalence-seed", type=int, default=20260727)
     return parser
 
 
@@ -393,6 +421,30 @@ def _dispatch(args: argparse.Namespace) -> int:
             platform_path=args.platform,
             output_dir=args.out,
             simulation_frames=args.simulation_frames,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
+
+    if args.command == "split":
+        report = validate_phase6(
+            ir_path=args.ir,
+            assignment_path=args.assignment,
+            schedule_path=args.schedule,
+            platform_path=args.platform,
+            manifest_path=args.manifest,
+        )
+        _print_json(report)
+        return 0
+
+    if args.command == "phase6":
+        report = run_phase6(
+            ir_path=args.ir,
+            assignment_path=args.assignment,
+            schedule_path=args.schedule,
+            platform_path=args.platform,
+            output_dir=args.out,
+            equivalence_cycles=args.equivalence_cycles,
+            equivalence_seed=args.equivalence_seed,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

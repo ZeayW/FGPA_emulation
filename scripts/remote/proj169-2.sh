@@ -58,6 +58,8 @@ Commands:
              Route connected PicoRV32 cut nets over the virtual BoardDB.
   picorv32-phase5
              Schedule and simulate connected PicoRV32 TDM transport.
+  picorv32-phase6
+             Split connected PicoRV32, compile endpoints, and prove cycles.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -1080,6 +1082,147 @@ du -sh "$output" "$repeat"
 REMOTE
 }
 
+picorv32_phase6_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+mapped_json="$root/synthesis/mapped.json"
+ir="$root/phase1/design.emuir.json"
+assignment="$root/phase3/assignment.json"
+routes="$root/phase4/routes.json"
+schedule="$root/phase5/schedule.json"
+platform=platforms/virtual/xcvu3p_2fpga_p2p.json
+output="$root/phase6"
+repeat="$root/phase6-repeat"
+test -s "$mapped_json"
+test -s "$assignment"
+test -s "$routes"
+test -x /usr/bin/iverilog
+
+# Re-import the existing real Yosys netlist so Phase 6 retains primitive
+# constant connections used by the mapped cycle model.
+PYTHONPATH=src python3 -m emuflow phase1 \
+  --yosys-json "$mapped_json" \
+  --top picorv32 \
+  --clock clk \
+  --platform "$platform" \
+  --out "$root/phase1" \
+  > "$root/phase1-phase6-refresh.json"
+
+# Rebuild the schedule with explicit route metadata required by the splitter.
+PYTHONPATH=src python3 -m emuflow phase5 \
+  --routes "$routes" \
+  --platform "$platform" \
+  --out "$root/phase5" \
+  --simulation-frames 64 \
+  > "$root/phase5-phase6-refresh.json"
+
+/usr/bin/time -v -o "$root/phase6-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase6 \
+    --ir "$ir" \
+    --assignment "$assignment" \
+    --schedule "$schedule" \
+    --platform "$platform" \
+    --out "$output" \
+    --equivalence-cycles 64 \
+    --equivalence-seed 20260727 \
+    > "$root/phase6-stdout.json"
+
+PYTHONPATH=src python3 -m emuflow split validate \
+  "$output/manifest.json" \
+  --ir "$ir" \
+  --assignment "$assignment" \
+  --schedule "$schedule" \
+  --platform "$platform" \
+  > "$root/phase6-independent-check.json"
+
+PYTHONPATH=src python3 -m emuflow phase6 \
+  --ir "$ir" \
+  --assignment "$assignment" \
+  --schedule "$schedule" \
+  --platform "$platform" \
+  --out "$repeat" \
+  --equivalence-cycles 64 \
+  --equivalence-seed 20260727 \
+  > "$root/phase6-repeat-stdout.json"
+
+for fpga in fpga0 fpga1; do
+  /usr/bin/iverilog -g2012 \
+    -s "emuflow_transport_${fpga}" \
+    -o "$output/$fpga/transport_compile" \
+    "$output/$fpga/transport_schedule.sv"
+done
+
+first_hash="$(
+  sha256sum \
+    "$output/manifest.json" \
+    "$output/lane_map.json" \
+    "$output/fpga0/netlist.json" \
+    "$output/fpga0/transport.json" \
+    "$output/fpga1/netlist.json" \
+    "$output/fpga1/transport.json" |
+  sha256sum | awk '{print $1}'
+)"
+repeat_hash="$(
+  sha256sum \
+    "$repeat/manifest.json" \
+    "$repeat/lane_map.json" \
+    "$repeat/fpga0/netlist.json" \
+    "$repeat/fpga0/transport.json" \
+    "$repeat/fpga1/netlist.json" \
+    "$repeat/fpga1/transport.json" |
+  sha256sum | awk '{print $1}'
+)"
+test "$first_hash" = "$repeat_hash"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2")
+report = json.loads((root / "phase6/phase6_report.json").read_text())
+validation = report["validation"]
+equivalence = report["equivalence"]
+if report["status"] != "pass":
+    raise SystemExit("Phase 6 report did not pass")
+if validation["instances"] != 3812:
+    raise SystemExit("Phase 6 real design instance count mismatch")
+if validation["scheduled_hops"] != 140:
+    raise SystemExit("Phase 6 did not cover all scheduled hops")
+if validation["transport_endpoints"] != 280:
+    raise SystemExit("Phase 6 did not create paired TX/RX endpoints")
+if validation["endpoint_agreement_errors"] != 0:
+    raise SystemExit("Phase 6 lane endpoint agreement failed")
+if equivalence["cycles"] != 64 or equivalence["mismatches"] != 0:
+    raise SystemExit("Phase 6 mapped cycle equivalence failed")
+if report["board_binding"]["status"] != "virtual":
+    raise SystemExit("Phase 6 incorrectly claims package-pin binding")
+print(
+    "EMUFLOW_PICORV32_PHASE6 "
+    f"status=pass instances={validation['instances']} "
+    f"net_segments={validation['net_segments']} "
+    f"scheduled_hops={validation['scheduled_hops']} "
+    f"transport_endpoints={validation['transport_endpoints']} "
+    f"lane_map_entries={validation['lane_map_entries']} "
+    f"virtual_anchors={validation['virtual_anchors']} "
+    f"unbound_package_pins={validation['unbound_package_pins']} "
+    f"equivalence_cycles={equivalence['cycles']} "
+    f"compared_state_bits={equivalence['compared_state_bits']} "
+    f"compared_output_bits={equivalence['compared_output_bits']} "
+    f"mismatches={equivalence['mismatches']} "
+    f"trace_sha256={equivalence['trace_sha256']}"
+)
+PY
+
+printf 'phase6_artifact_set_sha256=%s\n' "$first_hash"
+du -sh "$output" "$repeat"
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -1323,6 +1466,9 @@ case "$command" in
     ;;
   picorv32-phase5)
     picorv32_phase5_remote
+    ;;
+  picorv32-phase6)
+    picorv32_phase6_remote
     ;;
   koios-sync)
     sync_koios_source

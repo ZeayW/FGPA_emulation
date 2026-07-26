@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/transport-endpoints-v1.schema.json",
+  "title": "EmuFlow per-FPGA transport endpoints v1",
+  "type": "object",
+  "required": [
+    "schema", "design", "platform", "fpga", "frame_slots",
+    "source_signals", "shadow_signals", "endpoints"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.transport-endpoints/v1"},
+    "design": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "fpga": {"type": "string", "minLength": 1},
+    "frame_slots": {"type": "integer", "minimum": 1},
+    "source_signals": {"type": "array", "items": {"type": "object"}},
+    "shadow_signals": {"type": "array", "items": {"type": "object"}},
+    "endpoints": {"type": "array", "items": {"type": "object"}}
+  },
+  "additionalProperties": false
+}

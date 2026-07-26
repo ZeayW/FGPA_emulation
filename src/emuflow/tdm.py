@@ -199,6 +199,16 @@ def build_tdm_schedule(
         "platform": platform.name,
         "provider": "deterministic-earliest-slot-v1",
         "route_constraints": constraints,
+        "routes": [
+            {
+                "id": route["id"],
+                "net": route["net"],
+                "source": route["source"],
+                "sinks": list(route["sinks"]),
+                "tree_edges": list(route["tree_edges"]),
+            }
+            for route in sorted(raw_routes, key=lambda item: item["id"])
+        ],
         "entries": entries,
         "demand_completions": sorted(
             demand_completions, key=lambda item: item["demand"]
@@ -278,6 +288,18 @@ def validate_tdm_schedule(
     _, arcs, _ = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
     expected = _expected_hops(routes)
+    expected_route_metadata = [
+        {
+            "id": route["id"],
+            "net": route["net"],
+            "source": route["source"],
+            "sinks": list(route["sinks"]),
+            "tree_edges": list(route["tree_edges"]),
+        }
+        for route in sorted(routes["routes"], key=lambda item: item["id"])
+    ]
+    if schedule.get("routes") != expected_route_metadata:
+        raise ValidationError("schedule.routes does not match system routes")
 
     raw_entries = schedule.get("entries")
     if not isinstance(raw_entries, list):

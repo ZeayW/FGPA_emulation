@@ -152,6 +152,21 @@ def import_yosys_json(
         instance_resources[cell_name] = resources
         parameters = raw_cell.get("parameters", {})
         attributes = raw_cell.get("attributes", {})
+        constant_connections = []
+        raw_connections = raw_cell.get("connections", {})
+        if isinstance(raw_connections, dict):
+            for port_name, connection_bits in sorted(raw_connections.items()):
+                if not isinstance(connection_bits, list):
+                    continue
+                for bit_index, bit_value in enumerate(connection_bits):
+                    if isinstance(bit_value, str):
+                        constant_connections.append(
+                            {
+                                "port": port_name,
+                                "bit": bit_index,
+                                "value": bit_value.lower(),
+                            }
+                        )
         instances.append(
             {
                 "id": cell_name,
@@ -160,6 +175,7 @@ def import_yosys_json(
                 "resources": resources.to_dict(),
                 "parameters": parameters if isinstance(parameters, dict) else {},
                 "attributes": attributes if isinstance(attributes, dict) else {},
+                "constant_connections": constant_connections,
             }
         )
 

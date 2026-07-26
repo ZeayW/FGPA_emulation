@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/logical-lane-map-v1.schema.json",
+  "title": "EmuFlow logical lane map v1",
+  "type": "object",
+  "required": [
+    "schema", "design", "platform", "frame_slots",
+    "binding_status", "entries"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.logical-lane-map/v1"},
+    "design": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "frame_slots": {"type": "integer", "minimum": 1},
+    "binding_status": {"const": "logical_only"},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "schedule_entry", "demand", "net", "link",
+          "from", "to", "slot", "lane", "tx_endpoint", "rx_endpoint"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

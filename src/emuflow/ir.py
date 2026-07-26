@@ -84,6 +84,37 @@ class EmuIR:
                     f"instances[{index}].resources: expected an object"
                 )
             ResourceVector.from_mapping(resources, f"instances[{index}].resources")
+            constant_connections = instance.get("constant_connections", [])
+            if not isinstance(constant_connections, list):
+                raise ValidationError(
+                    f"instances[{index}].constant_connections: "
+                    "expected an array"
+                )
+            for connection_index, connection in enumerate(
+                constant_connections
+            ):
+                context = (
+                    f"instances[{index}].constant_connections"
+                    f"[{connection_index}]"
+                )
+                if not isinstance(connection, dict):
+                    raise ValidationError(f"{context}: expected an object")
+                if (
+                    not isinstance(connection.get("port"), str)
+                    or not connection["port"]
+                ):
+                    raise ValidationError(
+                        f"{context}.port: expected a non-empty string"
+                    )
+                bit = connection.get("bit")
+                if isinstance(bit, bool) or not isinstance(bit, int) or bit < 0:
+                    raise ValidationError(
+                        f"{context}.bit: expected a non-negative integer"
+                    )
+                if connection.get("value") not in {"0", "1", "x", "z"}:
+                    raise ValidationError(
+                        f"{context}.value: expected 0, 1, x, or z"
+                    )
 
         for index, net in enumerate(nets):
             cut_class = net.get("cut_class")
