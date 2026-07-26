@@ -21,20 +21,16 @@ foreach cell [lsort -dictionary [get_cells -hier]] {
 close $cell_inventory
 if {[file extension $placement_constraints] eq ".tsv"} {
     set placement_start_ms [clock milliseconds]
-    set cells_by_name [dict create]
-    set all_cells [get_cells -hier]
+    set all_cells [lsort -ascii [get_cells -hier]]
     set all_names [get_property NAME $all_cells]
-    foreach cell $all_cells name $all_names {
-        if {[dict exists $cells_by_name $name]} {
-            error "duplicate mapped cell name $name"
-        }
-        dict set cells_by_name $name $cell
+    if {[llength $all_cells] != $expected_cells} {
+        error "mapped design has [llength $all_cells] cells; expected $expected_cells"
     }
 
     set placement_input [open $placement_constraints r]
     set placement_count 0
-    set cells_by_site [dict create]
-    set cells_by_bel [dict create]
+    array set cells_by_site {}
+    array set cells_by_bel {}
     while {[gets $placement_input line] >= 0} {
         if {$line eq "" || [string index $line 0] eq "#"} {
             continue
@@ -49,16 +45,17 @@ if {[file extension $placement_constraints] eq ".tsv"} {
         }
         set name [encoding convertfrom utf-8 \
             [binary decode hex [lindex $fields 1]]]
-        if {![dict exists $cells_by_name $name]} {
-            error "placement TSV cell $name does not exist in mapped design"
+        set actual_name [lindex $all_names $index]
+        if {$name ne $actual_name} {
+            error "placement TSV cell $name does not match mapped cell $actual_name at index $index"
         }
         set variable "emuflow_cell_$index"
-        set cell [dict get $cells_by_name $name]
+        set cell [lindex $all_cells $index]
         set $variable $cell
-        dict lappend cells_by_site [lindex $fields 2] $cell
+        lappend cells_by_site([lindex $fields 2]) $cell
         set cell_type [lindex $fields 4]
         if {![string match "FD*" $cell_type]} {
-            dict lappend cells_by_bel [lindex $fields 3] $cell
+            lappend cells_by_bel([lindex $fields 3]) $cell
         }
         incr placement_count
     }
@@ -66,11 +63,11 @@ if {[file extension $placement_constraints] eq ".tsv"} {
     if {$placement_count != $expected_cells} {
         error "placement TSV has $placement_count cells; expected $expected_cells"
     }
-    dict for {site cells} $cells_by_site {
-        set_property LOC $site $cells
+    foreach site [array names cells_by_site] {
+        set_property LOC $site $cells_by_site($site)
     }
-    dict for {bel cells} $cells_by_bel {
-        set_property BEL $bel $cells
+    foreach bel [array names cells_by_bel] {
+        set_property BEL $bel $cells_by_bel($bel)
     }
     set placement_elapsed_ms [expr {[clock milliseconds] - $placement_start_ms}]
     puts "EMUFLOW_PLACEMENT_TSV status=pass cells=$placement_count elapsed_ms=$placement_elapsed_ms"
