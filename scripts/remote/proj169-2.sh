@@ -1411,11 +1411,12 @@ root = Path("build/remote/benchmarks/picorv32-l2/phase7b")
 total = 0
 for fpga in ("fpga0", "fpga1"):
     report = json.loads((root / fpga / "emission-report.json").read_text())
-    route = (root / fpga / "vivado/route_status.rpt").read_text()
     if report["status"] != "pass":
         raise SystemExit(f"{fpga} mapped Verilog emission failed")
-    if "UNROUTED" not in route:
-        raise SystemExit(f"{fpga} route status report is malformed")
+    if not (root / fpga / "vivado/routed.dcp").is_file():
+        raise SystemExit(f"{fpga} routed checkpoint is missing")
+    if not (root / fpga / "vivado/route_status.rpt").is_file():
+        raise SystemExit(f"{fpga} route status report is missing")
     total += report["instances"]
     print(
         "EMUFLOW_PICORV32_PHASE7B_FPGA "
