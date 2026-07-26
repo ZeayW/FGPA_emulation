@@ -410,7 +410,10 @@ def transport_to_systemverilog(
         group for group in groups if "tx" in kinds_by_group[group]
     ]
     if tx_groups:
-        lines.append("  always_comb begin")
+        # Icarus models constant bit selects correctly here but emits one
+        # sensitivity warning per select for always_comb. The equivalent
+        # Verilog sensitivity form is accepted cleanly by both Icarus/Yosys.
+        lines.append("  always @* begin")
         for link_id, peer in tx_groups:
             lines.append(
                 f"    {bus_name[(link_id, peer, 'tx')]} = '0;"
