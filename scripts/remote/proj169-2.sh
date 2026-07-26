@@ -52,6 +52,8 @@ Commands:
              Place the synthesized 32-core design with OpenPARF.
   picorv32-x32-vivado
              Route the 32-core OpenPARF placement with Vivado.
+  picorv32-x32-phase3
+             Validate G4 scale on x32 and legal cuts on connected PicoRV32.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -743,6 +745,154 @@ du -sh "$root/vivado"
 REMOTE
 }
 
+picorv32_x32_phase3_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-x32-l5
+ir="$root/phase1/design.emuir.json"
+connected_root=build/remote/benchmarks/picorv32-l2
+connected_ir="$connected_root/phase1/design.emuir.json"
+platform=platforms/virtual/xcvu3p_2fpga_p2p.json
+output="$root/phase3"
+repeat="$root/phase3-repeat"
+test -s "$ir"
+test -s "$connected_ir"
+
+/usr/bin/time -v -o "$root/phase3-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase3 \
+    --ir "$ir" \
+    --platform "$platform" \
+    --out "$output" \
+    --seed 20260727 \
+    > "$root/phase3-stdout.json"
+
+PYTHONPATH=src python3 -m emuflow partition validate \
+  "$output/assignment.json" \
+  --clusters "$output/clusters.json" \
+  --ir "$ir" \
+  --platform "$platform" \
+  > "$root/phase3-independent-check.json"
+
+PYTHONPATH=src python3 -m emuflow phase3 \
+  --ir "$ir" \
+  --platform "$platform" \
+  --out "$repeat" \
+  --seed 20260727 \
+  > "$root/phase3-repeat-stdout.json"
+
+first_hash="$(sha256sum "$output/assignment.json" | awk '{print $1}')"
+repeat_hash="$(sha256sum "$repeat/assignment.json" | awk '{print $1}')"
+test "$first_hash" = "$repeat_hash"
+
+/usr/bin/time -v -o "$connected_root/phase3-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase3 \
+    --ir "$connected_ir" \
+    --platform "$platform" \
+    --out "$connected_root/phase3" \
+    --seed 20260727 \
+    > "$connected_root/phase3-stdout.json"
+
+PYTHONPATH=src python3 -m emuflow partition validate \
+  "$connected_root/phase3/assignment.json" \
+  --clusters "$connected_root/phase3/clusters.json" \
+  --ir "$connected_ir" \
+  --platform "$platform" \
+  > "$connected_root/phase3-independent-check.json"
+
+PYTHONPATH=src python3 -m emuflow phase3 \
+  --ir "$connected_ir" \
+  --platform "$platform" \
+  --out "$connected_root/phase3-repeat" \
+  --seed 20260727 \
+  > "$connected_root/phase3-repeat-stdout.json"
+
+connected_hash="$(
+  sha256sum "$connected_root/phase3/assignment.json" | awk '{print $1}'
+)"
+connected_repeat_hash="$(
+  sha256sum "$connected_root/phase3-repeat/assignment.json" | awk '{print $1}'
+)"
+test "$connected_hash" = "$connected_repeat_hash"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-x32-l5")
+scale_report = json.loads((root / "phase3/phase3_report.json").read_text())
+scale = scale_report["validation"]
+scale_partitions = scale_report["partitions"]
+if scale_report["status"] != "pass":
+    raise SystemExit("Phase 3 scale report did not pass")
+if scale["instances"] < 100_000:
+    raise SystemExit("Phase 3 did not exercise at least 100,000 cells")
+if scale["used_fpgas"] != 2:
+    raise SystemExit("Phase 3 scale run did not force both virtual FPGAs")
+if scale["illegal_cuts"] != 0:
+    raise SystemExit("Phase 3 scale run contains a forbidden cut")
+if any(
+    partition["instance_count"] < 50_000 for partition in scale_partitions
+):
+    raise SystemExit("Phase 3 scale partition balance gate failed")
+
+connected_root = Path("build/remote/benchmarks/picorv32-l2")
+connected_report = json.loads(
+    (connected_root / "phase3/phase3_report.json").read_text()
+)
+connected = connected_report["validation"]
+connected_partitions = connected_report["partitions"]
+if connected_report["status"] != "pass":
+    raise SystemExit("connected Phase 3 report did not pass")
+if connected["instances"] < 3_000:
+    raise SystemExit("connected Phase 3 design is unexpectedly small")
+if connected["used_fpgas"] != 2:
+    raise SystemExit("connected Phase 3 run did not force both virtual FPGAs")
+if connected["illegal_cuts"] != 0:
+    raise SystemExit("connected Phase 3 run contains a forbidden cut")
+if connected["cut_nets"] <= 0:
+    raise SystemExit("connected Phase 3 run produced no cross-FPGA cut nets")
+if any(
+    partition["instance_count"] < 100
+    for partition in connected_partitions
+):
+    raise SystemExit("connected Phase 3 non-empty partition gate failed")
+print(
+    "EMUFLOW_PICORV32_X32_PHASE3 "
+    f"status=pass instances={scale['instances']} "
+    f"clusters={scale['clusters']} "
+    f"used_fpgas={scale['used_fpgas']} "
+    f"cut_nets={scale['cut_nets']} "
+    f"illegal_cuts={scale['illegal_cuts']} "
+    f"partition_cells="
+    f"{','.join(str(item['instance_count']) for item in scale_partitions)}"
+)
+print(
+    "EMUFLOW_PICORV32_CONNECTED_PHASE3 "
+    f"status=pass instances={connected['instances']} "
+    f"clusters={connected['clusters']} "
+    f"used_fpgas={connected['used_fpgas']} "
+    f"cut_nets={connected['cut_nets']} "
+    f"cut_sink_endpoints={connected['cut_sink_endpoints']} "
+    f"illegal_cuts={connected['illegal_cuts']} "
+    f"partition_cells="
+    f"{','.join(str(item['instance_count']) for item in connected_partitions)}"
+)
+PY
+
+printf 'scale_assignment_sha256=%s\n' "$first_hash"
+printf 'connected_assignment_sha256=%s\n' "$connected_hash"
+du -sh \
+  "$output" \
+  "$repeat" \
+  "$connected_root/phase3" \
+  "$connected_root/phase3-repeat"
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -977,6 +1127,9 @@ case "$command" in
     ;;
   picorv32-x32-vivado)
     picorv32_x32_vivado_remote
+    ;;
+  picorv32-x32-phase3)
+    picorv32_x32_phase3_remote
     ;;
   koios-sync)
     sync_koios_source

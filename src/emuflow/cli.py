@@ -11,6 +11,7 @@ from .io import write_json
 from .ir import EmuIR
 from .phase1 import run_phase1
 from .phase2 import run_phase2
+from .phase3 import run_phase3, validate_phase3
 from .placement import Placement
 from .platform import Platform
 from .synthesis import (
@@ -146,6 +147,31 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="OpenPARF output .pl; omit only for deterministic adapter testing",
     )
+
+    partition_parser = subparsers.add_parser(
+        "partition", help="multi-FPGA partition artifact operations"
+    )
+    partition_subparsers = partition_parser.add_subparsers(
+        dest="partition_command", required=True
+    )
+    partition_validate = partition_subparsers.add_parser(
+        "validate", help="independently validate Phase 3 partition artifacts"
+    )
+    partition_validate.add_argument("assignment", type=Path)
+    partition_validate.add_argument("--clusters", type=Path, required=True)
+    partition_validate.add_argument("--ir", type=Path, required=True)
+    partition_validate.add_argument("--platform", type=Path, required=True)
+
+    phase3 = subparsers.add_parser(
+        "phase3", help="run sequential clustering and multi-FPGA partitioning"
+    )
+    phase3.add_argument("--ir", type=Path, required=True)
+    phase3.add_argument("--platform", type=Path, required=True)
+    phase3.add_argument("--out", type=Path, required=True)
+    phase3.add_argument("--constraints", type=Path)
+    phase3.add_argument("--seed", type=int, default=0)
+    phase3.add_argument("--min-used-fpgas", type=int)
+    phase3.add_argument("--balance-tolerance", type=float)
     return parser
 
 
@@ -261,6 +287,29 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0
+
+    if args.command == "partition":
+        report = validate_phase3(
+            ir_path=args.ir,
+            platform_path=args.platform,
+            clusters_path=args.clusters,
+            assignment_path=args.assignment,
+        )
+        _print_json(report)
+        return 0
+
+    if args.command == "phase3":
+        report = run_phase3(
+            ir_path=args.ir,
+            platform_path=args.platform,
+            output_dir=args.out,
+            constraints_path=args.constraints,
+            seed=args.seed,
+            min_used_fpgas=args.min_used_fpgas,
+            balance_tolerance=args.balance_tolerance,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
 
     raise AssertionError(f"unhandled command {args.command!r}")
 
