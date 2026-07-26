@@ -47,8 +47,8 @@ class SynthesisTest(unittest.TestCase):
             output=Path("build/design.json"),
             verilog_output=Path("build/design.v"),
         )
-        self.assertIn("setattr -set keep 1 c:*", script)
-        self.assertIn("setattr -set dont_touch 1 c:*", script)
+        self.assertIn("setattr -set KEEP yes c:*", script)
+        self.assertIn("setattr -set DONT_TOUCH yes c:*", script)
         self.assertIn('write_verilog -norename "build/design.v"', script)
         self.assertNotIn("write_verilog -noattr", script)
 

@@ -91,8 +91,11 @@ def build_yosys_script(
         # redundant PicoRV32 register-file bits) and breaks the one-to-one
         # identity contract between EmuIR, OpenPARF, XDC, and the routed
         # design. Emit preservation attributes on every mapped cell.
-        "setattr -set keep 1 c:*",
-        "setattr -set dont_touch 1 c:*",
+        # Use Vivado's canonical uppercase, string-valued spellings. Numeric
+        # lowercase attributes are preserved by Yosys but Vivado does not
+        # honor them for constant-control FFs.
+        "setattr -set KEEP yes c:*",
+        "setattr -set DONT_TOUCH yes c:*",
         f"write_json {_yosys_quote(str(output))}",
     ]
     if verilog_output is not None:
