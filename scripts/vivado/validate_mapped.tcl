@@ -29,13 +29,18 @@ if {[file extension $placement_constraints] eq ".tsv"} {
     }
 
     set placement_input [open $placement_constraints r]
+    set placement_lines [split [read $placement_input] "\n"]
+    close $placement_input
+    # The first row is a header and the final split item is empty because the
+    # generated TSV ends with a newline.
+    set placement_rows [lrange $placement_lines 1 end-1]
+    if {[llength $placement_rows] != $expected_cells} {
+        error "placement TSV has [llength $placement_rows] cells; expected $expected_cells"
+    }
     set placement_count 0
     array set cells_by_site {}
     array set cells_by_bel {}
-    while {[gets $placement_input line] >= 0} {
-        if {$line eq "" || [string index $line 0] eq "#"} {
-            continue
-        }
+    foreach cell $all_cells actual_name $all_names line $placement_rows {
         set fields [split $line "\t"]
         if {[llength $fields] != 5} {
             error "malformed placement TSV row: $line"
@@ -51,7 +56,6 @@ if {[file extension $placement_constraints] eq ".tsv"} {
             error "placement TSV cell $name does not match mapped cell $actual_name at index $index"
         }
         set variable "emuflow_cell_$index"
-        set cell [lindex $all_cells $index]
         set $variable $cell
         lappend cells_by_site([lindex $fields 2]) $cell
         set cell_type [lindex $fields 4]
@@ -59,10 +63,6 @@ if {[file extension $placement_constraints] eq ".tsv"} {
             lappend cells_by_bel([lindex $fields 3]) $cell
         }
         incr placement_count
-    }
-    close $placement_input
-    if {$placement_count != $expected_cells} {
-        error "placement TSV has $placement_count cells; expected $expected_cells"
     }
     foreach site [array names cells_by_site] {
         set_property LOC $site $cells_by_site($site)
