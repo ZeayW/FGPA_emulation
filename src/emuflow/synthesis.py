@@ -94,8 +94,8 @@ def build_yosys_script(
         # Use Vivado's canonical uppercase, string-valued spellings. Numeric
         # lowercase attributes are preserved by Yosys but Vivado does not
         # honor them for constant-control FFs.
-        "setattr -set KEEP yes c:*",
-        "setattr -set DONT_TOUCH yes c:*",
+        'setattr -set KEEP "yes" c:*',
+        'setattr -set DONT_TOUCH "yes" c:*',
         f"write_json {_yosys_quote(str(output))}",
     ]
     if verilog_output is not None:
