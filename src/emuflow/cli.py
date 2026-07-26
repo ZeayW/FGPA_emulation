@@ -19,6 +19,7 @@ from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
 from .placement import Placement
 from .platform import Platform
+from .release import run_phase7d
 from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
     VALID_XILINX_FAMILIES,
@@ -30,6 +31,18 @@ from .verilog import emit_mapped_verilog
 
 def _print_json(value: Dict[str, Any]) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _keyed_paths(values: Sequence[str], option: str) -> Dict[str, Path]:
+    result: Dict[str, Path] = {}
+    for value in values:
+        key, separator, raw_path = value.partition("=")
+        if not separator or not key or not raw_path:
+            raise ValueError(f"{option}: expected KEY=PATH, got {value!r}")
+        if key in result:
+            raise ValueError(f"{option}: duplicate key {key!r}")
+        result[key] = Path(raw_path)
+    return result
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -281,6 +294,35 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7c.add_argument("--physical-summary", type=Path)
     phase7c.add_argument("--simulation-frames", type=int, default=12)
     phase7c.add_argument("--out", type=Path, required=True)
+
+    phase7d = subparsers.add_parser(
+        "phase7d",
+        help="audit and hash a complete board-independent G0-G9 release",
+    )
+    phase7d.add_argument("--benchmark-report", type=Path, required=True)
+    phase7d.add_argument("--phase3-report", type=Path, required=True)
+    phase7d.add_argument("--phase4-report", type=Path, required=True)
+    phase7d.add_argument("--phase5-report", type=Path, required=True)
+    phase7d.add_argument("--phase6-report", type=Path, required=True)
+    phase7d.add_argument("--phase7c-report", type=Path, required=True)
+    phase7d.add_argument("--runtime-contract", type=Path, required=True)
+    phase7d.add_argument("--qor-report", type=Path, required=True)
+    phase7d.add_argument("--physical-summary", type=Path, required=True)
+    phase7d.add_argument("--platform", type=Path, required=True)
+    phase7d.add_argument(
+        "--lowering-report", action="append", default=[], metavar="FPGA=PATH"
+    )
+    phase7d.add_argument(
+        "--placement-report", action="append", default=[], metavar="FPGA=PATH"
+    )
+    phase7d.add_argument(
+        "--emission-report", action="append", default=[], metavar="FPGA=PATH"
+    )
+    phase7d.add_argument(
+        "--artifact", action="append", default=[], metavar="LABEL=PATH"
+    )
+    phase7d.add_argument("--source-commit", required=True)
+    phase7d.add_argument("--out", type=Path, required=True)
     return parser
 
 
@@ -518,6 +560,34 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] in {"generated", "pass"} else 2
+
+    if args.command == "phase7d":
+        report = run_phase7d(
+            benchmark_report_path=args.benchmark_report,
+            phase3_report_path=args.phase3_report,
+            phase4_report_path=args.phase4_report,
+            phase5_report_path=args.phase5_report,
+            phase6_report_path=args.phase6_report,
+            phase7c_report_path=args.phase7c_report,
+            runtime_contract_path=args.runtime_contract,
+            qor_report_path=args.qor_report,
+            physical_summary_path=args.physical_summary,
+            platform_path=args.platform,
+            lowering_report_paths=_keyed_paths(
+                args.lowering_report, "--lowering-report"
+            ),
+            placement_report_paths=_keyed_paths(
+                args.placement_report, "--placement-report"
+            ),
+            emission_report_paths=_keyed_paths(
+                args.emission_report, "--emission-report"
+            ),
+            artifact_paths=_keyed_paths(args.artifact, "--artifact"),
+            source_commit=args.source_commit,
+            output_dir=args.out,
+        )
+        _print_json(report)
+        return 0
 
     raise AssertionError(f"unhandled command {args.command!r}")
 

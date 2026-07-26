@@ -70,6 +70,8 @@ Commands:
              Recheck existing runtime-constrained DCPs and aggregate QoR.
   picorv32-phase7c-all
              Rebuild Phase 6/7A, then run the complete Phase 7C validation.
+  picorv32-phase7d
+             Audit, hash, and seal the complete board-independent G0-G9 run.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -1708,6 +1710,119 @@ picorv32_phase7c_remote() {
   picorv32_phase7c_finalize_remote
 }
 
+picorv32_phase7d_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+source_commit="$(cat .emuflow-source-commit)"
+output="$root/phase7d"
+repeat="$root/phase7d-repeat"
+rm -rf "$output" "$repeat"
+
+run_audit() {
+  target="$1"
+  stdout="$2"
+  PYTHONPATH=src python3 -m emuflow phase7d \
+    --benchmark-report "$root/benchmark_report.json" \
+    --phase3-report "$root/phase3/phase3_report.json" \
+    --phase4-report "$root/phase4/phase4_report.json" \
+    --phase5-report "$root/phase5/phase5_report.json" \
+    --phase6-report "$root/phase6/phase6_report.json" \
+    --phase7c-report "$root/phase7c/phase7c_report.json" \
+    --runtime-contract "$root/phase7c/runtime_contract.json" \
+    --qor-report "$root/phase7c/qor_report.json" \
+    --physical-summary "$root/phase7c/physical_summary.json" \
+    --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+    --lowering-report \
+      "fpga0=$root/phase7a/fpga0/lowering-report.json" \
+    --lowering-report \
+      "fpga1=$root/phase7a/fpga1/lowering-report.json" \
+    --placement-report \
+      "fpga0=$root/phase7a/fpga0/placement-openparf/phase2_report.json" \
+    --placement-report \
+      "fpga1=$root/phase7a/fpga1/placement-openparf/phase2_report.json" \
+    --emission-report \
+      "fpga0=$root/phase7b/fpga0/emission-report.json" \
+    --emission-report \
+      "fpga1=$root/phase7b/fpga1/emission-report.json" \
+    --artifact "synthesis.mapped_json=$root/synthesis/mapped.json" \
+    --artifact "global.emuir=$root/phase1/design.emuir.json" \
+    --artifact "partition.assignment=$root/phase3/assignment.json" \
+    --artifact "system.routes=$root/phase4/routes.json" \
+    --artifact "system.schedule=$root/phase5/schedule.json" \
+    --artifact "system.lane_map=$root/phase6/lane_map.json" \
+    --artifact "fpga0.netlist=$root/phase6/fpga0/netlist.json" \
+    --artifact "fpga1.netlist=$root/phase6/fpga1/netlist.json" \
+    --artifact \
+      "fpga0.placement=$root/phase7a/fpga0/placement-openparf/placement.json" \
+    --artifact \
+      "fpga1.placement=$root/phase7a/fpga1/placement-openparf/placement.json" \
+    --artifact "fpga0.mapped_verilog=$root/phase7b/fpga0/mapped.v" \
+    --artifact "fpga1.mapped_verilog=$root/phase7b/fpga1/mapped.v" \
+    --artifact "fpga0.routed_dcp=$root/phase7b/fpga0/vivado/routed.dcp" \
+    --artifact "fpga1.routed_dcp=$root/phase7b/fpga1/vivado/routed.dcp" \
+    --artifact \
+      "runtime.contract=$root/phase7c/runtime_contract.json" \
+    --artifact "runtime.timing_xdc=$root/phase7c/runtime_timing.xdc" \
+    --artifact \
+      "runtime.physical_summary=$root/phase7c/physical_summary.json" \
+    --artifact "release.qor=$root/phase7c/qor_report.json" \
+    --source-commit "$source_commit" \
+    --out "$target" \
+    > "$stdout"
+}
+
+run_audit "$output" "$root/phase7d-stdout.json"
+run_audit "$repeat" "$root/phase7d-repeat-stdout.json"
+cmp "$output/release_manifest.json" "$repeat/release_manifest.json"
+manifest_hash="$(
+  sha256sum "$output/release_manifest.json" | awk '{print $1}'
+)"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2/phase7d")
+manifest = json.loads((root / "release_manifest.json").read_text())
+report = json.loads((root / "phase7d_report.json").read_text())
+if manifest["status"] != "pass" or report["status"] != "pass":
+    raise SystemExit("Phase 7D release audit did not pass")
+if set(manifest["gates"]) != {f"G{index}" for index in range(10)}:
+    raise SystemExit("Phase 7D did not cover exactly G0-G9")
+if any(
+    gate["status"] != "pass" for gate in manifest["gates"].values()
+):
+    raise SystemExit("Phase 7D contains a failing gate")
+metrics = manifest["metrics"]
+if metrics["original_cells"] != 3812:
+    raise SystemExit("Phase 7D original cell count mismatch")
+if metrics["routed_cells"] != 4223:
+    raise SystemExit("Phase 7D routed cell count mismatch")
+if len(manifest["artifacts"]) != 18:
+    raise SystemExit("Phase 7D artifact inventory count mismatch")
+print(
+    "EMUFLOW_PICORV32_PHASE7D "
+    f"status=pass gates={len(manifest['gates'])} "
+    f"source_files={metrics['source_files']} "
+    f"artifacts={len(manifest['artifacts'])} "
+    f"original_cells={metrics['original_cells']} "
+    f"transport_cells={metrics['transport_cells']} "
+    f"routed_cells={metrics['routed_cells']} "
+    f"cut_nets={metrics['cut_nets']} "
+    f"scheduled_bit_hops={metrics['scheduled_bit_hops']} "
+    f"equivalence_cycles={metrics['equivalence_cycles']} "
+    f"worst_wns_ns={metrics['worst_wns_ns']}"
+)
+PY
+printf 'phase7d_release_manifest_sha256=%s\n' "$manifest_hash"
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -1971,6 +2086,9 @@ case "$command" in
     picorv32_phase6_remote
     picorv32_phase7a_remote
     picorv32_phase7c_remote
+    ;;
+  picorv32-phase7d)
+    picorv32_phase7d_remote
     ;;
   koios-sync)
     sync_koios_source
