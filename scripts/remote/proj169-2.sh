@@ -30,7 +30,7 @@ Commands:
   phase2-arch
              Export a real xcvu3p Site/BEL inventory with Vivado.
   phase2-arch-large
-             Export up to 16,384 xcvu3p SLICE sites for 100k-cell runs.
+             Export up to 32,768 xcvu3p SLICE sites for 100k-cell runs.
   phase2     Export OpenPARF input and create a checked reference placement.
   phase2-vivado
              Apply the checked placement and route it with Vivado.
@@ -320,7 +320,7 @@ mkdir -p build/remote/phase2-large
 "$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
   -source scripts/vivado/export_architecture.tcl \
   -tclargs xcvu3p-ffvc1517-2-e \
-  build/remote/phase2-large/xcvu3p.sites.tsv 16384 \
+  build/remote/phase2-large/xcvu3p.sites.tsv 32768 \
   > build/remote/phase2-large/vivado-arch.log 2>&1
 PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
   build/remote/phase2-large/xcvu3p.sites.tsv \

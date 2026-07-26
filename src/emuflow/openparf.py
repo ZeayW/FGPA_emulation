@@ -248,7 +248,11 @@ def _render_config(
         "dtype": "float64",
         "target_density": 0.8,
         "random_seed": 1000,
-        "max_global_place_iters": 100,
+        # Production-scale designs need enough density iterations to spread
+        # before legalization. A 100-iteration smoke-test limit left the
+        # 121k-cell regression at ~0.96 overflow and produced unroutable
+        # level-6 congestion after legalization.
+        "max_global_place_iters": 1000,
         "global_place_flag": 1,
         "legalize_flag": 1,
         # OpenPARF's ISM detailed placer assumes a production-scale design and
