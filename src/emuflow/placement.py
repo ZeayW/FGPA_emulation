@@ -1,5 +1,16 @@
+from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import (
+    Any,
+    Deque,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
@@ -125,16 +136,29 @@ class Placement:
     def greedy_reference(
         cls, architecture: ArchitectureDB, ir: EmuIR
     ) -> "Placement":
-        occupied: Set[Tuple[str, str]] = set()
+        # Index each physical slot once by its compatibility signature. The
+        # original reference implementation rescanned every site for every
+        # cell, which was acceptable for smoke tests but quadratic at 100k+
+        # cells.
+        slots: Dict[
+            Tuple[str, ...],
+            Deque[Tuple[Dict[str, Any], Dict[str, Any]]],
+        ] = defaultdict(deque)
+        signatures_by_type: Dict[str, List[Tuple[str, ...]]] = defaultdict(list)
+        for site in architecture.sites:
+            for bel in site["bels"]:
+                signature = tuple(sorted(bel["compatible_cells"]))
+                slots[signature].append((site, bel))
+                for cell_type in signature:
+                    if signature not in signatures_by_type[cell_type]:
+                        signatures_by_type[cell_type].append(signature)
+
         cells: List[Dict[str, Any]] = []
         for instance in sorted(ir.value["instances"], key=lambda item: item["id"]):
             selected: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
-            for site in architecture.sites:
-                for bel in architecture.compatible_bels(site, instance["type"]):
-                    if (site["name"], bel["name"]) not in occupied:
-                        selected = (site, bel)
-                        break
-                if selected is not None:
+            for signature in signatures_by_type.get(instance["type"], []):
+                if slots[signature]:
+                    selected = slots[signature].popleft()
                     break
             if selected is None:
                 raise ValidationError(
@@ -142,7 +166,6 @@ class Placement:
                     f"{instance['id']!r} ({instance['type']})"
                 )
             site, bel = selected
-            occupied.add((site["name"], bel["name"]))
             cells.append(
                 {
                     "instance": instance["id"],

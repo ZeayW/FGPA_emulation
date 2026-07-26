@@ -29,6 +29,8 @@ Commands:
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
   phase2-arch
              Export a real xcvu3p Site/BEL inventory with Vivado.
+  phase2-arch-large
+             Export up to 16,384 xcvu3p SLICE sites for 100k-cell runs.
   phase2     Export OpenPARF input and create a checked reference placement.
   phase2-vivado
              Apply the checked placement and route it with Vivado.
@@ -46,6 +48,8 @@ Commands:
              Sync project and PicoRV32, test, export ArchitectureDB, and run L2.
   picorv32-x32-synth
              Synthesize 32 PicoRV32 cores and require 100,000 mapped cells.
+  picorv32-x32-openparf
+             Place the synthesized 32-core design with OpenPARF.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -300,6 +304,26 @@ mkdir -p build/remote/phase2
 PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
   build/remote/phase2/xcvu3p.sites.tsv \
   --output build/remote/phase2/xcvu3p.arch.json
+REMOTE
+}
+
+phase2_arch_large_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+mkdir -p build/remote/phase2-large
+"$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/export_architecture.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  build/remote/phase2-large/xcvu3p.sites.tsv 16384 \
+  > build/remote/phase2-large/vivado-arch.log 2>&1
+PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
+  build/remote/phase2-large/xcvu3p.sites.tsv \
+  --output build/remote/phase2-large/xcvu3p.arch.json
+du -sh build/remote/phase2-large
 REMOTE
 }
 
@@ -610,6 +634,72 @@ du -sh \
 REMOTE
 }
 
+picorv32_x32_openparf_remote() {
+  local remote_root_quoted
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+openparf_root=$remote_root_quoted
+openparf_python=/home/ziyiwang21/anaconda3/envs/deepgate/bin/python
+cd "\$remote_dir"
+
+test -x "\$openparf_python"
+test -f "\$openparf_root/OpenPARF-install/openparf.py"
+test -s build/remote/phase2-large/xcvu3p.arch.json
+test -s build/remote/benchmarks/picorv32-x32-l5/phase1/design.emuir.json
+rm -rf \
+  build/remote/benchmarks/picorv32-x32-l5/phase2-reference \
+  build/remote/benchmarks/picorv32-x32-l5/phase2-openparf \
+  build/remote/benchmarks/picorv32-x32-l5/openparf.log
+
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/benchmarks/picorv32-x32-l5/phase1/design.emuir.json \
+  --arch build/remote/phase2-large/xcvu3p.arch.json \
+  --out build/remote/benchmarks/picorv32-x32-l5/phase2-reference
+
+export CUDA_VISIBLE_DEVICES=""
+export PYTHONPATH="\$remote_dir/scripts/openparf/shims:\$openparf_root/OpenPARF-install"
+"\$openparf_python" "\$openparf_root/OpenPARF-install/openparf.py" \
+  --config \
+  build/remote/benchmarks/picorv32-x32-l5/phase2-reference/openparf/openparf.json \
+  --log build/remote/benchmarks/picorv32-x32-l5/openparf.log
+
+result=build/remote/benchmarks/picorv32-x32-l5/phase2-reference/openparf/results/picorv32_x32_top.pl
+test -s "\$result"
+PYTHONPATH=src python3 -m emuflow phase2 \
+  --ir build/remote/benchmarks/picorv32-x32-l5/phase1/design.emuir.json \
+  --arch build/remote/phase2-large/xcvu3p.arch.json \
+  --openparf-result "\$result" \
+  --out build/remote/benchmarks/picorv32-x32-l5/phase2-openparf
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-x32-l5")
+report = json.loads(
+    (root / "phase2-openparf/phase2_report.json").read_text(encoding="utf-8")
+)
+placement = report["placement"]
+status = (
+    "pass"
+    if placement["cells"] >= 100_000 and placement["status"] == "legal"
+    else "fail"
+)
+print(
+    "EMUFLOW_PICORV32_X32_OPENPARF "
+    f"status={status} cells={placement['cells']} "
+    f"sites_used={placement['sites_used']}"
+)
+if status != "pass":
+    raise SystemExit("100k-cell OpenPARF placement gate failed")
+PY
+du -sh build/remote/benchmarks/picorv32-x32-l5
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -798,6 +888,9 @@ case "$command" in
   phase2-arch)
     phase2_arch_remote
     ;;
+  phase2-arch-large)
+    phase2_arch_large_remote
+    ;;
   phase2)
     phase2_remote
     ;;
@@ -835,6 +928,9 @@ case "$command" in
     ;;
   picorv32-x32-synth)
     picorv32_x32_synth_remote
+    ;;
+  picorv32-x32-openparf)
+    picorv32_x32_openparf_remote
     ;;
   koios-sync)
     sync_koios_source
