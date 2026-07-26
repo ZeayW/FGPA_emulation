@@ -64,6 +64,10 @@ Commands:
              Synthesize transport and place both merged FPGA partitions.
   picorv32-phase7b
              Emit, place, and route both FPGA partitions with Vivado.
+  picorv32-phase7c
+             Build/verify the virtual runtime contract and reroute with both clocks.
+  picorv32-phase7c-all
+             Rebuild Phase 6/7A, then run the complete Phase 7C validation.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -1158,6 +1162,7 @@ for fpga in fpga0 fpga1; do
   /usr/bin/iverilog -g2012 \
     -s "emuflow_transport_${fpga}" \
     -o "$output/$fpga/transport_compile" \
+    "$output/virtual_runtime_controller.sv" \
     "$output/$fpga/transport_schedule.sv" \
     > "$output/$fpga/transport_compile.log" 2>&1
   test -x "$output/$fpga/transport_compile"
@@ -1267,6 +1272,7 @@ for fpga in fpga0 fpga1; do
   target="\$phase7a/\$fpga"
   mkdir -p "\$target"
   PYTHONPATH=src python3 -m emuflow synth-yosys \
+    "\$phase6/virtual_runtime_controller.sv" \
     "\$phase6/\$fpga/transport_schedule.sv" \
     --top "emuflow_transport_\$fpga" \
     --family xcup \
@@ -1372,6 +1378,16 @@ root=build/remote/benchmarks/picorv32-l2
 phase7a="$root/phase7a"
 phase7b="$root/phase7b"
 mkdir -p "$phase7b"
+dut_period=10.0
+runtime_xdc=""
+if [ -s "$root/phase7c/runtime_timing.xdc" ]; then
+  dut_period="$(
+    python3 -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["virtual_dut_clock"]["nominal_period_ns"])' \
+      "$root/phase7c/runtime_contract.json"
+  )"
+  runtime_xdc="$root/phase7c/runtime_timing.xdc"
+fi
 for fpga in fpga0 fpga1; do
   source="$phase7a/$fpga"
   target="$phase7b/$fpga"
@@ -1388,16 +1404,29 @@ for fpga in fpga0 fpga1; do
       'import json,sys; print(json.load(open(sys.argv[1]))["instances"])' \
       "$target/emission-report.json"
   )"
-  /usr/bin/time -v -o "$target/vivado-time.txt" \
-    "$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
-      -source scripts/vivado/validate_mapped.tcl \
-      -tclargs xcvu3p-ffvc1517-2-e \
-      "$target/mapped.v" \
-      "picorv32__$fpga" \
-      "$source/placement-openparf/placement.vivado.tsv" \
-      "$target/vivado" \
-      "$expected_cells" clk 10.0 \
-      > "$target/vivado-validation.log" 2>&1
+  if [ -n "$runtime_xdc" ]; then
+    /usr/bin/time -v -o "$target/vivado-time.txt" \
+      "$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+        -source scripts/vivado/validate_mapped.tcl \
+        -tclargs xcvu3p-ffvc1517-2-e \
+        "$target/mapped.v" \
+        "picorv32__$fpga" \
+        "$source/placement-openparf/placement.vivado.tsv" \
+        "$target/vivado" \
+        "$expected_cells" clk "$dut_period" "$runtime_xdc" \
+        > "$target/vivado-validation.log" 2>&1
+  else
+    /usr/bin/time -v -o "$target/vivado-time.txt" \
+      "$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+        -source scripts/vivado/validate_mapped.tcl \
+        -tclargs xcvu3p-ffvc1517-2-e \
+        "$target/mapped.v" \
+        "picorv32__$fpga" \
+        "$source/placement-openparf/placement.vivado.tsv" \
+        "$target/vivado" \
+        "$expected_cells" clk "$dut_period" \
+        > "$target/vivado-validation.log" 2>&1
+  fi
   grep 'EMUFLOW_MAPPED_VIVADO status=pass' \
     "$target/vivado-validation.log"
   test -s "$target/vivado/routed.dcp"
@@ -1408,9 +1437,15 @@ import json
 from pathlib import Path
 
 root = Path("build/remote/benchmarks/picorv32-l2/phase7b")
+phase7a = root.parent / "phase7a"
 total = 0
+total_original = 0
+total_transport = 0
 for fpga in ("fpga0", "fpga1"):
     report = json.loads((root / fpga / "emission-report.json").read_text())
+    lowering = json.loads(
+        (phase7a / fpga / "lowering-report.json").read_text()
+    )
     if report["status"] != "pass":
         raise SystemExit(f"{fpga} mapped Verilog emission failed")
     if not (root / fpga / "vivado/routed.dcp").is_file():
@@ -1418,16 +1453,221 @@ for fpga in ("fpga0", "fpga1"):
     if not (root / fpga / "vivado/route_status.rpt").is_file():
         raise SystemExit(f"{fpga} route status report is missing")
     total += report["instances"]
+    total_original += report["instances"] - lowering["transport_instances"]
+    total_transport += lowering["transport_instances"]
     print(
         "EMUFLOW_PICORV32_PHASE7B_FPGA "
         f"status=pass fpga={fpga} cells={report['instances']} "
         f"nets={report['nets']} ports={report['ports']}"
     )
-if total != 4197:
-    raise SystemExit(f"Phase 7B routed {total} cells; expected 4197")
-print(f"EMUFLOW_PICORV32_PHASE7B status=pass routed_cells={total}")
+if total_original != 3812:
+    raise SystemExit(
+        f"Phase 7B retained {total_original} original cells; expected 3812"
+    )
+if total != total_original + total_transport:
+    raise SystemExit("Phase 7B transport cell accounting mismatch")
+print(
+    "EMUFLOW_PICORV32_PHASE7B "
+    f"status=pass routed_cells={total} "
+    f"original_cells={total_original} "
+    f"transport_cells={total_transport}"
+)
 PY
 REMOTE
+}
+
+picorv32_phase7c_prepare_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+output="$root/phase7c"
+rm -rf "$output"
+PYTHONPATH=src python3 -m emuflow phase7c \
+  --schedule "$root/phase5/schedule.json" \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --phase3-report "$root/phase3/phase3_report.json" \
+  --phase4-report "$root/phase4/phase4_report.json" \
+  --phase5-report "$root/phase5/phase5_report.json" \
+  --phase6-report "$root/phase6/phase6_report.json" \
+  --simulation-frames 64 \
+  --out "$output" \
+  > "$root/phase7c-prepare-stdout.json"
+
+/usr/bin/iverilog -g2012 -s virtual_runtime_controller_tb \
+  -o "$output/virtual_runtime_controller_simv" \
+  "$output/virtual_runtime_controller.sv" \
+  "$output/virtual_runtime_controller_tb.sv"
+/usr/bin/vvp "$output/virtual_runtime_controller_simv" \
+  > "$output/virtual_runtime_controller_sim.log"
+grep 'EMUFLOW_RUNTIME_TB status=pass' \
+  "$output/virtual_runtime_controller_sim.log"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2/phase7c")
+report = json.loads((root / "phase7c_report.json").read_text())
+runtime = json.loads((root / "runtime_contract.json").read_text())
+if report["status"] != "generated":
+    raise SystemExit("Phase 7C prepare did not generate a pending contract")
+if runtime["frame"]["slots"] != 32:
+    raise SystemExit("Phase 7C frame length mismatch")
+if runtime["frame"]["completion_slot"] != 6:
+    raise SystemExit("Phase 7C completion slot mismatch")
+if runtime["frame"]["shadow_settle_slots"] != 25:
+    raise SystemExit("Phase 7C shadow-settle margin mismatch")
+if runtime["virtual_dut_clock"]["nominal_frequency_mhz"] != 7.8125:
+    raise SystemExit("Phase 7C nominal virtual frequency mismatch")
+print(
+    "EMUFLOW_PICORV32_PHASE7C_PREPARE "
+    "status=pass frame_slots=32 completion_slot=6 "
+    "shadow_settle_slots=25 shadow_settle_ns=100 "
+    "nominal_virtual_frequency_mhz=7.8125"
+)
+PY
+REMOTE
+}
+
+picorv32_phase7c_finalize_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+phase7b="$root/phase7b"
+phase7c="$root/phase7c"
+test -s "$phase7c/runtime_timing.xdc"
+for fpga in fpga0 fpga1; do
+  expected_cells="$(
+    python3 -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["instances"])' \
+      "$phase7b/$fpga/emission-report.json"
+  )"
+  "$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+    -source scripts/vivado/report_runtime_contract.tcl \
+    -tclargs "$phase7b/$fpga/vivado/routed.dcp" \
+    "$phase7c/$fpga" "$expected_cells" \
+    > "$phase7c/$fpga-vivado-runtime.log" 2>&1
+  grep 'EMUFLOW_RUNTIME_VIVADO status=pass' \
+    "$phase7c/$fpga-vivado-runtime.log"
+done
+
+python3 - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2")
+records = []
+for fpga in ("fpga0", "fpga1"):
+    lowering = json.loads(
+        (root / "phase7a" / fpga / "lowering-report.json").read_text()
+    )
+    emission = json.loads(
+        (root / "phase7b" / fpga / "emission-report.json").read_text()
+    )
+    netlist = json.loads(
+        (root / "phase6" / fpga / "netlist.json").read_text()
+    )
+    metrics = {}
+    for line in (
+        root / "phase7c" / fpga / "runtime_metrics.tsv"
+    ).read_text().splitlines()[1:]:
+        key, value = line.split("\t")
+        metrics[key] = value
+    checkpoint = root / "phase7b" / fpga / "vivado/routed.dcp"
+    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    original_cells = len(netlist["instances"])
+    transport_cells = lowering["transport_instances"]
+    if emission["instances"] != original_cells + transport_cells:
+        raise SystemExit(f"{fpga} physical cell accounting mismatch")
+    records.append(
+        {
+            "fpga": fpga,
+            "part": "xcvu3p-ffvc1517-2-e",
+            "original_cells": original_cells,
+            "transport_cells": transport_cells,
+            "routed_cells": int(metrics["cells"]),
+            "nets": int(metrics["nets"]),
+            "ports": int(metrics["ports"]),
+            "unrouted_nets": int(metrics["unrouted_nets"]),
+            "drc_violations": int(metrics["drc_violations"]),
+            "wns_ns": float(metrics["wns_ns"]),
+            "clocks": {
+                "fabric_period_ns": float(metrics["fabric_period_ns"]),
+                "dut_period_ns": float(metrics["dut_period_ns"]),
+            },
+            "routed_dcp": {
+                "bytes": checkpoint.stat().st_size,
+                "sha256": digest,
+            },
+        }
+    )
+summary = {
+    "schema": "emuflow.phase7b-physical-summary/v1",
+    "status": "pass",
+    "design": "picorv32",
+    "platform": "virtual_xcvu3p_2fpga_p2p",
+    "fpgas": records,
+}
+(root / "phase7c/physical_summary.json").write_text(
+    json.dumps(summary, indent=2, sort_keys=True) + "\n"
+)
+PY
+
+PYTHONPATH=src python3 -m emuflow phase7c \
+  --schedule "$root/phase5/schedule.json" \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --phase3-report "$root/phase3/phase3_report.json" \
+  --phase4-report "$root/phase4/phase4_report.json" \
+  --phase5-report "$root/phase5/phase5_report.json" \
+  --phase6-report "$root/phase6/phase6_report.json" \
+  --physical-summary "$phase7c/physical_summary.json" \
+  --simulation-frames 64 \
+  --out "$phase7c" \
+  > "$root/phase7c-final-stdout.json"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2/phase7c")
+report = json.loads((root / "phase7c_report.json").read_text())
+qor = json.loads((root / "qor_report.json").read_text())
+if report["status"] != "pass" or qor["status"] != "pass":
+    raise SystemExit("Phase 7C final report did not pass")
+physical = qor["physical"]
+if physical["original_cells"] != 3812:
+    raise SystemExit("Phase 7C lost original design cells")
+if physical["routed_cells"] != (
+    physical["original_cells"] + physical["transport_cells"]
+):
+    raise SystemExit("Phase 7C QoR cell accounting mismatch")
+print(
+    "EMUFLOW_PICORV32_PHASE7C "
+    f"status=pass routed_cells={physical['routed_cells']} "
+    f"original_cells={physical['original_cells']} "
+    f"transport_cells={physical['transport_cells']} "
+    f"unrouted_nets={physical['unrouted_nets']} "
+    f"drc_violations={physical['drc_violations']} "
+    f"worst_wns_ns={physical['worst_wns_ns']}"
+)
+PY
+REMOTE
+}
+
+picorv32_phase7c_remote() {
+  picorv32_phase7c_prepare_remote
+  picorv32_phase7b_remote
+  picorv32_phase7c_finalize_remote
 }
 
 koios_dla_medium_synth_remote() {
@@ -1682,6 +1922,14 @@ case "$command" in
     ;;
   picorv32-phase7b)
     picorv32_phase7b_remote
+    ;;
+  picorv32-phase7c)
+    picorv32_phase7c_remote
+    ;;
+  picorv32-phase7c-all)
+    picorv32_phase6_remote
+    picorv32_phase7a_remote
+    picorv32_phase7c_remote
     ;;
   koios-sync)
     sync_koios_source

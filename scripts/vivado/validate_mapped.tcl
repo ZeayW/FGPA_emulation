@@ -1,5 +1,5 @@
 if {$argc < 6} {
-    error "usage: vivado -mode batch -source validate_mapped.tcl -tclargs PART MAPPED_VERILOG TOP PLACEMENT_CONSTRAINTS OUTPUT_DIR EXPECTED_CELLS ?CLOCK_PORT PERIOD_NS?"
+    error "usage: vivado -mode batch -source validate_mapped.tcl -tclargs PART MAPPED_VERILOG TOP PLACEMENT_CONSTRAINTS OUTPUT_DIR EXPECTED_CELLS ?CLOCK_PORT PERIOD_NS? ?EXTRA_XDC?"
 }
 
 set part [lindex $argv 0]
@@ -100,6 +100,13 @@ if {$argc >= 8} {
         error "clock port $clock_port did not resolve to exactly one port"
     }
     create_clock -name emuflow_dut_clk -period $clock_period $clock_ports
+}
+if {$argc >= 9} {
+    set extra_xdc [file normalize [lindex $argv 8]]
+    if {![file isfile $extra_xdc]} {
+        error "extra XDC does not exist: $extra_xdc"
+    }
+    read_xdc $extra_xdc
 }
 
 set ff_loc_repairs 0

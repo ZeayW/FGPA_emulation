@@ -16,6 +16,7 @@ from .phase3 import run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
+from .phase7c import run_phase7c
 from .placement import Placement
 from .platform import Platform
 from .synthesis import (
@@ -266,6 +267,20 @@ def _build_parser() -> argparse.ArgumentParser:
     emit_verilog.add_argument("--ir", type=Path, required=True)
     emit_verilog.add_argument("--output", "-o", type=Path, required=True)
     emit_verilog.add_argument("--report", type=Path)
+
+    phase7c = subparsers.add_parser(
+        "phase7c",
+        help="build and validate the virtual runtime/timing/QoR contract",
+    )
+    phase7c.add_argument("--schedule", type=Path, required=True)
+    phase7c.add_argument("--platform", type=Path, required=True)
+    phase7c.add_argument("--phase3-report", type=Path, required=True)
+    phase7c.add_argument("--phase4-report", type=Path, required=True)
+    phase7c.add_argument("--phase5-report", type=Path, required=True)
+    phase7c.add_argument("--phase6-report", type=Path, required=True)
+    phase7c.add_argument("--physical-summary", type=Path)
+    phase7c.add_argument("--simulation-frames", type=int, default=12)
+    phase7c.add_argument("--out", type=Path, required=True)
     return parser
 
 
@@ -488,6 +503,21 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(dict(report))
         return 0
+
+    if args.command == "phase7c":
+        report = run_phase7c(
+            schedule_path=args.schedule,
+            platform_path=args.platform,
+            phase3_report_path=args.phase3_report,
+            phase4_report_path=args.phase4_report,
+            phase5_report_path=args.phase5_report,
+            phase6_report_path=args.phase6_report,
+            physical_summary_path=args.physical_summary,
+            simulation_frames=args.simulation_frames,
+            output_dir=args.out,
+        )
+        _print_json(report)
+        return 0 if report["status"] in {"generated", "pass"} else 2
 
     raise AssertionError(f"unhandled command {args.command!r}")
 

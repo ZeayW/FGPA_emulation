@@ -11,6 +11,7 @@ from .netlist import (
     validate_split_artifacts,
 )
 from .platform import Platform
+from .runtime import virtual_runtime_controller_to_systemverilog
 
 
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
@@ -62,6 +63,10 @@ def run_phase6(
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "manifest.json", artifacts["manifest"])
     write_json(output_dir / "lane_map.json", artifacts["lane_map"])
+    (output_dir / "virtual_runtime_controller.sv").write_text(
+        virtual_runtime_controller_to_systemverilog(),
+        encoding="utf-8",
+    )
     for item in artifacts["manifest"]["fpgas"]:
         fpga_id = item["fpga"]
         fpga_root = output_dir / fpga_id
@@ -97,6 +102,7 @@ def run_phase6(
         "artifacts": {
             "manifest": "manifest.json",
             "lane_map": "lane_map.json",
+            "runtime_controller_rtl": "virtual_runtime_controller.sv",
             "report": "phase6_report.json",
         },
     }

@@ -112,6 +112,7 @@ class Phase6Test(unittest.TestCase):
                 "manifest.json",
                 "lane_map.json",
                 "phase6_report.json",
+                "virtual_runtime_controller.sv",
                 "fpga0/netlist.json",
                 "fpga0/transport.json",
                 "fpga0/transport_schedule.sv",

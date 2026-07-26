@@ -324,6 +324,7 @@ def build_split_artifacts(
             for fpga_id in fpga_ids
         ],
         "lane_map": "lane_map.json",
+        "runtime_controller_rtl": "virtual_runtime_controller.sv",
     }
     return {
         "manifest": manifest,
@@ -358,9 +359,11 @@ def transport_to_systemverilog(
     ports = [
         "  input  logic fabric_clk",
         "  input  logic reset",
-        "  input  logic [SLOT_BITS-1:0] slot",
+        "  input  logic links_ready",
         "  input  logic [SOURCE_COUNT-1:0] source_values",
         "  output logic [SHADOW_COUNT-1:0] shadow_values",
+        "  output logic virtual_clock_enable",
+        "  output logic [SLOT_BITS-1:0] slot_debug",
     ]
     kinds_by_group: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
     for endpoint in transport["endpoints"]:
@@ -401,7 +404,19 @@ def transport_to_systemverilog(
         ",\n".join(ports),
         ");",
         "",
+        "  logic [SLOT_BITS-1:0] slot;",
         "  logic [SHADOW_COUNT-1:0] shadow_regs;",
+        "  emuflow_virtual_runtime_controller #(",
+        "    .FRAME_SLOTS(FRAME_SLOTS),",
+        "    .SLOT_BITS(SLOT_BITS)",
+        "  ) runtime_controller (",
+        "    .fabric_clk(fabric_clk),",
+        "    .reset(reset),",
+        "    .links_ready(links_ready),",
+        "    .virtual_clock_enable(virtual_clock_enable),",
+        "    .slot(slot)",
+        "  );",
+        "  assign slot_debug = slot;",
         "  assign shadow_values = shadow_regs;",
         "",
     ]
