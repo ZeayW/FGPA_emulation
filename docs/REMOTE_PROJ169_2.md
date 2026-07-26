@@ -52,6 +52,7 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-phase7c` | Generate/simulate the runtime contract, reroute both partitions with DUT/fabric constraints, and aggregate QoR. |
 | `picorv32-phase7c-finalize` | Reopen existing runtime-constrained DCPs, gate all timing groups, and regenerate QoR. |
 | `picorv32-phase7c-all` | Rebuild Phase 6 and 7A before the complete Phase 7C run. |
+| `picorv32-phase7d` | Cross-check G0-G9, rehash sources and 18 critical artifacts, and seal a release manifest. |
 | `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
@@ -214,3 +215,14 @@ frames with an intentional barrier stall, routes 4,223 total cells, and
 independently checks 4 ns fabric timing, 128 ns nominal DUT timing, the 100 ns
 fabric-to-DUT stable-data window, zero unrouted nets, and zero DRC violations.
 The worst routed WNS is +2.642 ns. See `docs/PHASE7C_VALIDATION.md`.
+
+Seal the board-independent run:
+
+```bash
+scripts/remote/proj169-2.sh picorv32-phase7d
+```
+
+It runs the release audit twice, requires byte-identical manifests, and checks
+all G0-G9 gates. The validated manifest SHA-256 is
+`15e226ab36bc7995dbddf26103204957a6905c4f4b05e9ab8649e9272b5fe7c9`.
+See `docs/PHASE7D_VALIDATION.md`.

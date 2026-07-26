@@ -79,6 +79,10 @@ G0-G9 form the board-independent/virtual-board complete flow. Package-pin
 binding and G10 require a real board support package; logical lane assignment
 does not.
 
+Connected PicoRV32 now has a sealed G0-G9 Phase 7D release manifest that
+rehashes the source and 18 critical artifacts and cross-checks all phase
+counts. See `docs/PHASE7D_VALIDATION.md`.
+
 ## 5. Feature progression
 
 Each benchmark is first run in the simplest policy that preserves function,

@@ -361,6 +361,12 @@ single-virtual-clock envelope. Hardware BSP pin binding, source-synchronous
 board timing, dedicated clock-buffer binding, bitstream generation, link
 training, and a golden hardware workload remain Phase 8/G10.
 
+Phase 7D seals that result with a versioned release manifest. It rehashes the
+pinned RTL and 18 critical artifacts, cross-checks every boundary from
+partition counts through routed timing, and records explicit G0-G9 evidence.
+Two audits of the real PicoRV32 run are byte-identical. See
+`docs/PHASE7D_VALIDATION.md`.
+
 ### Phase 8 — Open synthesis/packing completion and hardware bring-up
 
 Replace bootstrap mapped DCPs with:

@@ -40,6 +40,7 @@ virtual runtime/timing contract:
 - integrated lockstep barrier controllers and pausible-clock semantics;
 - separate DUT, fabric, and fabric-to-DUT timing gates;
 - machine-readable end-to-end physical and emulation QoR.
+- a reproducible G0-G9 release manifest with source/artifact hashing.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
@@ -175,6 +176,8 @@ checkpoints are recorded in
 The Phase 7C integrated runtime controller, two-clock timing closure, and
 end-to-end PicoRV32 QoR are recorded in
 [docs/PHASE7C_VALIDATION.md](docs/PHASE7C_VALIDATION.md).
+The Phase 7D cross-phase G0-G9 audit and sealed release manifest are recorded
+in [docs/PHASE7D_VALIDATION.md](docs/PHASE7D_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,
