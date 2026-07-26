@@ -30,13 +30,15 @@ to synchronize a dirty worktree, records the source commit in
 | `test` | Run all Python unit tests and byte-compile the source. |
 | `synth` | Run a real Yosys process with `synth_xilinx -family xcup` on `counter.v`. |
 | `phase1` | Import the synthesized JSON and run the Phase 1 platform/resource checks. |
-| `phase2-arch` | Use Vivado to export 64 real `xcvu3p` SLICE sites and import them as ArchitectureDB. |
+| `phase2-arch` | Use Vivado to export a compact window of up to 512 real `xcvu3p` SLICE sites and import it as ArchitectureDB. |
 | `phase2` | Export the locked LUT2/FDRE mapped fixture to Bookshelf and validate a deterministic reference Site/BEL placement. |
 | `phase2-vivado` | Apply the checked LOC/BEL constraints, complete placement, route, DRC, and write a DCP. |
 | `openparf-sync` | Upload the local upstream OpenPARF source checkout. |
 | `openparf-build` | Build and install CPU-only OpenPARF in the server `deepgate` environment. |
 | `openparf-run` | Run real OpenPARF global placement/legalization and re-import its `.pl` result. |
 | `phase2-vivado-openparf` | Route the re-imported OpenPARF LOC/BEL placement in Vivado and write a routed DCP. |
+| `serv-sync`, `serv-l1`, `serv-l1-all` | Synchronize or run the 436-cell SERV L1 physical regression. |
+| `picorv32-sync`, `picorv32-l2`, `picorv32-l2-all` | Synchronize or run the 3812-cell PicoRV32 L2 physical regression. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
 
@@ -91,3 +93,15 @@ itself never labels its deterministic fallback as OpenPARF. Phase 2 uses the
 checked-in mapped fixture: the server Yosys currently emits `CARRY4` for the
 counter, and legal conversion to the UltraScale+ `CARRY8` macro is a
 site-packing task rather than a placement conversion.
+
+The real-RTL scale regressions are:
+
+```bash
+scripts/remote/proj169-2.sh serv-l1-all
+scripts/remote/proj169-2.sh picorv32-l2-all
+```
+
+Their routed checkpoints are written below `build/remote/benchmarks/`.
+PicoRV32 uses 461 of the 483 exported sites. See
+`docs/PICORV32_L2_VALIDATION.md` for its resource, routing, timing, and
+control-set repair results.

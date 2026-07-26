@@ -105,5 +105,6 @@ multi-FPGA complete flow:
 - partitioning, system routing, TDM, transport RTL, and lane assignment are
   later phases and are not exercised by this single-FPGA L1 run.
 
-The next scale target is PicoRV32. Before moving to forced multi-FPGA AES, the
+PicoRV32 has now completed the larger L2 logic-only physical regression; see
+`docs/PICORV32_L2_VALIDATION.md`. Before moving to forced multi-FPGA AES, the
 partitioning implementation must provide G4 artifacts and independent checks.

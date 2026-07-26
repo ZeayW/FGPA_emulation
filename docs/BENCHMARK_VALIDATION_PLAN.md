@@ -97,8 +97,9 @@ Logic-only results are regression evidence, not final QoR numbers.
 
 The immediate sequence is:
 
-1. make SERV pass G0-G3 and the existing G8-G9 single-FPGA path;
-2. make PicoRV32 pass the same path and remove unsupported carry/LUTRAM gaps;
+1. make SERV pass G0-G3 and the existing G8-G9 single-FPGA path — completed;
+2. make PicoRV32 pass the same logic-only path — completed; native
+   carry/LUTRAM remains a separate physical-backend milestone;
 3. implement Phase 3 partitioning and force PicoRV32/AES onto 2 and 4 virtual
    FPGAs;
 4. implement system routing, TDM, transport, and lane planning, then require

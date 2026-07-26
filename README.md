@@ -118,6 +118,7 @@ scripts/remote/proj169-2.sh openparf-sync
 scripts/remote/proj169-2.sh openparf-build
 scripts/remote/proj169-2.sh phase2-all
 scripts/remote/proj169-2.sh serv-l1-all
+scripts/remote/proj169-2.sh picorv32-l2-all
 ```
 
 See [docs/REMOTE_PROJ169_2.md](docs/REMOTE_PROJ169_2.md) for the command
@@ -128,6 +129,9 @@ discovers the Vivado 2025.2 installation under
 The first real-RTL physical closure result, including SERV resource, routing,
 DRC, timing, and current semantic limitations, is recorded in
 [docs/SERV_L1_VALIDATION.md](docs/SERV_L1_VALIDATION.md).
+The larger 3812-cell PicoRV32 result and the control-set repair boundary are
+recorded in
+[docs/PICORV32_L2_VALIDATION.md](docs/PICORV32_L2_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,

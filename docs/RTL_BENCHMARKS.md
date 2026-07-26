@@ -33,15 +33,15 @@ following progression:
 | L5-L6 | Koios 2.0 | 40 medium and large DL designs | Large RTL, BRAM/DSP and multi-FPGA system stress |
 | L7 | NVDLA nvdlav1 | 2048 INT8 MACs plus memories/control | Final very-large hierarchy/runtime stress |
 
-L1 SERV has completed the current real-RTL single-FPGA physical path. See
-`docs/SERV_L1_VALIDATION.md` for exact metrics and the remaining semantic
+L1 SERV and L2 PicoRV32 have completed the current real-RTL single-FPGA
+physical path. See `docs/SERV_L1_VALIDATION.md` and
+`docs/PICORV32_L2_VALIDATION.md` for exact metrics and remaining semantic
 gates.
 
-PicoRV32 is the preferred next integration because its CPU RTL is contained in
-one Verilog file, it has an ISC license, and upstream reports results for the
-same `xcvu3p-ffvc1517-2-e` target family. The first configuration should
-disable optional multiply/divide, compressed ISA, IRQ, and wide barrel-shift
-features.
+The validated PicoRV32 configuration uses its upstream default parameters and
+logic-only mapping. It produced 2215 LUT and 1597 FF. Optional
+multiply/divide, compressed ISA, IRQ, and barrel-shift features are disabled
+by the upstream defaults.
 
 ## Current flow gaps exposed by larger designs
 
