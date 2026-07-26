@@ -24,6 +24,7 @@ from .synthesis import (
     run_yosys,
 )
 from .yosys import import_yosys_json
+from .verilog import emit_mapped_verilog
 
 
 def _print_json(value: Dict[str, Any]) -> None:
@@ -257,6 +258,14 @@ def _build_parser() -> argparse.ArgumentParser:
     lower.add_argument("--transport-ir", type=Path, required=True)
     lower.add_argument("--output", "-o", type=Path, required=True)
     lower.add_argument("--report", type=Path)
+
+    emit_verilog = subparsers.add_parser(
+        "emit-mapped-verilog",
+        help="emit a structural Xilinx primitive netlist from EmuIR",
+    )
+    emit_verilog.add_argument("--ir", type=Path, required=True)
+    emit_verilog.add_argument("--output", "-o", type=Path, required=True)
+    emit_verilog.add_argument("--report", type=Path)
     return parser
 
 
@@ -469,6 +478,15 @@ def _dispatch(args: argparse.Namespace) -> int:
             report_path=args.report,
         )
         _print_json(report)
+        return 0
+
+    if args.command == "emit-mapped-verilog":
+        report = emit_mapped_verilog(
+            ir_path=args.ir,
+            output_path=args.output,
+            report_path=args.report,
+        )
+        _print_json(dict(report))
         return 0
 
     raise AssertionError(f"unhandled command {args.command!r}")

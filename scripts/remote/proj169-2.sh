@@ -62,6 +62,8 @@ Commands:
              Split connected PicoRV32, compile endpoints, and prove cycles.
   picorv32-phase7a
              Synthesize transport and place both merged FPGA partitions.
+  picorv32-phase7b
+             Emit, place, and route both FPGA partitions with Vivado.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -1358,6 +1360,75 @@ PY
 REMOTE
 }
 
+picorv32_phase7b_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+phase7a="$root/phase7a"
+phase7b="$root/phase7b"
+mkdir -p "$phase7b"
+for fpga in fpga0 fpga1; do
+  source="$phase7a/$fpga"
+  target="$phase7b/$fpga"
+  test -s "$source/placement.emuir.json"
+  test -s "$source/placement-openparf/placement.vivado.tsv"
+  mkdir -p "$target"
+  PYTHONPATH=src python3 -m emuflow emit-mapped-verilog \
+    --ir "$source/placement.emuir.json" \
+    --output "$target/mapped.v" \
+    --report "$target/emission-report.json" \
+    > "$target/emission-stdout.json"
+  expected_cells="$(
+    python3 -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["instances"])' \
+      "$target/emission-report.json"
+  )"
+  /usr/bin/time -v -o "$target/vivado-time.txt" \
+    "$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+      -source scripts/vivado/validate_mapped.tcl \
+      -tclargs xcvu3p-ffvc1517-2-e \
+      "$target/mapped.v" \
+      "picorv32__$fpga" \
+      "$source/placement-openparf/placement.vivado.tsv" \
+      "$target/vivado" \
+      "$expected_cells" clk 10.0 \
+      > "$target/vivado-validation.log" 2>&1
+  grep 'EMUFLOW_MAPPED_VIVADO status=pass' \
+    "$target/vivado-validation.log"
+  test -s "$target/vivado/routed.dcp"
+done
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2/phase7b")
+total = 0
+for fpga in ("fpga0", "fpga1"):
+    report = json.loads((root / fpga / "emission-report.json").read_text())
+    route = (root / fpga / "vivado/route_status.rpt").read_text()
+    if report["status"] != "pass":
+        raise SystemExit(f"{fpga} mapped Verilog emission failed")
+    if "UNROUTED" not in route:
+        raise SystemExit(f"{fpga} route status report is malformed")
+    total += report["instances"]
+    print(
+        "EMUFLOW_PICORV32_PHASE7B_FPGA "
+        f"status=pass fpga={fpga} cells={report['instances']} "
+        f"nets={report['nets']} ports={report['ports']}"
+    )
+if total != 4197:
+    raise SystemExit(f"Phase 7B routed {total} cells; expected 4197")
+print(f"EMUFLOW_PICORV32_PHASE7B status=pass routed_cells={total}")
+PY
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -1607,6 +1678,9 @@ case "$command" in
     ;;
   picorv32-phase7a)
     picorv32_phase7a_remote
+    ;;
+  picorv32-phase7b)
+    picorv32_phase7b_remote
     ;;
   koios-sync)
     sync_koios_source
