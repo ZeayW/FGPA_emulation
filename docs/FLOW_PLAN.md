@@ -271,10 +271,10 @@ implemented. On `proj169-2`, all 140 connected-PicoRV32 bit-hops schedule
 without collision and complete by slot 6 of 32; 64 frames and 8,960 delivered
 sink values pass both transport models. See `docs/PHASE5_VALIDATION.md`.
 
-Full DUT cycle equivalence depends on Phase 6 netlist splitting and endpoint
-insertion and remains an explicit joint G6 gate.
+The joint G6 cycle-equivalence gate is now closed for the mapped PicoRV32
+LUT/FF primitive envelope by the Phase 6 split and shadow-endpoint model.
 
-### Phase 6 — Per-FPGA netlist generation and lane/pin planning
+### Phase 6 — Per-FPGA netlist generation and lane/pin planning (board-independent increment implemented)
 
 Implement:
 
@@ -291,6 +291,24 @@ Acceptance:
 - every cut endpoint is connected to one generated transport endpoint;
 - logical lane maps agree at both ends of each link;
 - hardware BSP pin constraints pass an independent electrical-rule checker.
+
+The board-independent increment is implemented with versioned per-FPGA
+netlist, transport-endpoint, logical lane-map, virtual-anchor, manifest, and
+report artifacts. It generates schedule-specific transport mux/capture RTL,
+retains mapped primitive constant pins, and independently reconstructs the
+split to check exact instance coverage and both ends of every lane binding.
+
+On `proj169-2`, it split the connected 3,812-cell PicoRV32 design into
+3,463-cell and 349-cell logical netlists. All 140 scheduled bit-hops produced
+280 paired TX/RX endpoints and 140 matching lane-map records. A 64-cycle
+mapped LUT/FF equivalence run compared 102,208 FF state bits and 12,864
+top-output bits with zero mismatches. Both generated transport RTL modules
+compile cleanly. See `docs/PHASE6_VALIDATION.md`.
+
+The virtual platform produces 82 deliberately unbound IO-region anchors.
+Package-pin, bank, IOSTANDARD, reference-clock, and GT binding remains the
+hardware-BSP increment; it cannot be electrically validated until a real
+board support package is selected.
 
 ### Phase 7 — Integrated placement, routing, and bitstream
 

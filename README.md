@@ -7,7 +7,8 @@ FPGA routing, and vendor-assisted bitstream generation.
 
 The repository implements the Phase 1 frontend, an executable Phase 2
 physical-backend risk spike, the Phase 3 multi-FPGA partitioner, Phase 4
-board-level system routing, and the Phase 5 TDM scheduling increment:
+board-level system routing, the Phase 5 TDM scheduler, and the
+board-independent Phase 6 split increment:
 
 - versioned EmuIR and Virtual BoardDB formats;
 - strict validation without third-party Python dependencies;
@@ -29,6 +30,10 @@ board-level system routing, and the Phase 5 TDM scheduling increment:
 - independent G5 reachability, cycle, latency, direction, and capacity checks.
 - latency-aware lane/slot scheduling and independent collision/precedence checks;
 - generic TDM link/barrier RTL plus generated schedule-specific simulation.
+- exact per-FPGA logical netlists with cut-net shadow endpoints;
+- two-ended logical lane maps and virtual IO-region anchors;
+- generated per-FPGA transport mux/capture RTL;
+- mapped LUT/FF cycle-equivalence checking across the partition boundary.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
@@ -152,6 +157,9 @@ experiment are recorded in
 The Phase 5 schedule/transport implementation and 64-frame real-cut
 simulation are recorded in
 [docs/PHASE5_VALIDATION.md](docs/PHASE5_VALIDATION.md).
+The Phase 6 per-FPGA split, endpoint/lane agreement checks, generated
+transport RTL, and 64-cycle mapped PicoRV32 equivalence result are recorded in
+[docs/PHASE6_VALIDATION.md](docs/PHASE6_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,

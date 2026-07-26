@@ -46,6 +46,7 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-x32-phase3` | Validate 100k-cell G4 scale and connected-PicoRV32 legal cut extraction on two virtual FPGAs. |
 | `picorv32-phase4` | Route all connected-PicoRV32 cut nets over BoardDB and independently validate G5. |
 | `picorv32-phase5` | Schedule all routed PicoRV32 bit-hops and run Python plus compiled RTL transport simulation. |
+| `picorv32-phase6` | Split connected PicoRV32 into per-FPGA netlists, compile transport RTL, and run mapped cycle equivalence. |
 | `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
@@ -162,3 +163,15 @@ It independently validates all 140 lane/slot assignments, repeats and hashes
 the schedule, simulates 64 frames in Python, compiles the generic TDM link and
 frame-barrier RTL, and runs a generated self-checking SystemVerilog testbench
 with Icarus. See `docs/PHASE5_VALIDATION.md`.
+
+Run the Phase 6 board-independent netlist/lane regression:
+
+```bash
+scripts/remote/proj169-2.sh picorv32-phase6
+```
+
+It re-imports the real mapped PicoRV32 JSON with constant primitive pins,
+creates both per-FPGA netlists and paired transport endpoints, independently
+reconstructs the lane bindings, compiles both generated transport modules,
+repeats and hashes all principal artifacts, and proves 64 mapped virtual DUT
+cycles. See `docs/PHASE6_VALIDATION.md`.
