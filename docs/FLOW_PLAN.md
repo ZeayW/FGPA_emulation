@@ -247,7 +247,7 @@ acyclicity, and capacity. Four-FPGA diamond, multicast, unavailable-link,
 infeasible-capacity, and half-duplex tests cover non-trivial topology cases.
 See `docs/PHASE4_VALIDATION.md`.
 
-### Phase 5 — TDM scheduling and cycle-accurate transport
+### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 
 Implement:
 
@@ -263,6 +263,16 @@ Acceptance:
 - all multi-hop precedence constraints hold;
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
+
+The dependency-free lane/slot scheduler, independent collision/precedence
+checker, schedule ROM table, transport manifest, generic link/barrier RTL,
+Python event model, and generated SystemVerilog transport simulation are
+implemented. On `proj169-2`, all 140 connected-PicoRV32 bit-hops schedule
+without collision and complete by slot 6 of 32; 64 frames and 8,960 delivered
+sink values pass both transport models. See `docs/PHASE5_VALIDATION.md`.
+
+Full DUT cycle equivalence depends on Phase 6 netlist splitting and endpoint
+insertion and remains an explicit joint G6 gate.
 
 ### Phase 6 — Per-FPGA netlist generation and lane/pin planning
 

@@ -19,9 +19,10 @@ pinned open PicoRV32 RTL plus x32 harness
 Validation date: 2026-07-26.
 
 This is the first EmuFlow run above the requested 100,000 mapped-cell
-threshold. The project now passes G0-G5, G8, and the routability/DRC portion
-of G9 across the documented validation matrix. The 100 MHz setup constraint
-does not close, and G6-G7 are not yet implemented.
+threshold. The project now passes G0-G5, the scheduling/transport portion of
+G6, G8, and the routability/DRC portion of G9 across the documented validation
+matrix. The 100 MHz setup constraint does not close; full DUT equivalence and
+G7 are not yet complete.
 
 ## Reproducible inputs
 
@@ -175,8 +176,9 @@ DRC-clean UltraScale+ checkpoint.
 
 It does not prove the complete multi-FPGA emulation flow:
 
-- G4 partitioning and G5 system routing are now validated separately; G6
-  TDM/transport and G7 lane/pin assignment are not yet implemented;
+- G4 partitioning, G5 system routing, and G6 scheduling/transport are now
+  validated separately; G6 full DUT equivalence and G7 lane/pin assignment
+  are not yet complete;
 - the run is single-FPGA and logic-only;
 - 100 MHz setup timing is not closed;
 - native CARRY8, LUTRAM, BRAM, DSP48E2, clocking, and macro packing remain;

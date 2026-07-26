@@ -143,7 +143,7 @@ The complete local and remote suite now has 42 passing tests.
 | infeasibility is actionable | unavailable and over-capacity tests fail with diagnostics |
 | fixed inputs are reproducible | byte-identical route artifacts and SHA-256 |
 
-## Remaining limitations and Phase 5 plan
+## Remaining limitations and Phase 5 handoff
 
 The current provider is a deterministic negotiated shortest-path baseline. It
 does not yet optimize timing criticality, reserve shell traffic, split demand
@@ -151,13 +151,6 @@ classes, or use an external ILP/min-cost-flow provider. Real-design validation
 uses the present two-node topology; multi-hop and multicast behavior is
 covered by independent topology tests.
 
-Phase 5 will consume `routes.json` and implement:
-
-1. `emuflow.tdm-schedule/v1`;
-2. concrete lane/slot assignment for every routed bit-hop;
-3. multi-hop store-and-forward precedence with link latency;
-4. full/half-duplex collision domains;
-5. independently recomputed collision and completion checks;
-6. schedule ROM and transport endpoint metadata;
-7. connected PicoRV32 scheduling of all 140 routed demands;
-8. a Verilog transport/scheduling simulation before cycle-equivalence work.
+Phase 5 now consumes `routes.json`, schedules all 140 bit-hops, and passes
+independent collision, precedence, latency, completion, Python transport, and
+compiled RTL transport checks. See `docs/PHASE5_VALIDATION.md`.

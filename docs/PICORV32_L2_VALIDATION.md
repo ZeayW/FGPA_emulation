@@ -106,6 +106,7 @@ of primitives and can route a dense register-file CPU. Phase 3 now forces this
 same connected design across two virtual FPGAs using 140 legal register-output
 cut nets, and Phase 4 routes all 140 over BoardDB; see
 `docs/PHASE3_VALIDATION.md` and `docs/PHASE4_VALIDATION.md`. It does not yet
-prove native UltraScale+ QoR or TDM/transport. The next physical-backend work
+prove native UltraScale+ QoR. Phase 5 now schedules and simulates all 140
+bit-hops; see `docs/PHASE5_VALIDATION.md`. The next physical-backend work
 remains explicit OpenPARF control-set modeling, native CARRY8/LUTRAM packing,
-and automated sequential equivalence.
+and automated full-DUT sequential equivalence.
