@@ -60,6 +60,8 @@ Commands:
              Schedule and simulate connected PicoRV32 TDM transport.
   picorv32-phase6
              Split connected PicoRV32, compile endpoints, and prove cycles.
+  picorv32-phase7a
+             Synthesize transport and place both merged FPGA partitions.
   koios-sync Upload the pinned Koios DLA small/medium sources.
   koios-dla-small-synth
              Synthesize DLA-small and require at least 100,000 mapped cells.
@@ -1225,6 +1227,137 @@ du -sh "$output" "$repeat"
 REMOTE
 }
 
+picorv32_phase7a_remote() {
+  local remote_root_quoted
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+yosys_path="\$3"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+openparf_root=$remote_root_quoted
+openparf_python=/home/ziyiwang21/anaconda3/envs/deepgate/bin/python
+cd "\$remote_dir"
+
+root=build/remote/benchmarks/picorv32-l2
+phase6="\$root/phase6"
+phase7a="\$root/phase7a"
+arch=build/remote/phase2/xcvu3p.arch.json
+test -x "\$yosys_path"
+test -x "\$openparf_python"
+test -f "\$openparf_root/OpenPARF-install/openparf.py"
+test -s "\$arch"
+test -s "\$phase6/manifest.json"
+mkdir -p "\$phase7a"
+
+/usr/bin/time -v -o "\$root/phase7a-time.txt" \
+  /bin/bash --noprofile --norc -s <<'INNER'
+set -eu
+root=build/remote/benchmarks/picorv32-l2
+phase6="\$root/phase6"
+phase7a="\$root/phase7a"
+arch=build/remote/phase2/xcvu3p.arch.json
+yosys_path="$YOSYS_PATH"
+openparf_root="$OPENPARF_REMOTE_ROOT"
+openparf_python=/home/ziyiwang21/anaconda3/envs/deepgate/bin/python
+
+for fpga in fpga0 fpga1; do
+  target="\$phase7a/\$fpga"
+  mkdir -p "\$target"
+  PYTHONPATH=src python3 -m emuflow synth-yosys \
+    "\$phase6/\$fpga/transport_schedule.sv" \
+    --top "emuflow_transport_\$fpga" \
+    --family xcup \
+    --policy logic-only \
+    --yosys "\$yosys_path" \
+    --output "\$target/transport.mapped.json" \
+    --verilog-output "\$target/transport.mapped.v" \
+    --log "\$target/transport-yosys.log" \
+    > "\$target/transport-synthesis-report.json"
+  PYTHONPATH=src python3 -m emuflow import-yosys \
+    "\$target/transport.mapped.json" \
+    --top "emuflow_transport_\$fpga" \
+    --clock fabric_clk \
+    --output "\$target/transport.emuir.json" \
+    > "\$target/transport-import-report.json"
+  PYTHONPATH=src python3 -m emuflow lower-placement-ir \
+    --netlist "\$phase6/\$fpga/netlist.json" \
+    --transport "\$phase6/\$fpga/transport.json" \
+    --transport-ir "\$target/transport.emuir.json" \
+    --output "\$target/placement.emuir.json" \
+    --report "\$target/lowering-report.json" \
+    > "\$target/lowering-stdout.json"
+  PYTHONPATH=src python3 -m emuflow phase2 \
+    --ir "\$target/placement.emuir.json" \
+    --arch "\$arch" \
+    --out "\$target/placement-reference" \
+    > "\$target/placement-reference-report.json"
+
+  export CUDA_VISIBLE_DEVICES=""
+  export PYTHONPATH="\$PWD/scripts/openparf/shims:\$openparf_root/OpenPARF-install"
+  "\$openparf_python" "\$openparf_root/OpenPARF-install/openparf.py" \
+    --config "\$target/placement-reference/openparf/openparf.json" \
+    --log "\$target/openparf.log"
+  result="\$target/placement-reference/openparf/results/picorv32__\$fpga.pl"
+  test -s "\$result"
+  PYTHONPATH=src python3 -m emuflow phase2 \
+    --ir "\$target/placement.emuir.json" \
+    --arch "\$arch" \
+    --openparf-result "\$result" \
+    --out "\$target/placement-openparf" \
+    > "\$target/placement-openparf-report.json"
+done
+INNER
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/picorv32-l2/phase7a")
+total_original = 0
+total_merged = 0
+for fpga in ("fpga0", "fpga1"):
+    lowering = json.loads((root / fpga / "lowering-report.json").read_text())
+    placement = json.loads(
+        (root / fpga / "placement-openparf/phase2_report.json").read_text()
+    )["placement"]
+    netlist = json.loads(
+        (
+            Path("build/remote/benchmarks/picorv32-l2/phase6")
+            / fpga
+            / "netlist.json"
+        ).read_text()
+    )
+    if lowering["status"] != "pass":
+        raise SystemExit(f"{fpga} lowering failed")
+    if placement["status"] != "legal":
+        raise SystemExit(f"{fpga} OpenPARF placement is not legal")
+    if placement["cells"] != lowering["instances"]:
+        raise SystemExit(f"{fpga} placement lost merged instances")
+    if lowering["transport_instances"] <= 0:
+        raise SystemExit(f"{fpga} contains no synthesized transport cells")
+    total_original += len(netlist["instances"])
+    total_merged += lowering["instances"]
+    print(
+        "EMUFLOW_PICORV32_PHASE7A_FPGA "
+        f"status=pass fpga={fpga} "
+        f"original_cells={len(netlist['instances'])} "
+        f"transport_cells={lowering['transport_instances']} "
+        f"merged_cells={lowering['instances']} "
+        f"sites_used={placement['sites_used']}"
+    )
+if total_original != 3812:
+    raise SystemExit("Phase 7A original partition coverage mismatch")
+print(
+    "EMUFLOW_PICORV32_PHASE7A "
+    f"status=pass original_cells={total_original} "
+    f"merged_cells={total_merged} "
+    f"transport_overhead_cells={total_merged-total_original}"
+)
+PY
+REMOTE
+}
+
 koios_dla_medium_synth_remote() {
   remote_script <<'REMOTE'
 set -eu
@@ -1471,6 +1604,9 @@ case "$command" in
     ;;
   picorv32-phase6)
     picorv32_phase6_remote
+    ;;
+  picorv32-phase7a)
+    picorv32_phase7a_remote
     ;;
   koios-sync)
     sync_koios_source

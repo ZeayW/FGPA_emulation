@@ -9,6 +9,7 @@ from .benchmark import run_benchmark
 from .errors import EmuFlowError
 from .io import write_json
 from .ir import EmuIR
+from .lowering import run_placement_ir_lowering
 from .phase1 import run_phase1
 from .phase2 import run_phase2
 from .phase3 import run_phase3, validate_phase3
@@ -246,6 +247,16 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--out", type=Path, required=True)
     phase6.add_argument("--equivalence-cycles", type=int, default=16)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
+
+    lower = subparsers.add_parser(
+        "lower-placement-ir",
+        help="merge one partition with its synthesized transport EmuIR",
+    )
+    lower.add_argument("--netlist", type=Path, required=True)
+    lower.add_argument("--transport", type=Path, required=True)
+    lower.add_argument("--transport-ir", type=Path, required=True)
+    lower.add_argument("--output", "-o", type=Path, required=True)
+    lower.add_argument("--report", type=Path)
     return parser
 
 
@@ -448,6 +459,17 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
+
+    if args.command == "lower-placement-ir":
+        report = run_placement_ir_lowering(
+            netlist_path=args.netlist,
+            transport_path=args.transport,
+            transport_ir_path=args.transport_ir,
+            output_path=args.output,
+            report_path=args.report,
+        )
+        _print_json(report)
+        return 0
 
     raise AssertionError(f"unhandled command {args.command!r}")
 
