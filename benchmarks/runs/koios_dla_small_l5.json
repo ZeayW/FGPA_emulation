@@ -1,0 +1,13 @@
+{
+  "schema": "emuflow.benchmark-run/v1",
+  "id": "koios_dla_small_l5_logic_only",
+  "design_id": "koios",
+  "top": "DLA",
+  "sources": ["dla_like.small.v"],
+  "clocks": ["clk"],
+  "platform": "platforms/virtual/xcvu3p_2fpga_p2p.json",
+  "synthesis": {
+    "family": "xcup",
+    "policy": "logic-only"
+  }
+}
