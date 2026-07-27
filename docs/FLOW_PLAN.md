@@ -210,17 +210,26 @@ Acceptance:
 - every FPGA satisfies its effective resource capacities;
 - cut and timing metrics are reproducible for a fixed seed.
 
-The dependency-free baseline is implemented with versioned cluster,
-constraint, assignment, and report artifacts. On `proj169-2`, it partitions
-the 121,984-cell PicoRV32 x32 design exactly 60,992/60,992 and partitions a
-connected 3,812-cell PicoRV32 into 12 atomic clusters with 140 legal
-register-output cut nets, 245 remote sink endpoints, and zero forbidden cuts.
-Independent checks recompute coverage, resources, capacities, constraints,
-and cut metrics. Repeated fixed-seed runs produce byte-identical assignments.
-See `docs/PHASE3_VALIDATION.md`.
+OpenROAD/TritonPart is the default Phase 3 provider. EmuFlow exports each
+legality-preserving atomic cluster as a hypergraph vertex weighted by cell
+count and active FPGA resources, exports register-output nets as weighted
+hyperedges, maps fixed constraints, executes TritonPart's multilevel
+partitioner, and imports the solution into the common assignment schema. The
+dependency-free greedy provider remains available explicitly as a fallback
+and A/B baseline.
 
-TritonPart integration, timing weights, and topology-aware refinement remain
-QoR extensions; they are not required for the validated G4 baseline.
+On `proj169-2`, TritonPart partitions the 121,984-cell PicoRV32 x32 design
+exactly 60,992/60,992 and partitions connected 3,812-cell PicoRV32 into 12
+atomic clusters with 140 legal register-output cut nets, 245 remote sink
+endpoints, and zero forbidden cuts. Independent checks recompute coverage,
+resources, capacities, constraints, and cut metrics. Repeated fixed-seed runs
+produce byte-identical assignments, and the connected result passes Phase
+4–6 routing, TDM, and cycle-equivalence validation. See
+`docs/PHASE3_VALIDATION.md`.
+
+Vivado/OpenSTA-derived timing weights, topology-aware repartition feedback,
+and resource-specific heterogeneous FPGA capacity ratios remain QoR
+extensions.
 
 ### Phase 4 — Board-level system routing (implemented)
 

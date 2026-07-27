@@ -27,6 +27,7 @@ to synchronize a dirty worktree, records the source commit in
 | `probe` | Report the final host name and discover Python, Git, Yosys, Vivado, OpenPARF, CMake, and Ninja. |
 | `sync` | Stream `git archive HEAD` into the remote deployment directory. |
 | `bootstrap` | Use the server OSS CAD Suite Yosys, or install `yowasp-yosys` as a fallback. |
+| `tritonpart-bootstrap` | Cache the pinned OpenROAD package locally, atomically upload it through the gateway, verify SHA-256 remotely, and install TritonPart without root. |
 | `test` | Run all Python unit tests and byte-compile the source. |
 | `synth` | Run a real Yosys process with `synth_xilinx -family xcup` on `counter.v`. |
 | `phase1` | Import the synthesized JSON and run the Phase 1 platform/resource checks. |
@@ -43,7 +44,7 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-x32-synth` | Synthesize the x32 PicoRV32 harness and require at least 100,000 mapped cells. |
 | `picorv32-x32-openparf` | Place and legalize the 100k-cell design with OpenPARF. |
 | `picorv32-x32-vivado` | Import the 100k-cell placement, route it with Vivado, and require a routed DCP. |
-| `picorv32-x32-phase3` | Validate 100k-cell G4 scale and connected-PicoRV32 legal cut extraction on two virtual FPGAs. |
+| `picorv32-x32-phase3` | Run deterministic TritonPart plus greedy A/B, validate 100k-cell G4 scale and connected-PicoRV32 legal cuts on two virtual FPGAs. |
 | `picorv32-phase4` | Route all connected-PicoRV32 cut nets over BoardDB and independently validate G5. |
 | `picorv32-phase5` | Schedule all routed PicoRV32 bit-hops and run Python plus compiled RTL transport simulation. |
 | `picorv32-phase6` | Split connected PicoRV32 into per-FPGA netlists, compile transport RTL, and run mapped cycle equivalence. |
@@ -80,6 +81,8 @@ Supported overrides are `EMUFLOW_SSH_ALIAS`, `EMUFLOW_INNER_HOST`,
 existing SSH ControlMaster socket. When it is unset, the wrapper checks
 `~/.ssh/control/` and reuses a live master before opening a new gateway
 connection. `EMUFLOW_YOSYS` overrides the server Yosys executable.
+`EMUFLOW_OPENROAD_ROOT` selects the user-space OpenROAD installation root and
+`EMUFLOW_OPENROAD` overrides the executable wrapper.
 
 ## Current environment observation
 
@@ -139,14 +142,17 @@ and semantic limits.
 Run the completed Phase 3 G4 regression:
 
 ```bash
+scripts/remote/proj169-2.sh tritonpart-bootstrap
 scripts/remote/proj169-2.sh picorv32-x32-phase3
 ```
 
-This performs two fixed-seed runs for each design, compares complete
-assignment SHA-256 values, and invokes the independent partition checker. The
-x32 run validates 121,984-cell scale and exact 60,992/60,992 balance; the
-connected PicoRV32 run validates 140 real register-output cut nets and zero
-illegal cuts. See `docs/PHASE3_VALIDATION.md`.
+The bootstrap installs OpenROAD `v2.0-17598-ga008522d8` below
+`/home/ziyiwang21/work/tools/` from a package pinned by SHA-256. The
+regression performs two fixed-seed TritonPart runs per design, compares
+complete assignment SHA-256 values, runs a greedy A/B baseline, and invokes
+the independent checker. The x32 run validates 121,984-cell scale and exact
+60,992/60,992 balance; connected PicoRV32 validates 140 real register-output
+cut nets and zero illegal cuts. See `docs/PHASE3_VALIDATION.md`.
 
 Run the completed Phase 4 G5 regression:
 

@@ -225,6 +225,60 @@ REMOTE
 }
 
 tritonpart_bootstrap() {
+  local package_name
+  local package_url
+  local package_sha256
+  local cache_dir
+  local cache_package
+  local cache_temporary
+  local remote_root
+  local remote_package
+  local upload_command
+
+  package_name="openroad_2.0-17598-ga008522d8_amd64-ubuntu-22.04.deb"
+  package_url="https://github.com/Precision-Innovations/OpenROAD/releases/download/2024-12-14/$package_name"
+  package_sha256="40ed178396b0276a5d5dfbbe695c9de9aac9088157a6655be02b39a0cef07207"
+  cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/emuflow"
+  cache_package="$cache_dir/$package_name"
+  cache_temporary="$cache_package.download.$$"
+  remote_root="$(dirname "$(dirname "$OPENROAD_PATH")")"
+  remote_package="$remote_root/$package_name"
+
+  if ! remote_script <<REMOTE
+set -eu
+package=$(shell_quote "$remote_package")
+sha256=$(shell_quote "$package_sha256")
+test -s "\$package"
+test "\$(sha256sum "\$package" | awk '{print \$1}')" = "\$sha256"
+REMOTE
+  then
+    mkdir -p "$cache_dir"
+    local_hash=""
+    if [ -s "$cache_package" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        local_hash="$(sha256sum "$cache_package" | awk '{print $1}')"
+      else
+        local_hash="$(shasum -a 256 "$cache_package" | awk '{print $1}')"
+      fi
+    fi
+    if [ "$local_hash" != "$package_sha256" ]; then
+      curl -L --fail --retry 3 -o "$cache_temporary" "$package_url"
+      if command -v sha256sum >/dev/null 2>&1; then
+        local_hash="$(sha256sum "$cache_temporary" | awk '{print $1}')"
+      else
+        local_hash="$(shasum -a 256 "$cache_temporary" | awk '{print $1}')"
+      fi
+      test "$local_hash" = "$package_sha256"
+      mv "$cache_temporary" "$cache_package"
+    fi
+    upload_command="$(inner_ssh_command \
+      "mkdir -p $(shell_quote "$remote_root") && \
+       cat > $(shell_quote "$remote_package.upload") && \
+       test \\\$(sha256sum $(shell_quote "$remote_package.upload") | awk '{print \\\$1}') = $(shell_quote "$package_sha256") && \
+       mv $(shell_quote "$remote_package.upload") $(shell_quote "$remote_package")")"
+    gateway_ssh "$upload_command" < "$cache_package"
+  fi
+
   remote_script <<'REMOTE'
 set -eu
 remote_dir="$1"
@@ -234,24 +288,9 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 root="$(dirname "$(dirname "$openroad_path")")"
 package="$root/openroad_2.0-17598-ga008522d8_amd64-ubuntu-22.04.deb"
 extract="$root/extract"
-url="https://github.com/Precision-Innovations/OpenROAD/releases/download/2024-12-14/openroad_2.0-17598-ga008522d8_amd64-ubuntu-22.04.deb"
 sha256="40ed178396b0276a5d5dfbbe695c9de9aac9088157a6655be02b39a0cef07207"
 
 mkdir -p "$root" "$extract" "$(dirname "$openroad_path")"
-if [ ! -s "$package" ] ||
-  [ "$(sha256sum "$package" | awk '{print $1}')" != "$sha256" ]; then
-  if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --retry 3 -o "$package" "$url"
-  else
-    python3 - "$url" "$package" <<'PY'
-import pathlib
-import sys
-import urllib.request
-
-urllib.request.urlretrieve(sys.argv[1], pathlib.Path(sys.argv[2]))
-PY
-  fi
-fi
 printf '%s  %s\n' "$sha256" "$package" | sha256sum -c -
 command -v dpkg-deb >/dev/null
 dpkg-deb -x "$package" "$extract"

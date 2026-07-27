@@ -9,7 +9,9 @@ real open-RTL runs:
 EmuIR
   -> combinationally indivisible atomic clusters
   -> group/fixed/hard-macro closure
-  -> deterministic multi-resource assignment
+  -> weighted hMETIS hypergraph
+  -> OpenROAD/TritonPart multilevel partitioning
+  -> common partition-assignment artifact
   -> cut-net extraction
   -> independent coverage/capacity/constraint/cut checker
 ```
@@ -32,7 +34,11 @@ Phase 3 adds these versioned artifacts:
 - `emuflow.partition-assignment/v1`: cluster and instance assignments,
   per-FPGA resources/utilization, cut nets, and recomputable metrics;
 - `emuflow.phase3-report/v1`: the pipeline result and independent checker
-  summary.
+  summary;
+- `emuflow.tritonpart-input/v1`: vertex/FPGA ordering, multi-dimensional
+  weights, legal hyperedges, balance relaxation, and exact tool artifacts;
+- weighted `partition.hgr`, `partition.fix`, generated Tcl, OpenROAD log, and
+  `.part` solution under the Phase 3 `tritonpart/` directory.
 
 The CLI entry points are:
 
@@ -41,6 +47,8 @@ PYTHONPATH=src python3 -m emuflow phase3 \
   --ir design.emuir.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --out build/phase3 \
+  --provider tritonpart \
+  --openroad /path/to/openroad \
   --seed 20260727
 
 PYTHONPATH=src python3 -m emuflow partition validate \
@@ -67,14 +75,23 @@ component atomic. It also unions explicit user groups and connected hard
 macros carrying BRAM, URAM, DSP48, or CARRY8 resources. A cluster can be fixed
 to an FPGA; conflicting fixed constraints fail before assignment.
 
-The dependency-free provider uses deterministic multi-resource greedy
-assignment with:
+The default provider exports one hypergraph vertex per atomic cluster. Vertex
+dimension zero is instance count; remaining dimensions are active resources
+supported by every target FPGA, such as LUT and FF. Each register-output net
+connecting at least two clusters becomes a weighted hyperedge. Fixed clusters
+are emitted in hMETIS fixed-vertex format.
 
-- effective BoardDB capacities and utilization headroom;
-- proportional per-resource balance targets;
-- register-output connectivity as cut cost;
-- a stable SHA-256 seed tie-break;
-- forced use of the requested number of FPGAs.
+TritonPart receives the fixed seed, multi-dimensional weights, per-part base
+balance, and at least one vertex per part. Because its imbalance is a hard
+constraint, EmuFlow computes a deterministic lower bound from the largest
+atomic/fixed cluster and automatically relaxes an infeasible user target.
+Connected PicoRV32 therefore uses 41.80712% rather than the requested 10%;
+without this relaxation, its 3,463-cell atomic cone cannot fit either nominal
+50% block.
+
+The dependency-free deterministic greedy implementation remains selectable
+with `--provider greedy`. It is used for unit tests, environments without
+OpenROAD, and provider A/B comparisons; it is no longer the default.
 
 The checker independently reloads EmuIR and BoardDB, then recomputes exact
 instance coverage, cluster indivisibility, resource totals, effective-capacity
@@ -95,10 +112,11 @@ partition provider.
 | LUT effective-capacity utilization | 11.991% / 11.991% |
 | FF effective-capacity utilization | 4.323% / 4.323% |
 | illegal cuts | 0 |
-| runtime | 14.25 s |
-| peak RSS | 907,628 KiB |
-| artifact size | 19 MB |
-| assignment SHA-256 | `1237c796df416f29f29bdad572eff7ec6c5c0ed9935f0f52052469dd10e42fb0` |
+| TritonPart hypergraph | 384 vertices / 4,480 hyperedges |
+| runtime | 14.58 s |
+| peak RSS | 908,352 KiB |
+| artifact size | 20 MB |
+| assignment SHA-256 | `c888ecf9902a0c31cc82aa5dc35502589fd4d450e373a452c9274037719a5a66` |
 
 The x32 harness has no inter-core data connections. The best legal solution
 places complete cores on each FPGA and therefore produces zero inter-FPGA cut
@@ -120,14 +138,32 @@ cut-net artifact by itself.
 | cut class | 140 register-output |
 | replicated primary inputs / global nets | 1 / 1 |
 | illegal cuts | 0 |
-| runtime | 0.45 s |
-| peak RSS | 42,460 KiB |
-| artifact size | 448 KB |
-| assignment SHA-256 | `dcb84aef5b9988478389fc16a2b858b6b055d5cfaf313684c9b3451b2670498d` |
+| TritonPart hypergraph | 12 vertices / 140 hyperedges |
+| effective imbalance | 41.80712% |
+| runtime | 0.69 s |
+| peak RSS | 111,884 KiB |
+| artifact size | 504 KB |
+| assignment SHA-256 | `7211089179abf512b7cfb2d4f76d221552cd3ecedc416ab72233e1fea278a2d2` |
 
 Both runs were executed twice with seed `20260727`; each pair of complete
 `assignment.json` files had identical SHA-256 hashes. Both assignments also
 passed a separate CLI checker invocation.
+
+## TritonPart versus greedy
+
+| Design/provider | Runtime | Peak RSS | Partition cells | Cut nets |
+| --- | ---: | ---: | ---: | ---: |
+| x32 TritonPart | 14.58 s | 908,352 KiB | 60,992 / 60,992 | 0 |
+| x32 greedy | 13.10 s | 907,264 KiB | 60,992 / 60,992 | 0 |
+| connected TritonPart | 0.69 s | 111,884 KiB | 3,463 / 349 | 140 |
+| connected greedy | 0.41 s | 43,932 KiB | 3,463 / 349 | 140 |
+
+The x32 cluster assignments differ, but both providers place whole
+independent cores and therefore achieve the same zero-cut objective. The
+connected assignments are identical because the register-output-only
+semantics leave one dominant 3,463-cell atomic cluster. These results validate
+the provider integration, determinism, resource legality, and scale; they do
+not yet demonstrate a TritonPart QoR advantage on a large connected design.
 
 ## Experimental findings
 
@@ -154,17 +190,26 @@ passed a separate CLI checker invocation.
 | every FPGA fits effective capacities | resource totals recomputed from EmuIR |
 | reproducible fixed-seed metrics | byte-identical assignment JSON and matching SHA-256 |
 
-Local and remote regression suites contain 35 passing tests, including
+Local and remote regression suites contain 66 passing tests, including
 infeasible capacity, missing coverage, split atomic cluster, group/fixed
-constraint, deterministic assignment, and forced two-FPGA cases.
+constraint, deterministic assignment, weighted hypergraph export, malformed
+solution rejection, external-provider execution, and forced two-FPGA cases.
 
 ## Remaining limitations and Phase 4 handoff
 
-Phase 3 is a deterministic dependency-free baseline, not yet a TritonPart QoR
-integration. It lacks timing weights, SLR-aware cost, true cascade metadata,
-cluster refinement moves, and an optional external partition provider.
+The pinned validated tool is OpenROAD `v2.0-17598-ga008522d8`. Its hypergraph
+command runs TritonPart multilevel optimization but explicitly reports that
+native timing-driven mode is unavailable. EmuFlow accepts optional
+`emuflow.partition-net-weights/v1` hyperedge weights, but no Vivado/OpenSTA
+criticality extractor is implemented yet. SLR-aware cost, BoardDB/TDM
+feedback, and a large genuinely connected benchmark remain QoR work.
 
-Phase 4 now consumes these 140 cut nets and passes G5 with all sinks routed,
-zero overload, and independent reachability/capacity checks. See
-`docs/PHASE4_VALIDATION.md`. Phase 3's remaining work is QoR-oriented:
-TritonPart integration, timing weights, SLR-aware costs, and refinement.
+TritonPart's hypergraph interface uses one base-balance ratio per block for
+all vertex dimensions. The adapter therefore supports homogeneous or
+proportionally scaled FPGA capacities and rejects resource-specific
+heterogeneous capacity ratios rather than silently mis-modeling them.
+
+The TritonPart connected assignment passed the existing downstream gates:
+Phase 4 routed all 140 demands with zero overload, Phase 5 scheduled 140
+bit-hops with zero collisions, and Phase 6 compared 102,208 state bits plus
+12,864 output bits over 64 virtual cycles with zero mismatches.

@@ -24,7 +24,9 @@ virtual runtime/timing contract:
 - reproducible CPU-only OpenPARF build/run support for `proj169-2`;
 - a validated OpenPARF-to-Vivado routed-DCP smoke-test path.
 - combinationally safe sequential clustering and hard-macro/group closure;
-- deterministic multi-resource partitioning with fixed constraints;
+- OpenROAD/TritonPart multilevel hypergraph partitioning with cell/LUT/FF
+  weights, fixed constraints, and deterministic fixed-seed execution;
+- a dependency-free greedy partitioner retained only as a fallback/baseline;
 - independent G4 coverage, capacity, constraint, and cut-legality checking.
 - directed BoardDB routing with multicast trees and negotiated congestion;
 - independent G5 reachability, cycle, latency, direction, and capacity checks.
@@ -133,6 +135,7 @@ Yosys, and runs synthesis plus Phase 1:
 
 ```bash
 scripts/remote/proj169-2.sh probe
+scripts/remote/proj169-2.sh tritonpart-bootstrap
 scripts/remote/proj169-2.sh all
 scripts/remote/proj169-2.sh openparf-sync
 scripts/remote/proj169-2.sh openparf-build
