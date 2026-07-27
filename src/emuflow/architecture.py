@@ -10,7 +10,7 @@ from .io import read_json
 ARCHDB_SCHEMA = "emuflow.archdb/v1"
 _SITE_NAME_RE = re.compile(r"^(?P<type>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 _LUT_BEL_RE = re.compile(r"^[A-H]6LUT$")
-_FF_BEL_RE = re.compile(r"^[A-H]FF$")
+_FF_BEL_RE = re.compile(r"^[A-H]FF2?$")
 
 
 def compatible_cells_for_bel(bel_name: str, bel_type: str) -> List[str]:
@@ -105,10 +105,10 @@ class ArchitectureDB:
                     "tool_version": metadata.get("vivado_version", "unknown"),
                 },
                 "policy": {
-                    "name": "conservative-slice-v1",
+                    "name": "ultrascale-slice-v2",
                     "description": (
-                        "Use only 6LUT and primary FF BELs; exclude paired "
-                        "5LUT/FF2 packing until intra-site repair is implemented."
+                        "Use 6LUT plus both primary and FF2 register BELs; "
+                        "exclude paired 5LUT packing."
                     ),
                 },
                 "sites": sites,

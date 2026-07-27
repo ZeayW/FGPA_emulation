@@ -35,6 +35,8 @@ Commands:
              Export a real xcvu3p Site/BEL inventory with Vivado.
   phase2-arch-large
              Export up to 32,768 xcvu3p SLICE sites for 100k-cell runs.
+  nvdla-arch-full
+             Export the complete xcvu3p SLICE inventory for NVDLA placement.
   phase2     Export OpenPARF input and create a checked reference placement.
   phase2-vivado
              Apply the checked placement and route it with Vivado.
@@ -88,6 +90,8 @@ Commands:
   nvdla-sync Upload the pinned NVDLA nvdlav1 source archive.
   nvdla-screen
              Synthesize the connected NV_nvdla top and enforce the scale gate.
+  nvdla-partition-a-synth
+             Map the connected CACC partition and its SRAMs to FPGA soft logic.
   openparf-sync
              Upload an existing local OpenPARF source checkout.
   openparf-build
@@ -461,6 +465,28 @@ PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
   build/remote/phase2-large/xcvu3p.sites.tsv \
   --output build/remote/phase2-large/xcvu3p.arch.json
 du -sh build/remote/phase2-large
+REMOTE
+}
+
+nvdla_arch_full_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+mkdir -p build/remote/nvdla-arch-full
+"$vivado_root/bin/vivado" -mode batch -nojournal -nolog \
+  -source scripts/vivado/export_architecture.tcl \
+  -tclargs xcvu3p-ffvc1517-2-e \
+  build/remote/nvdla-arch-full/xcvu3p.sites.tsv \
+  > build/remote/nvdla-arch-full/vivado-arch.log 2>&1
+PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
+  build/remote/nvdla-arch-full/xcvu3p.sites.tsv \
+  --output build/remote/nvdla-arch-full/xcvu3p.arch.json
+grep 'EMUFLOW_ARCH_EXPORT' \
+  build/remote/nvdla-arch-full/vivado-arch.log
+du -sh build/remote/nvdla-arch-full
 REMOTE
 }
 
@@ -2244,6 +2270,132 @@ printf \
 REMOTE
 }
 
+nvdla_partition_a_synth_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+yosys_path="$3"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+source_root=third_party/rtl/nvdla
+root=build/remote/benchmarks/nvdla-partition-a-flow
+synthesis="$root/synthesis"
+vivado="$vivado_root/bin/vivado"
+top=NV_NVDLA_partition_a
+mapped_top=NV_NVDLA_partition_a
+platform=platforms/virtual/xcvu3p_4fpga_mesh.json
+test -x "$vivado"
+test -x "$yosys_path"
+test -f "$source_root/.emuflow-source.json"
+test -f scripts/vivado/synth_nvdla.tcl
+test -f scripts/yosys/xilinx_softlogic_map.v
+test -f scripts/yosys/xilinx_ultrascale_softlogic_cells.v
+test -s "$platform"
+rm -rf "$root"
+mkdir -p "$synthesis"
+
+python3 scripts/benchmarks/nvdla_ram_stubs.py \
+  "$source_root/vmod/rams/synth" \
+  "$synthesis/nvdla_ram_wrappers.v" \
+  --register-model-pattern 'nv_ram_rws_32x(512|544|768)' \
+  > "$synthesis/ram_models.log"
+grep 'register_models=3' "$synthesis/ram_models.log"
+
+/usr/bin/time -v -o "$synthesis/vivado-time.txt" \
+  "$vivado" -mode batch -nojournal -nolog \
+    -source scripts/vivado/synth_nvdla.tcl \
+    -tclargs \
+      "$source_root" \
+      "$synthesis/nvdla_ram_wrappers.v" \
+      "$synthesis" \
+      xcvu3p-ffvc1517-2-e \
+      "$top" \
+    > "$synthesis/vivado.log" 2>&1
+
+netlist="$synthesis/nv_nvdla_partition_a_synth.v"
+test -s "$netlist"
+test -s "$synthesis/nv_nvdla_partition_a_synth.dcp"
+blackboxes="$(
+  awk -F '\t' '$1 == "blackbox_cells" {print $2}' \
+    "$synthesis/primitive_counts.tsv"
+)"
+test "$blackboxes" = 0
+
+yosys_script="$synthesis/import-vivado.ys"
+{
+  printf 'read_verilog -lib scripts/yosys/xilinx_ultrascale_softlogic_cells.v\n'
+  # Vivado appends a simulation-only glbl module containing drive-strength
+  # syntax that is irrelevant to synthesis and unsupported by Yosys.
+  printf 'read_verilog -DGLBL -sv %s\n' "$netlist"
+  printf 'hierarchy -check -top %s\n' "$mapped_top"
+  printf 'flatten\n'
+  printf 'techmap -map scripts/yosys/xilinx_softlogic_map.v\n'
+  printf 'opt_clean\n'
+  printf 'check\n'
+  printf 'setattr -set KEEP \"yes\" c:*\n'
+  printf 'setattr -set DONT_TOUCH \"yes\" c:*\n'
+  printf 'write_json %s\n' "$synthesis/mapped.json"
+  printf 'write_verilog -norename %s\n' "$synthesis/mapped.v"
+} > "$yosys_script"
+
+/usr/bin/time -v -o "$synthesis/yosys-time.txt" \
+  "$yosys_path" -s "$yosys_script" \
+  > "$synthesis/yosys.log" 2>&1
+test -s "$synthesis/mapped.json"
+test -s "$synthesis/mapped.v"
+
+/usr/bin/time -v -o "$root/phase1-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase1 \
+    --yosys-json "$synthesis/mapped.json" \
+    --top "$mapped_top" \
+    --clock nvdla_core_clk \
+    --platform "$platform" \
+    --out "$root/phase1" \
+    > "$root/phase1-stdout.json"
+
+python3 - <<'PY'
+import json
+from collections import Counter
+from pathlib import Path
+
+root = Path("build/remote/benchmarks/nvdla-partition-a-flow")
+counts = {}
+with (root / "synthesis/primitive_counts.tsv").open() as stream:
+    next(stream)
+    for line in stream:
+        key, value = line.rstrip().split("\t")
+        counts[key] = int(value)
+if counts["blackbox_cells"] != 0:
+    raise SystemExit("NVDLA partition A still contains black boxes")
+
+design = json.loads((root / "phase1/design.emuir.json").read_text())
+cell_types = Counter(instance["type"] for instance in design["instances"])
+unsupported = sorted(
+    cell_type
+    for cell_type in cell_types
+    if not (
+        cell_type.startswith("LUT")
+        or cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"}
+    )
+)
+if unsupported:
+    raise SystemExit(f"unsupported mapped cell types: {unsupported}")
+if len(design["instances"]) < 300_000:
+    raise SystemExit("mapped NVDLA partition A is below the scale gate")
+print(
+    "EMUFLOW_NVDLA_PARTITION_A_SYNTH "
+    f"status=pass vivado_cells={counts['primitive_cells']} "
+    f"blackboxes={counts['blackbox_cells']} "
+    f"emuir_cells={len(design['instances'])} "
+    f"nets={len(design['nets'])} "
+    f"types={json.dumps(cell_types, sort_keys=True)}"
+)
+PY
+REMOTE
+}
+
 build_openparf_remote() {
   local remote_root_quoted
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
@@ -2344,6 +2496,9 @@ case "$command" in
   phase2-arch-large)
     phase2_arch_large_remote
     ;;
+  nvdla-arch-full)
+    nvdla_arch_full_remote
+    ;;
   phase2)
     phase2_remote
     ;;
@@ -2440,6 +2595,9 @@ case "$command" in
     ;;
   nvdla-screen)
     nvdla_screen_remote
+    ;;
+  nvdla-partition-a-synth)
+    nvdla_partition_a_synth_remote
     ;;
   openparf-sync)
     sync_openparf

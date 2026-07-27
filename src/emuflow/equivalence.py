@@ -46,7 +46,12 @@ class _MappedModel:
                 for instance in self.instances.values()
                 if not (
                     instance["type"].startswith("LUT")
-                    or instance["type"] in {"FDRE", "FDSE"}
+                    or instance["type"] in {
+                        "FDCE",
+                        "FDPE",
+                        "FDRE",
+                        "FDSE",
+                    }
                 )
             }
         )
@@ -93,7 +98,7 @@ class _MappedModel:
         self.ff_ids = sorted(
             instance_id
             for instance_id, instance in self.instances.items()
-            if instance["type"] in {"FDRE", "FDSE"}
+            if instance["type"] in {"FDCE", "FDPE", "FDRE", "FDSE"}
         )
         self.lut_ids = sorted(
             instance_id
@@ -188,19 +193,48 @@ class _MappedModel:
             data = self._pin(
                 values, instance_id, "D", current, overrides
             )
+            data = int(data) ^ _bit(
+                instance.get("parameters", {}).get("IS_D_INVERTED", 0)
+            )
             enable = self._pin(
                 values, instance_id, "CE", 1, overrides
             )
-            if instance["type"] == "FDRE":
+            if instance["type"] in {"FDRE", "FDCE"}:
+                control_port = (
+                    "R" if instance["type"] == "FDRE" else "CLR"
+                )
+                inversion_parameter = (
+                    "IS_R_INVERTED"
+                    if instance["type"] == "FDRE"
+                    else "IS_CLR_INVERTED"
+                )
                 control = self._pin(
-                    values, instance_id, "R", 0, overrides
+                    values, instance_id, control_port, 0, overrides
+                )
+                control = int(control) ^ _bit(
+                    instance.get("parameters", {}).get(
+                        inversion_parameter, 0
+                    )
                 )
                 next_state[instance_id] = (
                     0 if control else int(data) if enable else current
                 )
             else:
+                control_port = (
+                    "S" if instance["type"] == "FDSE" else "PRE"
+                )
+                inversion_parameter = (
+                    "IS_S_INVERTED"
+                    if instance["type"] == "FDSE"
+                    else "IS_PRE_INVERTED"
+                )
                 control = self._pin(
-                    values, instance_id, "S", 0, overrides
+                    values, instance_id, control_port, 0, overrides
+                )
+                control = int(control) ^ _bit(
+                    instance.get("parameters", {}).get(
+                        inversion_parameter, 0
+                    )
                 )
                 next_state[instance_id] = (
                     1 if control else int(data) if enable else current

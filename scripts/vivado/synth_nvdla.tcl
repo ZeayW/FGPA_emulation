@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# FPGA scale screen for the pinned NVDLA nvdlav1 RTL.  SRAM wrapper modules
-# are supplied as black boxes by the caller; this keeps the experiment focused
-# on the connected accelerator logic instead of expanding proprietary ASIC
-# MBIST/DFT cells into LUTs.
+# FPGA synthesis for the pinned NVDLA nvdlav1 RTL.  FPGA-safe SRAM wrapper
+# declarations or functional models are supplied by the caller so proprietary
+# ASIC MBIST/DFT cells never enter the implementation netlist.
 
-if {$argc != 4} {
-  puts stderr "usage: vivado -mode batch -source synth_nvdla.tcl -tclargs SOURCE_ROOT RAM_STUBS OUTPUT_DIR PART"
+if {$argc != 4 && $argc != 5} {
+  puts stderr "usage: vivado -mode batch -source synth_nvdla.tcl -tclargs SOURCE_ROOT RAM_STUBS OUTPUT_DIR PART ?TOP?"
   exit 2
 }
 
@@ -14,9 +13,17 @@ set source_root [file normalize [lindex $argv 0]]
 set ram_stubs [file normalize [lindex $argv 1]]
 set output_dir [file normalize [lindex $argv 2]]
 set part [lindex $argv 3]
+set top NV_nvdla
+if {$argc == 5} {
+  set top [lindex $argv 4]
+}
+set output_stem nvdla
+if {$top ne "NV_nvdla"} {
+  set output_stem [string tolower $top]
+}
 
 if {![file isfile $ram_stubs]} {
-  puts stderr "missing generated NVDLA RAM black boxes: $ram_stubs"
+  puts stderr "missing generated NVDLA RAM wrappers: $ram_stubs"
   exit 2
 }
 file mkdir $output_dir
@@ -70,18 +77,19 @@ set_property verilog_define [list \
   NVDLA_PDP_ENABLE \
   NVDLA_RUBIK_ENABLE \
 ] [current_fileset]
-set_property top NV_nvdla [current_fileset]
+set_property top $top [current_fileset]
 
 synth_design \
-  -top NV_nvdla \
+  -top $top \
   -part $part \
   -mode out_of_context \
   -flatten_hierarchy rebuilt \
   -directive RuntimeOptimized
 
-write_checkpoint -force [file join $output_dir nvdla_synth.dcp]
-write_edif -force [file join $output_dir nvdla_synth.edf]
-write_verilog -force -mode funcsim [file join $output_dir nvdla_synth.v]
+write_checkpoint -force [file join $output_dir ${output_stem}_synth.dcp]
+write_edif -force [file join $output_dir ${output_stem}_synth.edf]
+write_verilog -force -mode funcsim \
+  [file join $output_dir ${output_stem}_synth.v]
 report_utilization -hierarchical \
   -file [file join $output_dir utilization_hierarchical.rpt]
 

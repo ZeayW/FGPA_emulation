@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.architecture import ArchitectureDB
+from emuflow.architecture import ArchitectureDB, compatible_cells_for_bel
 from emuflow.errors import ImportError, ValidationError
 from emuflow.ir import EmuIR
 from emuflow.openparf import _lut_size, openparf_instance_names
@@ -18,6 +18,12 @@ IR_FIXTURE = ROOT / "examples/yosys/counter.json"
 
 
 class ArchitectureDBTest(unittest.TestCase):
+    def test_secondary_ultrascale_ff_bel_is_supported(self) -> None:
+        self.assertEqual(
+            compatible_cells_for_bel("AFF2", "FF"),
+            ["FDCE", "FDPE", "FDRE", "FDSE"],
+        )
+
     def test_lut1_is_supported(self) -> None:
         self.assertEqual(_lut_size("LUT1"), 2)
 
@@ -169,6 +175,7 @@ class Phase2PipelineTest(unittest.TestCase):
             )
             self.assertEqual(config["architecture_name"], "ultrascale")
             self.assertEqual(config["dtype"], "float64")
+            self.assertEqual(config["target_density"], 0.8)
             self.assertEqual(config["detailed_place_flag"], 0)
             self.assertEqual(config["plot_target_at_names"], ["FF", "LUT"])
             nodes = (output / "openparf/design.nodes").read_text(

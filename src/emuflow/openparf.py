@@ -1,5 +1,5 @@
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Set, Tuple
 
@@ -210,6 +210,23 @@ def _render_config(
     ir: EmuIR, architecture: ArchitectureDB, output_dir: Path
 ) -> Dict[str, Any]:
     types = sorted({instance["type"] for instance in ir.value["instances"]})
+    demand_by_area_type = Counter(
+        _area_type_for_cell(instance["type"])
+        for instance in ir.value["instances"]
+    )
+    capacity_by_area_type = Counter()
+    for site in architecture.sites:
+        capacity_by_area_type.update(_site_resource_counts(site))
+    utilizations = [
+        demand / capacity_by_area_type[area_type]
+        for area_type, demand in demand_by_area_type.items()
+        if capacity_by_area_type[area_type] > 0
+    ]
+    max_resource_utilization = max(utilizations, default=0.0)
+    target_density = max(
+        0.8,
+        min(0.98, max_resource_utilization + 0.05),
+    )
     model_map: Dict[str, Any] = {}
     resource_map: Dict[str, str] = {}
     resource_categories: Dict[str, str] = {}
@@ -246,7 +263,10 @@ def _render_config(
         "aux_input": str(output_dir / "design.aux"),
         "gpu": 0,
         "dtype": "float64",
-        "target_density": 0.8,
+        # Density must exceed the most utilized heterogeneous resource.
+        # A fixed 0.8 target is mathematically infeasible for dense designs
+        # such as NVDLA partition A (about 85% LUT utilization).
+        "target_density": target_density,
         "random_seed": 1000,
         # Production-scale designs need enough density iterations to spread
         # before legalization. A 100-iteration smoke-test limit left the

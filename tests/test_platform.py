@@ -34,6 +34,18 @@ class PlatformTest(unittest.TestCase):
             2_364_480,
         )
 
+    def test_four_fpga_nvdla_platform(self) -> None:
+        platform = Platform.load(
+            ROOT / "platforms/virtual/xcvu3p_4fpga_mesh.json"
+        )
+        self.assertEqual(platform.name, "virtual_xcvu3p_4fpga_mesh")
+        self.assertEqual(len(platform.fpgas), 4)
+        self.assertEqual(len(platform.links), 4)
+        self.assertEqual(
+            sum(fpga.effective_capacity["lut"] for fpga in platform.fpgas),
+            1_576_320,
+        )
+
     def test_unknown_endpoint_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValidationError, "unknown FPGA IDs"):
             Platform.from_dict(

@@ -25,7 +25,7 @@ synth_design -top phase2_primitives -part $part -flatten_hierarchy none
 set output [open $output_path w]
 puts $output "META\tpart\t$part"
 puts $output "META\tvivado_version\t[version -short]"
-puts $output "# Conservative Phase 2 inventory: 6LUT and primary FF BELs only."
+puts $output "# Phase 2 inventory: 6LUT plus primary and FF2 register BELs."
 
 set emitted 0
 foreach site [lsort -dictionary [get_sites -filter {SITE_TYPE =~ SLICE*}]] {
@@ -54,6 +54,15 @@ foreach site [lsort -dictionary [get_sites -filter {SITE_TYPE =~ SLICE*}]] {
     set z 0
     foreach letter {A B C D E F G H} {
         set bel_name "${letter}FF"
+        set bel [get_bels -quiet "$site/$bel_name"]
+        if {[llength $bel] == 1} {
+            puts $output "BEL\t$bel_name\tFF\t$z"
+        }
+        incr z
+    }
+    set z 8
+    foreach letter {A B C D E F G H} {
+        set bel_name "${letter}FF2"
         set bel [get_bels -quiet "$site/$bel_name"]
         if {[llength $bel] == 1} {
             puts $output "BEL\t$bel_name\tFF\t$z"

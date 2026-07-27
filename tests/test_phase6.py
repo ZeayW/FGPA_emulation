@@ -4,8 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.equivalence import simulate_partition_equivalence
+from emuflow.equivalence import _MappedModel, simulate_partition_equivalence
 from emuflow.errors import ValidationError
+from emuflow.ir import EmuIR
 from emuflow.netlist import (
     build_split_artifacts,
     validate_split_artifacts,
@@ -151,6 +152,36 @@ class Phase6Test(unittest.TestCase):
         self.assertTrue(
             all(item["value"] in {"0", "1", "x", "z"} for item in constants)
         )
+
+    def test_async_clear_and_preset_flops_are_modeled(self) -> None:
+        for cell_type, old_port, new_port in (
+            ("FDCE", "R", "CLR"),
+            ("FDPE", "R", "PRE"),
+        ):
+            with self.subTest(cell_type=cell_type):
+                value = copy.deepcopy(self.ir.to_dict())
+                target = next(
+                    instance
+                    for instance in value["instances"]
+                    if instance["type"] == "FDRE"
+                )
+                target["type"] = cell_type
+                for connection in target["constant_connections"]:
+                    if connection["port"] == old_port:
+                        connection["port"] = new_port
+                for net in value["nets"]:
+                    for endpoint in net["sinks"]:
+                        if (
+                            endpoint["instance"] == target["id"]
+                            and endpoint["port"] == old_port
+                        ):
+                            endpoint["port"] = new_port
+                model = _MappedModel(EmuIR(value))
+                state = model.initial_state()
+                _, next_state, _ = model.evaluate(
+                    state, cycle=0, seed=20260727
+                )
+                self.assertIn(target["id"], next_state)
 
 
 if __name__ == "__main__":

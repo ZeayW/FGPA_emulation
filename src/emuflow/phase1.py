@@ -25,15 +25,40 @@ def run_phase1(
         fpga.id: totals.fits_capacity(fpga.effective_capacity)
         for fpga in platform.fpgas
     }
+    capacity_fields = sorted(
+        {
+            resource
+            for fpga in platform.fpgas
+            for resource in fpga.effective_capacity
+        }
+    )
+    aggregate_capacity = {
+        resource: sum(
+            fpga.effective_capacity.get(resource, 0)
+            for fpga in platform.fpgas
+        )
+        for resource in capacity_fields
+    }
+    fits_on_platform = totals.fits_capacity(aggregate_capacity)
+    single_fpga_fit = any(fit_by_fpga.values())
     cut_classes = Counter(net["cut_class"] for net in ir.value["nets"])
     report: Dict[str, Any] = {
         "schema": PHASE1_REPORT_SCHEMA,
         "phase": 1,
-        "status": "pass" if any(fit_by_fpga.values()) else "capacity_error",
+        "status": "pass" if fits_on_platform else "capacity_error",
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "resource_totals": totals.to_dict(include_zeros=False),
         "fits_on_fpga": fit_by_fpga,
+        "fits_on_platform": fits_on_platform,
+        "fit_scope": (
+            "single_fpga"
+            if single_fpga_fit
+            else "aggregate_platform"
+            if fits_on_platform
+            else None
+        ),
+        "aggregate_effective_capacity": aggregate_capacity,
         "cut_classes": dict(sorted(cut_classes.items())),
         "warnings": list(ir.value.get("warnings", [])),
         "artifacts": {
