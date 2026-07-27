@@ -10,6 +10,7 @@ from .partition import (
     validate_partition_artifacts,
 )
 from .platform import Platform
+from .tritonpart import load_partition_net_weights, run_tritonpart
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -23,6 +24,11 @@ def run_phase3(
     seed: int = 0,
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
+    provider: str = "tritonpart",
+    openroad: Optional[str] = None,
+    tritonpart_solution: Optional[Path] = None,
+    net_weights_path: Optional[Path] = None,
+    tritonpart_timeout_seconds: int = 3600,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -34,13 +40,32 @@ def run_phase3(
         balance_tolerance=balance_tolerance,
     )
     clusters = build_clusters(ir, constraints)
-    assignment = assign_clusters(
-        ir,
-        platform,
-        clusters,
-        constraints,
-        seed=seed,
-    )
+    if provider == "greedy":
+        assignment = assign_clusters(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            seed=seed,
+        )
+    elif provider == "tritonpart":
+        assignment = run_tritonpart(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            output_dir / "tritonpart",
+            seed=seed,
+            executable=openroad,
+            solution_input=tritonpart_solution,
+            net_weights=load_partition_net_weights(net_weights_path),
+            timeout_seconds=tritonpart_timeout_seconds,
+        )
+    else:
+        raise ValueError(
+            f"unknown Phase 3 provider {provider!r}; "
+            "expected 'tritonpart' or 'greedy'"
+        )
     validation = validate_partition_artifacts(
         ir,
         platform,
@@ -64,6 +89,8 @@ def run_phase3(
             "report": "phase3_report.json",
         },
     }
+    if provider == "tritonpart":
+        report["artifacts"]["tritonpart"] = "tritonpart/tritonpart_input.json"
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "clusters.json", clusters)

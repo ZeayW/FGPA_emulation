@@ -15,6 +15,8 @@ YOSYS_PATH="${EMUFLOW_YOSYS:-/data/zhpei/oss-cad-suite/bin/yosys}"
 CONTROL_PATH="${EMUFLOW_CONTROL_PATH:-}"
 OPENPARF_SOURCE="${EMUFLOW_OPENPARF_SOURCE:-$REPO_ROOT/../OpenPARF-src}"
 OPENPARF_REMOTE_ROOT="${EMUFLOW_OPENPARF_REMOTE_ROOT:-/home/ziyiwang21/work/tools}"
+OPENROAD_ROOT="${EMUFLOW_OPENROAD_ROOT:-/home/ziyiwang21/work/tools/openroad-2.0-17598-ga008522d8}"
+OPENROAD_PATH="${EMUFLOW_OPENROAD:-$OPENROAD_ROOT/bin/openroad}"
 
 usage() {
   cat <<'EOF'
@@ -24,6 +26,8 @@ Commands:
   probe      Inspect the remote host and available FPGA tools.
   sync       Upload the current committed Git snapshot.
   bootstrap  Select server Yosys or install a user-space fallback.
+  tritonpart-bootstrap
+             Install the pinned OpenROAD/TritonPart binary in user space.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -97,6 +101,8 @@ Environment overrides:
   EMUFLOW_CONTROL_PATH
   EMUFLOW_OPENPARF_SOURCE
   EMUFLOW_OPENPARF_REMOTE_ROOT
+  EMUFLOW_OPENROAD_ROOT
+  EMUFLOW_OPENROAD
 EOF
 }
 
@@ -149,12 +155,14 @@ remote_script() {
   local remote_dir_quoted
   local vivado_root_quoted
   local yosys_path_quoted
+  local openroad_path_quoted
   local command
   remote_dir_quoted="$(shell_quote "$REMOTE_DIR")"
   vivado_root_quoted="$(shell_quote "$VIVADO_ROOT")"
   yosys_path_quoted="$(shell_quote "$YOSYS_PATH")"
+  openroad_path_quoted="$(shell_quote "$OPENROAD_PATH")"
   command="$(inner_ssh_command \
-    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted $vivado_root_quoted $yosys_path_quoted")"
+    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted $vivado_root_quoted $yosys_path_quoted $openroad_path_quoted")"
   gateway_ssh "$command"
 }
 
@@ -164,6 +172,7 @@ set -eu
 remote_dir="$1"
 vivado_root="$2"
 yosys_path="$3"
+openroad_path="$4"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 printf 'host=%s\n' "$(hostname)"
@@ -176,6 +185,12 @@ for tool in python3 git openparf openparf.py cmake ninja; do
     printf '%s=MISSING\n' "$tool"
   fi
 done
+if [ -x "$openroad_path" ]; then
+  printf 'openroad=%s\n' "$openroad_path"
+  "$openroad_path" -version
+else
+  printf 'openroad=MISSING\n'
+fi
 if command -v yosys >/dev/null 2>&1; then
   yosys_bin="$(command -v yosys)"
 elif [ -x "$yosys_path" ]; then
@@ -206,6 +221,59 @@ if [ -x "$remote_dir/.venv/bin/yowasp-yosys" ]; then
   printf 'project_yosys=%s\n' "$remote_dir/.venv/bin/yowasp-yosys"
   "$remote_dir/.venv/bin/yowasp-yosys" -V
 fi
+REMOTE
+}
+
+tritonpart_bootstrap() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+openroad_path="$4"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+root="$(dirname "$(dirname "$openroad_path")")"
+package="$root/openroad_2.0-17598-ga008522d8_amd64-ubuntu-22.04.deb"
+extract="$root/extract"
+url="https://github.com/Precision-Innovations/OpenROAD/releases/download/2024-12-14/openroad_2.0-17598-ga008522d8_amd64-ubuntu-22.04.deb"
+sha256="40ed178396b0276a5d5dfbbe695c9de9aac9088157a6655be02b39a0cef07207"
+
+mkdir -p "$root" "$extract" "$(dirname "$openroad_path")"
+if [ ! -s "$package" ] ||
+  [ "$(sha256sum "$package" | awk '{print $1}')" != "$sha256" ]; then
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --retry 3 -o "$package" "$url"
+  else
+    python3 - "$url" "$package" <<'PY'
+import pathlib
+import sys
+import urllib.request
+
+urllib.request.urlretrieve(sys.argv[1], pathlib.Path(sys.argv[2]))
+PY
+  fi
+fi
+printf '%s  %s\n' "$sha256" "$package" | sha256sum -c -
+command -v dpkg-deb >/dev/null
+dpkg-deb -x "$package" "$extract"
+candidate="$(
+  find "$extract" -type f -path '*/bin/openroad' -perm -u+x | head -n 1
+)"
+test -n "$candidate"
+cat > "$openroad_path" <<EOF
+#!/usr/bin/env bash
+exec "$candidate" "\$@"
+EOF
+chmod +x "$openroad_path"
+"$openroad_path" -version
+
+probe_tcl="$root/probe_tritonpart.tcl"
+cat > "$probe_tcl" <<'EOF'
+help triton_part_hypergraph
+exit
+EOF
+"$openroad_path" -exit "$probe_tcl" > "$root/probe_tritonpart.log"
+grep -q triton_part_hypergraph "$root/probe_tritonpart.log"
+printf 'tritonpart=%s\n' "$openroad_path"
 REMOTE
 }
 
@@ -767,6 +835,7 @@ picorv32_x32_phase3_remote() {
   remote_script <<'REMOTE'
 set -eu
 remote_dir="$1"
+openroad="$4"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd "$remote_dir"
 
@@ -779,6 +848,7 @@ output="$root/phase3"
 repeat="$root/phase3-repeat"
 test -s "$ir"
 test -s "$connected_ir"
+test -x "$openroad"
 
 /usr/bin/time -v -o "$root/phase3-time.txt" \
   env PYTHONPATH=src python3 -m emuflow phase3 \
@@ -786,6 +856,8 @@ test -s "$connected_ir"
     --platform "$platform" \
     --out "$output" \
     --seed 20260727 \
+    --provider tritonpart \
+    --openroad "$openroad" \
     > "$root/phase3-stdout.json"
 
 PYTHONPATH=src python3 -m emuflow partition validate \
@@ -800,6 +872,8 @@ PYTHONPATH=src python3 -m emuflow phase3 \
   --platform "$platform" \
   --out "$repeat" \
   --seed 20260727 \
+  --provider tritonpart \
+  --openroad "$openroad" \
   > "$root/phase3-repeat-stdout.json"
 
 first_hash="$(sha256sum "$output/assignment.json" | awk '{print $1}')"
@@ -812,6 +886,8 @@ test "$first_hash" = "$repeat_hash"
     --platform "$platform" \
     --out "$connected_root/phase3" \
     --seed 20260727 \
+    --provider tritonpart \
+    --openroad "$openroad" \
     > "$connected_root/phase3-stdout.json"
 
 PYTHONPATH=src python3 -m emuflow partition validate \
@@ -826,6 +902,8 @@ PYTHONPATH=src python3 -m emuflow phase3 \
   --platform "$platform" \
   --out "$connected_root/phase3-repeat" \
   --seed 20260727 \
+  --provider tritonpart \
+  --openroad "$openroad" \
   > "$connected_root/phase3-repeat-stdout.json"
 
 connected_hash="$(
@@ -835,6 +913,24 @@ connected_repeat_hash="$(
   sha256sum "$connected_root/phase3-repeat/assignment.json" | awk '{print $1}'
 )"
 test "$connected_hash" = "$connected_repeat_hash"
+
+/usr/bin/time -v -o "$root/phase3-greedy-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase3 \
+    --ir "$ir" \
+    --platform "$platform" \
+    --out "$root/phase3-greedy" \
+    --seed 20260727 \
+    --provider greedy \
+    > "$root/phase3-greedy-stdout.json"
+
+/usr/bin/time -v -o "$connected_root/phase3-greedy-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase3 \
+    --ir "$connected_ir" \
+    --platform "$platform" \
+    --out "$connected_root/phase3-greedy" \
+    --seed 20260727 \
+    --provider greedy \
+    > "$connected_root/phase3-greedy-stdout.json"
 
 python3 - <<'PY'
 import json
@@ -878,6 +974,55 @@ if any(
     for partition in connected_partitions
 ):
     raise SystemExit("connected Phase 3 non-empty partition gate failed")
+
+scale_greedy = json.loads(
+    (root / "phase3-greedy/phase3_report.json").read_text()
+)
+connected_greedy = json.loads(
+    (connected_root / "phase3-greedy/phase3_report.json").read_text()
+)
+comparison = {
+    "schema": "emuflow.phase3-provider-comparison/v1",
+    "designs": {
+        "picorv32_x32": {
+            "tritonpart": {
+                "provider": scale_report["provider"],
+                "validation": scale_report["validation"],
+                "partition_cells": [
+                    item["instance_count"] for item in scale_partitions
+                ],
+            },
+            "greedy": {
+                "provider": scale_greedy["provider"],
+                "validation": scale_greedy["validation"],
+                "partition_cells": [
+                    item["instance_count"]
+                    for item in scale_greedy["partitions"]
+                ],
+            },
+        },
+        "picorv32_connected": {
+            "tritonpart": {
+                "provider": connected_report["provider"],
+                "validation": connected_report["validation"],
+                "partition_cells": [
+                    item["instance_count"] for item in connected_partitions
+                ],
+            },
+            "greedy": {
+                "provider": connected_greedy["provider"],
+                "validation": connected_greedy["validation"],
+                "partition_cells": [
+                    item["instance_count"]
+                    for item in connected_greedy["partitions"]
+                ],
+            },
+        },
+    },
+}
+(root / "phase3-provider-comparison.json").write_text(
+    json.dumps(comparison, indent=2, sort_keys=True) + "\n"
+)
 print(
     "EMUFLOW_PICORV32_X32_PHASE3 "
     f"status=pass instances={scale['instances']} "
@@ -1998,6 +2143,9 @@ case "$command" in
     ;;
   bootstrap)
     bootstrap
+    ;;
+  tritonpart-bootstrap)
+    tritonpart_bootstrap
     ;;
   test)
     test_remote

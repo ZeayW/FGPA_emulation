@@ -587,24 +587,72 @@ def assign_clusters(
 
         place(cluster_id, min(candidates, key=score))
 
+    return build_partition_assignment(
+        ir,
+        platform,
+        clusters_artifact,
+        constraints,
+        assignment,
+        provider="deterministic-multiresource-greedy-v1",
+        seed=seed,
+    )
+
+
+def build_partition_assignment(
+    ir: EmuIR,
+    platform: Platform,
+    clusters_artifact: Mapping[str, Any],
+    constraints: Mapping[str, Any],
+    cluster_assignment: Mapping[str, str],
+    provider: str,
+    seed: int,
+    provider_metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the common Phase 3 assignment artifact for any provider."""
+
+    clusters = {
+        cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
+    }
+    if set(cluster_assignment) != set(clusters):
+        missing = sorted(set(clusters) - set(cluster_assignment))
+        extra = sorted(set(cluster_assignment) - set(clusters))
+        raise ValidationError(
+            "cluster assignment exact coverage failed; "
+            f"missing={missing[:8]}, extra={extra[:8]}"
+        )
+    fpga_ids = {fpga.id for fpga in platform.fpgas}
+    unknown_fpgas = sorted(set(cluster_assignment.values()) - fpga_ids)
+    if unknown_fpgas:
+        raise ValidationError(
+            f"cluster assignment references unknown FPGAs {unknown_fpgas}"
+        )
+
     instance_assignment = {
-        instance_id: assignment[cluster_id]
-        for instance_id, cluster_id in cluster_by_instance.items()
+        instance_id: cluster_assignment[cluster_id]
+        for cluster_id, cluster in clusters.items()
+        for instance_id in cluster["instances"]
     }
     cut_nets, cut_metrics = compute_cut_nets(ir, instance_assignment)
     partition_records = []
     for fpga in platform.fpgas:
         cluster_ids = sorted(
             cluster_id
-            for cluster_id, assigned_fpga in assignment.items()
+            for cluster_id, assigned_fpga in cluster_assignment.items()
             if assigned_fpga == fpga.id
         )
         instance_count = sum(
             len(clusters[cluster_id]["instances"]) for cluster_id in cluster_ids
         )
-        resources = ResourceVector.from_mapping(loads[fpga.id]).to_dict(
-            include_zeros=False
-        )
+        resources = ResourceVector.sum(
+            ResourceVector.from_mapping(clusters[cluster_id]["resources"])
+            for cluster_id in cluster_ids
+        ).to_dict(include_zeros=False)
+        if not ResourceVector.from_mapping(resources).fits_capacity(
+            fpga.effective_capacity
+        ):
+            raise ValidationError(
+                f"provider assignment exceeds effective capacity of {fpga.id!r}"
+            )
         utilization = {
             field: resources.get(field, 0) / fpga.effective_capacity[field]
             for field in fpga.effective_capacity
@@ -617,19 +665,21 @@ def assign_clusters(
                 "cluster_count": len(cluster_ids),
                 "instance_count": instance_count,
                 "resources": resources,
-                "effective_capacity": dict(sorted(fpga.effective_capacity.items())),
+                "effective_capacity": dict(
+                    sorted(fpga.effective_capacity.items())
+                ),
                 "utilization": dict(sorted(utilization.items())),
             }
         )
 
-    return {
+    result: Dict[str, Any] = {
         "schema": PARTITION_ASSIGNMENT_SCHEMA,
         "design": ir.value["design"]["name"],
         "platform": platform.name,
-        "provider": "deterministic-multiresource-greedy-v1",
+        "provider": provider,
         "seed": seed,
         "constraints": dict(constraints),
-        "cluster_assignment": dict(sorted(assignment.items())),
+        "cluster_assignment": dict(sorted(cluster_assignment.items())),
         "instance_assignment": dict(sorted(instance_assignment.items())),
         "partitions": partition_records,
         "cut_nets": cut_nets,
@@ -642,6 +692,9 @@ def assign_clusters(
             **cut_metrics,
         },
     }
+    if provider_metadata is not None:
+        result["provider_metadata"] = dict(provider_metadata)
+    return result
 
 
 def compute_cut_nets(

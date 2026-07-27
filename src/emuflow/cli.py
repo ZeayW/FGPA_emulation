@@ -191,6 +191,31 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--seed", type=int, default=0)
     phase3.add_argument("--min-used-fpgas", type=int)
     phase3.add_argument("--balance-tolerance", type=float)
+    phase3.add_argument(
+        "--provider",
+        choices=("tritonpart", "greedy"),
+        default="tritonpart",
+        help="partition provider (default: tritonpart)",
+    )
+    phase3.add_argument(
+        "--openroad",
+        help="OpenROAD executable containing TritonPart",
+    )
+    phase3.add_argument(
+        "--tritonpart-solution",
+        type=Path,
+        help="import a precomputed TritonPart .part file instead of executing",
+    )
+    phase3.add_argument(
+        "--net-weights",
+        type=Path,
+        help="optional emuflow.partition-net-weights/v1 JSON",
+    )
+    phase3.add_argument(
+        "--tritonpart-timeout-seconds",
+        type=int,
+        default=3600,
+    )
 
     route_parser = subparsers.add_parser(
         "route", help="board-level system route artifact operations"
@@ -458,6 +483,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             seed=args.seed,
             min_used_fpgas=args.min_used_fpgas,
             balance_tolerance=args.balance_tolerance,
+            provider=args.provider,
+            openroad=args.openroad,
+            tritonpart_solution=args.tritonpart_solution,
+            net_weights_path=args.net_weights,
+            tritonpart_timeout_seconds=args.tritonpart_timeout_seconds,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

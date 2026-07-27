@@ -59,6 +59,7 @@ class Phase3Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=output / "phase3",
                 seed=11,
+                provider="greedy",
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["validation"]["instances"], 8)
