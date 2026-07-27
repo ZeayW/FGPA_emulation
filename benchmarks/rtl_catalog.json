@@ -126,6 +126,38 @@
       "notes": "Primary large open-RTL suite. Start with gemm_layer and attention_layer in soft-logic mode, then enable inferred BRAM/DSP, and finally use dla_like.medium/large and tpu_like.large variants. Each source file is compiled separately because several files intentionally reuse module names such as top and DLA."
     },
     {
+      "id": "veer_eh1",
+      "name": "VeeR EH1",
+      "repository": "https://github.com/chipsalliance/Cores-VeeR-EH1.git",
+      "revision": "d04b1c7ae675a63dc4307cacfd10547ec937b928",
+      "license": "Apache-2.0",
+      "language": "SystemVerilog",
+      "tops": ["veer_wrapper", "veer"],
+      "sparse_paths": [
+        "/LICENSE",
+        "/README.md",
+        "/veer.core",
+        "/configs",
+        "/design",
+        "/tools/vivado.tcl"
+      ],
+      "scale": "large",
+      "upstream_size": "Real dual-issue RV32IMC CPU with instruction/data tightly coupled memories, instruction cache, branch prediction, debug, interrupt, and AXI/AHB interfaces",
+      "priority": 7,
+      "validation_tier": "L6",
+      "feature_tags": [
+        "systemverilog",
+        "cpu",
+        "single-core",
+        "connected",
+        "bram",
+        "hierarchy",
+        "fpga"
+      ],
+      "flow_readiness": "frontend-and-scale-screen",
+      "notes": "A genuine connected application design rather than a replicated-core harness. Upstream provides an FPGA-optimized configuration and a Vivado synthesis target. First screen the pinned veer_wrapper with Vivado, then bridge the generated primitive netlist into EmuIR only if the mapped scale meets the experiment gate."
+    },
+    {
       "id": "nvdla",
       "name": "NVDLA nvdlav1",
       "repository": "https://github.com/nvdla/hw.git",
@@ -145,7 +177,7 @@
       ],
       "scale": "very-large",
       "upstream_size": "Full-precision nvdlav1 implements 2048 8-bit MACs or 1024 16-bit MACs, plus memories and control",
-      "priority": 7,
+      "priority": 8,
       "validation_tier": "L7",
       "feature_tags": [
         "dsp",

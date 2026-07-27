@@ -81,6 +81,10 @@ Commands:
              Synthesize DLA-small and require at least 100,000 mapped cells.
   koios-dla-medium-synth
              Synthesize DLA-medium and require at least 100,000 mapped cells.
+  veer-eh1-sync
+             Upload the pinned upstream VeeR EH1 source checkout.
+  veer-eh1-screen
+             Generate the upstream FPGA config and measure a real Vivado synthesis.
   openparf-sync
              Upload an existing local OpenPARF source checkout.
   openparf-build
@@ -591,6 +595,28 @@ sync_koios_source() {
     "mkdir -p $destination_quoted && tar -xf - -C $destination_quoted")"
   COPYFILE_DISABLE=1 tar -cf - \
     -C "$benchmark_source" dla_like.small.v dla_like.medium.v README.md |
+    gateway_ssh "$unpack_command"
+}
+
+sync_veer_eh1_source() {
+  local source="$REPO_ROOT/third_party/rtl/veer_eh1"
+  local destination_quoted
+  local unpack_command
+
+  env \
+    -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY \
+    -u all_proxy -u https_proxy -u http_proxy \
+    python3 "$REPO_ROOT/scripts/benchmarks/fetch.py" fetch veer_eh1
+  if [ ! -f "$source/veer.core" ] ||
+    [ ! -f "$source/design/veer_wrapper.sv" ] ||
+    [ ! -x "$source/configs/veer.config" ]; then
+    echo "error: VeeR EH1 source is incomplete at $source" >&2
+    return 1
+  fi
+  destination_quoted="$(shell_quote "$REMOTE_DIR/third_party/rtl/veer_eh1")"
+  unpack_command="$(inner_ssh_command \
+    "mkdir -p $destination_quoted && tar -xf - -C $destination_quoted")"
+  COPYFILE_DISABLE=1 tar -cf - --exclude=.git -C "$source" . |
     gateway_ssh "$unpack_command"
 }
 
@@ -2102,6 +2128,45 @@ du -sh \
 REMOTE
 }
 
+veer_eh1_screen_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+source_root=third_party/rtl/veer_eh1
+output=build/remote/benchmarks/veer-eh1-vivado-screen
+vivado="$vivado_root/bin/vivado"
+test -x "$vivado"
+test -x "$source_root/configs/veer.config"
+test -f scripts/vivado/synth_veer_eh1.tcl
+
+(
+  cd "$source_root"
+  RV_ROOT="$PWD" ./configs/veer.config \
+    -unset=assert_on -set=fpga_optimize=1
+)
+config_root="$source_root/snapshots/default"
+test -s "$config_root/common_defines.vh"
+mkdir -p "$output"
+
+/usr/bin/time -v -o "$output/time.txt" \
+  "$vivado" -mode batch -nojournal -nolog \
+    -source scripts/vivado/synth_veer_eh1.tcl \
+    -tclargs \
+      "$source_root" \
+      "$config_root" \
+      "$output" \
+      xcvu3p-ffvc1517-2-e \
+    > "$output/vivado.log" 2>&1
+
+test -s "$output/primitive_counts.tsv"
+cat "$output/primitive_counts.tsv"
+REMOTE
+}
+
 build_openparf_remote() {
   local remote_root_quoted
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
@@ -2286,6 +2351,12 @@ case "$command" in
     ;;
   koios-dla-small-synth)
     koios_dla_small_synth_remote
+    ;;
+  veer-eh1-sync)
+    sync_veer_eh1_source
+    ;;
+  veer-eh1-screen)
+    veer_eh1_screen_remote
     ;;
   openparf-sync)
     sync_openparf
