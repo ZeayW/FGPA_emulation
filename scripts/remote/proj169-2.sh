@@ -261,6 +261,7 @@ candidate="$(
 test -n "$candidate"
 cat > "$openroad_path" <<EOF
 #!/usr/bin/env bash
+export LD_LIBRARY_PATH="$extract/opt/or-tools/lib:$extract/usr/lib:$extract/usr/lib/x86_64-linux-gnu:\${LD_LIBRARY_PATH:-}"
 exec "$candidate" "\$@"
 EOF
 chmod +x "$openroad_path"

@@ -93,6 +93,7 @@ class TritonPartTest(unittest.TestCase):
             )
 
             def fake_openroad(command, **kwargs):
+                self.assertTrue(Path(command[-1]).is_absolute())
                 run_directory = Path(kwargs["cwd"])
                 tritonpart_input = json.loads(
                     (run_directory / "tritonpart_input.json").read_text()

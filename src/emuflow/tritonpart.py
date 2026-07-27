@@ -414,7 +414,7 @@ def run_tritonpart(
             solution_path.unlink()
         try:
             completed = subprocess.run(
-                [resolved_executable, "-exit", str(tcl_path)],
+                [resolved_executable, "-exit", str(tcl_path.resolve())],
                 cwd=output_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
