@@ -15,7 +15,7 @@ virtual runtime/timing contract:
 - Yosys JSON to EmuIR import;
 - UltraScale+ primitive resource classification;
 - a runnable Phase 1 pipeline and machine-readable report;
-- a virtual two-FPGA `xcvu3p` reference platform.
+- virtual two-FPGA and eight-FPGA-mesh `xcvu3p` reference platforms.
 - ArchitectureDB and placement artifact validation;
 - Vivado Site/BEL inventory import for `xcvu3p-ffvc1517-2-e`;
 - EmuIR to OpenPARF Bookshelf export;
@@ -158,6 +158,12 @@ recorded in
 The first 100k-scale result, a 121,984-cell PicoRV32 x32 run with a fully
 routed and DRC-clean checkpoint, is recorded in
 [docs/PICORV32_X32_100K_VALIDATION.md](docs/PICORV32_X32_100K_VALIDATION.md).
+The first genuine connected million-cell screen, the official NVDLA
+`NV_nvdla` top with 3,123,117 synthesized cells, and the measured 118 GB
+Yosys-JSON importer limit are recorded in
+[docs/NVDLA_NVDLAV1_VALIDATION.md](docs/NVDLA_NVDLAV1_VALIDATION.md).
+The intermediate connected VeeR EH1 CPU result is recorded in
+[docs/VEER_EH1_VALIDATION.md](docs/VEER_EH1_VALIDATION.md).
 The completed Phase 3 implementation and the real two-FPGA partition
 experiments are recorded in
 [docs/PHASE3_VALIDATION.md](docs/PHASE3_VALIDATION.md).

@@ -50,7 +50,7 @@ to debug.
 | L5 scale gate | PicoRV32 x32 | 121,984 mapped LUT/FF primitives | 1 FPGA | 100k-cell frontend, OpenPARF, import and routing scalability |
 | L5 | Koios `gemm_layer`, `attention_layer`, `conv_layer` | medium DL datapaths | forced 2/4 FPGA | Wide datapaths, high fanout, early BRAM/DSP work |
 | L6 | Koios `dla_like.medium/large`, `tpu_like.large`, proxy variants | large DL/CAD designs | 4/8 FPGA | Capacity, runtime, hard-block grouping, congestion |
-| L7 | NVDLA `nvdlav1` | 2048 INT8 MACs plus large memory/control hierarchy | 8+ virtual FPGA | Final frontend and system-scale stress test |
+| L7 | NVDLA `nvdlav1` | 3.12M synthesized cells, 1.83M LUTs, 0.92M FFs | 8 virtual FPGA | Final frontend and system-scale stress test |
 
 The levels are gates, not a list to run blindly. A level advances only after
 the independent checkers pass. If a level fails, the smallest benchmark that
@@ -118,9 +118,12 @@ The immediate sequence is:
    for connected PicoRV32 with integrated frame controllers, 4,223 routed
    cells, zero unrouted nets/DRC violations, and positive DUT, fabric, and
    cross-domain timing margins;
-7. introduce Koios with native BRAM/DSP preservation; the current logic-only
-   policy expands DLA soft memories beyond practical server memory;
-8. use NVDLA only after Koios large is stable.
+7. synthesize a genuine connected million-cell design — completed for the
+   official NVDLA `NV_nvdla` top, with 3,123,117 hierarchical cells;
+8. replace the Yosys JSON bridge with a streaming DCP/EDIF-to-EmuIR importer;
+   the current bridge reached 118 GB RSS and was stopped safely;
+9. run NVDLA partitioning and downstream stages on the checked-in 8×VU3P
+   virtual mesh after the scalable importer passes.
 
 This ordering keeps failures attributable: only one new scale or primitive
 class is introduced at a time.

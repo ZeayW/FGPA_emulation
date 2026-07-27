@@ -32,13 +32,22 @@ following progression:
 | L4 | VTR classic and Ibex | mixed; Ibex is 16.85-66.02 kGE by configuration | Frontend diversity, SystemVerilog and dependency stress |
 | L5 scale gate | PicoRV32 x32 harness | 121,984 mapped LUT/FF primitives | 100k-cell frontend, OpenPARF and routing scalability |
 | L5-L6 | Koios 2.0 | 40 medium and large DL designs | Large RTL, BRAM/DSP and multi-FPGA system stress |
-| L7 | NVDLA nvdlav1 | 2048 INT8 MACs plus memories/control | Final very-large hierarchy/runtime stress |
+| L7 | NVDLA nvdlav1 | 3,123,117 synthesized cells; 1,825,473 LUTs and 915,739 FFs | Real connected million-cell stress |
 
 L1 SERV, L2 PicoRV32, and the 121,984-cell PicoRV32 x32 scale harness have
 completed the current real-RTL single-FPGA physical path. See
 `docs/SERV_L1_VALIDATION.md`, `docs/PICORV32_L2_VALIDATION.md`, and
 `docs/PICORV32_X32_100K_VALIDATION.md` for exact metrics and remaining
 semantic gates.
+
+The connected VeeR EH1 baseline synthesized to 48,095 EmuIR cells. The
+connected NVDLA `NV_nvdla` top then passed a substantially larger Vivado
+frontend gate with 3,123,117 hierarchical cells. Its 1.1 GB structural
+Verilog exhausted the practical memory budget of the current Yosys JSON
+bridge, which was stopped at 118 GB RSS before it could emit EmuIR. See
+`docs/VEER_EH1_VALIDATION.md` and
+`docs/NVDLA_NVDLAV1_VALIDATION.md`. This is now the primary importer
+scalability milestone; NVDLA is not recorded as a completed end-to-end run.
 
 The validated PicoRV32 configuration uses its upstream default parameters and
 logic-only mapping. It produced 2215 LUT and 1597 FF. Optional
@@ -64,9 +73,9 @@ placement test while the native UltraScale+ packer is implemented. It should
 be treated as a placement regression configuration, not as the final QoR
 configuration.
 
-Koios is preferred over pre-synthesized placement suites for the large-design
-campaign because it supplies editable RTL and explicit soft-logic versus hard
-memory/DSP modes. Compile one Koios source file at a time: several variants
-reuse top-level module names. The first logic-only DLA attempts exceeded
-64-79 GB memory because soft memories expanded into logic, so Koios physical
-validation is deferred until native BRAM/DSP preservation is available.
+Koios remains useful for intermediate BRAM/DSP coverage, but the official
+NVDLA top is now the final scale target. Compile one Koios source file at a
+time: several variants reuse top-level module names. The first logic-only DLA
+attempts exceeded 64-79 GB memory because soft memories expanded into logic,
+so Koios physical validation is deferred until native BRAM/DSP preservation
+is available.

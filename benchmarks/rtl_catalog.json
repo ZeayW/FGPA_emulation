@@ -162,9 +162,11 @@
       "name": "NVDLA nvdlav1",
       "repository": "https://github.com/nvdla/hw.git",
       "revision": "8e06b1b9d85aab65b40d43d08eec5ea4681ff715",
+      "archive_url": "https://codeload.github.com/nvdla/hw/tar.gz/8e06b1b9d85aab65b40d43d08eec5ea4681ff715",
+      "archive_sha256": "3dc7270c8975acd439959120ec22ea6c968c06e822f169b0ec3899d74f7fa1b8",
       "license": "NVIDIA Open NVDLA License and Agreement v1.0",
       "language": "Verilog",
-      "tops": ["NV_NVDLA_top"],
+      "tops": ["NV_nvdla", "NV_NVDLA_partition_a", "NV_NVDLA_partition_c"],
       "sparse_paths": [
         "/LICENSE",
         "/README.md",
@@ -188,7 +190,7 @@
         "very-large"
       ],
       "flow_readiness": "final-stress-only",
-      "notes": "Final frontend, hierarchy, memory, partition-capacity, and runtime stress test. It is not an early bring-up design and its custom license must be preserved. The nvdlav1 branch is deliberately pinned because it is the stable full-precision release."
+      "notes": "Final frontend, hierarchy, memory, partition-capacity, and runtime stress test. NV_nvdla is the genuine connected top over the five upstream synthesis partitions. ASIC SRAM wrappers are represented as interface-accurate black boxes for the FPGA scale screen; their proprietary DFT implementation is not expanded into LUTs. The nvdlav1 branch is deliberately pinned and its custom license must be preserved."
     }
   ]
 }

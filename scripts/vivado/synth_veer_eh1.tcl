@@ -95,7 +95,7 @@ synth_design \
   -part $part \
   -mode out_of_context \
   -flatten_hierarchy rebuilt \
-  -directive AreaOptimized_high
+  -directive RuntimeOptimized
 
 write_checkpoint -force [file join $output_dir veer_eh1_synth.dcp]
 write_edif -force [file join $output_dir veer_eh1_synth.edf]

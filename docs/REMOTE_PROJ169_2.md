@@ -55,6 +55,7 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-phase7c-all` | Rebuild Phase 6 and 7A before the complete Phase 7C run. |
 | `picorv32-phase7d` | Cross-check G0-G9, rehash sources and 18 critical artifacts, and seal a release manifest. |
 | `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
+| `nvdla-sync`, `nvdla-screen` | Synchronize the pinned official NVDLA nvdlav1 source and run the connected 3.12M-cell Vivado scale gate. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
 
@@ -232,3 +233,16 @@ It runs the release audit twice, requires byte-identical manifests, and checks
 all G0-G9 gates. The validated manifest SHA-256 is
 `15e226ab36bc7995dbddf26103204957a6905c4f4b05e9ab8649e9272b5fe7c9`.
 See `docs/PHASE7D_VALIDATION.md`.
+
+Run the genuine million-cell frontend screen:
+
+```bash
+scripts/remote/proj169-2.sh nvdla-sync
+scripts/remote/proj169-2.sh nvdla-screen
+```
+
+The validated `NV_nvdla` synthesis produced 3,123,117 hierarchical cells,
+1,825,473 LUTs, 915,739 FFs, and 459 DSP blocks in 54:47.72. The current
+Yosys JSON bridge is intentionally not part of this command: a measured
+attempt reached 118 GB RSS without producing JSON and was stopped before host
+memory exhaustion. See `docs/NVDLA_NVDLAV1_VALIDATION.md`.

@@ -85,6 +85,9 @@ Commands:
              Upload the pinned upstream VeeR EH1 source checkout.
   veer-eh1-screen
              Generate the upstream FPGA config and measure a real Vivado synthesis.
+  nvdla-sync Upload the pinned NVDLA nvdlav1 source archive.
+  nvdla-screen
+             Synthesize the connected NV_nvdla top and enforce the scale gate.
   openparf-sync
              Upload an existing local OpenPARF source checkout.
   openparf-build
@@ -617,6 +620,30 @@ sync_veer_eh1_source() {
   unpack_command="$(inner_ssh_command \
     "mkdir -p $destination_quoted && tar -xf - -C $destination_quoted")"
   COPYFILE_DISABLE=1 tar -cf - --exclude=.git -C "$source" . |
+    gateway_ssh "$unpack_command"
+}
+
+sync_nvdla_source() {
+  local source="$REPO_ROOT/third_party/rtl/nvdla"
+  local destination_quoted
+  local unpack_command
+
+  env \
+    -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY \
+    -u all_proxy -u https_proxy -u http_proxy \
+    python3 "$REPO_ROOT/scripts/benchmarks/fetch.py" fetch nvdla
+  if [ ! -f "$source/.emuflow-source.json" ] ||
+    [ ! -f "$source/vmod/nvdla/top/NV_nvdla.v" ] ||
+    [ ! -d "$source/vmod/rams/synth" ]; then
+    echo "error: NVDLA source is incomplete at $source" >&2
+    return 1
+  fi
+  destination_quoted="$(shell_quote "$REMOTE_DIR/third_party/rtl/nvdla")"
+  unpack_command="$(inner_ssh_command \
+    "mkdir -p $destination_quoted && tar -xf - -C $destination_quoted")"
+  COPYFILE_DISABLE=1 tar -cf - \
+    -C "$source" \
+    .emuflow-source.json LICENSE README.md VERSION vmod |
     gateway_ssh "$unpack_command"
 }
 
@@ -2167,6 +2194,56 @@ cat "$output/primitive_counts.tsv"
 REMOTE
 }
 
+nvdla_screen_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+source_root=third_party/rtl/nvdla
+output=build/remote/benchmarks/nvdla-nvdlav1
+vivado="$vivado_root/bin/vivado"
+test -x "$vivado"
+test -f "$source_root/.emuflow-source.json"
+test -f "$source_root/vmod/nvdla/top/NV_nvdla.v"
+test -f scripts/vivado/synth_nvdla.tcl
+
+mkdir -p "$output"
+python3 scripts/benchmarks/nvdla_ram_stubs.py \
+  "$source_root/vmod/rams/synth" \
+  "$output/nvdla_ram_blackboxes.v" \
+  > "$output/ram_stubs.log"
+
+/usr/bin/time -v -o "$output/vivado_time.txt" \
+  "$vivado" -mode batch -nojournal -nolog \
+    -source scripts/vivado/synth_nvdla.tcl \
+    -tclargs \
+      "$source_root" \
+      "$output/nvdla_ram_blackboxes.v" \
+      "$output" \
+      xcvu3p-ffvc1517-2-e \
+    > "$output/vivado.log" 2>&1
+
+test -s "$output/nvdla_synth.dcp"
+test -s "$output/nvdla_synth.edf"
+test -s "$output/nvdla_synth.v"
+test -s "$output/primitive_counts.tsv"
+cells="$(awk -F '\t' '$1 == "all_cells" {print $2}' \
+  "$output/primitive_counts.tsv")"
+blackboxes="$(awk -F '\t' '$1 == "blackbox_cells" {print $2}' \
+  "$output/primitive_counts.tsv")"
+if [ -z "$cells" ] || [ "$cells" -lt 100000 ]; then
+  echo "error: NVDLA Vivado netlist has only ${cells:-unknown} cells" >&2
+  exit 1
+fi
+printf \
+  'EMUFLOW_NVDLA_SCREEN status=pass cells=%s blackbox_cells=%s dcp=%s\n' \
+  "$cells" "$blackboxes" "$output/nvdla_synth.dcp"
+REMOTE
+}
+
 build_openparf_remote() {
   local remote_root_quoted
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
@@ -2357,6 +2434,12 @@ case "$command" in
     ;;
   veer-eh1-screen)
     veer_eh1_screen_remote
+    ;;
+  nvdla-sync)
+    sync_nvdla_source
+    ;;
+  nvdla-screen)
+    nvdla_screen_remote
     ;;
   openparf-sync)
     sync_openparf
