@@ -11,6 +11,7 @@ Usage:
   nvdla_partition_a_balanced.sh phase7b-timing-close ROOT
   nvdla_partition_a_balanced.sh phase7c-finalize ROOT
   nvdla_partition_a_balanced.sh phase7d ROOT
+  nvdla_partition_a_balanced.sh phase8a ROOT
 
 Reproduce the balanced four-VU9P NVDLA partition-A flow on proj169-2.
 
@@ -26,6 +27,8 @@ OpenPARF anchors on all four balanced partitions.
 The phase7b-timing-close command applies the recorded pre-route forced-fanout
 replication strategy to the largest partition and promotes only a routed,
 DRC-clean, timing-closed checkpoint.
+The phase8a command seals the hardware-BSP requirements while leaving G10
+explicitly pending until a physical board is selected.
 
 Environment overrides:
   EMUFLOW_REPO
@@ -220,6 +223,13 @@ run_phase7d() {
     "$repo/scripts/remote/nvdla_partition_a_phase7.sh" phase7d "$root"
 }
 
+run_phase8a() {
+  require_file "$root/phase7d/release_manifest.json"
+  require_file "$repo/scripts/remote/nvdla_partition_a_phase7.sh"
+  EMUFLOW_REPO="$repo" \
+    "$repo/scripts/remote/nvdla_partition_a_phase7.sh" phase8a "$root"
+}
+
 case "$command_name" in
   logical)
     if [ "$#" -ne 3 ]; then
@@ -262,6 +272,13 @@ case "$command_name" in
       exit 2
     fi
     run_phase7d
+    ;;
+  phase8a)
+    if [ "$#" -ne 2 ]; then
+      usage >&2
+      exit 2
+    fi
+    run_phase8a
     ;;
   *)
     usage >&2

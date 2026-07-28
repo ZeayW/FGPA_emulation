@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Sequence
 
 from .architecture import ArchitectureDB
 from .benchmark import run_benchmark
+from .bsp import run_phase8a
 from .errors import EmuFlowError
 from .io import write_json
 from .ir import EmuIR
@@ -402,6 +403,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase7d.add_argument("--source-commit", required=True)
     phase7d.add_argument("--out", type=Path, required=True)
+
+    phase8a = subparsers.add_parser(
+        "phase8a",
+        help="seal the hardware-BSP requirements for a G0-G9 release",
+    )
+    phase8a.add_argument("--release-manifest", type=Path, required=True)
+    phase8a.add_argument("--phase6-report", type=Path, required=True)
+    phase8a.add_argument("--platform", type=Path, required=True)
+    phase8a.add_argument(
+        "--anchor", action="append", default=[], metavar="FPGA=PATH"
+    )
+    phase8a.add_argument("--out", type=Path, required=True)
     return parser
 
 
@@ -681,6 +694,17 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             artifact_paths=_keyed_paths(args.artifact, "--artifact"),
             source_commit=args.source_commit,
+            output_dir=args.out,
+        )
+        _print_json(report)
+        return 0
+
+    if args.command == "phase8a":
+        report = run_phase8a(
+            release_manifest_path=args.release_manifest,
+            phase6_report_path=args.phase6_report,
+            platform_path=args.platform,
+            anchor_paths=_keyed_paths(args.anchor, "--anchor"),
             output_dir=args.out,
         )
         _print_json(report)

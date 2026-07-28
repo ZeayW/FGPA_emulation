@@ -9,6 +9,7 @@ Usage:
   nvdla_partition_a_phase7.sh phase7b ROOT
   nvdla_partition_a_phase7.sh phase7c-finalize ROOT
   nvdla_partition_a_phase7.sh phase7d ROOT
+  nvdla_partition_a_phase7.sh phase8a ROOT
 
 Run the per-FPGA physical stages for an existing NVDLA partition-A Phase 6
 result on proj169-2. ROOT must contain phase3 through phase6 artifacts.
@@ -18,6 +19,8 @@ Phase 7C physical/QoR report.
 The phase7d command rehashes the complete pinned source dependency set,
 cross-checks G0-G9, hashes the release-critical artifacts, and requires a
 byte-reproducible release manifest.
+The phase8a command seals a byte-reproducible hardware-BSP requirements
+contract without claiming board binding or G10 hardware closure.
 
 Environment overrides:
   EMUFLOW_REPO
@@ -725,6 +728,83 @@ print(
 PY
 }
 
+run_phase8a() {
+  local platform="$repo/platforms/virtual/xcvu9p_4fpga_mesh.json"
+  local output="$root/phase8a"
+  local repeat="$root/phase8a-repeat"
+  local fpga
+
+  require_file "$platform"
+  require_file "$root/phase6/phase6_report.json"
+  require_file "$root/phase7d/release_manifest.json"
+
+  run_contract() {
+    local target="$1"
+    local stdout="$2"
+    local -a args=(
+      env "PYTHONPATH=$repo/src" python3 -m emuflow phase8a
+      --release-manifest "$root/phase7d/release_manifest.json"
+      --phase6-report "$root/phase6/phase6_report.json"
+      --platform "$platform"
+    )
+    for fpga in fpga0 fpga1 fpga2 fpga3; do
+      args+=(
+        --anchor "$fpga=$root/phase6/$fpga/virtual_anchors.json"
+      )
+    done
+    args+=(--out "$target")
+    /usr/bin/time -v -o "$target-time.txt" \
+      "${args[@]}" > "$stdout"
+  }
+
+  rm -rf "$output" "$repeat"
+  run_contract "$output" "$root/phase8a-stdout.json"
+  run_contract "$repeat" "$root/phase8a-repeat-stdout.json"
+  cmp "$output/bsp_requirements.json" "$repeat/bsp_requirements.json"
+  cmp "$output/phase8a_report.json" "$repeat/phase8a_report.json"
+
+  python3 - "$output" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+requirements_path = root / "bsp_requirements.json"
+requirements = json.loads(requirements_path.read_text(encoding="utf-8"))
+report = json.loads((root / "phase8a_report.json").read_text(encoding="utf-8"))
+if report["status"] != "pass" or report["g10_status"] != "not_run":
+    raise SystemExit("NVDLA Phase 8A readiness audit did not pass")
+if requirements["status"] != "awaiting_hardware_bsp":
+    raise SystemExit("NVDLA Phase 8A incorrectly claims board binding")
+expected = {
+    "fpgas": 4,
+    "links": 4,
+    "physical_data_lane_endpoints": 512,
+    "fabric_clock_bindings": 4,
+    "link_channel_bindings": 8,
+    "bitstreams": 4,
+    "pending_g10_checks": 5,
+}
+metrics = requirements["metrics"]
+for key, value in expected.items():
+    if metrics[key] != value:
+        raise SystemExit(f"NVDLA Phase 8A {key} mismatch")
+digest = hashlib.sha256(requirements_path.read_bytes()).hexdigest()
+print(
+    "EMUFLOW_NVDLA_PHASE8A "
+    f"status=pass board_binding={requirements['status']} "
+    f"g10_status={report['g10_status']} "
+    f"logical_anchors={metrics['logical_anchors']} "
+    f"physical_data_lane_endpoints={metrics['physical_data_lane_endpoints']} "
+    f"fabric_clock_bindings={metrics['fabric_clock_bindings']} "
+    f"link_channel_bindings={metrics['link_channel_bindings']} "
+    f"bitstreams={metrics['bitstreams']} "
+    f"requirements_sha256={digest}"
+)
+PY
+}
+
 cd "$repo"
 case "$command_name" in
   phase7a)
@@ -738,6 +818,9 @@ case "$command_name" in
     ;;
   phase7d)
     run_phase7d
+    ;;
+  phase8a)
+    run_phase8a
     ;;
   *)
     usage >&2
