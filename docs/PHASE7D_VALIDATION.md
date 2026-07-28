@@ -116,3 +116,23 @@ remaining requirements for package pins, dedicated clock-buffer binding, and
 link training. G10, electrical pin validation, source-synchronous board IO
 timing, bitstream generation, and hardware workload validation require a real
 board BSP and are not silently inferred.
+
+## NVDLA 731k-cell scale extension
+
+The same auditor now passes the genuine connected
+`NV_NVDLA_partition_a` run on the four-VU9P mesh. This experiment adds an
+important multi-hop correction: cut-demand count, routed-sink count, and
+scheduled bit-hop count are cross-checked separately. The result contains 3
+cut demands and 3 sinks but 4 bit-hops.
+
+The audit rehashes 376 source dependencies and 26 critical artifacts, checks
+731,313 original cells, 74 transport cells, 731,387 routed mapped cells, one
+whitelisted physical BUFGCE, zero route/DRC failures, and +1.435 ns worst
+WNS. Two audits are byte-identical. The release manifest SHA-256 is:
+
+```text
+cc965f733830ec6a32c5357a516b36a96b160c8f85ac23ad26714507a713ef0a
+```
+
+See `docs/NVDLA_PARTITION_A_FULL_FLOW.md` for the full logical and physical
+experiment record.

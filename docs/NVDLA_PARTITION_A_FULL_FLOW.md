@@ -12,7 +12,8 @@ board-independent multi-FPGA path:
 5. per-FPGA split, virtual pin planning, and mapped equivalence;
 6. transport synthesis and per-FPGA placement-IR lowering;
 7. OpenPARF global placement plus ArchitectureDB legalization;
-8. Vivado placement/routing and Phase 7C physical/timing aggregation.
+8. Vivado placement/routing and Phase 7C physical/timing aggregation;
+9. Phase 7D reproducible G0-G9 release audit.
 
 The source is the official NVDLA `nvdlav1` repository:
 
@@ -250,6 +251,41 @@ The four-controller RTL testbench also passes 64 frames and three deliberate
 stall cycles. The final machine-readable Phase 7C and QoR reports have
 `status: pass`.
 
+## Phase 7D: G0-G9 release audit
+
+The final board-independent gate reloads all logical and physical reports
+rather than trusting their filenames. It rehashes 376 pinned NVDLA source
+dependencies and 26 release-critical artifacts, including every per-FPGA
+netlist, OpenPARF placement, mapped Verilog file, and routed DCP.
+
+The NVDLA mesh exposed and fixed an audit assumption hidden by the earlier
+single-hop PicoRV32 run: three cut demands produce four scheduled bit-hops
+because the `fpga3` sink requires two links. Phase 7D now independently
+cross-checks demand count, sink-endpoint count, and bit-hop count instead of
+incorrectly requiring them to be identical.
+
+| Gate | NVDLA evidence |
+| --- | --- |
+| G0-G2 | 376 source dependencies rehashed; elaboration and mapped synthesis pass |
+| G3 | 731,313 EmuIR instances |
+| G4 | 3 legal cuts across 4 FPGAs |
+| G5 | 3 routed sinks, zero overload |
+| G6 | 4 scheduled bit-hops, 2 equivalent cycles |
+| G7 | 4 logical lanes, 6 virtual anchors |
+| G8 | 731,387 legal OpenPARF-placed cells |
+| G9 | 731,387 routed mapped cells, +1.435 ns worst WNS |
+
+The audit executes twice. The primary run takes 16.00 seconds and peaks at
+22,784 KB RSS; the repeat takes 15.77 seconds and peaks at 21,284 KB RSS.
+Both 79,237-byte manifests are byte-identical:
+
+```text
+cc965f733830ec6a32c5357a516b36a96b160c8f85ac23ad26714507a713ef0a
+```
+
+The manifest records auditor source commit
+`ca6501403a7460f52990c7a1b7974dad8854462c`.
+
 ## Reproduction
 
 After Phases 3-6 and the runtime-timing contract exist at `ROOT`, run:
@@ -258,6 +294,7 @@ After Phases 3-6 and the runtime-timing contract exist at `ROOT`, run:
 scripts/remote/nvdla_partition_a_phase7.sh phase7a ROOT
 scripts/remote/nvdla_partition_a_phase7.sh phase7b ROOT
 scripts/remote/nvdla_partition_a_phase7.sh phase7c-finalize ROOT
+scripts/remote/nvdla_partition_a_phase7.sh phase7d ROOT
 ```
 
 The large partition's physical policy can be varied without editing code:
@@ -280,6 +317,12 @@ A tiny one-FF partition has no DUT-to-DUT launch/capture pair. The timing
 collector records such an empty path class explicitly as `path_present=0`
 with conservative `slack=0.0`; it never substitutes a positive margin. Any
 path class that exists must still have non-negative slack.
+
+`phase7d` requires the deployment's `.emuflow-source-commit` marker and
+executes the complete audit twice. It rejects source hash changes,
+cross-phase demand/sink/hop disagreement, missing FPGA reports, placement or
+emission count changes, route/DRC/timing failure, and release-artifact hash
+changes.
 
 ## Board boundary
 

@@ -5,7 +5,8 @@ UltraScale+ devices. The long-term flow covers logic synthesis, partitioning,
 board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
 FPGA routing, and vendor-assisted bitstream generation.
 
-The repository implements the board-independent path through Phase 7C:
+The repository implements the board-independent path through Phase 7C plus
+the Phase 7D reproducible release audit:
 frontend synthesis/import, multi-FPGA partitioning, system routing, TDM,
 per-FPGA transport generation, OpenPARF placement, Vivado routing, and the
 virtual runtime/timing contract:
@@ -168,8 +169,9 @@ through TritonPart, system routing, TDM, virtual pin planning, netlist split,
 OpenPARF placement, and per-FPGA Vivado implementation. All four routed DCPs
 pass the independent Phase 7C gate with 731,387 mapped cells, one recorded
 Vivado-inserted BUFGCE, zero unrouted nets, zero DRC violations, and
-+1.435 ns worst WNS; its exact results and board-independent boundary are
-recorded in
++1.435 ns worst WNS. Its Phase 7D audit rehashes 376 source dependencies and
+26 critical artifacts into a byte-reproducible G0-G9 manifest; exact results
+and the board-independent boundary are recorded in
 [docs/NVDLA_PARTITION_A_FULL_FLOW.md](docs/NVDLA_PARTITION_A_FULL_FLOW.md).
 The intermediate connected VeeR EH1 CPU result is recorded in
 [docs/VEER_EH1_VALIDATION.md](docs/VEER_EH1_VALIDATION.md).

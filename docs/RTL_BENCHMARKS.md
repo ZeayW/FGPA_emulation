@@ -56,8 +56,10 @@ TDM, virtual pin planning, per-FPGA split, and mapped equivalence on a
 four-VU9P virtual platform. It also completes four per-FPGA OpenPARF/Vivado
 implementations and the independent Phase 7C gate: 731,387 mapped cells plus
 one recorded BUFGCE, zero unrouted nets, zero DRC violations, and +1.435 ns
-worst WNS. Its physical closure experiment and the important atomic-cluster
-imbalance are recorded in
+worst WNS. Phase 7D additionally rehashes 376 source dependencies and 26
+critical artifacts and produces two byte-identical G0-G9 manifests. Its
+physical closure experiment and the important atomic-cluster imbalance are
+recorded in
 `docs/NVDLA_PARTITION_A_FULL_FLOW.md`.
 
 The validated PicoRV32 configuration uses its upstream default parameters and

@@ -271,6 +271,7 @@ stages directly on `proj169-2`:
 scripts/remote/nvdla_partition_a_phase7.sh phase7a ROOT
 scripts/remote/nvdla_partition_a_phase7.sh phase7b ROOT
 scripts/remote/nvdla_partition_a_phase7.sh phase7c-finalize ROOT
+scripts/remote/nvdla_partition_a_phase7.sh phase7d ROOT
 ```
 
 The large partition defaults to one fixed LUT on each deterministic 1/64
@@ -287,3 +288,9 @@ mapped cells and 731,388 physical cells, with zero unrouted nets and zero DRC
 violations. `phase7c-finalize` checks every mapped identity against the saved
 pre-placement inventory and rejects any tool-added cell outside the `BUFG*`
 infrastructure whitelist.
+
+The validated `phase7d` run rehashes 376 pinned source dependencies and 26
+release artifacts, distinguishes 3 routed demands from 4 multi-hop scheduled
+bit-hops, and requires two byte-identical G0-G9 manifests. The validated
+manifest SHA-256 is
+`cc965f733830ec6a32c5357a516b36a96b160c8f85ac23ad26714507a713ef0a`.
