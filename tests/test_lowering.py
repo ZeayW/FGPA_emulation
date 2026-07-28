@@ -154,7 +154,22 @@ class PlacementIrLoweringTest(unittest.TestCase):
                 "warnings": [],
             }
         )
+        class CountingNets(list):
+            def __init__(self, values):
+                super().__init__(values)
+                self.iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        counting_nets = CountingNets(transport_ir.value["nets"])
+        transport_ir.value["nets"] = counting_nets
         result = build_placement_ir(netlist, transport, transport_ir)
+        # Building the top-port index and copying/consuming transport nets
+        # requires three full passes, independent of the number of interface
+        # bits. A per-bit full-net scan would make large TDM lowering O(P*N).
+        self.assertEqual(counting_nets.iterations, 3)
         self.assertEqual(len(result.value["instances"]), 2)
         cut = next(net for net in result.value["nets"] if net["id"] == "cut")
         self.assertEqual(

@@ -259,6 +259,27 @@ and tens of thousands of source/shadow transport signals. The first target is
 44,770 shadow signals, 114,743 transport endpoints, and 6.20 MB of generated
 transport SystemVerilog.
 
+The real `fpga3` transport RTL synthesizes successfully into 94,242
+primitives: 49,460 LUTs and 44,782 FFs. Yosys takes 11:10.56 and peaks at
+2,217,224 KiB RSS. The merged placement IR contains:
+
+| Metric | `fpga3` result |
+| --- | ---: |
+| original instances | 107,055 |
+| transport instances | 94,242 |
+| merged instances | 201,297 |
+| merged LUT | 116,172 |
+| merged FF | 85,125 |
+
+This run exposed a lowering scalability bug: each source/shadow interface bit
+performed a full scan of every transport net. For `fpga3` that implied 86,988
+lookups over 136,527 nets. The implementation now builds one
+`(port, bit, direction) -> net` index and performs three total net-list passes
+independent of interface width. The indexed real lowering completes in 41.62
+seconds with 2,067,756 KiB peak RSS. The Phase 7A runner now checkpoints
+transport synthesis/import separately, so the accepted 11-minute Yosys result
+was reused while validating the fix.
+
 Final transport-cell, OpenPARF placement, Vivado routing, DRC, and timing
 metrics will be added only after their independent gates complete.
 

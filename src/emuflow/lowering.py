@@ -1,6 +1,6 @@
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .errors import ValidationError
 from .io import read_json, write_json
@@ -12,18 +12,12 @@ PLACEMENT_IR_REPORT_SCHEMA = "emuflow.placement-ir-report/v1"
 
 
 def _top_net(
-    ir: EmuIR, port: str, bit: int, collection: str
+    index: Mapping[Tuple[str, int, str], List[Dict[str, Any]]],
+    port: str,
+    bit: int,
+    collection: str,
 ) -> Dict[str, Any]:
-    matches = [
-        net
-        for net in ir.value["nets"]
-        if any(
-            endpoint["instance"] is None
-            and endpoint["port"] == port
-            and endpoint["bit"] == bit
-            for endpoint in net[collection]
-        )
-    ]
+    matches = index.get((port, bit, collection), [])
     if len(matches) != 1:
         raise ValidationError(
             f"transport EmuIR {port}[{bit}] expected one {collection[:-1]} "
@@ -43,6 +37,21 @@ def build_placement_ir(
         raise ValidationError("invalid transport endpoint schema")
     if netlist.get("fpga") != transport.get("fpga"):
         raise ValidationError("netlist and transport target different FPGAs")
+
+    top_net_index: Dict[
+        Tuple[str, int, str], List[Dict[str, Any]]
+    ] = {}
+    for net in transport_ir.value["nets"]:
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                if endpoint["instance"] is not None:
+                    continue
+                key = (
+                    endpoint["port"],
+                    endpoint["bit"],
+                    collection,
+                )
+                top_net_index.setdefault(key, []).append(net)
 
     namespace = "__emuflow_transport__/"
     instance_map = {
@@ -91,7 +100,7 @@ def build_placement_ir(
                     f"local net references unknown RX endpoint {endpoint_id!r}"
                 )
             top_net = _top_net(
-                transport_ir,
+                top_net_index,
                 "shadow_values",
                 shadow_index[signal],
                 "sinks",
@@ -113,7 +122,12 @@ def build_placement_ir(
             raise ValidationError(
                 f"transport source net {original_net!r} is not local"
             )
-        top_net = _top_net(transport_ir, "source_values", index, "drivers")
+        top_net = _top_net(
+            top_net_index,
+            "source_values",
+            index,
+            "drivers",
+        )
         consumed_transport_nets.add(top_net["id"])
         local_nets[original_net]["sinks"].extend(
             remap_endpoint(endpoint)
@@ -122,7 +136,12 @@ def build_placement_ir(
         )
 
     for signal, index in shadow_index.items():
-        top_net = _top_net(transport_ir, "shadow_values", index, "sinks")
+        top_net = _top_net(
+            top_net_index,
+            "shadow_values",
+            index,
+            "sinks",
+        )
         consumed_transport_nets.add(top_net["id"])
 
     # The generated transport RTL keeps each packed interface at width one

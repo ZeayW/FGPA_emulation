@@ -100,8 +100,10 @@ phase7a_one() {
 
   mkdir -p "$target"
   if [ "$resume" != 1 ] ||
-    [ ! -s "$target/placement.emuir.json" ] ||
-    [ ! -s "$target/lowering-report.json" ]; then
+    [ ! -s "$target/transport.mapped.json" ] ||
+    [ ! -s "$target/transport.emuir.json" ] ||
+    [ ! -s "$target/transport-synthesis-report.json" ] ||
+    [ ! -s "$target/transport-import-report.json" ]; then
     /usr/bin/time -v -o "$target/transport-synthesis-time.txt" \
       env PYTHONPATH="$repo/src" python3 -m emuflow synth-yosys \
         "$phase6/virtual_runtime_controller.sv" \
@@ -120,7 +122,12 @@ phase7a_one() {
       --clock fabric_clk \
       --output "$target/transport.emuir.json" \
       > "$target/transport-import-report.json"
+  fi
 
+  if [ "$resume" != 1 ] ||
+    [ ! -s "$target/placement.emuir.json" ] ||
+    [ ! -s "$target/lowering-report.json" ]; then
+    require_file "$target/transport.emuir.json"
     /usr/bin/time -v -o "$target/lowering-time.txt" \
       env PYTHONPATH="$repo/src" python3 -m emuflow lower-placement-ir \
         --netlist "$phase6/$fpga/netlist.json" \
