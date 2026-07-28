@@ -280,6 +280,21 @@ seconds with 2,067,756 KiB peak RSS. The Phase 7A runner now checkpoints
 transport synthesis/import separately, so the accepted 11-minute Yosys result
 was reused while validating the fix.
 
+All four balanced partitions use OpenPARF for continuous global coordinates
+followed by the checked ArchitectureDB legalizer. This is the scalable path
+previously used for the 731,331-cell unbalanced partition; OpenPARF's direct
+detailed legalizer is retained for genuinely small partitions but is not the
+default for these 100K–250K-cell balanced partitions.
+
+The strategy was selected from a real `fpga3` pilot. Direct OpenPARF global
+placement reached 14.83% LUT and 19.98% FF overflow in 601.624 seconds, then
+ripped up 192,057 of 201,297 instances for detailed legalization. That
+legalizer was still running without a result more than six minutes later, so
+the pilot was intentionally stopped and its log retained as
+`phase7a-direct-pilot.stderr.log`. Transport synthesis, import, lowering, and
+Phase 2 reference checkpoints remain valid and are reused by the global-mode
+run.
+
 Final transport-cell, OpenPARF placement, Vivado routing, DRC, and timing
 metrics will be added only after their independent gates complete.
 
@@ -290,6 +305,10 @@ Starting from the checked Phase 1 EmuIR:
 ```bash
 scripts/remote/nvdla_partition_a_balanced.sh logical ROOT PHASE1_IR
 scripts/remote/nvdla_partition_a_balanced.sh phase7a ROOT
+scripts/remote/nvdla_partition_a_balanced.sh phase7b ROOT
+scripts/remote/nvdla_partition_a_balanced.sh phase7c-finalize ROOT
+EMUFLOW_NVDLA_SYNTHESIS_DIR=ORIGINAL_SYNTHESIS \
+  scripts/remote/nvdla_partition_a_balanced.sh phase7d ROOT
 ```
 
 The logical script executes real TritonPart rather than importing the

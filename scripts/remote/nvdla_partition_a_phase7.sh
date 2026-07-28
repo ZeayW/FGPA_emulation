@@ -41,6 +41,9 @@ Environment overrides:
   EMUFLOW_MAIN_ROUTE_DIRECTIVE
   EMUFLOW_MAIN_UNPLACED_DCP
                       Reuse a checked fpga0 post-synthesis checkpoint.
+  EMUFLOW_PHASE7D_PROFILE
+                      "legacy" for the original three-cut run or "balanced"
+                      for the resource-bounded 142,882-cut run.
 EOF
 }
 
@@ -66,6 +69,7 @@ main_anchor_modulus="${EMUFLOW_MAIN_ANCHOR_MODULUS:-64}"
 main_place_directive="${EMUFLOW_MAIN_PLACE_DIRECTIVE:-SSI_SpreadLogic_high}"
 main_route_directive="${EMUFLOW_MAIN_ROUTE_DIRECTIVE:-Default}"
 main_unplaced_dcp="${EMUFLOW_MAIN_UNPLACED_DCP:-}"
+phase7d_profile="${EMUFLOW_PHASE7D_PROFILE:-legacy}"
 
 phase6="$root/phase6"
 phase7a="$root/phase7a"
@@ -601,13 +605,14 @@ run_phase7d() {
   run_audit "$repeat" "$root/phase7d-repeat-stdout.json"
   cmp "$output/release_manifest.json" "$repeat/release_manifest.json"
 
-  python3 - "$output" <<'PY'
+  python3 - "$output" "$phase7d_profile" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+profile = sys.argv[2]
 manifest_path = root / "release_manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 report = json.loads((root / "phase7d_report.json").read_text(encoding="utf-8"))
@@ -618,16 +623,26 @@ if set(manifest["gates"]) != {f"G{index}" for index in range(10)}:
 if any(gate["status"] != "pass" for gate in manifest["gates"].values()):
     raise SystemExit("NVDLA Phase 7D contains a failing gate")
 metrics = manifest["metrics"]
-expected = {
-    "original_cells": 731313,
-    "transport_cells": 74,
-    "routed_cells": 731387,
-    "physical_cells": 731388,
-    "infrastructure_cells": 1,
-    "cut_nets": 3,
-    "scheduled_bit_hops": 4,
-    "equivalence_cycles": 2,
-}
+if profile == "legacy":
+    expected = {
+        "original_cells": 731313,
+        "transport_cells": 74,
+        "routed_cells": 731387,
+        "physical_cells": 731388,
+        "infrastructure_cells": 1,
+        "cut_nets": 3,
+        "scheduled_bit_hops": 4,
+        "equivalence_cycles": 2,
+    }
+elif profile == "balanced":
+    expected = {
+        "original_cells": 731313,
+        "cut_nets": 142882,
+        "scheduled_bit_hops": 231011,
+        "equivalence_cycles": 2,
+    }
+else:
+    raise SystemExit(f"unknown NVDLA Phase 7D profile: {profile!r}")
 for key, value in expected.items():
     if metrics[key] != value:
         raise SystemExit(f"NVDLA Phase 7D {key} mismatch")
