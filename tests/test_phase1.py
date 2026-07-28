@@ -26,6 +26,9 @@ class Phase1Test(unittest.TestCase):
             self.assertTrue(all(report["fits_on_fpga"].values()))
             self.assertTrue(report["fits_on_platform"])
             self.assertEqual(report["fit_scope"], "single_fpga")
+            self.assertEqual(
+                report["clock_topology"]["fabric_logic_clock_nets"], 0
+            )
             for filename in (
                 "design.emuir.json",
                 "platform.normalized.json",
@@ -81,6 +84,35 @@ class Phase1Test(unittest.TestCase):
             self.assertFalse(any(report["fits_on_fpga"].values()))
             self.assertTrue(report["fits_on_platform"])
             self.assertEqual(report["fit_scope"], "aggregate_platform")
+
+    def test_fabric_logic_clock_can_be_a_strict_phase1_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            yosys = json.loads(
+                (ROOT / "examples/yosys/counter.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            counter = yosys["modules"]["counter"]
+            counter["cells"]["q_reg[0]"]["connections"]["C"] = [8]
+            yosys_path = root / "fabric-clock.json"
+            yosys_path.write_text(json.dumps(yosys), encoding="utf-8")
+
+            report = run_phase1(
+                yosys_json=yosys_path,
+                platform_path=(
+                    ROOT / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+                ),
+                output_dir=root / "phase1",
+                top="counter",
+                clocks=["clk"],
+                require_no_fabric_clock=True,
+            )
+            self.assertEqual(report["status"], "clock_topology_error")
+            topology = report["clock_topology"]
+            self.assertEqual(topology["fabric_logic_clock_nets"], 1)
+            self.assertEqual(topology["fabric_logic_clocked_ffs"], 1)
+            self.assertEqual(topology["maximum_fabric_clock_fanout"], 1)
 
 
 if __name__ == "__main__":

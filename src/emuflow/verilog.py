@@ -23,28 +23,47 @@ def _parameter(value: Any) -> str:
     return json.dumps(text)
 
 
+def _emittable_parameters(instance: Mapping[str, Any]) -> Dict[str, Any]:
+    parameters = dict(instance.get("parameters", {}))
+    init = parameters.get("INIT")
+    if (
+        isinstance(init, str)
+        and init
+        and all(character.lower() in "01xz" for character in init)
+        and any(character.lower() in "xz" for character in init)
+    ):
+        # FD* INIT accepts only a known bit in Vivado. An x/z value means the
+        # source design did not specify a hardware power-up value; omitting
+        # the property preserves that unspecified contract and lets the
+        # primitive use its legal default instead of emitting invalid RTL.
+        parameters.pop("INIT")
+    return parameters
+
+
 def mapped_verilog(ir: EmuIR) -> str:
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
         for index, net in enumerate(ir.value["nets"])
     }
     pin_net: Dict[Tuple[str, str, int], str] = {}
+    pins_by_instance: Dict[str, set[Tuple[str, int]]] = {}
     for net in ir.value["nets"]:
         for collection in ("drivers", "sinks"):
             for endpoint in net[collection]:
                 if endpoint["instance"] is not None:
-                    pin_net[
-                        (
-                            endpoint["instance"],
-                            endpoint["port"],
-                            endpoint["bit"],
-                        )
-                    ] = net_wire[net["id"]]
-    constants = {
-        (instance["id"], item["port"], item["bit"]): item["value"]
-        for instance in ir.value["instances"]
-        for item in instance.get("constant_connections", [])
-    }
+                    instance_id = endpoint["instance"]
+                    port_bit = (endpoint["port"], endpoint["bit"])
+                    pin_net[(instance_id, *port_bit)] = net_wire[net["id"]]
+                    pins_by_instance.setdefault(instance_id, set()).add(
+                        port_bit
+                    )
+    constants: Dict[Tuple[str, str, int], Any] = {}
+    for instance in ir.value["instances"]:
+        instance_id = instance["id"]
+        for item in instance.get("constant_connections", []):
+            port_bit = (item["port"], item["bit"])
+            constants[(instance_id, *port_bit)] = item["value"]
+            pins_by_instance.setdefault(instance_id, set()).add(port_bit)
 
     lines = [
         f"module {_identifier(ir.value['design']['top'])}(",
@@ -102,23 +121,14 @@ def mapped_verilog(ir: EmuIR) -> str:
     lines.append("")
 
     for instance in ir.value["instances"]:
-        parameters = instance.get("parameters", {})
+        parameters = _emittable_parameters(instance)
         parameter_text = ""
         if parameters:
             parameter_text = " #(" + ", ".join(
                 f".{_identifier(name)}({_parameter(value)})"
                 for name, value in sorted(parameters.items())
             ) + ")"
-        pins = {
-            (port, bit)
-            for instance_id, port, bit in pin_net
-            if instance_id == instance["id"]
-        }
-        pins.update(
-            (port, bit)
-            for instance_id, port, bit in constants
-            if instance_id == instance["id"]
-        )
+        pins = pins_by_instance.get(instance["id"], set())
         connections = []
         for port, bit in sorted(pins):
             if bit != 0:
@@ -161,6 +171,11 @@ def emit_mapped_verilog(
         "instances": len(ir.value["instances"]),
         "nets": len(ir.value["nets"]),
         "ports": len(ir.value["ports"]),
+        "omitted_unknown_init_parameters": sum(
+            "INIT" in instance.get("parameters", {})
+            and "INIT" not in _emittable_parameters(instance)
+            for instance in ir.value["instances"]
+        ),
         "output": str(output_path),
     }
     if report_path is not None:

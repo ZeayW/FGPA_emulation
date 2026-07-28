@@ -359,6 +359,8 @@ def validate_physical_summary(
     expected_fabric = runtime["fabric_clock"]["period_ns"]
     expected_dut = runtime["virtual_dut_clock"]["nominal_period_ns"]
     total_cells = 0
+    total_physical_cells = 0
+    total_infrastructure_cells = 0
     total_original = 0
     total_transport = 0
     worst_slack = None
@@ -371,6 +373,8 @@ def validate_physical_summary(
             "original_cells",
             "transport_cells",
             "routed_cells",
+            "physical_cells",
+            "infrastructure_cells",
             "unrouted_nets",
             "drc_violations",
         ):
@@ -384,6 +388,13 @@ def validate_physical_summary(
         ):
             raise ValidationError(
                 f"physical summary {fpga_id} cell accounting is inconsistent"
+            )
+        if item["physical_cells"] != (
+            item["routed_cells"] + item["infrastructure_cells"]
+        ):
+            raise ValidationError(
+                f"physical summary {fpga_id} physical cell accounting "
+                "is inconsistent"
             )
         if item["unrouted_nets"] or item["drc_violations"]:
             raise ValidationError(
@@ -440,6 +451,8 @@ def validate_physical_summary(
                 )
             timing_values[field] = float(value)
         total_cells += item["routed_cells"]
+        total_physical_cells += item["physical_cells"]
+        total_infrastructure_cells += item["infrastructure_cells"]
         total_original += item["original_cells"]
         total_transport += item["transport_cells"]
         worst_slack = float(slack) if worst_slack is None else min(
@@ -469,6 +482,8 @@ def validate_physical_summary(
         "original_cells": total_original,
         "transport_cells": total_transport,
         "routed_cells": total_cells,
+        "physical_cells": total_physical_cells,
+        "infrastructure_cells": total_infrastructure_cells,
         "unrouted_nets": 0,
         "drc_violations": 0,
         "worst_wns_ns": worst_slack,

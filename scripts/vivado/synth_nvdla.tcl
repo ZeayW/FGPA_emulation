@@ -4,8 +4,8 @@
 # declarations or functional models are supplied by the caller so proprietary
 # ASIC MBIST/DFT cells never enter the implementation netlist.
 
-if {$argc != 4 && $argc != 5} {
-  puts stderr "usage: vivado -mode batch -source synth_nvdla.tcl -tclargs SOURCE_ROOT RAM_STUBS OUTPUT_DIR PART ?TOP?"
+if {$argc < 4 || $argc > 6} {
+  puts stderr "usage: vivado -mode batch -source synth_nvdla.tcl -tclargs SOURCE_ROOT RAM_STUBS OUTPUT_DIR PART ?TOP? ?GATED_CLOCK_CONVERSION?"
   exit 2
 }
 
@@ -16,6 +16,15 @@ set part [lindex $argv 3]
 set top NV_nvdla
 if {$argc == 5} {
   set top [lindex $argv 4]
+}
+set gated_clock_conversion off
+if {$argc == 6} {
+  set top [lindex $argv 4]
+  set gated_clock_conversion [lindex $argv 5]
+}
+if {$gated_clock_conversion ni {off on auto}} {
+  puts stderr "GATED_CLOCK_CONVERSION must be off, on, or auto"
+  exit 2
 }
 set output_stem nvdla
 if {$top ne "NV_nvdla"} {
@@ -62,6 +71,36 @@ if {$partition_index < 0} {
 set rtl_sources [lreplace $rtl_sources $partition_index $partition_index \
   $normalized_partition_o]
 
+# The ASIC clock-gate model samples its enable on the falling edge and gates
+# the following high phase.  Vivado can preserve this behavior with register
+# clock-enables, but only when synthesis is enabled for gated-clock conversion
+# and the clock input inside the gate is identified explicitly.  Generate a
+# tagged source copy so the pinned upstream checkout remains unmodified.
+if {$gated_clock_conversion ne "off"} {
+  set clock_gate [file join $source_root vmod vlibs CKLNQD12.v]
+  set tagged_clock_gate [file join $output_dir CKLNQD12.v]
+  set input [open $clock_gate r]
+  set contents [read $input]
+  close $input
+  set replacements [regsub -all -line \
+    {^[[:space:]]*input[[:space:]]+CP[[:space:]]*;} \
+    $contents {(* gated_clock = "true" *) input CP;} contents]
+  if {$replacements != 1} {
+    puts stderr "expected one CP input in $clock_gate; found $replacements"
+    exit 2
+  }
+  set output [open $tagged_clock_gate w]
+  puts -nonewline $output $contents
+  close $output
+  set clock_gate_index [lsearch -exact $library_sources $clock_gate]
+  if {$clock_gate_index < 0} {
+    puts stderr "NVDLA CKLNQD12 clock gate was not found in the library manifest"
+    exit 2
+  }
+  set library_sources [lreplace $library_sources \
+    $clock_gate_index $clock_gate_index $tagged_clock_gate]
+}
+
 create_project -in_memory -part $part nvdla_screen
 add_files -norecurse $ram_stubs
 add_files -norecurse $library_sources
@@ -84,6 +123,7 @@ synth_design \
   -part $part \
   -mode out_of_context \
   -flatten_hierarchy rebuilt \
+  -gated_clock_conversion $gated_clock_conversion \
   -directive RuntimeOptimized
 
 write_checkpoint -force [file join $output_dir ${output_stem}_synth.dcp]
@@ -115,4 +155,4 @@ foreach reference [lsort [array names counts]] {
 }
 close $summary
 
-puts "EMUFLOW_NVDLA_RESULT [file join $output_dir primitive_counts.tsv]"
+puts "EMUFLOW_NVDLA_RESULT gated_clock_conversion=$gated_clock_conversion [file join $output_dir primitive_counts.tsv]"

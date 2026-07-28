@@ -125,6 +125,22 @@ def build_placement_ir(
         top_net = _top_net(transport_ir, "shadow_values", index, "sinks")
         consumed_transport_nets.add(top_net["id"])
 
+    # The generated transport RTL keeps each packed interface at width one
+    # when a partition has no TX or no RX signals.  Yosys consequently emits
+    # a dangling top-level source_values/shadow_values net for that dummy bit.
+    # Both interface ports are removed below, so consume every remaining net
+    # that references them as well.  Real interface bits have already been
+    # stitched into local DUT nets by the loops above.
+    removed_ports = {"source_values", "shadow_values"}
+    for net in transport_ir.value["nets"]:
+        if any(
+            endpoint["instance"] is None
+            and endpoint["port"] in removed_ports
+            for collection in ("drivers", "sinks")
+            for endpoint in net[collection]
+        ):
+            consumed_transport_nets.add(net["id"])
+
     transport_nets = []
     for net in transport_ir.value["nets"]:
         if net["id"] in consumed_transport_nets:
@@ -140,7 +156,6 @@ def build_placement_ir(
         ]
         transport_nets.append(value)
 
-    removed_ports = {"source_values", "shadow_values"}
     ports = [deepcopy(port) for port in netlist["ports"]]
     port_ids = {port["id"] for port in ports}
     for port in transport_ir.value["ports"]:

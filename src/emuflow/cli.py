@@ -117,6 +117,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase1.add_argument("--out", type=Path, required=True)
     phase1.add_argument("--top")
     phase1.add_argument("--clock", action="append", default=[])
+    phase1.add_argument(
+        "--require-no-fabric-clock",
+        action="store_true",
+        help="fail when a LUT output drives an FD*.C clock pin",
+    )
 
     arch_parser = subparsers.add_parser(
         "arch", help="UltraScale+ ArchitectureDB operations"
@@ -165,6 +170,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--openparf-result",
         type=Path,
         help="OpenPARF output .pl; omit only for deterministic adapter testing",
+    )
+    phase2.add_argument(
+        "--openparf-global-result",
+        action="store_true",
+        help=(
+            "treat --openparf-result as global coordinates and legalize them "
+            "onto exact ArchitectureDB Site/BEL slots"
+        ),
+    )
+    phase2.add_argument(
+        "--site-utilization-limit",
+        type=float,
+        default=0.75,
+        help="maximum fraction of compatible slots exposed per site",
+    )
+    phase2.add_argument(
+        "--site-y-range",
+        type=int,
+        nargs=2,
+        metavar=("MIN_Y", "MAX_Y"),
+        help=(
+            "affinely map OpenPARF y coordinates into this inclusive "
+            "ArchitectureDB region (for example, one SLR)"
+        ),
     )
 
     partition_parser = subparsers.add_parser(
@@ -215,6 +244,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tritonpart-timeout-seconds",
         type=int,
         default=3600,
+    )
+    phase3.add_argument(
+        "--tritonpart-seed-attempts",
+        type=int,
+        default=1,
+        help=(
+            "try consecutive deterministic seeds until min-used-fpgas "
+            "is satisfied"
+        ),
+    )
+    phase3.add_argument(
+        "--tritonpart-repair-min-used-fpgas",
+        action="store_true",
+        help=(
+            "minimally move the smallest legal atomic clusters when the "
+            "provider leaves required partitions empty"
+        ),
     )
 
     route_parser = subparsers.add_parser(
@@ -424,6 +470,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             output_dir=args.out,
             top=args.top,
             clocks=args.clock,
+            require_no_fabric_clock=args.require_no_fabric_clock,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
@@ -460,6 +507,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             architecture_path=args.arch,
             output_dir=args.out,
             openparf_result=args.openparf_result,
+            openparf_global_result=args.openparf_global_result,
+            site_utilization_limit=args.site_utilization_limit,
+            site_y_range=(
+                tuple(args.site_y_range)
+                if args.site_y_range is not None
+                else None
+            ),
         )
         _print_json(report)
         return 0
@@ -488,6 +542,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             tritonpart_solution=args.tritonpart_solution,
             net_weights_path=args.net_weights,
             tritonpart_timeout_seconds=args.tritonpart_timeout_seconds,
+            tritonpart_seed_attempts=args.tritonpart_seed_attempts,
+            tritonpart_repair_min_used_fpgas=(
+                args.tritonpart_repair_min_used_fpgas
+            ),
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

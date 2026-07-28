@@ -37,6 +37,8 @@ Commands:
              Export up to 32,768 xcvu3p SLICE sites for 100k-cell runs.
   nvdla-arch-full
              Export the complete xcvu3p SLICE inventory for NVDLA placement.
+  nvdla-arch-vu9p-full
+             Export the complete xcvu9p SLICE inventory for the CACC flow.
   phase2     Export OpenPARF input and create a checked reference placement.
   phase2-vivado
              Apply the checked placement and route it with Vivado.
@@ -96,6 +98,8 @@ Commands:
              Upload an existing local OpenPARF source checkout.
   openparf-build
              Build a CPU OpenPARF in the server deepgate environment.
+  openparf-build-sparse
+             Build an isolated greedy-first legalizer for sparse large devices.
   openparf-run
              Run OpenPARF and re-import its placement through Phase 2.
   phase2-all Run sync, Phase 1, ArchitectureDB, Phase 2, and Vivado validation.
@@ -487,6 +491,36 @@ PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
 grep 'EMUFLOW_ARCH_EXPORT' \
   build/remote/nvdla-arch-full/vivado-arch.log
 du -sh build/remote/nvdla-arch-full
+REMOTE
+}
+
+nvdla_arch_vu9p_full_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+vivado_root="$2"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+vivado="$vivado_root/bin/vivado"
+output=build/remote/nvdla-arch-vu9p-full
+test -x "$vivado"
+test -f scripts/vivado/export_architecture.tcl
+rm -rf "$output"
+mkdir -p "$output"
+/usr/bin/time -v -o "$output/vivado-time.txt" \
+  "$vivado" -mode batch -nojournal -nolog \
+    -source scripts/vivado/export_architecture.tcl \
+    -tclargs xcvu9p-flga2104-2L-e \
+      "$output/xcvu9p.sites.tsv" \
+    > "$output/vivado-arch.log" 2>&1
+/usr/bin/time -v -o "$output/import-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow arch import-vivado-tsv \
+    "$output/xcvu9p.sites.tsv" \
+    --output "$output/xcvu9p.arch.json" \
+    > "$output/import.log" 2>&1
+test -s "$output/xcvu9p.arch.json"
+grep 'EMUFLOW_ARCH_EXPORT' "$output/vivado-arch.log"
+du -sh "$output"
 REMOTE
 }
 
@@ -2312,6 +2346,7 @@ grep 'register_models=3' "$synthesis/ram_models.log"
       "$synthesis" \
       xcvu3p-ffvc1517-2-e \
       "$top" \
+      on \
     > "$synthesis/vivado.log" 2>&1
 
 netlist="$synthesis/nv_nvdla_partition_a_synth.v"
@@ -2352,6 +2387,7 @@ test -s "$synthesis/mapped.v"
     --top "$mapped_top" \
     --clock nvdla_core_clk \
     --platform "$platform" \
+    --require-no-fabric-clock \
     --out "$root/phase1" \
     > "$root/phase1-stdout.json"
 
@@ -2440,6 +2476,23 @@ CUDA_VISIBLE_DEVICES="" cmake --build "\$openparf_root/OpenPARF-build" \
 REMOTE
 }
 
+build_openparf_sparse_remote() {
+  local remote_root_quoted
+  remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+openparf_root=$remote_root_quoted
+cd "\$remote_dir"
+scripts/openparf/build_sparse_legalizer.sh \
+  "\$openparf_root/OpenPARF-src" \
+  "\$openparf_root/OpenPARF-build" \
+  "\$openparf_root/OpenPARF-install" \
+  "\$openparf_root/OpenPARF-install-greedy-first"
+REMOTE
+}
+
 run_openparf_remote() {
   local remote_root_quoted
   remote_root_quoted="$(shell_quote "$OPENPARF_REMOTE_ROOT")"
@@ -2498,6 +2551,9 @@ case "$command" in
     ;;
   nvdla-arch-full)
     nvdla_arch_full_remote
+    ;;
+  nvdla-arch-vu9p-full)
+    nvdla_arch_vu9p_full_remote
     ;;
   phase2)
     phase2_remote
@@ -2604,6 +2660,9 @@ case "$command" in
     ;;
   openparf-build)
     build_openparf_remote
+    ;;
+  openparf-build-sparse)
+    build_openparf_sparse_remote
     ;;
   openparf-run)
     run_openparf_remote

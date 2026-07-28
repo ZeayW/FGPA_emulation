@@ -128,6 +128,8 @@ class Phase7CTest(unittest.TestCase):
                     "original_cells": 80,
                     "transport_cells": 12,
                     "routed_cells": 92,
+                    "physical_cells": 93,
+                    "infrastructure_cells": 1,
                     "unrouted_nets": 0,
                     "drc_violations": 0,
                     "wns_ns": 1.25,
@@ -146,6 +148,8 @@ class Phase7CTest(unittest.TestCase):
                     "original_cells": 20,
                     "transport_cells": 8,
                     "routed_cells": 28,
+                    "physical_cells": 28,
+                    "infrastructure_cells": 0,
                     "unrouted_nets": 0,
                     "drc_violations": 0,
                     "wns_ns": 0.75,
@@ -199,6 +203,8 @@ class Phase7CTest(unittest.TestCase):
             physical, runtime, self.platform
         )
         self.assertEqual(result["routed_cells"], 120)
+        self.assertEqual(result["physical_cells"], 121)
+        self.assertEqual(result["infrastructure_cells"], 1)
         self.assertEqual(result["transport_cells"], 20)
         self.assertEqual(result["worst_wns_ns"], 0.75)
         self.assertEqual(result["worst_dut_wns_ns"], 120.0)
@@ -219,6 +225,10 @@ class Phase7CTest(unittest.TestCase):
         broken = copy.deepcopy(physical)
         broken["fpgas"][0]["unrouted_nets"] = 1
         with self.assertRaisesRegex(ValidationError, "route/DRC"):
+            validate_physical_summary(broken, runtime, self.platform)
+        broken = copy.deepcopy(physical)
+        broken["fpgas"][0]["physical_cells"] += 1
+        with self.assertRaisesRegex(ValidationError, "physical cell"):
             validate_physical_summary(broken, runtime, self.platform)
 
     def test_phase7c_writes_generated_then_physically_closed_report(self):

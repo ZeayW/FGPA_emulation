@@ -124,6 +124,41 @@ class PlacementTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Placement(reference, self.architecture)
 
+    def test_openparf_global_coordinates_are_archdb_legalized(self) -> None:
+        names = openparf_instance_names(self.ir)
+        lines = [
+            f"{names[instance['id']]} 0.25 0.75 0"
+            for instance in self.ir.value["instances"]
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "global.pl"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            placement = Placement.from_openparf_global_pl(
+                path,
+                self.architecture,
+                self.ir,
+                tile_size=2,
+                site_utilization_limit=1.0,
+                site_y_range=(0, 0),
+            )
+        self.assertEqual(placement.summary()["status"], "legal")
+        self.assertEqual(placement.summary()["cells"], 8)
+        self.assertIn(
+            "openparf-global-bookshelf-pl",
+            placement.value["source"]["format"],
+        )
+        self.assertEqual(
+            placement.value["source"]["site_utilization_limit"], 1.0
+        )
+        self.assertEqual(placement.value["source"]["site_y_range"], [0, 0])
+        self.assertEqual(
+            placement.value["source"]["y_transform"],
+            "affine-to-site-y-range",
+        )
+        self.assertGreaterEqual(
+            placement.value["source"]["max_manhattan_displacement"], 0
+        )
+
 
 class Phase2PipelineTest(unittest.TestCase):
     def test_pipeline_writes_adapter_and_placement_artifacts(self) -> None:

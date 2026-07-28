@@ -1,0 +1,61 @@
+diff --git a/openparf/ops/direct_lg/src/dl_solver.cpp b/openparf/ops/direct_lg/src/dl_solver.cpp
+--- a/openparf/ops/direct_lg/src/dl_solver.cpp
++++ b/openparf/ops/direct_lg/src/dl_solver.cpp
+@@ -1406,7 +1406,7 @@ bool DLSolver::ripupLegalization() {
+     // because its binded nodes may legalize it already
+     auto &inst = _instArray[i];
+     if (inst.curr.detSiteId == kIndexTypeMax) {
+-      if (!ripupLegalizeInst(inst, _param.nbrDistEnd) && !greedyLegalizeInst(inst)) {
++      if (!greedyLegalizeInst(inst) && !ripupLegalizeInst(inst, _param.nbrDistEnd)) {
+         return false;
+       }
+     }
+@@ -1617,41 +1617,25 @@ bool DLSolver::greedyLegalizeInst(DLInstance &inst) {
+   auto         end = _spiralAccessor.end();
+   XY<RealType> initXY(computeInstCentroid(inst.precluster));
+ 
+-  Candidate    bestCand(_num_LUTs, _num_FFs);
+-  RealType     bestScoreImprov = kRealTypeMin;
+   for (auto it = beg; it != end; ++it) {
+     XY<IntType> xy(IntType(initXY.x() + it->x()), IntType(initXY.y() + it->y()));
+     if (!_bndBox.contain(xy)) {
+       continue;
+     }
+     auto     &site = _siteMap(xy.x(), xy.y());
+     Candidate cand(site.det);
+     if (instAndSiteAreCompatible(inst, site) && instAndSiteClockCompatible(inst, site) &&
+         addInstToCandidateImpl(inst, cand) && addInstToSignature(inst, cand.sig)) {
+-      // Adding the instance to the site is legal
+-      // If this is the first legal position found, set the expansion search radius
+-      if (bestScoreImprov == kRealTypeMin) {
+-        IntType r = _spiralAccessor.radius(it);
+-        r += _param.greedyExpansion;
+-        end = _spiralAccessor.end(std::min(_spiralAccessor.maxRadius(), r));
+-      }
+-
+-      cand.score           = computeCandidateScore(cand);
+-      RealType scoreImprov = cand.score - site.det.score;
+-      if (scoreImprov > bestScoreImprov) {
+-        bestCand        = cand;
+-        bestScoreImprov = scoreImprov;
++      // Sparse devices have ample legal capacity. Commit the nearest legal
++      // site immediately instead of scoring an expanding neighborhood.
++      cand.score = computeCandidateScore(cand);
++      site.det   = cand;
++      for (IndexType i : inst.precluster) {
++        _instArray[i].curr.detSiteId = cand.siteId;
+       }
++      return true;
+     }
+   }
+ 
+-  // Commit the found best legal solution
+-  if (bestCand.siteId != kIndexTypeMax) {
+-    _siteMap[bestCand.siteId].det = bestCand;
+-    for (IndexType i : inst.precluster) {
+-      _instArray[i].curr.detSiteId = bestCand.siteId;
+-    }
+-    return true;
+-  }
+   return false;
+ }

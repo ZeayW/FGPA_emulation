@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from .architecture import ArchitectureDB
 from .io import write_json
@@ -16,14 +16,30 @@ def run_phase2(
     architecture_path: Path,
     output_dir: Path,
     openparf_result: Optional[Path] = None,
+    openparf_global_result: bool = False,
+    site_utilization_limit: float = 0.75,
+    site_y_range: Optional[Tuple[int, int]] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     architecture = ArchitectureDB.load(architecture_path)
     bookshelf_dir = output_dir / "openparf"
     manifest = export_bookshelf(ir, architecture, bookshelf_dir)
     if openparf_result is None:
+        if openparf_global_result:
+            raise ValueError(
+                "openparf_global_result requires openparf_result"
+            )
         placement = Placement.greedy_reference(architecture, ir)
         provider = "emuflow-greedy-reference"
+    elif openparf_global_result:
+        placement = Placement.from_openparf_global_pl(
+            openparf_result,
+            architecture,
+            ir,
+            site_utilization_limit=site_utilization_limit,
+            site_y_range=site_y_range,
+        )
+        provider = "openparf-global+emuflow-archdb-legalizer"
     else:
         placement = Placement.from_openparf_pl(
             openparf_result, architecture, ir

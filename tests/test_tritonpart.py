@@ -15,6 +15,7 @@ from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.tritonpart import (
     TRITONPART_INPUT_SCHEMA,
+    _repair_min_used_fpgas,
     export_tritonpart_inputs,
     parse_tritonpart_solution,
 )
@@ -84,6 +85,32 @@ class TritonPartTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "invalid part"):
                 parse_tritonpart_solution(solution, artifact)
 
+    def test_min_used_repair_moves_one_small_atomic_cluster(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                Path(temporary_directory),
+            )
+            raw = {
+                cluster["id"]: "fpga0"
+                for cluster in self.clusters["clusters"]
+            }
+            repaired, moves = _repair_min_used_fpgas(
+                raw,
+                self.clusters,
+                self.platform,
+                self.constraints,
+                artifact["hyperedges"],
+            )
+            self.assertEqual(set(repaired.values()), {"fpga0", "fpga1"})
+            self.assertEqual(len(moves), 1)
+            self.assertEqual(moves[0]["source"], "fpga0")
+            self.assertEqual(moves[0]["target"], "fpga1")
+            self.assertEqual(moves[0]["instances"], 2)
+
     def test_phase3_executes_provider_and_independently_validates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
@@ -91,17 +118,27 @@ class TritonPartTest(unittest.TestCase):
             ir_path.write_text(
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
             )
+            attempted_seeds = []
 
             def fake_openroad(command, **kwargs):
                 self.assertTrue(Path(command[-1]).is_absolute())
                 run_directory = Path(kwargs["cwd"])
+                tcl = Path(command[-1]).read_text(encoding="utf-8")
+                seed_line = next(
+                    line for line in tcl.splitlines() if "-seed" in line
+                )
+                attempted_seeds.append(int(seed_line.split()[1]))
                 tritonpart_input = json.loads(
                     (run_directory / "tritonpart_input.json").read_text()
                 )
                 solution = run_directory / tritonpart_input["files"]["solution"]
                 solution.write_text(
                     "\n".join(
-                        str(index % 2)
+                        (
+                            "0"
+                            if len(attempted_seeds) == 1
+                            else str(index % 2)
+                        )
                         for index in range(
                             len(tritonpart_input["cluster_order"])
                         )
@@ -124,9 +161,12 @@ class TritonPartTest(unittest.TestCase):
                     seed=19,
                     provider="tritonpart",
                     openroad="/fake/openroad",
+                    tritonpart_seed_attempts=2,
                 )
 
             self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["seed"], 20)
+            self.assertEqual(attempted_seeds, [19, 20])
             self.assertEqual(
                 report["provider"],
                 "tritonpart-openroad-hypergraph-v1",
@@ -139,12 +179,35 @@ class TritonPartTest(unittest.TestCase):
             self.assertEqual(
                 assignment["provider_metadata"]["mode"], "execute"
             )
+            self.assertEqual(
+                assignment["provider_metadata"]["seed_attempts"],
+                [
+                    {
+                        "seed": 19,
+                        "raw_used_fpgas": 1,
+                        "used_fpgas": 1,
+                        "repair_moves": [],
+                        "log": "openroad-tritonpart.seed-19.log",
+                    },
+                    {
+                        "seed": 20,
+                        "raw_used_fpgas": 2,
+                        "used_fpgas": 2,
+                        "repair_moves": [],
+                        "log": "openroad-tritonpart.seed-20.log",
+                    },
+                ],
+            )
+            self.assertEqual(
+                assignment["provider_metadata"]["min_used_fpgas_repair"],
+                {"enabled": False, "moves": []},
+            )
             self.assertTrue(
                 (
                     output
                     / "phase3"
                     / "tritonpart"
-                    / "openroad-tritonpart.log"
+                    / "openroad-tritonpart.seed-20.log"
                 ).is_file()
             )
 

@@ -15,7 +15,8 @@ virtual runtime/timing contract:
 - Yosys JSON to EmuIR import;
 - UltraScale+ primitive resource classification;
 - a runnable Phase 1 pipeline and machine-readable report;
-- virtual two-FPGA and eight-FPGA-mesh `xcvu3p` reference platforms.
+- virtual two-FPGA and eight-FPGA-mesh `xcvu3p` reference platforms;
+- a four-FPGA `xcvu9p` mesh with 25% physical-implementation headroom;
 - ArchitectureDB and placement artifact validation;
 - Vivado Site/BEL inventory import for `xcvu3p-ffvc1517-2-e`;
 - EmuIR to OpenPARF Bookshelf export;
@@ -162,6 +163,14 @@ The first genuine connected million-cell screen, the official NVDLA
 `NV_nvdla` top with 3,123,117 synthesized cells, and the measured 118 GB
 Yosys-JSON importer limit are recorded in
 [docs/NVDLA_NVDLAV1_VALIDATION.md](docs/NVDLA_NVDLAV1_VALIDATION.md).
+The connected NVDLA CACC partition experiment carries 731,313 EmuIR cells
+through TritonPart, system routing, TDM, virtual pin planning, netlist split,
+OpenPARF placement, and per-FPGA Vivado implementation. All four routed DCPs
+pass the independent Phase 7C gate with 731,387 mapped cells, one recorded
+Vivado-inserted BUFGCE, zero unrouted nets, zero DRC violations, and
++1.435 ns worst WNS; its exact results and board-independent boundary are
+recorded in
+[docs/NVDLA_PARTITION_A_FULL_FLOW.md](docs/NVDLA_PARTITION_A_FULL_FLOW.md).
 The intermediate connected VeeR EH1 CPU result is recorded in
 [docs/VEER_EH1_VALIDATION.md](docs/VEER_EH1_VALIDATION.md).
 The completed Phase 3 implementation and the real two-FPGA partition

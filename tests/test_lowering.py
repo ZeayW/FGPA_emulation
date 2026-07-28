@@ -91,6 +91,14 @@ class PlacementIrLoweringTest(unittest.TestCase):
                         "clock": False,
                         "reset": False,
                     },
+                    {
+                        "id": "source_values",
+                        "name": "source_values",
+                        "direction": "input",
+                        "width": 1,
+                        "clock": False,
+                        "reset": False,
+                    },
                 ],
                 "instances": [
                     {
@@ -104,6 +112,20 @@ class PlacementIrLoweringTest(unittest.TestCase):
                     }
                 ],
                 "nets": [
+                    {
+                        "id": "dummy_source",
+                        "name": "source_values",
+                        "drivers": [
+                            {
+                                "instance": None,
+                                "port": "source_values",
+                                "bit": 0,
+                            }
+                        ],
+                        "sinks": [],
+                        "fanout": 0,
+                        "cut_class": "combinational",
+                    },
                     {
                         "id": "q",
                         "name": "q",
@@ -142,6 +164,12 @@ class PlacementIrLoweringTest(unittest.TestCase):
         self.assertEqual(cut["sinks"][0]["instance"], "u_lut")
         self.assertNotIn(
             "shadow_values", {port["id"] for port in result.value["ports"]}
+        )
+        self.assertNotIn(
+            "source_values", {port["id"] for port in result.value["ports"]}
+        )
+        self.assertNotIn(
+            "dummy_source", {net["id"] for net in result.value["nets"]}
         )
 
 

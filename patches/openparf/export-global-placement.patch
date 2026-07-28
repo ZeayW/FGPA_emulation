@@ -1,0 +1,23 @@
+diff --git a/openparf/placement/placer.py b/openparf/placement/placer.py
+--- a/openparf/placement/placer.py
++++ b/openparf/placement/placer.py
+@@ -1888,6 +1888,19 @@ class Placer(object):
+                 "%s/%s.lg.pklz" % (self.params.result_dir, self.params.design_name())
+             )
+ 
++        if not self.params.legalize_flag:
++            # writeBookshelfPl serializes inst_locs_xyz, while global
++            # placement optimizes data_cls.pos.  Keep the upstream data model
++            # intact and explicitly publish the final global coordinates for
++            # an external architecture-aware legalizer.
++            global_xy = self.data_cls.pos[0][
++                self.data_cls.movable_range[0] : self.data_cls.movable_range[1]
++            ]
++            self.data_cls.inst_locs_xyz[
++                self.data_cls.movable_range[0] : self.data_cls.movable_range[1],
++                :2,
++            ].data.copy_(global_xy)
++
+         if not self.params.legalize_flag and self.params.load_legalize_solution_file:
+             self.load(self.params.load_legalize_solution_file)
+             legality_check_done = False

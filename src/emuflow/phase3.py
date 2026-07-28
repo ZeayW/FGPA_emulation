@@ -29,6 +29,8 @@ def run_phase3(
     tritonpart_solution: Optional[Path] = None,
     net_weights_path: Optional[Path] = None,
     tritonpart_timeout_seconds: int = 3600,
+    tritonpart_seed_attempts: int = 1,
+    tritonpart_repair_min_used_fpgas: bool = False,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -60,6 +62,8 @@ def run_phase3(
             solution_input=tritonpart_solution,
             net_weights=load_partition_net_weights(net_weights_path),
             timeout_seconds=tritonpart_timeout_seconds,
+            seed_attempts=tritonpart_seed_attempts,
+            repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
         )
     else:
         raise ValueError(
@@ -79,7 +83,7 @@ def run_phase3(
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "provider": assignment["provider"],
-        "seed": seed,
+        "seed": assignment["seed"],
         "validation": validation,
         "partitions": assignment["partitions"],
         "artifacts": {

@@ -56,6 +56,9 @@ to synchronize a dirty worktree, records the source commit in
 | `picorv32-phase7d` | Cross-check G0-G9, rehash sources and 18 critical artifacts, and seal a release manifest. |
 | `koios-sync`, `koios-dla-small-synth`, `koios-dla-medium-synth` | Synchronize or run bounded Koios DLA synthesis experiments. |
 | `nvdla-sync`, `nvdla-screen` | Synchronize the pinned official NVDLA nvdlav1 source and run the connected 3.12M-cell Vivado scale gate. |
+| `nvdla-partition-a-synth` | Synthesize the connected NVDLA CACC partition, require zero black boxes, soft-map it to LUT/FF EmuIR, and enforce a 300k-cell gate. |
+| `nvdla-arch-vu9p-full` | Export and import the complete 147,780-SLICE VU9P architecture database. |
+| `openparf-build-sparse` | Build the experimental isolated greedy-first legalizer used by a recorded negative-control run. |
 | `phase2-all` | Run the Phase 1 plus reference Phase 2 validation sequence. |
 | `all` | Execute the complete sequence above. |
 
@@ -246,3 +249,41 @@ The validated `NV_nvdla` synthesis produced 3,123,117 hierarchical cells,
 Yosys JSON bridge is intentionally not part of this command: a measured
 attempt reached 118 GB RSS without producing JSON and was stopped before host
 memory exhaustion. See `docs/NVDLA_NVDLAV1_VALIDATION.md`.
+
+Run the connected hundreds-of-thousands-cell CACC frontend and export its
+full physical target:
+
+```bash
+scripts/remote/proj169-2.sh nvdla-partition-a-synth
+scripts/remote/proj169-2.sh nvdla-arch-vu9p-full
+```
+
+The gated-clock-converted design contains 731,313 EmuIR LUT/FF cells
+(334,522 LUTs and 396,791 FFs), one legal FF clock net, no fabric-routed
+clock net, and zero black boxes. The downstream four-FPGA TritonPart,
+system-routing, TDM, virtual-pin, split/equivalence, and physical results are
+recorded in `docs/NVDLA_PARTITION_A_FULL_FLOW.md`.
+
+For an existing complete Phase 6 experiment root, reproduce the physical
+stages directly on `proj169-2`:
+
+```bash
+scripts/remote/nvdla_partition_a_phase7.sh phase7a ROOT
+scripts/remote/nvdla_partition_a_phase7.sh phase7b ROOT
+scripts/remote/nvdla_partition_a_phase7.sh phase7c-finalize ROOT
+```
+
+The large partition defaults to one fixed LUT on each deterministic 1/64
+sample of OpenPARF-used SLICE sites. Override
+`EMUFLOW_MAIN_ANCHOR_MODULUS`, `EMUFLOW_MAIN_PLACE_DIRECTIVE`, or
+`EMUFLOW_MAIN_ROUTE_DIRECTIVE` to run explicitly labeled placement A/B
+experiments.
+
+The validated sparse-anchor run preserves 870 OpenPARF anchors and all
+731,331 mapped main-partition cell identities. Its 679,250 routable nets
+converge to zero routing errors with +1.435 ns WNS. Vivado inserts one
+explicitly audited `BUFGCE`, so the four-DCP Phase 7C result contains 731,387
+mapped cells and 731,388 physical cells, with zero unrouted nets and zero DRC
+violations. `phase7c-finalize` checks every mapped identity against the saved
+pre-placement inventory and rejects any tool-added cell outside the `BUFG*`
+infrastructure whitelist.

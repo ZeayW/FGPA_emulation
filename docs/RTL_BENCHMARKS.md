@@ -49,6 +49,17 @@ bridge, which was stopped at 118 GB RSS before it could emit EmuIR. See
 `docs/NVDLA_NVDLAV1_VALIDATION.md`. This is now the primary importer
 scalability milestone; NVDLA is not recorded as a completed end-to-end run.
 
+The bounded but still genuine `NV_NVDLA_partition_a` CACC top avoids that
+whole-chip importer ceiling while retaining a connected 731,313-cell mapped
+design. It has passed the logical path through TritonPart, system routing,
+TDM, virtual pin planning, per-FPGA split, and mapped equivalence on a
+four-VU9P virtual platform. It also completes four per-FPGA OpenPARF/Vivado
+implementations and the independent Phase 7C gate: 731,387 mapped cells plus
+one recorded BUFGCE, zero unrouted nets, zero DRC violations, and +1.435 ns
+worst WNS. Its physical closure experiment and the important atomic-cluster
+imbalance are recorded in
+`docs/NVDLA_PARTITION_A_FULL_FLOW.md`.
+
 The validated PicoRV32 configuration uses its upstream default parameters and
 logic-only mapping. It produced 2215 LUT and 1597 FF. Optional
 multiply/divide, compressed ISA, IRQ, and barrel-shift features are disabled

@@ -138,6 +138,242 @@ class Placement:
         )
 
     @classmethod
+    def from_openparf_global_pl(
+        cls,
+        path: Path,
+        architecture: ArchitectureDB,
+        ir: EmuIR,
+        tile_size: int = 8,
+        site_utilization_limit: float = 0.75,
+        site_y_range: Optional[Tuple[int, int]] = None,
+    ) -> "Placement":
+        """Legalize OpenPARF global coordinates onto free ArchitectureDB BELs.
+
+        OpenPARF's UltraScale direct legalizer scales poorly when hundreds of
+        thousands of otherwise sparse LUT/FF instances remain after its
+        detailed legalization pass.  This adapter preserves OpenPARF's global
+        spatial guidance, but performs the discrete Site/BEL assignment with
+        the exact ArchitectureDB inventory.
+        """
+        if tile_size <= 0:
+            raise ValueError("tile_size must be positive")
+        if not 0.0 < site_utilization_limit <= 1.0:
+            raise ValueError(
+                "site_utilization_limit must be in the interval (0, 1]"
+            )
+        if (
+            site_y_range is not None
+            and site_y_range[0] > site_y_range[1]
+        ):
+            raise ValueError("site_y_range minimum must not exceed maximum")
+
+        cell_types = {
+            instance["id"]: instance["type"] for instance in ir.value["instances"]
+        }
+        safe_to_original = {
+            safe: original
+            for original, safe in openparf_instance_names(ir).items()
+        }
+        raw_locations: Dict[str, Tuple[int, int]] = {}
+        with path.open("r", encoding="utf-8") as stream:
+            for line_number, raw_line in enumerate(stream, start=1):
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fields = line.split()
+                if len(fields) not in {4, 5}:
+                    raise ImportError(
+                        f"{path}:{line_number}: expected 'instance x y z [FIXED]'"
+                    )
+                raw_instance = fields[0]
+                instance = safe_to_original.get(raw_instance, raw_instance)
+                if instance not in cell_types:
+                    raise ImportError(
+                        f"{path}:{line_number}: unknown instance {raw_instance!r}"
+                    )
+                if instance in raw_locations:
+                    raise ImportError(
+                        f"{path}:{line_number}: duplicate instance {instance!r}"
+                    )
+                try:
+                    x = int(round(float(fields[1])))
+                    y = int(round(float(fields[2])))
+                    float(fields[3])
+                except ValueError as error:
+                    raise ImportError(
+                        f"{path}:{line_number}: x, y and z must be numeric"
+                    ) from error
+                raw_locations[instance] = (x, y)
+
+        missing = sorted(set(cell_types) - set(raw_locations))
+        if missing:
+            raise ImportError(
+                "OpenPARF global placement is incomplete; missing instances: "
+                + ", ".join(missing[:10])
+            )
+
+        eligible_sites = [
+            site
+            for site in architecture.sites
+            if site_y_range is None
+            or site_y_range[0] <= site["y"] <= site_y_range[1]
+        ]
+        if not eligible_sites:
+            raise ValidationError(
+                "site_y_range does not contain any architecture sites"
+            )
+
+        raw_y_min = min(location[1] for location in raw_locations.values())
+        raw_y_max = max(location[1] for location in raw_locations.values())
+
+        def transform_y(raw_y: int) -> int:
+            if site_y_range is None:
+                return raw_y
+            target_min, target_max = site_y_range
+            if raw_y_max == raw_y_min:
+                return (target_min + target_max) // 2
+            scaled = target_min + (
+                (raw_y - raw_y_min)
+                * (target_max - target_min)
+                / (raw_y_max - raw_y_min)
+            )
+            return max(target_min, min(target_max, int(round(scaled))))
+
+        Slot = Tuple[Dict[str, Any], Dict[str, Any]]
+        Bucket = Tuple[int, int]
+        slots: Dict[
+            Tuple[str, ...],
+            Dict[Bucket, Deque[Slot]],
+        ] = defaultdict(lambda: defaultdict(deque))
+        signatures_by_type: Dict[str, List[Tuple[str, ...]]] = defaultdict(list)
+        for site in eligible_sites:
+            bucket = (site["x"] // tile_size, site["y"] // tile_size)
+            site_bels: Dict[
+                Tuple[str, ...],
+                List[Dict[str, Any]],
+            ] = defaultdict(list)
+            for bel in site["bels"]:
+                signature = tuple(sorted(bel["compatible_cells"]))
+                site_bels[signature].append(bel)
+            for signature, compatible_bels in site_bels.items():
+                slot_limit = max(
+                    1,
+                    int(len(compatible_bels) * site_utilization_limit),
+                )
+                for bel in compatible_bels[:slot_limit]:
+                    slots[signature][bucket].append((site, bel))
+                for cell_type in signature:
+                    if signature not in signatures_by_type[cell_type]:
+                        signatures_by_type[cell_type].append(signature)
+
+        site_buckets = [
+            (site["x"] // tile_size, site["y"] // tile_size)
+            for site in eligible_sites
+        ]
+        min_bucket_x = min(bucket[0] for bucket in site_buckets)
+        max_bucket_x = max(bucket[0] for bucket in site_buckets)
+        min_bucket_y = min(bucket[1] for bucket in site_buckets)
+        max_bucket_y = max(bucket[1] for bucket in site_buckets)
+
+        def bucket_ring(center: Bucket, radius: int) -> Iterable[Bucket]:
+            if radius == 0:
+                yield center
+                return
+            left = center[0] - radius
+            right = center[0] + radius
+            bottom = center[1] - radius
+            top = center[1] + radius
+            for bucket_x in range(left, right + 1):
+                yield (bucket_x, bottom)
+                yield (bucket_x, top)
+            for bucket_y in range(bottom + 1, top):
+                yield (left, bucket_y)
+                yield (right, bucket_y)
+
+        def take_nearby_slot(cell_type: str, x: int, y: int) -> Slot:
+            target = (x // tile_size, y // tile_size)
+            signatures = signatures_by_type.get(cell_type, [])
+            maximum_radius = max(
+                abs(target[0] - min_bucket_x),
+                abs(target[0] - max_bucket_x),
+                abs(target[1] - min_bucket_y),
+                abs(target[1] - max_bucket_y),
+            )
+            for radius in range(maximum_radius + 1):
+                for bucket in bucket_ring(target, radius):
+                    for signature in signatures:
+                        bucket_slots = slots[signature].get(bucket)
+                        if not bucket_slots:
+                            continue
+                        selected = bucket_slots.popleft()
+                        if not bucket_slots:
+                            del slots[signature][bucket]
+                        return selected
+            raise ValidationError(
+                f"no legal ArchitectureDB slot remains for {cell_type}"
+            )
+
+        cells: List[Dict[str, Any]] = []
+        total_displacement = 0
+        maximum_displacement = 0
+        for instance in sorted(cell_types):
+            cell_type = cell_types[instance]
+            raw_x, raw_y = raw_locations[instance]
+            target_y = transform_y(raw_y)
+            site, bel = take_nearby_slot(cell_type, raw_x, target_y)
+            displacement = (
+                abs(site["x"] - raw_x) + abs(site["y"] - target_y)
+            )
+            total_displacement += displacement
+            maximum_displacement = max(maximum_displacement, displacement)
+            cells.append(
+                {
+                    "instance": instance,
+                    "cell_type": cell_type,
+                    "site": site["name"],
+                    "bel": bel["name"],
+                    "x": site["x"],
+                    "y": site["y"],
+                    "z": bel["z"],
+                    "fixed": False,
+                }
+            )
+
+        return cls(
+            {
+                "schema": PLACEMENT_SCHEMA,
+                "part": architecture.part,
+                "source": {
+                    "format": (
+                        "openparf-global-bookshelf-pl"
+                        "+emuflow-archdb-bucket-legalizer/v1"
+                    ),
+                    "path": str(path),
+                    "tile_size": tile_size,
+                    "site_utilization_limit": site_utilization_limit,
+                    "site_y_range": (
+                        list(site_y_range)
+                        if site_y_range is not None
+                        else None
+                    ),
+                    "openparf_y_range": [raw_y_min, raw_y_max],
+                    "y_transform": (
+                        "affine-to-site-y-range"
+                        if site_y_range is not None
+                        else "identity"
+                    ),
+                    "mean_manhattan_displacement": (
+                        total_displacement / len(cells) if cells else 0.0
+                    ),
+                    "max_manhattan_displacement": maximum_displacement,
+                },
+                "cells": cells,
+            },
+            architecture,
+            ir,
+        )
+
+    @classmethod
     def greedy_reference(
         cls, architecture: ArchitectureDB, ir: EmuIR
     ) -> "Placement":

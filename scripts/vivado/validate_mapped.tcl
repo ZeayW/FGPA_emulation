@@ -1,5 +1,5 @@
 if {$argc < 6} {
-    error "usage: vivado -mode batch -source validate_mapped.tcl -tclargs PART MAPPED_VERILOG TOP PLACEMENT_CONSTRAINTS OUTPUT_DIR EXPECTED_CELLS ?CLOCK_PORT PERIOD_NS? ?EXTRA_XDC?"
+    error "usage: vivado -mode batch -source validate_mapped.tcl -tclargs PART MAPPED_VERILOG_OR_DCP TOP PLACEMENT_CONSTRAINTS OUTPUT_DIR EXPECTED_CELLS ?CLOCK_PORT PERIOD_NS? ?EXTRA_XDC? ?MAX_FIXED_LUTS_PER_SITE? ?PLACE_DIRECTIVE? ?ROUTE_DIRECTIVE? ?ANCHOR_SITE_MODULUS?"
 }
 
 set part [lindex $argv 0]
@@ -10,15 +10,23 @@ set output_dir [file normalize [lindex $argv 4]]
 set expected_cells [lindex $argv 5]
 file mkdir $output_dir
 
-create_project -in_memory -part $part
-read_verilog $netlist_path
-synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
-write_checkpoint -force "$output_dir/unplaced.dcp"
+if {[file extension $netlist_path] eq ".dcp"} {
+    open_checkpoint $netlist_path
+} else {
+    create_project -in_memory -part $part
+    read_verilog $netlist_path
+    synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
+}
+set output_unplaced [file normalize "$output_dir/unplaced.dcp"]
+if {$netlist_path ne $output_unplaced} {
+    write_checkpoint -force $output_unplaced
+}
 set cell_inventory [open "$output_dir/cells_before_xdc.txt" w]
 foreach cell [lsort -dictionary [get_cells -hier]] {
     puts $cell_inventory [get_property NAME $cell]
 }
 close $cell_inventory
+set fixed_lut_anchors 0
 if {[file extension $placement_constraints] eq ".tsv"} {
     set placement_start_ms [clock milliseconds]
     set all_cells [lsort -ascii [get_cells -hier -filter \
@@ -41,6 +49,21 @@ if {[file extension $placement_constraints] eq ".tsv"} {
     array set lut_cells_by_site {}
     array set ff_cells_by_site {}
     array set cells_by_bel {}
+    array set fixed_luts_by_site {}
+    set max_fixed_luts_per_site -1
+    if {$argc >= 10} {
+        set max_fixed_luts_per_site [lindex $argv 9]
+        if {$max_fixed_luts_per_site < 0} {
+            error "MAX_FIXED_LUTS_PER_SITE must be non-negative"
+        }
+    }
+    set anchor_site_modulus 1
+    if {$argc >= 13} {
+        set anchor_site_modulus [lindex $argv 12]
+        if {$anchor_site_modulus <= 0} {
+            error "ANCHOR_SITE_MODULUS must be positive"
+        }
+    }
     foreach cell $all_cells actual_name $all_names line $placement_rows {
         set fields [split $line "\t"]
         if {[llength $fields] != 5} {
@@ -59,10 +82,37 @@ if {[file extension $placement_constraints] eq ".tsv"} {
         set $variable $cell
         set cell_type [lindex $fields 4]
         if {[string match "FD*" $cell_type]} {
-            lappend ff_cells_by_site([lindex $fields 2]) $cell
+            if {$max_fixed_luts_per_site >= 0} {
+                set emuflow_ff_repair($index) 1
+            } else {
+                lappend ff_cells_by_site([lindex $fields 2]) $cell
+            }
         } else {
-            lappend lut_cells_by_site([lindex $fields 2]) $cell
-            lappend cells_by_bel([lindex $fields 3]) $cell
+            set site [lindex $fields 2]
+            if {![info exists fixed_luts_by_site($site)]} {
+                set fixed_luts_by_site($site) 0
+            }
+            set anchor_site 1
+            if {$anchor_site_modulus > 1} {
+                if {![regexp {^SLICE_X([0-9]+)Y([0-9]+)$} \
+                    $site unused site_x site_y]} {
+                    error "cannot subsample non-SLICE anchor site $site"
+                }
+                set anchor_site [expr {
+                    (($site_x * 131) + ($site_y * 17)) %
+                    $anchor_site_modulus == 0
+                }]
+            }
+            if {$anchor_site &&
+                ($max_fixed_luts_per_site < 0 ||
+                 $fixed_luts_by_site($site) < $max_fixed_luts_per_site)} {
+                lappend lut_cells_by_site($site) $cell
+                lappend cells_by_bel([lindex $fields 3]) $cell
+                incr fixed_luts_by_site($site)
+                incr fixed_lut_anchors
+            } else {
+                set emuflow_lut_repair($index) 1
+            }
         }
         incr placement_count
     }
@@ -88,7 +138,7 @@ if {[file extension $placement_constraints] eq ".tsv"} {
         }
     }
     set placement_elapsed_ms [expr {[clock milliseconds] - $placement_start_ms}]
-    puts "EMUFLOW_PLACEMENT_TSV status=pass cells=$placement_count initial_ff_loc_rejects=$initial_ff_loc_rejects elapsed_ms=$placement_elapsed_ms"
+    puts "EMUFLOW_PLACEMENT_TSV status=pass cells=$placement_count fixed_lut_anchors=$fixed_lut_anchors anchor_site_modulus=$anchor_site_modulus initial_ff_loc_rejects=$initial_ff_loc_rejects elapsed_ms=$placement_elapsed_ms"
 } else {
     read_xdc $placement_constraints
 }
@@ -128,18 +178,34 @@ for {set index 0} {$index < $expected_cells} {incr index} {
             # Leave only those conflicting FFs movable for Vivado repair.
             set emuflow_ff_repair($index) 1
             incr ff_loc_repairs
+        } elseif {[info exists emuflow_lut_repair($index)]} {
+            # Coarse OpenPARF guidance fixes only the selected per-site LUT
+            # anchors. Vivado is expected to place all remaining LUTs.
         } else {
             error "$variable does not have a LOC constraint"
         }
     }
-    if {![string match "FD*" $ref_name] && [get_property BEL $cells] eq ""} {
+    if {![string match "FD*" $ref_name] &&
+        ![info exists emuflow_lut_repair($index)] &&
+        [get_property BEL $cells] eq ""} {
         error "$variable does not have a BEL constraint"
     }
 }
 
-# Complete placement of unconstrained physical objects. LUT Site/BEL decisions
-# remain fixed; only FF LOCs rejected for control-set conflicts may spill.
-place_design -directive Quick
+# Complete placement of unconstrained physical objects. In exact mode every
+# accepted Site/BEL remains fixed and only rejected FF LOCs may spill. In
+# coarse-anchor mode Vivado places all non-anchor LUTs and FFs. Allow an SSI
+# congestion-aware directive without changing the exact identity/anchor gate.
+set place_directive Quick
+if {$argc >= 11} {
+    set place_directive [lindex $argv 10]
+}
+set route_directive Default
+if {$argc >= 12} {
+    set route_directive [lindex $argv 11]
+}
+puts "EMUFLOW_IMPLEMENTATION_DIRECTIVES place=$place_directive route=$route_directive"
+place_design -directive $place_directive
 for {set index 0} {$index < $expected_cells} {incr index} {
     set variable "emuflow_cell_$index"
     set cells [set $variable]
@@ -148,10 +214,12 @@ for {set index 0} {$index < $expected_cells} {incr index} {
         error "$variable is unplaced after placement completion"
     }
     if {![string match "FD*" $ref_name]} {
-        if {![get_property IS_LOC_FIXED $cells]} {
+        if {![info exists emuflow_lut_repair($index)] &&
+            ![get_property IS_LOC_FIXED $cells]} {
             error "$variable LOC was not kept fixed during placement completion"
         }
-        if {![get_property IS_BEL_FIXED $cells]} {
+        if {![info exists emuflow_lut_repair($index)] &&
+            ![get_property IS_BEL_FIXED $cells]} {
             error "$variable BEL was not kept fixed during placement completion"
         }
     } elseif {![info exists emuflow_ff_repair($index)] &&
@@ -160,7 +228,7 @@ for {set index 0} {$index < $expected_cells} {incr index} {
     }
 }
 write_checkpoint -force "$output_dir/placed.dcp"
-route_design
+route_design -directive $route_directive
 write_checkpoint -force "$output_dir/routed.dcp"
 report_route_status -file "$output_dir/route_status.rpt"
 report_drc -file "$output_dir/drc.rpt"
@@ -170,4 +238,4 @@ set unrouted [get_nets -quiet -filter {ROUTE_STATUS == UNROUTED}]
 if {[llength $unrouted] != 0} {
     error "route completed with [llength $unrouted] unrouted nets"
 }
-puts "EMUFLOW_MAPPED_VIVADO status=pass part=$part cells=$expected_cells ff_loc_repairs=$ff_loc_repairs routed_dcp=$output_dir/routed.dcp"
+puts "EMUFLOW_MAPPED_VIVADO status=pass part=$part cells=$expected_cells fixed_lut_anchors=$fixed_lut_anchors ff_loc_repairs=$ff_loc_repairs routed_dcp=$output_dir/routed.dcp"

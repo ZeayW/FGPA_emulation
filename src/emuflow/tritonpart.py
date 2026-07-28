@@ -1,6 +1,7 @@
 import math
 import shutil
 import subprocess
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -361,6 +362,107 @@ def parse_tritonpart_solution(
     return assignment
 
 
+def _repair_min_used_fpgas(
+    cluster_assignment: Mapping[str, str],
+    clusters_artifact: Mapping[str, Any],
+    platform: Platform,
+    constraints: Mapping[str, Any],
+    hyperedges: Sequence[Mapping[str, Any]],
+) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
+    assignment = dict(cluster_assignment)
+    clusters = {
+        cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
+    }
+    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    capacity = {
+        fpga.id: fpga.effective_capacity for fpga in platform.fpgas
+    }
+    loads = {
+        fpga_id: {field: 0 for field in RESOURCE_FIELDS}
+        for fpga_id in fpga_ids
+    }
+    cluster_counts = {fpga_id: 0 for fpga_id in fpga_ids}
+    for cluster_id, fpga_id in assignment.items():
+        cluster_counts[fpga_id] += 1
+        for field, value in clusters[cluster_id]["resources"].items():
+            loads[fpga_id][field] += value
+
+    incident_edges: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
+    for edge in hyperedges:
+        for cluster_id in edge["clusters"]:
+            incident_edges[cluster_id].append(edge)
+
+    moves = []
+    while sum(count > 0 for count in cluster_counts.values()) < constraints[
+        "min_used_fpgas"
+    ]:
+        target = next(
+            fpga_id for fpga_id in fpga_ids if cluster_counts[fpga_id] == 0
+        )
+        candidates = []
+        for cluster_id, source in assignment.items():
+            cluster = clusters[cluster_id]
+            if cluster_counts[source] <= 1 or cluster["fixed_fpga"] is not None:
+                continue
+            resources = cluster["resources"]
+            if any(
+                loads[target][field] + resources.get(field, 0) > limit
+                for field, limit in capacity[target].items()
+            ):
+                continue
+            cut_delta = 0.0
+            for edge in incident_edges.get(cluster_id, []):
+                before = {
+                    assignment[edge_cluster]
+                    for edge_cluster in edge["clusters"]
+                }
+                after = {
+                    (
+                        target
+                        if edge_cluster == cluster_id
+                        else assignment[edge_cluster]
+                    )
+                    for edge_cluster in edge["clusters"]
+                }
+                cut_delta += (
+                    len(after) - len(before)
+                ) * float(edge["weight"])
+            candidates.append(
+                (
+                    len(cluster["instances"]),
+                    sum(resources.values()),
+                    cut_delta,
+                    cluster_id,
+                    source,
+                )
+            )
+        if not candidates:
+            raise ValidationError(
+                "TritonPart min-used-FPGA repair found no legal movable "
+                f"cluster for empty partition {target!r}"
+            )
+        instance_count, _, cut_delta, cluster_id, source = min(candidates)
+        resources = clusters[cluster_id]["resources"]
+        assignment[cluster_id] = target
+        cluster_counts[source] -= 1
+        cluster_counts[target] += 1
+        for field in RESOURCE_FIELDS:
+            value = resources.get(field, 0)
+            loads[source][field] -= value
+            loads[target][field] += value
+        moves.append(
+            {
+                "cluster": cluster_id,
+                "source": source,
+                "target": target,
+                "instances": instance_count,
+                "resources": dict(resources),
+                "estimated_cut_delta": cut_delta,
+            }
+        )
+    return assignment, moves
+
+
 def run_tritonpart(
     ir: EmuIR,
     platform: Platform,
@@ -372,7 +474,15 @@ def run_tritonpart(
     solution_input: Optional[Path] = None,
     net_weights: Optional[Mapping[str, float]] = None,
     timeout_seconds: int = 3600,
+    seed_attempts: int = 1,
+    repair_min_used_fpgas: bool = False,
 ) -> Dict[str, Any]:
+    if seed_attempts <= 0:
+        raise ValueError("TritonPart seed_attempts must be positive")
+    if solution_input is not None and seed_attempts != 1:
+        raise ValueError(
+            "precomputed TritonPart solutions require seed_attempts=1"
+        )
     tritonpart_input = export_tritonpart_inputs(
         ir,
         platform,
@@ -382,66 +492,120 @@ def run_tritonpart(
         net_weights=net_weights,
     )
     tcl_path = output_dir / tritonpart_input["files"]["tcl"]
-    # The seed is deliberately patched after exporting so the input metadata
-    # and generated command remain an exact record of the executed run.
-    tcl_text = tcl_path.read_text(encoding="utf-8").replace(
-        "  -seed 0 \\\n", f"  -seed {seed} \\\n"
-    )
-    tcl_path.write_text(tcl_text, encoding="utf-8")
-    tritonpart_input["seed"] = seed
-    write_json(output_dir / "tritonpart_input.json", tritonpart_input)
+    tcl_template = tcl_path.read_text(encoding="utf-8")
 
     solution_path = output_dir / tritonpart_input["files"]["solution"]
-    log_path = output_dir / "openroad-tritonpart.log"
     resolved_executable: Optional[str] = None
     mode = "execute"
-    if solution_input is not None:
-        if not solution_input.is_file():
-            raise ValidationError(
-                f"precomputed TritonPart solution does not exist: {solution_input}"
-            )
-        if solution_input.resolve() != solution_path.resolve():
-            shutil.copyfile(solution_input, solution_path)
-        mode = "import"
-    else:
+    if solution_input is None:
         resolved_executable = executable or shutil.which("openroad")
         if not resolved_executable:
             raise EmuFlowError(
                 "OpenROAD executable was not found; install OpenROAD with "
                 "TritonPart or pass --openroad PATH"
             )
-        if solution_path.exists():
-            solution_path.unlink()
-        try:
-            completed = subprocess.run(
-                [resolved_executable, "-exit", str(tcl_path.resolve())],
-                cwd=output_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-                timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise EmuFlowError(
-                f"TritonPart exceeded timeout of {timeout_seconds} seconds"
-            ) from error
-        log_path.write_text(completed.stdout, encoding="utf-8")
-        if completed.returncode != 0:
-            tail = "\n".join(completed.stdout.splitlines()[-30:])
-            raise EmuFlowError(
-                "OpenROAD/TritonPart failed with exit code "
-                f"{completed.returncode}\n{tail}"
-            )
-        if not solution_path.is_file():
-            raise EmuFlowError(
-                "OpenROAD/TritonPart reported success but did not create "
-                f"{solution_path}"
-            )
 
-    cluster_assignment = parse_tritonpart_solution(
-        solution_path, tritonpart_input
-    )
+    cluster_assignment: Optional[Dict[str, str]] = None
+    selected_seed = seed
+    selected_log: Optional[Path] = None
+    selected_repair_moves: List[Dict[str, Any]] = []
+    attempts = []
+    for offset in range(seed_attempts):
+        attempt_seed = seed + offset
+        tcl_text = tcl_template.replace(
+            "  -seed 0 \\\n", f"  -seed {attempt_seed} \\\n"
+        )
+        tcl_path.write_text(tcl_text, encoding="utf-8")
+        tritonpart_input["seed"] = attempt_seed
+        write_json(output_dir / "tritonpart_input.json", tritonpart_input)
+
+        if solution_input is not None:
+            if not solution_input.is_file():
+                raise ValidationError(
+                    "precomputed TritonPart solution does not exist: "
+                    f"{solution_input}"
+                )
+            if solution_input.resolve() != solution_path.resolve():
+                shutil.copyfile(solution_input, solution_path)
+            mode = "import"
+            log_path = None
+        else:
+            log_name = (
+                "openroad-tritonpart.log"
+                if seed_attempts == 1
+                else f"openroad-tritonpart.seed-{attempt_seed}.log"
+            )
+            log_path = output_dir / log_name
+            if solution_path.exists():
+                solution_path.unlink()
+            try:
+                completed = subprocess.run(
+                    [resolved_executable, "-exit", str(tcl_path.resolve())],
+                    cwd=output_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise EmuFlowError(
+                    f"TritonPart exceeded timeout of {timeout_seconds} seconds"
+                ) from error
+            log_path.write_text(completed.stdout, encoding="utf-8")
+            if completed.returncode != 0:
+                tail = "\n".join(completed.stdout.splitlines()[-30:])
+                raise EmuFlowError(
+                    "OpenROAD/TritonPart failed with exit code "
+                    f"{completed.returncode}\n{tail}"
+                )
+            if not solution_path.is_file():
+                raise EmuFlowError(
+                    "OpenROAD/TritonPart reported success but did not create "
+                    f"{solution_path}"
+                )
+
+        candidate = parse_tritonpart_solution(
+            solution_path, tritonpart_input
+        )
+        raw_used_fpgas = len(set(candidate.values()))
+        repair_moves: List[Dict[str, Any]] = []
+        if (
+            repair_min_used_fpgas
+            and raw_used_fpgas < constraints["min_used_fpgas"]
+        ):
+            candidate, repair_moves = _repair_min_used_fpgas(
+                candidate,
+                clusters_artifact,
+                platform,
+                constraints,
+                tritonpart_input["hyperedges"],
+            )
+        used_fpgas = len(set(candidate.values()))
+        attempts.append(
+            {
+                "seed": attempt_seed,
+                "raw_used_fpgas": raw_used_fpgas,
+                "used_fpgas": used_fpgas,
+                "repair_moves": repair_moves,
+                "log": log_path.name if log_path is not None else None,
+            }
+        )
+        if used_fpgas >= constraints["min_used_fpgas"]:
+            cluster_assignment = candidate
+            selected_seed = attempt_seed
+            selected_log = log_path
+            selected_repair_moves = repair_moves
+            break
+
+    if cluster_assignment is None:
+        raise ValidationError(
+            "TritonPart seed sweep did not satisfy min_used_fpgas; "
+            f"attempts={attempts}"
+        )
+    tritonpart_input["seed"] = selected_seed
+    tritonpart_input["seed_attempts"] = attempts
+    write_json(output_dir / "tritonpart_input.json", tritonpart_input)
     return build_partition_assignment(
         ir,
         platform,
@@ -449,7 +613,7 @@ def run_tritonpart(
         constraints,
         cluster_assignment,
         provider=TRITONPART_PROVIDER,
-        seed=seed,
+        seed=selected_seed,
         provider_metadata={
             "mode": mode,
             "executable": resolved_executable,
@@ -463,10 +627,19 @@ def run_tritonpart(
                 "effective_balance_percent"
             ],
             "balance_auto_relaxed": tritonpart_input["balance_auto_relaxed"],
+            "seed_attempts": attempts,
+            "min_used_fpgas_repair": {
+                "enabled": repair_min_used_fpgas,
+                "moves": selected_repair_moves,
+            },
             "artifacts": {
                 **tritonpart_input["files"],
                 "input": "tritonpart_input.json",
-                "log": log_path.name if mode == "execute" else None,
+                "log": (
+                    selected_log.name
+                    if selected_log is not None and mode == "execute"
+                    else None
+                ),
             },
         },
     )
