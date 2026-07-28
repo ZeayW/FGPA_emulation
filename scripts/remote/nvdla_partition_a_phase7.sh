@@ -96,10 +96,36 @@ list_contains() {
   esac
 }
 
+placement_checkpoint_is_valid() {
+  local lowering_report="$1"
+  local phase2_report="$2"
+  local expected_provider="$3"
+
+  python3 - "$lowering_report" "$phase2_report" \
+    "$expected_provider" <<'PY'
+import json
+import sys
+
+lowering = json.load(open(sys.argv[1], encoding="utf-8"))
+phase2 = json.load(open(sys.argv[2], encoding="utf-8"))
+expected_provider = sys.argv[3]
+placement = phase2.get("placement", {})
+if (
+    lowering.get("status") != "pass"
+    or phase2.get("status") != "pass"
+    or phase2.get("provider") != expected_provider
+    or placement.get("status") != "legal"
+    or placement.get("cells") != lowering.get("instances")
+):
+    raise SystemExit(1)
+PY
+}
+
 phase7a_one() {
   local fpga="$1"
   local target="$phase7a/$fpga"
   local reference="$target/placement-reference"
+  local expected_provider
   local result
 
   mkdir -p "$target"
@@ -140,6 +166,22 @@ phase7a_one() {
         --output "$target/placement.emuir.json" \
         --report "$target/lowering-report.json" \
         > "$target/lowering-stdout.json"
+  fi
+
+  if list_contains "$global_place_fpgas" "$fpga"; then
+    expected_provider="openparf-global+emuflow-archdb-legalizer"
+  else
+    expected_provider="openparf"
+  fi
+  if [ "$resume" = 1 ] &&
+    [ -s "$target/placement-openparf/placement.json" ] &&
+    [ -s "$target/placement-openparf/placement.vivado.tsv" ] &&
+    [ -s "$target/placement-openparf/phase2_report.json" ] &&
+    placement_checkpoint_is_valid \
+      "$target/lowering-report.json" \
+      "$target/placement-openparf/phase2_report.json" \
+      "$expected_provider"; then
+    return
   fi
 
   if [ "$resume" != 1 ] ||

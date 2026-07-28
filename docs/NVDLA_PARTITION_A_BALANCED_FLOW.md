@@ -252,24 +252,25 @@ independently reopened and checked.
 
 ## Phase 7A status
 
-Phase 7A is executing on `proj169-2`. Unlike the earlier deliberately
-unbalanced run, all four partitions now contain substantial original logic
-and tens of thousands of source/shadow transport signals. The first target is
-`fpga3`, which contains 107,055 original instances, 42,218 source signals,
-44,770 shadow signals, 114,743 transport endpoints, and 6.20 MB of generated
-transport SystemVerilog.
+Phase 7A completes on `proj169-2` for all four balanced partitions. Unlike
+the earlier deliberately unbalanced run, every partition contains substantial
+original logic and tens of thousands of source/shadow transport signals.
+Real Yosys synthesis, EmuIR import, indexed lowering, OpenPARF global
+placement, and ArchitectureDB legalization all exit normally.
 
-The real `fpga3` transport RTL synthesizes successfully into 94,242
-primitives: 49,460 LUTs and 44,782 FFs. Yosys takes 11:10.56 and peaks at
-2,217,224 KiB RSS. The merged placement IR contains:
+| FPGA | Original cells | Transport cells | Merged cells | Merged LUT | Merged FF | Merged nets |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fpga0` | 223,669 | 95,404 | 319,073 | 112,396 | 206,677 | 267,689 |
+| `fpga1` | 258,216 | 124,793 | 383,009 | 147,895 | 235,114 | 383,974 |
+| `fpga2` | 142,373 | 71,652 | 214,025 | 113,091 | 100,934 | 210,327 |
+| `fpga3` | 107,055 | 94,242 | 201,297 | 116,172 | 85,125 | 175,056 |
+| **Total** | **731,313** | **386,091** | **1,117,404** | **489,554** | **627,850** | **1,037,046** |
 
-| Metric | `fpga3` result |
-| --- | ---: |
-| original instances | 107,055 |
-| transport instances | 94,242 |
-| merged instances | 201,297 |
-| merged LUT | 116,172 |
-| merged FF | 85,125 |
+The transport synthesis scale ranges from 71,652 to 124,793 primitives per
+FPGA. For example, `fpga3` contains 42,218 source signals, 44,770 shadow
+signals, 114,743 transport endpoints, and 6.20 MB of generated transport
+SystemVerilog. Its transport maps to 94,242 primitives: 49,460 LUTs and
+44,782 FFs. Yosys takes 11:10.56 and peaks at 2,217,224 KiB RSS.
 
 This run exposed a lowering scalability bug: each source/shadow interface bit
 performed a full scan of every transport net. For `fpga3` that implied 86,988
@@ -284,7 +285,7 @@ All four balanced partitions use OpenPARF for continuous global coordinates
 followed by the checked ArchitectureDB legalizer. This is the scalable path
 previously used for the 731,331-cell unbalanced partition; OpenPARF's direct
 detailed legalizer is retained for genuinely small partitions but is not the
-default for these 100K–250K-cell balanced partitions.
+default for these 201K–383K-cell merged partitions.
 
 The strategy was selected from a real `fpga3` pilot. Direct OpenPARF global
 placement reached 14.83% LUT and 19.98% FF overflow in 601.624 seconds, then
@@ -295,8 +296,37 @@ the pilot was intentionally stopped and its log retained as
 Phase 2 reference checkpoints remain valid and are reused by the global-mode
 run.
 
-Final transport-cell, OpenPARF placement, Vivado routing, DRC, and timing
-metrics will be added only after their independent gates complete.
+| FPGA | Final LUT/FF overflow | OpenPARF wall time | Architecture legalization | Legal sites | Cells covered |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fpga0` | 0.94% / 19.59% | 9:02.34 | 2:48.29 | 18,733 | 319,073 |
+| `fpga1` | 5.65% / 19.96% | 10:14.44 | 3:25.57 | 24,650 | 383,009 |
+| `fpga2` | 15.64% / 19.57% | 10:08.68 | 2:26.81 | 18,849 | 214,025 |
+| `fpga3` | 14.83% / 19.98% | 10:05.20 | 2:16.45 | 19,362 | 201,297 |
+| **Total** |  |  |  | **81,594** | **1,117,404** |
+
+Each accepted Phase 2 report names
+`openparf-global+emuflow-archdb-legalizer` as its provider and reports a
+legal placement with exact lowering-instance coverage. The Phase 7A aggregate
+gate cross-checks all four reports and prints:
+
+```text
+EMUFLOW_NVDLA_PHASE7A status=pass merged_cells=1117404 transport_cells=386091
+```
+
+Four separate `placement validate` invocations then reload the ArchitectureDB,
+merged EmuIR, and placement JSON. All four again report `legal` with the exact
+cell/site counts above; their wall times range from 36.38 to 47.65 seconds.
+
+A concurrent `fpga1` transport pre-synthesis finished at the same moment the
+main runner inspected its files, starting one redundant Yosys process. The
+redundant task was stopped; the accepted 133.1 MB mapped JSON was re-imported
+independently and reproduced the 251.3 MB EmuIR byte for byte with SHA-256
+`f1813748f4e7edf106901beb94620cc1d7c51284b58c79a9ee3e5202e16fbfff`.
+The resume path now validates status, provider, legal placement, and exact
+cell coverage before skipping a completed partition.
+
+Vivado routing, DRC, and timing metrics remain pending until the Phase 7B and
+final Phase 7C physical gates complete.
 
 ## Reproduction
 
