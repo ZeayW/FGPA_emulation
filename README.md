@@ -180,7 +180,10 @@ legalizes the low-cut solution against cell/LUT/FF upper bounds, and validates
 placements, and four Vivado routed checkpoints. Its final Phase 7C result
 covers 1,117,404 mapped cells plus 146 audited timing replicas and one BUFG,
 with zero unrouted nets, zero DRC violations, and +0.010 ns worst WNS. Its
-algorithms, controls, and measured results are recorded in
+Phase 7D audit rehashes 376 source dependencies and 26 critical artifacts;
+two independent G0-G9 manifests are byte-identical at commit
+`63b05710466d35a64759ae51a1c51772e957c7ab`. Its algorithms, controls, and
+measured results are recorded in
 [docs/NVDLA_PARTITION_A_BALANCED_FLOW.md](docs/NVDLA_PARTITION_A_BALANCED_FLOW.md).
 The intermediate connected VeeR EH1 CPU result is recorded in
 [docs/VEER_EH1_VALIDATION.md](docs/VEER_EH1_VALIDATION.md).

@@ -19,11 +19,12 @@ board-independent flow:
   -> Phase 7 transport synthesis and OpenPARF placement
   -> Vivado placement, routing, DRC, and 250 MHz fabric timing closure
   -> independent four-DCP Phase 7C runtime/QoR closure
+  -> reproducible Phase 7D G0-G9 release audit
 ```
 
 Validation date: 2026-07-28 through 2026-07-29.
 
-Phases 3-7C pass on `proj169-2` for the real 731,313-cell design. The
+Phases 3-7D pass on `proj169-2` for the real 731,313-cell design. The
 experiment root is:
 
 ```text
@@ -422,6 +423,47 @@ drc_violations=0 worst_wns_ns=0.01
 
 The resulting `phase7c_report.json` and `qor_report.json` both have
 `status: pass`.
+
+## Phase 7D reproducible release audit
+
+Phase 7D does not rerun implementation. It independently reloads the
+versioned reports, rehashes the pinned RTL dependency inventory and critical
+artifacts, and rejects any disagreement at a phase boundary. Multicast
+accounting deliberately keeps three different quantities separate:
+
+| Cross-phase invariant | Count | Compared reports |
+| --- | ---: | --- |
+| cut nets / routing and TDM demands | 142,882 | Phase 3 = Phase 4 = Phase 5 |
+| original logical sink pins on cut nets | 661,822 | Phase 3 = Phase 6 |
+| source-FPGA to remote-FPGA sinks | 147,453 | Phase 4 = Phase 5 |
+| routed, scheduled, split, and bound bit-hops | 231,011 | Phase 4 = Phase 5 = Phase 6 lane map |
+
+A remote FPGA sink may fan out to many original logical sink pins, so the
+661,822 logical endpoints are not expected to equal the 147,453 routed remote
+sinks. Unit tests cover this multicast case and independently reject either
+kind of cross-phase mismatch.
+
+The accepted audit uses source commit
+`63b05710466d35a64759ae51a1c51772e957c7ab`. It rehashes 376 pinned source
+files and 26 release artifacts, including the global EmuIR, mapped synthesis
+JSON, partition assignment, routes, TDM schedule, lane map, four per-FPGA
+netlists, four OpenPARF placements, four mapped structural netlists, four
+routed DCPs, and runtime/QoR records. G0 through G9 all pass:
+
+```text
+EMUFLOW_NVDLA_PHASE7D status=pass gates=10 source_files=376 artifacts=26 \
+original_cells=731313 transport_cells=386091 routed_cells=1117404 \
+physical_cells=1117551 infrastructure_cells=147 cut_nets=142882 \
+worst_wns_ns=0.01 \
+manifest_sha256=1bd5f3e3681dec8018a78076489c899e818376cf705c0dd21a7ee57d85a6ba49
+```
+
+The runner performs the audit twice and byte-compares both outputs. The two
+release manifests have the same SHA-256 above, and the two Phase 7D reports
+both have SHA-256
+`72d9d8ed688c18873e7e7057be66d80a85b17386a47319c4f25cc5b4bcbe21cd`.
+The complete source-inventory plus double-audit command takes 34.98 seconds
+and peaks at 21,028 KiB RSS.
 
 ## Reproduction
 
