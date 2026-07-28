@@ -44,6 +44,9 @@ Environment overrides:
   EMUFLOW_PHASE7D_PROFILE
                       "legacy" for the original three-cut run or "balanced"
                       for the resource-bounded 142,882-cut run.
+  EMUFLOW_SOURCE_COMMIT
+                      Exact deployed 40-hex source commit. If unset, read
+                      EMUFLOW_REPO/.emuflow-source-commit.
 EOF
 }
 
@@ -575,13 +578,15 @@ run_phase7d() {
   local platform="$repo/platforms/virtual/xcvu9p_4fpga_mesh.json"
   local platform_name="virtual_xcvu9p_4fpga_mesh"
   local source_commit_file="$repo/.emuflow-source-commit"
-  local source_commit
+  local source_commit="${EMUFLOW_SOURCE_COMMIT:-}"
   local output="$root/phase7d"
   local repeat="$root/phase7d-repeat"
   local fpga
 
-  require_file "$source_commit_file"
-  source_commit="$(tr -d '\n' < "$source_commit_file")"
+  if [ -z "$source_commit" ]; then
+    require_file "$source_commit_file"
+    source_commit="$(tr -d '\n' < "$source_commit_file")"
+  fi
   if [[ ! "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
     echo "invalid deployed source commit: $source_commit" >&2
     exit 1
