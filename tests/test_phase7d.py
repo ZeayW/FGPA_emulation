@@ -315,6 +315,82 @@ class Phase7DTest(unittest.TestCase):
                     "abc123",
                 )
 
+    def test_multicast_logical_and_remote_sink_counts_are_distinct(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            values = self._inputs(Path(temporary_directory))
+            values["phase3"]["validation"]["cut_sink_endpoints"] = 9
+            values["phase6"]["validation"]["cut_sink_endpoints"] = 9
+            values["phase4"]["validation"]["routed_sinks"] = 3
+            values["phase5"]["validation"]["routed_sinks"] = 3
+            manifest = build_release_manifest(
+                values["benchmark"],
+                values["phase3"],
+                values["phase4"],
+                values["phase5"],
+                values["phase6"],
+                values["phase7c"],
+                values["runtime"],
+                values["qor"],
+                values["physical"],
+                values["platform"],
+                values["lowering"],
+                values["placement"],
+                values["emission"],
+                values["artifacts"],
+                "abc123",
+            )
+            self.assertEqual(manifest["status"], "pass")
+
+    def test_logical_sink_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            values = self._inputs(Path(temporary_directory))
+            values["phase6"]["validation"]["cut_sink_endpoints"] = 3
+            with self.assertRaisesRegex(
+                ValidationError, "logical sink endpoint counts"
+            ):
+                build_release_manifest(
+                    values["benchmark"],
+                    values["phase3"],
+                    values["phase4"],
+                    values["phase5"],
+                    values["phase6"],
+                    values["phase7c"],
+                    values["runtime"],
+                    values["qor"],
+                    values["physical"],
+                    values["platform"],
+                    values["lowering"],
+                    values["placement"],
+                    values["emission"],
+                    values["artifacts"],
+                    "abc123",
+                )
+
+    def test_remote_sink_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            values = self._inputs(Path(temporary_directory))
+            values["phase5"]["validation"]["routed_sinks"] = 3
+            with self.assertRaisesRegex(
+                ValidationError, "remote sink counts"
+            ):
+                build_release_manifest(
+                    values["benchmark"],
+                    values["phase3"],
+                    values["phase4"],
+                    values["phase5"],
+                    values["phase6"],
+                    values["phase7c"],
+                    values["runtime"],
+                    values["qor"],
+                    values["physical"],
+                    values["platform"],
+                    values["lowering"],
+                    values["placement"],
+                    values["emission"],
+                    values["artifacts"],
+                    "abc123",
+                )
+
     def test_run_phase7d_is_byte_reproducible(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
