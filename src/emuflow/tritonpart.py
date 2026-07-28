@@ -1,3 +1,4 @@
+import hashlib
 import math
 import shutil
 import subprocess
@@ -8,7 +9,11 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
-from .partition import build_partition_assignment
+from .partition import (
+    TRANSPORTED_CUT_CLASSES,
+    build_partition_assignment,
+    validate_cluster_assignment_balance,
+)
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
 
@@ -115,14 +120,14 @@ def _effective_balance_percent(
         sum(weights[index] for weights in vertex_weights)
         for index in range(len(vertex_weights[0]))
     ]
-    required_fraction = 0.0
+    required_ratio = 0.0
     largest_target = max(base_balance)
     for weights in vertex_weights:
         for index, total in enumerate(totals):
             if total:
-                required_fraction = max(
-                    required_fraction,
-                    weights[index] / total - largest_target,
+                required_ratio = max(
+                    required_ratio,
+                    weights[index] / total / largest_target - 1.0,
                 )
 
     fixed_totals = [
@@ -139,18 +144,40 @@ def _effective_balance_percent(
     for part_index, weights in enumerate(fixed_totals):
         for dimension, total in enumerate(totals):
             if total:
-                required_fraction = max(
-                    required_fraction,
-                    weights[dimension] / total - base_balance[part_index],
+                required_ratio = max(
+                    required_ratio,
+                    weights[dimension]
+                    / total
+                    / base_balance[part_index]
+                    - 1.0,
                 )
 
     requested_percent = requested_tolerance * 100.0
-    required_percent = max(0.0, required_fraction * 100.0)
+    required_percent = max(0.0, required_ratio * 100.0)
     # TritonPart compares floating-point accumulated weights. A small,
     # deterministic guard prevents an exactly tight atomic cluster from being
     # rejected due to rounding.
     effective_percent = max(requested_percent, required_percent + 0.01)
     return requested_percent, effective_percent
+
+
+def _tritonpart_ubfactor_percent_points(
+    base_balance: Sequence[float],
+    effective_balance_percent: float,
+) -> float:
+    """Translate EmuFlow's relative tolerance to TritonPart percentage points.
+
+    EmuFlow defines a 10% tolerance around a 25% target as an upper share of
+    27.5%. TritonPart instead adds ``UBfactor * 0.01`` directly to the target,
+    so the equivalent UBfactor is 2.5 percentage points, not 10.
+
+    A single TritonPart UBfactor is shared by all partitions. Using the largest
+    target share guarantees that an auto-relaxed atomic cluster can be placed;
+    EmuFlow's independent validator still enforces the stricter relative
+    tolerance per FPGA after TritonPart returns.
+    """
+
+    return max(base_balance) * effective_balance_percent
 
 
 def _legal_hyperedges(
@@ -168,7 +195,7 @@ def _legal_hyperedges(
 
     hyperedges = []
     for net in ir.value["nets"]:
-        if net["cut_class"] != "register_output":
+        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
             continue
         cluster_ids = sorted(
             {
@@ -217,6 +244,10 @@ def export_tritonpart_inputs(
         base_balance,
         constraints["balance_tolerance"],
     )
+    tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(
+        base_balance,
+        effective_balance,
+    )
 
     for dimension_index, field in enumerate(resource_fields, start=1):
         total = sum(item[dimension_index] for item in weights)
@@ -257,7 +288,8 @@ def export_tritonpart_inputs(
     )
     if not hyperedges:
         raise ValidationError(
-            "TritonPart hypergraph has no legal register-output hyperedges; "
+            "TritonPart hypergraph has no legal sequential-boundary "
+            "hyperedges; "
             "use the greedy provider for disconnected designs"
         )
 
@@ -295,7 +327,7 @@ def export_tritonpart_inputs(
         f"  -hypergraph_file {{{hypergraph_path.resolve()}}} \\",
         f"  -fixed_file {{{fixed_path.resolve()}}} \\",
         f"  -num_parts {len(fpga_ids)} \\",
-        f"  -balance_constraint {effective_balance:.9g} \\",
+        f"  -balance_constraint {tritonpart_ubfactor:.9g} \\",
         f"  -base_balance {tcl_list([f'{value:.12g}' for value in base_balance])} \\",
         f"  -scale_factor {tcl_list([1.0] * len(fpga_ids))} \\",
         f"  -seed 0 \\",
@@ -320,6 +352,7 @@ def export_tritonpart_inputs(
         "base_balance": base_balance,
         "requested_balance_percent": requested_balance,
         "effective_balance_percent": effective_balance,
+        "tritonpart_ubfactor_percent_points": tritonpart_ubfactor,
         "balance_auto_relaxed": effective_balance > requested_balance + 1e-9,
         "files": {
             "hypergraph": hypergraph_path.name,
@@ -463,6 +496,305 @@ def _repair_min_used_fpgas(
     return assignment, moves
 
 
+def _repair_multi_resource_balance(
+    cluster_assignment: Mapping[str, str],
+    clusters_artifact: Mapping[str, Any],
+    platform: Platform,
+    constraints: Mapping[str, Any],
+    tritonpart_input: Mapping[str, Any],
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Legalize a TritonPart solution against EmuFlow's upper load bounds.
+
+    TritonPart can return a best-effort solution when none of its randomized
+    initial candidates satisfies every multidimensional constraint. This
+    deterministic pass starts from that low-cut solution and moves only
+    clusters needed to remove upper-bound violations. Candidate moves are
+    ranked by hypergraph cut delta per unit of overload relief.
+    """
+
+    assignment = dict(cluster_assignment)
+    clusters = {
+        cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
+    }
+    cluster_order = list(tritonpart_input["cluster_order"])
+    fpga_order = list(tritonpart_input["fpga_order"])
+    dimensions = list(tritonpart_input["vertex_dimensions"])
+    vertex_weights = list(tritonpart_input["vertex_weights"])
+    fpga_index = {
+        fpga_id: index for index, fpga_id in enumerate(fpga_order)
+    }
+    labels = [
+        fpga_index[assignment[cluster_id]] for cluster_id in cluster_order
+    ]
+    num_parts = len(fpga_order)
+    num_dimensions = len(dimensions)
+    totals = [
+        sum(weights[dimension] for weights in vertex_weights)
+        for dimension in range(num_dimensions)
+    ]
+
+    base_balance: List[List[float]] = []
+    for dimension in dimensions:
+        if dimension == "cells":
+            base_balance.append([1.0 / num_parts] * num_parts)
+            continue
+        capacities = [
+            float(fpga.effective_capacity[dimension])
+            for fpga in platform.fpgas
+        ]
+        capacity_total = sum(capacities)
+        base_balance.append(
+            [capacity / capacity_total for capacity in capacities]
+        )
+    effective_ratio = (
+        float(tritonpart_input["effective_balance_percent"]) / 100.0
+    )
+    allowed = [
+        [
+            math.floor(
+                totals[dimension]
+                * base_balance[dimension][part]
+                * (1.0 + effective_ratio)
+                + 1e-7
+            )
+            for dimension in range(num_dimensions)
+        ]
+        for part in range(num_parts)
+    ]
+    loads = [[0] * num_dimensions for _ in range(num_parts)]
+    for part, weights in zip(labels, vertex_weights):
+        for dimension, weight in enumerate(weights):
+            loads[part][dimension] += weight
+    initial_loads = [list(item) for item in loads]
+
+    edge_vertices = [
+        [vertex - 1 for vertex in edge["vertices"]]
+        for edge in tritonpart_input["hyperedges"]
+    ]
+    edge_weights = [
+        float(edge["weight"]) for edge in tritonpart_input["hyperedges"]
+    ]
+    incident_edges: List[List[int]] = [
+        [] for _ in range(len(cluster_order))
+    ]
+    for edge_index, vertices in enumerate(edge_vertices):
+        for vertex in vertices:
+            incident_edges[vertex].append(edge_index)
+
+    def overload(part: int) -> List[int]:
+        return [
+            max(0, loads[part][dimension] - allowed[part][dimension])
+            for dimension in range(num_dimensions)
+        ]
+
+    def fits(vertex: int, part: int) -> bool:
+        return all(
+            loads[part][dimension] + vertex_weights[vertex][dimension]
+            <= allowed[part][dimension]
+            for dimension in range(num_dimensions)
+        )
+
+    def cut_delta(vertex: int, source: int, target: int) -> float:
+        delta = 0.0
+        for edge_index in incident_edges[vertex]:
+            vertices = edge_vertices[edge_index]
+            before = {labels[item] for item in vertices}
+            after = {
+                target if item == vertex else labels[item]
+                for item in vertices
+            }
+            delta += (
+                int(len(after) > 1) - int(len(before) > 1)
+            ) * edge_weights[edge_index]
+        return delta
+
+    def cut_summary() -> Tuple[int, float]:
+        cut_edges = 0
+        cut_weight = 0.0
+        for vertices, weight in zip(edge_vertices, edge_weights):
+            if len({labels[vertex] for vertex in vertices}) > 1:
+                cut_edges += 1
+                cut_weight += weight
+        return cut_edges, cut_weight
+
+    initial_cut_edges, initial_cut_weight = cut_summary()
+    move_counts: Dict[Tuple[int, int], int] = defaultdict(int)
+    moved_weights: Dict[Tuple[int, int], List[int]] = {}
+    move_digest = hashlib.sha256()
+    estimated_cut_delta = 0.0
+    move_total = 0
+
+    while True:
+        overloaded_parts = [
+            part for part in range(num_parts) if any(overload(part))
+        ]
+        if not overloaded_parts:
+            break
+        source = max(
+            overloaded_parts,
+            key=lambda part: max(
+                (
+                    loads[part][dimension] - allowed[part][dimension]
+                )
+                / max(1, allowed[part][dimension])
+                for dimension in range(num_dimensions)
+            ),
+        )
+        source_overload = overload(source)
+        ranked: List[Tuple[float, float, float, int]] = []
+        for vertex, (part, weights) in enumerate(
+            zip(labels, vertex_weights)
+        ):
+            if part != source:
+                continue
+            cluster_id = cluster_order[vertex]
+            if clusters[cluster_id]["fixed_fpga"] is not None:
+                continue
+            relief = sum(
+                min(weights[dimension], source_overload[dimension])
+                / max(1, allowed[source][dimension])
+                for dimension in range(num_dimensions)
+            )
+            if relief <= 0.0:
+                continue
+            choices = []
+            for target in range(num_parts):
+                if target == source or not fits(vertex, target):
+                    continue
+                delta = cut_delta(vertex, source, target)
+                projected_peak = max(
+                    (
+                        loads[target][dimension] + weights[dimension]
+                    )
+                    / max(1, allowed[target][dimension])
+                    for dimension in range(num_dimensions)
+                )
+                choices.append((delta, projected_peak, target))
+            if choices:
+                best_delta, _, _ = min(choices)
+                ranked.append(
+                    (
+                        best_delta / relief,
+                        best_delta,
+                        -relief,
+                        vertex,
+                    )
+                )
+        ranked.sort()
+
+        moved_from_source = 0
+        for _, _, _, vertex in ranked:
+            source_overload = overload(source)
+            if not any(source_overload):
+                break
+            if labels[vertex] != source:
+                continue
+            weights = vertex_weights[vertex]
+            if not any(
+                weights[dimension] and source_overload[dimension]
+                for dimension in range(num_dimensions)
+            ):
+                continue
+            choices = []
+            for target in range(num_parts):
+                if target == source or not fits(vertex, target):
+                    continue
+                delta = cut_delta(vertex, source, target)
+                projected_peak = max(
+                    (
+                        loads[target][dimension] + weights[dimension]
+                    )
+                    / max(1, allowed[target][dimension])
+                    for dimension in range(num_dimensions)
+                )
+                choices.append((delta, projected_peak, target))
+            if not choices:
+                continue
+            delta, _, target = min(choices)
+            labels[vertex] = target
+            for dimension, weight in enumerate(weights):
+                loads[source][dimension] -= weight
+                loads[target][dimension] += weight
+            transition = (source, target)
+            move_counts[transition] += 1
+            if transition not in moved_weights:
+                moved_weights[transition] = [0] * num_dimensions
+            for dimension, weight in enumerate(weights):
+                moved_weights[transition][dimension] += weight
+            cluster_id = cluster_order[vertex]
+            assignment[cluster_id] = fpga_order[target]
+            move_digest.update(
+                (
+                    f"{cluster_id}:{fpga_order[source]}"
+                    f"->{fpga_order[target]}\n"
+                ).encode("utf-8")
+            )
+            estimated_cut_delta += delta
+            move_total += 1
+            moved_from_source += 1
+        if not moved_from_source:
+            raise ValidationError(
+                "TritonPart balance repair found no legal move for "
+                f"{fpga_order[source]!r}; overload={overload(source)}"
+            )
+
+    final_cut_edges, final_cut_weight = cut_summary()
+    validate_cluster_assignment_balance(
+        platform,
+        clusters_artifact["clusters"],
+        assignment,
+        constraints["balance_tolerance"],
+    )
+    return assignment, {
+        "moves": move_total,
+        "move_sha256": move_digest.hexdigest(),
+        "move_counts": {
+            f"{fpga_order[source]}->{fpga_order[target]}": count
+            for (source, target), count in sorted(move_counts.items())
+        },
+        "moved_weights": {
+            f"{fpga_order[source]}->{fpga_order[target]}": {
+                dimension: value
+                for dimension, value in zip(
+                    dimensions,
+                    moved_weights[(source, target)],
+                )
+            }
+            for source, target in sorted(moved_weights)
+        },
+        "dimensions": dimensions,
+        "initial_loads": {
+            fpga_order[part]: {
+                dimension: value
+                for dimension, value in zip(
+                    dimensions,
+                    initial_loads[part],
+                )
+            }
+            for part in range(num_parts)
+        },
+        "final_loads": {
+            fpga_order[part]: {
+                dimension: value
+                for dimension, value in zip(dimensions, loads[part])
+            }
+            for part in range(num_parts)
+        },
+        "allowed_loads": {
+            fpga_order[part]: {
+                dimension: value
+                for dimension, value in zip(dimensions, allowed[part])
+            }
+            for part in range(num_parts)
+        },
+        "initial_cut_hyperedges": initial_cut_edges,
+        "final_cut_hyperedges": final_cut_edges,
+        "initial_cut_weight": initial_cut_weight,
+        "final_cut_weight": final_cut_weight,
+        "estimated_cut_delta": estimated_cut_delta,
+    }
+
+
 def run_tritonpart(
     ir: EmuIR,
     platform: Platform,
@@ -476,6 +808,7 @@ def run_tritonpart(
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     repair_min_used_fpgas: bool = False,
+    repair_balance: bool = False,
 ) -> Dict[str, Any]:
     if seed_attempts <= 0:
         raise ValueError("TritonPart seed_attempts must be positive")
@@ -509,6 +842,7 @@ def run_tritonpart(
     selected_seed = seed
     selected_log: Optional[Path] = None
     selected_repair_moves: List[Dict[str, Any]] = []
+    selected_balance_repair: Optional[Dict[str, Any]] = None
     attempts = []
     for offset in range(seed_attempts):
         attempt_seed = seed + offset
@@ -568,7 +902,49 @@ def run_tritonpart(
         candidate = parse_tritonpart_solution(
             solution_path, tritonpart_input
         )
+        attempt_solution = None
+        if seed_attempts > 1:
+            attempt_solution = (
+                output_dir
+                / f"partition.hgr.seed-{attempt_seed}.part.{len(platform.fpgas)}"
+            )
+            shutil.copyfile(solution_path, attempt_solution)
         raw_used_fpgas = len(set(candidate.values()))
+        balance_repair = None
+        repaired_solution_path = None
+        if repair_balance:
+            candidate, balance_repair = _repair_multi_resource_balance(
+                candidate,
+                clusters_artifact,
+                platform,
+                constraints,
+                tritonpart_input,
+            )
+            repaired_solution_path = output_dir / (
+                (
+                    f"partition.hgr.seed-{attempt_seed}.repaired.part."
+                    f"{len(platform.fpgas)}"
+                )
+                if seed_attempts > 1
+                else (
+                    "partition.hgr.repaired.part."
+                    f"{len(platform.fpgas)}"
+                )
+            )
+            fpga_index = {
+                fpga_id: index
+                for index, fpga_id in enumerate(
+                    tritonpart_input["fpga_order"]
+                )
+            }
+            repaired_solution_path.write_text(
+                "".join(
+                    f"{fpga_index[candidate[cluster_id]]}\n"
+                    for cluster_id in tritonpart_input["cluster_order"]
+                ),
+                encoding="utf-8",
+            )
+            balance_repair["solution"] = repaired_solution_path.name
         repair_moves: List[Dict[str, Any]] = []
         if (
             repair_min_used_fpgas
@@ -582,25 +958,59 @@ def run_tritonpart(
                 tritonpart_input["hyperedges"],
             )
         used_fpgas = len(set(candidate.values()))
-        attempts.append(
-            {
-                "seed": attempt_seed,
-                "raw_used_fpgas": raw_used_fpgas,
-                "used_fpgas": used_fpgas,
-                "repair_moves": repair_moves,
-                "log": log_path.name if log_path is not None else None,
-            }
-        )
+        attempt: Dict[str, Any] = {
+            "seed": attempt_seed,
+            "raw_used_fpgas": raw_used_fpgas,
+            "used_fpgas": used_fpgas,
+            "balance_repair": balance_repair,
+            "repair_moves": repair_moves,
+            "solution": (
+                attempt_solution.name
+                if attempt_solution is not None
+                else solution_path.name
+            ),
+            "repaired_solution": (
+                repaired_solution_path.name
+                if repaired_solution_path is not None
+                else None
+            ),
+            "log": log_path.name if log_path is not None else None,
+        }
+        if used_fpgas < constraints["min_used_fpgas"]:
+            attempt["accepted"] = False
+            attempt["rejection"] = "min_used_fpgas"
+            attempts.append(attempt)
+            continue
+        try:
+            attempt["balance_validation"] = (
+                validate_cluster_assignment_balance(
+                    platform,
+                    clusters_artifact["clusters"],
+                    candidate,
+                    constraints["balance_tolerance"],
+                )
+            )
+        except ValidationError as error:
+            attempt["accepted"] = False
+            attempt["rejection"] = "multi_resource_balance"
+            attempt["error"] = str(error)
+            attempts.append(attempt)
+            continue
+
+        attempt["accepted"] = True
+        attempts.append(attempt)
         if used_fpgas >= constraints["min_used_fpgas"]:
             cluster_assignment = candidate
             selected_seed = attempt_seed
-            selected_log = log_path
-            selected_repair_moves = repair_moves
-            break
+        selected_log = log_path
+        selected_repair_moves = repair_moves
+        selected_balance_repair = balance_repair
+        break
 
     if cluster_assignment is None:
         raise ValidationError(
-            "TritonPart seed sweep did not satisfy min_used_fpgas; "
+            "TritonPart seed sweep produced no independently acceptable "
+            "assignment; "
             f"attempts={attempts}"
         )
     tritonpart_input["seed"] = selected_seed
@@ -626,11 +1036,18 @@ def run_tritonpart(
             "effective_balance_percent": tritonpart_input[
                 "effective_balance_percent"
             ],
+            "tritonpart_ubfactor_percent_points": tritonpart_input[
+                "tritonpart_ubfactor_percent_points"
+            ],
             "balance_auto_relaxed": tritonpart_input["balance_auto_relaxed"],
             "seed_attempts": attempts,
             "min_used_fpgas_repair": {
                 "enabled": repair_min_used_fpgas,
                 "moves": selected_repair_moves,
+            },
+            "balance_repair": {
+                "enabled": repair_balance,
+                "summary": selected_balance_repair,
             },
             "artifacts": {
                 **tritonpart_input["files"],

@@ -9,6 +9,7 @@ from emuflow.io import read_json
 from emuflow.ir import EmuIR
 from emuflow.partition import (
     assign_clusters,
+    build_partition_assignment,
     build_clusters,
     normalize_partition_constraints,
     validate_partition_artifacts,
@@ -66,6 +67,12 @@ class Phase3Test(unittest.TestCase):
             self.assertEqual(report["validation"]["used_fpgas"], 2)
             self.assertEqual(report["validation"]["illegal_cuts"], 0)
             self.assertGreater(report["validation"]["cut_nets"], 0)
+            self.assertTrue(
+                all(
+                    "clusters" not in partition
+                    for partition in report["partitions"]
+                )
+            )
             for filename in (
                 "clusters.json",
                 "constraints.normalized.json",
@@ -102,7 +109,7 @@ class Phase3Test(unittest.TestCase):
                     }
                 ],
                 "min_used_fpgas": 2,
-                "balance_tolerance": 0.25,
+                "balance_tolerance": 0.50,
             },
             self.ir,
             self.platform,
@@ -142,7 +149,27 @@ class Phase3Test(unittest.TestCase):
             )
 
     def test_cluster_split_is_rejected(self) -> None:
-        _, clusters, assignment = self._artifacts()
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "groups": [
+                    {
+                        "id": "paired_cells",
+                        "instances": ["next_lut[0]", "q_reg[0]"],
+                    }
+                ],
+            },
+            self.ir,
+            self.platform,
+        )
+        clusters = build_clusters(self.ir, constraints)
+        assignment = assign_clusters(
+            self.ir,
+            self.platform,
+            clusters,
+            constraints,
+            seed=7,
+        )
         broken = copy.deepcopy(assignment)
         cluster = next(
             cluster
@@ -161,6 +188,43 @@ class Phase3Test(unittest.TestCase):
                 clusters,
                 broken,
             )
+
+    def test_register_input_cut_uses_second_transport_round(self) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        clusters = build_clusters(self.ir, constraints)
+        cluster_by_instance = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        cluster_assignment = {
+            cluster["id"]: "fpga0" for cluster in clusters["clusters"]
+        }
+        cluster_assignment[cluster_by_instance["next_lut[0]"]] = "fpga1"
+        assignment = build_partition_assignment(
+            self.ir,
+            self.platform,
+            clusters,
+            constraints,
+            cluster_assignment,
+            provider="test",
+            seed=0,
+        )
+        cut_by_net = {
+            cut["net"]: cut for cut in assignment["cut_nets"]
+        }
+        self.assertEqual(
+            cut_by_net["next_q[0]"]["cut_class"], "register_input"
+        )
+        self.assertEqual(cut_by_net["next_q[0]"]["transport_round"], 1)
+        self.assertNotIn("transport_round", cut_by_net["q[0]"])
+        self.assertEqual(
+            assignment["metrics"]["register_input_cut_nets"], 1
+        )
+        self.assertEqual(assignment["metrics"]["transport_rounds"], 2)
+        self.assertEqual(assignment["metrics"]["round_barriers"], 1)
 
     def test_infeasible_capacity_is_rejected(self) -> None:
         platform_value = self.platform.to_dict()
@@ -183,6 +247,38 @@ class Phase3Test(unittest.TestCase):
                 constraints,
             )
 
+    def test_unbalanced_provider_assignment_is_rejected(self) -> None:
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 1,
+                "balance_tolerance": 0.10,
+            },
+            self.ir,
+            self.platform,
+        )
+        clusters = build_clusters(self.ir, constraints)
+        assignment = build_partition_assignment(
+            self.ir,
+            self.platform,
+            clusters,
+            constraints,
+            {
+                cluster["id"]: "fpga0"
+                for cluster in clusters["clusters"]
+            },
+            provider="deliberately-unbalanced-test",
+            seed=0,
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "multi-resource balance"
+        ):
+            validate_partition_artifacts(
+                self.ir,
+                self.platform,
+                clusters,
+                assignment,
+            )
 
 if __name__ == "__main__":
     unittest.main()

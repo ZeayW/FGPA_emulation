@@ -215,15 +215,26 @@ def demands_from_assignment(
             raise ValidationError(
                 f"assignment.cut_nets[{index}]: no remote sink FPGA"
             )
-        demands.append(
-            {
-                "id": f"d{index:06d}",
-                "net": net_id,
-                "source": source,
-                "sinks": normalized_sinks,
-                "width_bits": 1,
-            }
-        )
+        raw_round = cut.get("transport_round", 0)
+        if (
+            isinstance(raw_round, bool)
+            or not isinstance(raw_round, int)
+            or raw_round < 0
+        ):
+            raise ValidationError(
+                f"assignment.cut_nets[{index}].transport_round: "
+                "expected a non-negative integer"
+            )
+        demand = {
+            "id": f"d{index:06d}",
+            "net": net_id,
+            "source": source,
+            "sinks": normalized_sinks,
+            "width_bits": 1,
+        }
+        if "transport_round" in cut:
+            demand["transport_round"] = raw_round
+        demands.append(demand)
     return sorted(demands, key=lambda demand: demand["net"])
 
 
@@ -511,10 +522,17 @@ def validate_system_routes(
         route = route_by_id[demand_id]
         demand = expected_by_id[demand_id]
         for field in ("id", "net", "source", "sinks", "width_bits"):
-            if route.get(field) != demand[field]:
+            actual = route.get(field)
+            if actual != demand[field]:
                 raise ValidationError(
                     f"route {demand_id!r}.{field}: does not match demand"
                 )
+        if route.get("transport_round", 0) != demand.get(
+            "transport_round", 0
+        ):
+            raise ValidationError(
+                f"route {demand_id!r}.transport_round: does not match demand"
+            )
         edge_keys, max_latency = _validate_route_tree(route, arcs)
         if route.get("max_latency_cycles") != max_latency:
             raise ValidationError(

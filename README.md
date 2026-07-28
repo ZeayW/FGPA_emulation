@@ -173,6 +173,12 @@ Vivado-inserted BUFGCE, zero unrouted nets, zero DRC violations, and
 26 critical artifacts into a byte-reproducible G0-G9 manifest; exact results
 and the board-independent boundary are recorded in
 [docs/NVDLA_PARTITION_A_FULL_FLOW.md](docs/NVDLA_PARTITION_A_FULL_FLOW.md).
+The follow-on four-FPGA resource-bounded experiment adds register-input
+transport rounds, independently rejects infeasible TritonPart solutions,
+legalizes the low-cut solution against cell/LUT/FF upper bounds, and validates
+142,882 real cut nets through the large routing/TDM/split path. Its algorithms,
+controls, and measured results are recorded in
+[docs/NVDLA_PARTITION_A_BALANCED_FLOW.md](docs/NVDLA_PARTITION_A_BALANCED_FLOW.md).
 The intermediate connected VeeR EH1 CPU result is recorded in
 [docs/VEER_EH1_VALIDATION.md](docs/VEER_EH1_VALIDATION.md).
 The completed Phase 3 implementation and the real two-FPGA partition

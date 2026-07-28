@@ -12,6 +12,7 @@ from .routing import (
 
 
 TDM_SCHEDULE_SCHEMA = "emuflow.tdm-schedule/v1"
+COMBINATIONAL_SETTLE_SLOTS = 1
 HopKey = Tuple[str, str, str, str]
 
 
@@ -60,6 +61,35 @@ def _link_by_id(platform: Platform):
     return {link.id: link for link in platform.links}
 
 
+def _round_order(
+    routes: Sequence[Mapping[str, Any]],
+) -> Tuple[List[Mapping[str, Any]], List[int]]:
+    for route in routes:
+        transport_round = route.get("transport_round", 0)
+        if (
+            isinstance(transport_round, bool)
+            or not isinstance(transport_round, int)
+            or transport_round < 0
+        ):
+            raise ValidationError(
+                f"TDM route {route['id']!r}.transport_round must be a "
+                "non-negative integer"
+            )
+    ordered = sorted(
+        routes,
+        key=lambda route: (
+            route.get("transport_round", 0),
+            -max((depth for depth, _ in _route_hops(route)), default=0),
+            route["net"],
+            route["id"],
+        ),
+    )
+    active_rounds = sorted(
+        {route.get("transport_round", 0) for route in routes}
+    )
+    return ordered, active_rounds
+
+
 def build_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -76,26 +106,51 @@ def build_tdm_schedule(
     frame_slots = constraints["frame_slots"]
     _, arcs, capacity_records = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
-    occupancy: Dict[str, Set[Tuple[int, int]]] = {
-        key: set() for key in capacity_records
+    slot_fill: Dict[str, List[int]] = {
+        key: [0] * frame_slots for key in capacity_records
     }
+    next_available: Dict[str, List[int]] = {
+        key: list(range(frame_slots + 1)) for key in capacity_records
+    }
+
+    def first_available_slot(capacity_key: str, start: int) -> int:
+        parents = next_available[capacity_key]
+        slot = start
+        while parents[slot] != slot:
+            parents[slot] = parents[parents[slot]]
+            slot = parents[slot]
+        root = slot
+        slot = start
+        while parents[slot] != slot:
+            successor = parents[slot]
+            parents[slot] = root
+            slot = successor
+        return root
+
     entries: List[Dict[str, Any]] = []
     demand_completions: List[Dict[str, Any]] = []
 
     raw_routes = routes.get("routes")
     if not isinstance(raw_routes, list):
         raise ValidationError("routes.routes: expected an array")
-    ordered_routes = sorted(
-        raw_routes,
-        key=lambda route: (
-            -max((depth for depth, _ in _route_hops(route)), default=0),
-            route["net"],
-            route["id"],
-        ),
-    )
+    ordered_routes, active_rounds = _round_order(raw_routes)
+    completion_by_round: Dict[int, int] = {}
     entry_index = 0
     for route in ordered_routes:
-        arrival_by_node = {route["source"]: -1}
+        transport_round = route.get("transport_round", 0)
+        prior_completions = [
+            completion
+            for round_index, completion in completion_by_round.items()
+            if round_index < transport_round
+        ]
+        source_ready_slot = max(
+            (
+                completion + COMBINATIONAL_SETTLE_SLOTS
+                for completion in prior_completions
+            ),
+            default=0,
+        )
+        arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
             arc_key = (edge["link"], edge["from"], edge["to"])
             if arc_key not in arcs:
@@ -105,29 +160,39 @@ def build_tdm_schedule(
             arc = arcs[arc_key]
             link = links[edge["link"]]
             ready_slot = (
-                0
+                source_ready_slot
                 if edge["from"] == route["source"]
                 else arrival_by_node[edge["from"]] + 1
             )
-            selected = None
             latest_exclusive = frame_slots - link.latency_cycles
-            for slot in range(ready_slot, latest_exclusive):
-                for lane in range(link.data_lanes_per_direction):
-                    if (slot, lane) not in occupancy[arc["capacity_key"]]:
-                        selected = (slot, lane)
-                        break
-                if selected is not None:
-                    break
-            if selected is None:
+            slot = (
+                frame_slots
+                if ready_slot >= frame_slots
+                else first_available_slot(
+                    arc["capacity_key"],
+                    ready_slot,
+                )
+            )
+            if slot >= latest_exclusive:
                 raise ValidationError(
                     f"TDM scheduling is infeasible for demand {route['id']!r} "
                     f"edge {arc_key}: ready={ready_slot}, "
                     f"frame_slots={frame_slots}, "
                     f"latency={link.latency_cycles}"
                 )
-            slot, lane = selected
+            lane = slot_fill[arc["capacity_key"]][slot]
+            slot_fill[arc["capacity_key"]][slot] += 1
+            if (
+                slot_fill[arc["capacity_key"]][slot]
+                == link.data_lanes_per_direction
+            ):
+                next_available[arc["capacity_key"]][slot] = (
+                    first_available_slot(
+                        arc["capacity_key"],
+                        slot + 1,
+                    )
+                )
             arrival_slot = slot + link.latency_cycles
-            occupancy[arc["capacity_key"]].add((slot, lane))
             arrival_by_node[edge["to"]] = arrival_slot
             entries.append(
                 {
@@ -155,10 +220,16 @@ def build_tdm_schedule(
         completion_slot = max(
             arrival_by_node[sink] for sink in route["sinks"]
         )
+        completion_by_round[transport_round] = max(
+            completion_slot,
+            completion_by_round.get(transport_round, completion_slot),
+        )
         demand_completions.append(
             {
                 "demand": route["id"],
                 "net": route["net"],
+                "transport_round": transport_round,
+                "source_ready_slot": source_ready_slot,
                 "completion_slot": completion_slot,
             }
         )
@@ -191,13 +262,17 @@ def build_tdm_schedule(
             (domain["utilization"] for domain in domain_schedules),
             default=0.0,
         ),
+        "transport_rounds": len(active_rounds),
+        "round_barriers": max(0, len(active_rounds) - 1),
+        "max_transport_round": max(active_rounds, default=0),
+        "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
         "collisions": 0,
     }
     return {
         "schema": TDM_SCHEDULE_SCHEMA,
         "design": routes.get("design"),
         "platform": platform.name,
-        "provider": "deterministic-earliest-slot-v1",
+        "provider": "deterministic-round-barrier-earliest-slot-v2",
         "route_constraints": constraints,
         "routes": [
             {
@@ -205,6 +280,7 @@ def build_tdm_schedule(
                 "net": route["net"],
                 "source": route["source"],
                 "sinks": list(route["sinks"]),
+                "transport_round": route.get("transport_round", 0),
                 "tree_edges": list(route["tree_edges"]),
             }
             for route in sorted(raw_routes, key=lambda item: item["id"])
@@ -288,16 +364,22 @@ def validate_tdm_schedule(
     _, arcs, _ = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
     expected = _expected_hops(routes)
-    expected_route_metadata = [
-        {
+    extended_schedule = (
+        schedule.get("provider")
+        == "deterministic-round-barrier-earliest-slot-v2"
+    )
+    expected_route_metadata = []
+    for route in sorted(routes["routes"], key=lambda item: item["id"]):
+        record = {
             "id": route["id"],
             "net": route["net"],
             "source": route["source"],
             "sinks": list(route["sinks"]),
             "tree_edges": list(route["tree_edges"]),
         }
-        for route in sorted(routes["routes"], key=lambda item: item["id"])
-    ]
+        if extended_schedule:
+            record["transport_round"] = route.get("transport_round", 0)
+        expected_route_metadata.append(record)
     if schedule.get("routes") != expected_route_metadata:
         raise ValidationError("schedule.routes does not match system routes")
 
@@ -378,9 +460,24 @@ def validate_tdm_schedule(
             f"schedule.entries: route-hop coverage is incomplete {missing[:8]}"
         )
 
+    ordered_routes, active_rounds = _round_order(routes["routes"])
+    completion_by_round: Dict[int, int] = {}
     completions = []
-    for route in sorted(routes["routes"], key=lambda item: item["id"]):
-        arrival_by_node = {route["source"]: -1}
+    for route in ordered_routes:
+        transport_round = route.get("transport_round", 0)
+        prior_completions = [
+            completion
+            for round_index, completion in completion_by_round.items()
+            if round_index < transport_round
+        ]
+        source_ready_slot = max(
+            (
+                completion + COMBINATIONAL_SETTLE_SLOTS
+                for completion in prior_completions
+            ),
+            default=0,
+        )
+        arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
             del depth
             entry = entries_by_hop[
@@ -392,7 +489,7 @@ def validate_tdm_schedule(
                 )
             ]
             ready = (
-                0
+                source_ready_slot
                 if edge["from"] == route["source"]
                 else arrival_by_node[edge["from"]] + 1
             )
@@ -411,15 +508,27 @@ def validate_tdm_schedule(
                 f"schedule demand {route['id']!r}: missing sinks "
                 f"{missing_sinks}"
             )
-        completions.append(
-            {
-                "demand": route["id"],
-                "net": route["net"],
-                "completion_slot": max(
-                    arrival_by_node[sink] for sink in route["sinks"]
-                ),
-            }
+        completion_slot = max(
+            arrival_by_node[sink] for sink in route["sinks"]
         )
+        completion_by_round[transport_round] = max(
+            completion_slot,
+            completion_by_round.get(transport_round, completion_slot),
+        )
+        completion = {
+            "demand": route["id"],
+            "net": route["net"],
+            "completion_slot": completion_slot,
+        }
+        if extended_schedule:
+            completion.update(
+                {
+                    "transport_round": transport_round,
+                    "source_ready_slot": source_ready_slot,
+                }
+            )
+        completions.append(completion)
+    completions.sort(key=lambda item: item["demand"])
     if schedule.get("demand_completions") != completions:
         raise ValidationError(
             "schedule.demand_completions does not match recomputed values"
@@ -446,6 +555,15 @@ def validate_tdm_schedule(
         ),
         "collisions": 0,
     }
+    if extended_schedule:
+        expected_metrics.update(
+            {
+                "transport_rounds": len(active_rounds),
+                "round_barriers": max(0, len(active_rounds) - 1),
+                "max_transport_round": max(active_rounds, default=0),
+                "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
+            }
+        )
     if schedule.get("metrics") != expected_metrics:
         raise ValidationError(
             "schedule.metrics does not match independently recomputed metrics"

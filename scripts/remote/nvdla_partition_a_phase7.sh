@@ -29,6 +29,12 @@ Environment overrides:
   EMUFLOW_PART
   EMUFLOW_FPGAS       Space-separated partition list for a resumed run.
   EMUFLOW_RESUME      Set to 1 to reuse checked lowering/reference artifacts.
+  EMUFLOW_GLOBAL_PLACE_FPGAS
+                      Space-separated FPGA list using OpenPARF global
+                      coordinates plus ArchitectureDB legalization.
+  EMUFLOW_SPARSE_ANCHOR_FPGAS
+                      Space-separated FPGA list using sparse OpenPARF anchors
+                      during Vivado implementation.
   EMUFLOW_MAIN_ANCHOR_MODULUS
                       Fix one LUT on every Nth deterministic OpenPARF site.
   EMUFLOW_MAIN_PLACE_DIRECTIVE
@@ -54,6 +60,8 @@ vivado="${EMUFLOW_VIVADO:-/data2/vivado/2025.2/Vivado/bin/vivado}"
 part="${EMUFLOW_PART:-xcvu9p-flga2104-2L-e}"
 fpgas="${EMUFLOW_FPGAS:-fpga1 fpga2 fpga3 fpga0}"
 resume="${EMUFLOW_RESUME:-0}"
+global_place_fpgas="${EMUFLOW_GLOBAL_PLACE_FPGAS:-fpga0}"
+sparse_anchor_fpgas="${EMUFLOW_SPARSE_ANCHOR_FPGAS:-fpga0}"
 main_anchor_modulus="${EMUFLOW_MAIN_ANCHOR_MODULUS:-64}"
 main_place_directive="${EMUFLOW_MAIN_PLACE_DIRECTIVE:-SSI_SpreadLogic_high}"
 main_route_directive="${EMUFLOW_MAIN_ROUTE_DIRECTIVE:-Default}"
@@ -69,6 +77,19 @@ require_file() {
     echo "required artifact is missing or empty: $1" >&2
     exit 1
   fi
+}
+
+list_contains() {
+  local values="$1"
+  local expected="$2"
+  case " $values " in
+    *" $expected "*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 phase7a_one() {
@@ -121,7 +142,7 @@ phase7a_one() {
         > "$target/placement-reference-report.json"
   fi
 
-  if [ "$fpga" = "fpga0" ]; then
+  if list_contains "$global_place_fpgas" "$fpga"; then
     python3 - "$reference/openparf/openparf.json" \
       "$target/openparf-global.json" <<'PY'
 import json
@@ -142,7 +163,7 @@ PY
         "$openparf_python" "$openparf_root/OpenPARF-install/openparf.py" \
           --config "$target/openparf-global.json" \
           --log "$target/openparf-global.log"
-    result="$reference/openparf/results-global/NV_NVDLA_partition_a__fpga0.pl"
+    result="$reference/openparf/results-global/NV_NVDLA_partition_a__${fpga}.pl"
     require_file "$result"
     /usr/bin/time -v -o "$target/architecture-legalization-time.txt" \
       env PYTHONPATH="$repo/src" python3 -m emuflow phase2 \
@@ -178,8 +199,8 @@ run_phase7a() {
   require_file "$yosys"
   mkdir -p "$phase7a"
 
-  # Finish the three tiny partitions first so their independent backend
-  # coverage remains available even if the 700k-cell placement is interrupted.
+  # The caller controls ordering so long runs can retain completed per-FPGA
+  # evidence if a later placement is interrupted.
   for fpga in $fpgas; do
     phase7a_one "$fpga"
   done
@@ -250,8 +271,8 @@ print(report["instances"], report["top"])
 PY
   )
   implementation_input="$target/mapped.v"
-  if [ "$fpga" = "fpga0" ]; then
-    if [ -n "$main_unplaced_dcp" ]; then
+  if list_contains "$sparse_anchor_fpgas" "$fpga"; then
+    if [ "$fpga" = "fpga0" ] && [ -n "$main_unplaced_dcp" ]; then
       require_file "$main_unplaced_dcp"
       implementation_input="$main_unplaced_dcp"
     fi

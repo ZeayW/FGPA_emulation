@@ -14,6 +14,7 @@ VALID_CUT_CLASSES = {
     "reset",
     "primary_input",
     "register_output",
+    "register_input",
     "combinational",
     "multi_driver",
     "undriven",

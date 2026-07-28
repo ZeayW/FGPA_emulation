@@ -158,6 +158,40 @@ class Phase5Test(unittest.TestCase):
         self.assertEqual(entries[1]["slot"], 2)
         self.assertEqual(entries[1]["arrival_slot"], 3)
 
+    def test_register_input_round_waits_for_register_output_round(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "dependency",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [("q", "a", ["b"]), ("d", "b", ["a"])],
+        )
+        assignment["cut_nets"][1]["cut_class"] = "register_input"
+        assignment["cut_nets"][1]["transport_round"] = 1
+        constraints = normalize_route_constraints(
+            None, platform, frame_slots=8
+        )
+        routes = route_system(assignment, platform, constraints)
+        schedule = build_tdm_schedule(routes, platform)
+        validation = validate_tdm_schedule(routes, platform, schedule)
+        entries = {entry["net"]: entry for entry in schedule["entries"]}
+        self.assertEqual(entries["q"]["slot"], 0)
+        self.assertEqual(entries["q"]["arrival_slot"], 1)
+        self.assertEqual(entries["d"]["ready_slot"], 2)
+        self.assertEqual(entries["d"]["slot"], 2)
+        self.assertEqual(validation["transport_rounds"], 2)
+        self.assertEqual(validation["round_barriers"], 1)
+        self.assertEqual(validation["max_transport_round"], 1)
+        completion = {
+            item["net"]: item for item in schedule["demand_completions"]
+        }
+        self.assertEqual(completion["d"]["source_ready_slot"], 2)
+        self.assertEqual(completion["d"]["transport_round"], 1)
+
     def test_latency_can_make_route_capacity_schedule_infeasible(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

@@ -15,7 +15,10 @@ from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.tritonpart import (
     TRITONPART_INPUT_SCHEMA,
+    _effective_balance_percent,
     _repair_min_used_fpgas,
+    _repair_multi_resource_balance,
+    _tritonpart_ubfactor_percent_points,
     export_tritonpart_inputs,
     parse_tritonpart_solution,
 )
@@ -68,6 +71,55 @@ class TritonPartTest(unittest.TestCase):
                 vertex_count,
             )
 
+    def test_atomic_balance_relaxation_is_relative_to_target_block(self) -> None:
+        requested, effective = _effective_balance_percent(
+            [[37], [21], [21], [21]],
+            [
+                {"fixed_fpga": None},
+                {"fixed_fpga": None},
+                {"fixed_fpga": None},
+                {"fixed_fpga": None},
+            ],
+            ["fpga0", "fpga1", "fpga2", "fpga3"],
+            [0.25, 0.25, 0.25, 0.25],
+            0.10,
+        )
+        self.assertEqual(requested, 10.0)
+        self.assertAlmostEqual(effective, 48.01)
+        self.assertAlmostEqual(
+            _tritonpart_ubfactor_percent_points(
+                [0.25, 0.25, 0.25, 0.25],
+                effective,
+            ),
+            12.0025,
+        )
+
+    def test_export_translates_relative_tolerance_to_ubfactor_points(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                output,
+            )
+            expected = (
+                max(artifact["base_balance"])
+                * artifact["effective_balance_percent"]
+            )
+            self.assertAlmostEqual(
+                artifact["tritonpart_ubfactor_percent_points"],
+                expected,
+            )
+            tcl = (output / "run_tritonpart.tcl").read_text()
+            self.assertIn(
+                f"-balance_constraint {expected:.9g}",
+                tcl,
+            )
+
     def test_solution_parser_rejects_invalid_part(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
@@ -109,7 +161,47 @@ class TritonPartTest(unittest.TestCase):
             self.assertEqual(len(moves), 1)
             self.assertEqual(moves[0]["source"], "fpga0")
             self.assertEqual(moves[0]["target"], "fpga1")
-            self.assertEqual(moves[0]["instances"], 2)
+            self.assertEqual(moves[0]["instances"], 1)
+
+    def test_balance_repair_legalizes_best_effort_solution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                Path(temporary_directory),
+            )
+            raw = {
+                cluster["id"]: "fpga0"
+                for cluster in self.clusters["clusters"]
+            }
+            repaired, summary = _repair_multi_resource_balance(
+                raw,
+                self.clusters,
+                self.platform,
+                self.constraints,
+                artifact,
+            )
+            self.assertEqual(set(repaired.values()), {"fpga0", "fpga1"})
+            self.assertGreater(summary["moves"], 0)
+            self.assertEqual(
+                summary["final_cut_weight"],
+                summary["initial_cut_weight"]
+                + summary["estimated_cut_delta"],
+            )
+            self.assertEqual(
+                summary["final_loads"]["fpga0"]["cells"],
+                summary["final_loads"]["fpga1"]["cells"],
+            )
+            self.assertEqual(
+                set(summary["moved_weights"]),
+                {"fpga0->fpga1"},
+            )
+            self.assertEqual(
+                set(summary["moved_weights"]["fpga0->fpga1"]),
+                {"cells", "lut", "ff"},
+            )
 
     def test_phase3_executes_provider_and_independently_validates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -135,7 +227,7 @@ class TritonPartTest(unittest.TestCase):
                 solution.write_text(
                     "\n".join(
                         (
-                            "0"
+                            ("1" if index == 0 else "0")
                             if len(attempted_seeds) == 1
                             else str(index % 2)
                         )
@@ -179,24 +271,28 @@ class TritonPartTest(unittest.TestCase):
             self.assertEqual(
                 assignment["provider_metadata"]["mode"], "execute"
             )
+            attempts = assignment["provider_metadata"]["seed_attempts"]
+            self.assertEqual([item["seed"] for item in attempts], [19, 20])
+            self.assertEqual(attempts[0]["raw_used_fpgas"], 2)
+            self.assertFalse(attempts[0]["accepted"])
             self.assertEqual(
-                assignment["provider_metadata"]["seed_attempts"],
-                [
-                    {
-                        "seed": 19,
-                        "raw_used_fpgas": 1,
-                        "used_fpgas": 1,
-                        "repair_moves": [],
-                        "log": "openroad-tritonpart.seed-19.log",
-                    },
-                    {
-                        "seed": 20,
-                        "raw_used_fpgas": 2,
-                        "used_fpgas": 2,
-                        "repair_moves": [],
-                        "log": "openroad-tritonpart.seed-20.log",
-                    },
-                ],
+                attempts[0]["rejection"],
+                "multi_resource_balance",
+            )
+            self.assertIn("violates", attempts[0]["error"])
+            self.assertEqual(
+                attempts[0]["solution"],
+                "partition.hgr.seed-19.part.2",
+            )
+            self.assertEqual(attempts[1]["raw_used_fpgas"], 2)
+            self.assertTrue(attempts[1]["accepted"])
+            self.assertEqual(
+                attempts[1]["balance_validation"]["balance_violations"],
+                0,
+            )
+            self.assertEqual(
+                attempts[1]["solution"],
+                "partition.hgr.seed-20.part.2",
             )
             self.assertEqual(
                 assignment["provider_metadata"]["min_used_fpgas_repair"],
@@ -209,6 +305,64 @@ class TritonPartTest(unittest.TestCase):
                     / "tritonpart"
                     / "openroad-tritonpart.seed-20.log"
                 ).is_file()
+            )
+
+    def test_phase3_balance_repair_is_audited_and_reproducible(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            ir_path = output / "design.emuir.json"
+            ir_path.write_text(
+                json.dumps(self.ir.to_dict()), encoding="utf-8"
+            )
+
+            def fake_openroad(command, **kwargs):
+                run_directory = Path(kwargs["cwd"])
+                tritonpart_input = json.loads(
+                    (run_directory / "tritonpart_input.json").read_text()
+                )
+                solution = run_directory / tritonpart_input["files"]["solution"]
+                solution.write_text(
+                    "\n".join(
+                        ["0"] * len(tritonpart_input["cluster_order"])
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n")
+
+            with mock.patch(
+                "emuflow.tritonpart.subprocess.run",
+                side_effect=fake_openroad,
+            ):
+                report = run_phase3(
+                    ir_path=ir_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=output / "phase3",
+                    seed=31,
+                    provider="tritonpart",
+                    openroad="/fake/openroad",
+                    tritonpart_repair_balance=True,
+                )
+
+            self.assertEqual(report["status"], "pass")
+            assignment = json.loads(
+                (output / "phase3" / "assignment.json").read_text()
+            )
+            repair = assignment["provider_metadata"]["balance_repair"]
+            self.assertTrue(repair["enabled"])
+            self.assertGreater(repair["summary"]["moves"], 0)
+            repaired_solution = (
+                output
+                / "phase3"
+                / "tritonpart"
+                / repair["summary"]["solution"]
+            )
+            self.assertTrue(repaired_solution.is_file())
+            self.assertEqual(
+                assignment["provider_metadata"]["seed_attempts"][0][
+                    "repaired_solution"
+                ],
+                repaired_solution.name,
             )
 
 

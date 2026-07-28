@@ -26,7 +26,16 @@ class YosysImportTest(unittest.TestCase):
         self.assertIn("clock", classes)
         self.assertIn("reset", classes)
         self.assertIn("register_output", classes)
-        self.assertIn("combinational", classes)
+        self.assertIn("register_input", classes)
+        register_inputs = {
+            net["id"]
+            for net in self.ir.value["nets"]
+            if net["cut_class"] == "register_input"
+        }
+        self.assertEqual(
+            register_inputs,
+            {"next_q[0]", "next_q[1]", "next_q[2]", "next_q[3]"},
+        )
         net_ids = {net["id"] for net in self.ir.value["nets"]}
         self.assertTrue({"q[0]", "q[1]", "q[2]", "q[3]"}.issubset(net_ids))
 

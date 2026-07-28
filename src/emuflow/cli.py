@@ -262,6 +262,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "provider leaves required partitions empty"
         ),
     )
+    phase3.add_argument(
+        "--tritonpart-repair-balance",
+        action="store_true",
+        help=(
+            "legalize a best-effort TritonPart solution against EmuFlow's "
+            "independently checked multi-resource upper bounds"
+        ),
+    )
 
     route_parser = subparsers.add_parser(
         "route", help="board-level system route artifact operations"
@@ -546,6 +554,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             tritonpart_repair_min_used_fpgas=(
                 args.tritonpart_repair_min_used_fpgas
             ),
+            tritonpart_repair_balance=args.tritonpart_repair_balance,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

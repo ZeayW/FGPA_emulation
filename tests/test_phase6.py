@@ -13,6 +13,7 @@ from emuflow.netlist import (
 )
 from emuflow.partition import (
     assign_clusters,
+    build_partition_assignment,
     build_clusters,
     normalize_partition_constraints,
 )
@@ -141,6 +142,59 @@ class Phase6Test(unittest.TestCase):
                 self.platform,
                 broken,
             )
+
+    def test_round_barrier_register_input_cut_is_cycle_equivalent(self) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        clusters = build_clusters(self.ir, constraints)
+        cluster_by_instance = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        cluster_assignment = {
+            cluster["id"]: "fpga0" for cluster in clusters["clusters"]
+        }
+        cluster_assignment[cluster_by_instance["next_lut[0]"]] = "fpga1"
+        assignment = build_partition_assignment(
+            self.ir,
+            self.platform,
+            clusters,
+            constraints,
+            cluster_assignment,
+            provider="test-dependent-cut",
+            seed=0,
+        )
+        route_constraints = normalize_route_constraints(
+            None, self.platform, frame_slots=32
+        )
+        routes = route_system(
+            assignment, self.platform, route_constraints
+        )
+        schedule = build_tdm_schedule(routes, self.platform)
+        artifacts = build_split_artifacts(
+            self.ir, assignment, schedule, self.platform
+        )
+        validation = validate_split_artifacts(
+            self.ir,
+            assignment,
+            schedule,
+            self.platform,
+            artifacts,
+        )
+        equivalence = simulate_partition_equivalence(
+            self.ir, assignment, schedule, cycles=12
+        )
+        cut_by_net = {
+            cut["net"]: cut for cut in assignment["cut_nets"]
+        }
+        self.assertEqual(cut_by_net["next_q[0]"]["transport_round"], 1)
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(equivalence["register_input_cuts"], 1)
+        self.assertEqual(equivalence["transport_rounds"], 2)
+        self.assertEqual(equivalence["round_barrier_checks"], 1)
+        self.assertEqual(equivalence["mismatches"], 0)
 
     def test_yosys_constant_connections_are_retained(self) -> None:
         constants = [

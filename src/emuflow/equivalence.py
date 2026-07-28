@@ -258,9 +258,52 @@ def simulate_partition_equivalence(
         raise ValidationError("equivalence cycles must be positive")
     model = _MappedModel(ir)
     assignment_map = assignment["instance_assignment"]
+    cut_class_by_net = {
+        cut["net"]: cut["cut_class"] for cut in assignment["cut_nets"]
+    }
     route_source = {}
     for cut in assignment["cut_nets"]:
         route_source[cut["net"]] = cut["source_fpgas"][0]
+
+    route_by_net = {
+        route["net"]: route for route in schedule.get("routes", [])
+    }
+    first_source_slot: Dict[str, int] = {}
+    completion_by_round: Dict[int, int] = {}
+    for entry in schedule.get("entries", []):
+        if entry["from"] == route_source[entry["net"]]:
+            first_source_slot[entry["net"]] = min(
+                entry["slot"],
+                first_source_slot.get(entry["net"], entry["slot"]),
+            )
+        transport_round = route_by_net[entry["net"]].get(
+            "transport_round", 0
+        )
+        completion_by_round[transport_round] = max(
+            entry["arrival_slot"],
+            completion_by_round.get(
+                transport_round, entry["arrival_slot"]
+            ),
+        )
+    round_barrier_checks = 0
+    for net_id, route in route_by_net.items():
+        transport_round = route.get("transport_round", 0)
+        prior_completions = [
+            completion
+            for round_index, completion in completion_by_round.items()
+            if round_index < transport_round
+        ]
+        if not prior_completions:
+            continue
+        round_barrier_checks += 1
+        required_slot = max(prior_completions) + 1
+        source_slot = first_source_slot.get(net_id)
+        if source_slot is None or source_slot < required_slot:
+            raise ValidationError(
+                f"cut net {net_id!r} in transport round "
+                f"{transport_round} is sent at {source_slot!r}, before "
+                f"round barrier slot {required_slot}"
+            )
 
     state = model.initial_state()
     trace = hashlib.sha256()
@@ -356,6 +399,12 @@ def simulate_partition_equivalence(
         "primitive_instances": len(model.instances),
         "flip_flops": len(model.ff_ids),
         "luts": len(model.lut_ids),
+        "register_input_cuts": sum(
+            cut_class == "register_input"
+            for cut_class in cut_class_by_net.values()
+        ),
+        "transport_rounds": len(completion_by_round),
+        "round_barrier_checks": round_barrier_checks,
         "compared_state_bits": compared_state_bits,
         "compared_output_bits": compared_outputs,
         "mismatches": 0,

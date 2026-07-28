@@ -31,6 +31,7 @@ def run_phase3(
     tritonpart_timeout_seconds: int = 3600,
     tritonpart_seed_attempts: int = 1,
     tritonpart_repair_min_used_fpgas: bool = False,
+    tritonpart_repair_balance: bool = False,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -64,6 +65,7 @@ def run_phase3(
             timeout_seconds=tritonpart_timeout_seconds,
             seed_attempts=tritonpart_seed_attempts,
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
+            repair_balance=tritonpart_repair_balance,
         )
     else:
         raise ValueError(
@@ -85,7 +87,14 @@ def run_phase3(
         "provider": assignment["provider"],
         "seed": assignment["seed"],
         "validation": validation,
-        "partitions": assignment["partitions"],
+        "partitions": [
+            {
+                key: value
+                for key, value in partition.items()
+                if key != "clusters"
+            }
+            for partition in assignment["partitions"]
+        ],
         "artifacts": {
             "clusters": "clusters.json",
             "constraints": "constraints.normalized.json",

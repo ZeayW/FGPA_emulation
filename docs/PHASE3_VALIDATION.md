@@ -66,8 +66,11 @@ scripts/remote/proj169-2.sh picorv32-x32-phase3
 
 ## Partition semantics
 
-The current synchronous semantic envelope permits inter-FPGA cuts only at
-register outputs and replicated primary inputs. Clock and reset nets are
+The synchronous semantic envelope permits transported inter-FPGA cuts at
+register outputs and at register D/CE inputs. Register-output values travel in
+round 0; register-input values travel in round 1 after a global round barrier
+and one combinational settle slot. Asynchronous clear/preset inputs are not
+classified as register-input cuts. Primary inputs, clocks, and resets are
 modeled as replicated globals.
 
 Phase 3 uses union-find closure to make every forbidden-cut connectivity
@@ -77,17 +80,27 @@ to an FPGA; conflicting fixed constraints fail before assignment.
 
 The default provider exports one hypergraph vertex per atomic cluster. Vertex
 dimension zero is instance count; remaining dimensions are active resources
-supported by every target FPGA, such as LUT and FF. Each register-output net
-connecting at least two clusters becomes a weighted hyperedge. Fixed clusters
-are emitted in hMETIS fixed-vertex format.
+supported by every target FPGA, such as LUT and FF. Each transported
+register-output or register-input net connecting at least two clusters becomes
+a weighted hyperedge. Fixed clusters are emitted in hMETIS fixed-vertex
+format.
 
 TritonPart receives the fixed seed, multi-dimensional weights, per-part base
-balance, and at least one vertex per part. Because its imbalance is a hard
-constraint, EmuFlow computes a deterministic lower bound from the largest
-atomic/fixed cluster and automatically relaxes an infeasible user target.
+balance, and at least one vertex per part. EmuFlow computes a deterministic
+lower bound from the largest atomic/fixed cluster and automatically relaxes an
+infeasible user target. The adapter translates EmuFlow's relative tolerance
+into TritonPart's additive percentage-point `UBfactor`; a 10% tolerance around
+a 25% target therefore becomes 2.5 percentage points, not 10.
 Connected PicoRV32 therefore uses 41.80712% rather than the requested 10%;
 without this relaxation, its 3,463-cell atomic cone cannot fit either nominal
 50% block.
+
+TritonPart can return a best-effort assignment even when its randomized
+multidimensional initial solutions are infeasible. EmuFlow consequently
+reloads and independently checks every candidate before acceptance. The
+optional `--tritonpart-repair-balance` pass legalizes a low-cut best-effort
+assignment by moving non-fixed clusters in minimum cut-delta-per-overload-
+relief order until all independent cell/LUT/FF upper bounds hold.
 
 The dependency-free deterministic greedy implementation remains selectable
 with `--provider greedy`. It is used for unit tests, environments without
@@ -190,10 +203,11 @@ not yet demonstrate a TritonPart QoR advantage on a large connected design.
 | every FPGA fits effective capacities | resource totals recomputed from EmuIR |
 | reproducible fixed-seed metrics | byte-identical assignment JSON and matching SHA-256 |
 
-Local and remote regression suites contain 66 passing tests, including
+Local and remote regression suites contain 89 passing tests, including
 infeasible capacity, missing coverage, split atomic cluster, group/fixed
 constraint, deterministic assignment, weighted hypergraph export, malformed
-solution rejection, external-provider execution, and forced two-FPGA cases.
+solution rejection, external-provider execution, independent balance
+rejection/repair, two-round scheduling, and forced two-FPGA cases.
 
 ## Remaining limitations and Phase 4 handoff
 
@@ -213,3 +227,9 @@ The TritonPart connected assignment passed the existing downstream gates:
 Phase 4 routed all 140 demands with zero overload, Phase 5 scheduled 140
 bit-hops with zero collisions, and Phase 6 compared 102,208 state bits plus
 12,864 output bits over 64 virtual cycles with zero mismatches.
+
+The follow-on real NVDLA experiment validates the revised semantics and
+balance checker at 731,313-cell scale. Its final legal assignment has 142,882
+cut nets, uses all four VU9Ps, passes independent multidimensional balance,
+and completes routing, two-round TDM, split, and mapped equivalence. See
+`docs/NVDLA_PARTITION_A_BALANCED_FLOW.md`.

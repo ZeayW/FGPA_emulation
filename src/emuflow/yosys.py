@@ -11,6 +11,8 @@ from .resources import ResourceVector, classify_ultrascale_primitive
 
 _CLOCK_NAME = re.compile(r"(^|[_/])(clk|clock)([_/]|$)", re.IGNORECASE)
 _RESET_NAME = re.compile(r"(^|[_/])(rst|reset|aresetn?)([_/]|$)", re.IGNORECASE)
+_SEQUENTIAL_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
+_TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {"D", "CE"}
 
 
 def _select_top_module(
@@ -116,6 +118,7 @@ def import_yosys_json(
         int, List[Tuple[int, int, str, int, int]]
     ] = defaultdict(list)
     instance_resources: Dict[str, ResourceVector] = {}
+    instance_types: Dict[str, str] = {}
 
     for port_name, raw_port in sorted(raw_ports.items()):
         if not isinstance(raw_port, dict):
@@ -150,6 +153,7 @@ def import_yosys_json(
             raise ImportError(f"cell {cell_name!r}: missing type")
         resources = classify_ultrascale_primitive(cell_type)
         instance_resources[cell_name] = resources
+        instance_types[cell_name] = cell_type
         parameters = raw_cell.get("parameters", {})
         attributes = raw_cell.get("attributes", {})
         constant_connections = []
@@ -249,6 +253,17 @@ def import_yosys_json(
             cut_class = "primary_input"
         elif driver_resources and driver_resources[0].ff:
             cut_class = "register_output"
+        elif endpoints["sinks"] and all(
+            endpoint["instance"] is not None
+            and instance_types[endpoint["instance"]] in _SEQUENTIAL_TYPES
+            and endpoint["port"] in _TRANSPORT_SAFE_SEQUENTIAL_INPUTS
+            for endpoint in endpoints["sinks"]
+        ):
+            # D and CE are sampled only at the virtual DUT edge. They can be
+            # transported during round 1 of the paused-clock frame, after all
+            # remote register outputs arrive in round 0. Async CLR/PRE and
+            # other control pins intentionally remain forbidden.
+            cut_class = "register_input"
         else:
             cut_class = "combinational"
 

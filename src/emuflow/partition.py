@@ -15,7 +15,8 @@ from .resources import RESOURCE_FIELDS, ResourceVector
 CLUSTERS_SCHEMA = "emuflow.clusters/v1"
 PARTITION_ASSIGNMENT_SCHEMA = "emuflow.partition-assignment/v1"
 PARTITION_CONSTRAINTS_SCHEMA = "emuflow.partition-constraints/v1"
-LEGAL_CUT_CLASSES = {"register_output", "primary_input"}
+TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
+LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
 HARD_MACRO_RESOURCES = {"bram18k", "uram288", "dsp48", "carry8"}
 
@@ -372,7 +373,7 @@ def _cluster_adjacency(
 ) -> Dict[str, Dict[str, int]]:
     adjacency: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for net in ir.value["nets"]:
-        if net["cut_class"] != "register_output":
+        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
             continue
         driver_clusters = {
             cluster_by_instance[endpoint["instance"]]
@@ -740,25 +741,189 @@ def compute_cut_nets(
             sink_endpoints_by_fpga[fpga_id] for fpga_id in remote_sink_fpgas
         )
         cut_sink_endpoints += remote_endpoints
-        cut_nets.append(
+        cut = {
+            "net": net["id"],
+            "cut_class": net["cut_class"],
+            "source_fpgas": driver_fpgas,
+            "sink_fpgas": remote_sink_fpgas,
+            "sink_endpoints": remote_endpoints,
+        }
+        if net["cut_class"] == "register_input":
+            # Round 0 distributes stable FF Q values. Round 1 starts only
+            # after every round-0 arrival plus one fabric settle cycle, so a
+            # D/CE source can safely depend on any remote FF without copying
+            # an enormous per-net transitive dependency list.
+            cut["transport_round"] = 1
+        cut_nets.append(cut)
+
+    metrics = {
+        "cut_nets": len(cut_nets),
+        "cut_sink_endpoints": cut_sink_endpoints,
+        "replicated_primary_inputs": replicated_primary_inputs,
+        "global_nets": global_nets,
+    }
+    register_input_cuts = sum(
+        cut["cut_class"] == "register_input" for cut in cut_nets
+    )
+    if register_input_cuts:
+        metrics.update(
             {
-                "net": net["id"],
-                "cut_class": net["cut_class"],
-                "source_fpgas": driver_fpgas,
-                "sink_fpgas": remote_sink_fpgas,
-                "sink_endpoints": remote_endpoints,
+                "register_input_cut_nets": register_input_cuts,
+                "transport_rounds": 2,
+                "round_barriers": 1,
             }
         )
+    return sorted(cut_nets, key=lambda item: item["net"]), metrics
 
-    return (
-        sorted(cut_nets, key=lambda item: item["net"]),
-        {
-            "cut_nets": len(cut_nets),
-            "cut_sink_endpoints": cut_sink_endpoints,
-            "replicated_primary_inputs": replicated_primary_inputs,
-            "global_nets": global_nets,
-        },
+
+def validate_cluster_assignment_balance(
+    platform: Platform,
+    clusters: Sequence[Mapping[str, Any]],
+    cluster_assignment: Mapping[str, str],
+    requested_tolerance: float,
+) -> Dict[str, Any]:
+    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    dimensions = ["cells"]
+    dimensions.extend(
+        field
+        for field in RESOURCE_FIELDS
+        if any(cluster["resources"].get(field, 0) for cluster in clusters)
+        and all(
+            fpga.effective_capacity.get(field, 0) > 0
+            for fpga in platform.fpgas
+        )
     )
+    weights = {
+        cluster["id"]: {
+            "cells": len(cluster["instances"]),
+            **{
+                field: cluster["resources"].get(field, 0)
+                for field in dimensions
+                if field != "cells"
+            },
+        }
+        for cluster in clusters
+    }
+    totals = {
+        dimension: sum(item[dimension] for item in weights.values())
+        for dimension in dimensions
+    }
+    base_balance: Dict[str, Dict[str, float]] = {}
+    for dimension in dimensions:
+        if dimension == "cells":
+            shares = {
+                fpga_id: 1.0 / len(fpga_ids) for fpga_id in fpga_ids
+            }
+        else:
+            capacity_total = sum(
+                fpga.effective_capacity[dimension]
+                for fpga in platform.fpgas
+            )
+            shares = {
+                fpga.id: (
+                    fpga.effective_capacity[dimension] / capacity_total
+                )
+                for fpga in platform.fpgas
+            }
+        base_balance[dimension] = shares
+
+    required_ratio = 0.0
+    for cluster in clusters:
+        for dimension in dimensions:
+            total = totals[dimension]
+            if not total:
+                continue
+            fixed_fpga = cluster.get("fixed_fpga")
+            target_share = (
+                base_balance[dimension][fixed_fpga]
+                if fixed_fpga is not None
+                else max(base_balance[dimension].values())
+            )
+            required_ratio = max(
+                required_ratio,
+                weights[cluster["id"]][dimension]
+                / total
+                / target_share
+                - 1.0,
+            )
+    fixed_loads = {
+        fpga_id: {dimension: 0 for dimension in dimensions}
+        for fpga_id in fpga_ids
+    }
+    for cluster in clusters:
+        fixed_fpga = cluster.get("fixed_fpga")
+        if fixed_fpga is None:
+            continue
+        for dimension in dimensions:
+            fixed_loads[fixed_fpga][dimension] += weights[
+                cluster["id"]
+            ][dimension]
+    for fpga_id in fpga_ids:
+        for dimension in dimensions:
+            total = totals[dimension]
+            if total:
+                required_ratio = max(
+                    required_ratio,
+                    fixed_loads[fpga_id][dimension]
+                    / total
+                    / base_balance[dimension][fpga_id]
+                    - 1.0,
+                )
+
+    requested_percent = requested_tolerance * 100.0
+    effective_percent = max(
+        requested_percent,
+        max(0.0, required_ratio * 100.0) + 0.01,
+    )
+    loads = {
+        fpga_id: {dimension: 0 for dimension in dimensions}
+        for fpga_id in fpga_ids
+    }
+    for cluster_id, fpga_id in cluster_assignment.items():
+        for dimension in dimensions:
+            loads[fpga_id][dimension] += weights[cluster_id][dimension]
+
+    violations = []
+    maximum_ratio = 0.0
+    for fpga_id in fpga_ids:
+        for dimension in dimensions:
+            total = totals[dimension]
+            if not total:
+                continue
+            actual_share = loads[fpga_id][dimension] / total
+            target_share = base_balance[dimension][fpga_id]
+            allowed_share = target_share * (
+                1.0 + effective_percent / 100.0
+            )
+            ratio = actual_share / allowed_share
+            maximum_ratio = max(maximum_ratio, ratio)
+            if ratio > 1.0 + 1e-9:
+                violations.append(
+                    {
+                        "fpga": fpga_id,
+                        "dimension": dimension,
+                        "bound": "upper",
+                        "load": loads[fpga_id][dimension],
+                        "total": total,
+                        "actual_share": actual_share,
+                        "allowed_share": allowed_share,
+                    }
+                )
+    if violations:
+        raise ValidationError(
+            "assignment violates effective multi-resource balance: "
+            f"{violations[:8]}"
+        )
+    return {
+        "requested_balance_percent": requested_percent,
+        "effective_balance_percent": effective_percent,
+        "balance_auto_relaxed": (
+            effective_percent > requested_percent + 1e-9
+        ),
+        "balance_dimensions": dimensions,
+        "max_balance_limit_ratio": maximum_ratio,
+        "balance_violations": 0,
+    }
 
 
 def validate_partition_artifacts(
@@ -894,6 +1059,27 @@ def validate_partition_artifacts(
             f"assignment uses {used_fpgas} FPGAs; "
             f"{constraints['min_used_fpgas']} required"
         )
+    raw_cluster_assignment = assignment_artifact.get("cluster_assignment")
+    if not isinstance(raw_cluster_assignment, dict):
+        raise ValidationError("assignment.cluster_assignment: expected an object")
+    if set(raw_cluster_assignment) != cluster_ids:
+        raise ValidationError(
+            "assignment.cluster_assignment: exact cluster coverage failed"
+        )
+    expected_cluster_assignment = {
+        cluster["id"]: raw_assignment[cluster["instances"][0]]
+        for cluster in raw_clusters
+    }
+    if raw_cluster_assignment != expected_cluster_assignment:
+        raise ValidationError(
+            "assignment.cluster_assignment does not match instance assignment"
+        )
+    balance_validation = validate_cluster_assignment_balance(
+        platform,
+        raw_clusters,
+        raw_cluster_assignment,
+        constraints["balance_tolerance"],
+    )
 
     illegal_cuts: List[str] = []
     for net in ir.value["nets"]:
@@ -933,6 +1119,7 @@ def validate_partition_artifacts(
         "used_fpgas": used_fpgas,
         "illegal_cuts": 0,
         **expected_metrics,
+        **balance_validation,
         "resources_by_fpga": {
             fpga_id: resources.to_dict(include_zeros=False)
             for fpga_id, resources in resources_by_fpga.items()
