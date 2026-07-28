@@ -77,6 +77,7 @@ class Phase7DTest(unittest.TestCase):
                 "instances": 10,
                 "used_fpgas": 2,
                 "cut_nets": 2,
+                "cut_sink_endpoints": 2,
                 "illegal_cuts": 0,
             },
         }
@@ -88,6 +89,7 @@ class Phase7DTest(unittest.TestCase):
             "validation": {
                 "demands": 2,
                 "routed_sinks": 2,
+                "total_link_bit_hops": 2,
                 "overloaded_links": 0,
             },
         }
@@ -97,6 +99,8 @@ class Phase7DTest(unittest.TestCase):
             "design": "dut",
             "platform": platform.name,
             "validation": {
+                "demands": 2,
+                "routed_sinks": 2,
                 "scheduled_bit_hops": 2,
                 "frame_slots": 8,
                 "completion_slot": 2,
@@ -110,6 +114,7 @@ class Phase7DTest(unittest.TestCase):
             "platform": platform.name,
             "validation": {
                 "instances": 10,
+                "cut_sink_endpoints": 2,
                 "scheduled_hops": 2,
                 "instance_coverage_errors": 0,
                 "endpoint_agreement_errors": 0,
@@ -214,7 +219,11 @@ class Phase7DTest(unittest.TestCase):
             fpga: {
                 "schema": "emuflow.phase2-report/v1",
                 "status": "pass",
-                "provider": "openparf",
+                "provider": (
+                    "openparf-global+emuflow-archdb-legalizer"
+                    if fpga == "fpga0"
+                    else "openparf"
+                ),
                 "placement": {
                     "status": "legal",
                     "cells": 8 if fpga == "fpga0" else 5,
@@ -275,13 +284,19 @@ class Phase7DTest(unittest.TestCase):
                 {"pass"},
             )
             self.assertEqual(manifest["metrics"]["routed_cells"], 13)
+            self.assertEqual(manifest["metrics"]["physical_cells"], 13)
+            self.assertEqual(
+                manifest["metrics"]["infrastructure_cells"], 0
+            )
             self.assertEqual(len(manifest["artifacts"]), 1)
 
     def test_cross_phase_count_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             values = self._inputs(Path(temporary_directory))
             values["phase5"]["validation"]["scheduled_bit_hops"] = 3
-            with self.assertRaisesRegex(ValidationError, "counts do not agree"):
+            with self.assertRaisesRegex(
+                ValidationError, "bit-hop counts do not agree"
+            ):
                 build_release_manifest(
                     values["benchmark"],
                     values["phase3"],

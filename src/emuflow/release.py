@@ -201,11 +201,27 @@ def build_release_manifest(
     if not (
         cut_nets
         == p4.get("demands")
+        == p5.get("demands")
+    ):
+        raise ValidationError(
+            "cut and routed-demand counts do not agree"
+        )
+    if not (
+        p3.get("cut_sink_endpoints")
+        == p4.get("routed_sinks")
+        == p5.get("routed_sinks")
+        == p6.get("cut_sink_endpoints")
+    ):
+        raise ValidationError(
+            "cut and routed-sink endpoint counts do not agree"
+        )
+    if not (
+        p4.get("total_link_bit_hops")
         == p5.get("scheduled_bit_hops")
         == p6.get("scheduled_hops")
     ):
         raise ValidationError(
-            "cut, route, schedule, and split counts do not agree"
+            "routed, scheduled, and split bit-hop counts do not agree"
         )
     original_cells = p3.get("instances")
     if not (
@@ -246,7 +262,11 @@ def build_release_manifest(
         if (
             placement.get("schema") != PHASE2_REPORT_SCHEMA
             or placement.get("status") != "pass"
-            or placement.get("provider") != "openparf"
+            or placement.get("provider")
+            not in {
+                "openparf",
+                "openparf-global+emuflow-archdb-legalizer",
+            }
             or placement.get("placement", {}).get("status") != "legal"
         ):
             raise ValidationError(
@@ -340,6 +360,8 @@ def build_release_manifest(
             "original_cells": original_cells,
             "transport_cells": physical["transport_cells"],
             "routed_cells": physical["routed_cells"],
+            "physical_cells": physical["physical_cells"],
+            "infrastructure_cells": physical["infrastructure_cells"],
             "cut_nets": cut_nets,
             "scheduled_bit_hops": p5["scheduled_bit_hops"],
             "equivalence_cycles": eq["cycles"],

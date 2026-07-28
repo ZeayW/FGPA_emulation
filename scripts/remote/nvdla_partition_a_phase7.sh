@@ -8,12 +8,16 @@ Usage:
   nvdla_partition_a_phase7.sh phase7a ROOT
   nvdla_partition_a_phase7.sh phase7b ROOT
   nvdla_partition_a_phase7.sh phase7c-finalize ROOT
+  nvdla_partition_a_phase7.sh phase7d ROOT
 
 Run the per-FPGA physical stages for an existing NVDLA partition-A Phase 6
 result on proj169-2. ROOT must contain phase3 through phase6 artifacts.
 The phase7c-finalize command additionally requires the four routed Phase 7B
 checkpoints and converts their route, DRC, and timing results into the final
 Phase 7C physical/QoR report.
+The phase7d command rehashes the complete pinned source dependency set,
+cross-checks G0-G9, hashes the release-critical artifacts, and requires a
+byte-reproducible release manifest.
 
 Environment overrides:
   EMUFLOW_REPO
@@ -483,6 +487,144 @@ print(
 PY
 }
 
+run_phase7d() {
+  local platform="$repo/platforms/virtual/xcvu9p_4fpga_mesh.json"
+  local platform_name="virtual_xcvu9p_4fpga_mesh"
+  local source_commit_file="$repo/.emuflow-source-commit"
+  local source_commit
+  local output="$root/phase7d"
+  local repeat="$root/phase7d-repeat"
+  local fpga
+
+  require_file "$source_commit_file"
+  source_commit="$(tr -d '\n' < "$source_commit_file")"
+  if [[ ! "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "invalid deployed source commit: $source_commit" >&2
+    exit 1
+  fi
+  require_file "$platform"
+  require_file "$root/phase1/phase1_report.json"
+  require_file "$phase7c/phase7c_report.json"
+  require_file "$phase7c/runtime_contract.json"
+  require_file "$phase7c/qor_report.json"
+  require_file "$phase7c/physical_summary.json"
+
+  env PYTHONPATH="$repo/src" python3 \
+    "$repo/scripts/benchmarks/nvdla_release_inventory.py" \
+    "$repo" "$root" "$platform_name" "$root/benchmark_report.json"
+
+  run_audit() {
+    local target="$1"
+    local stdout="$2"
+    local -a args=(
+      env "PYTHONPATH=$repo/src" python3 -m emuflow phase7d
+      --benchmark-report "$root/benchmark_report.json"
+      --phase3-report "$root/phase3/phase3_report.json"
+      --phase4-report "$root/phase4/phase4_report.json"
+      --phase5-report "$root/phase5/phase5_report.json"
+      --phase6-report "$root/phase6/phase6_report.json"
+      --phase7c-report "$phase7c/phase7c_report.json"
+      --runtime-contract "$phase7c/runtime_contract.json"
+      --qor-report "$phase7c/qor_report.json"
+      --physical-summary "$phase7c/physical_summary.json"
+      --platform "$platform"
+    )
+    for fpga in fpga0 fpga1 fpga2 fpga3; do
+      args+=(
+        --lowering-report
+        "$fpga=$phase7a/$fpga/lowering-report.json"
+        --placement-report
+        "$fpga=$phase7a/$fpga/placement-openparf/phase2_report.json"
+        --emission-report
+        "$fpga=$phase7b/$fpga/emission-report.json"
+      )
+    done
+    args+=(
+      --artifact "synthesis.mapped_json=$root/synthesis/mapped.json"
+      --artifact "global.emuir=$root/phase1/design.emuir.json"
+      --artifact "partition.assignment=$root/phase3/assignment.json"
+      --artifact "system.routes=$root/phase4/routes.json"
+      --artifact "system.schedule=$root/phase5/schedule.json"
+      --artifact "system.lane_map=$root/phase6/lane_map.json"
+    )
+    for fpga in fpga0 fpga1 fpga2 fpga3; do
+      args+=(
+        --artifact "$fpga.netlist=$phase6/$fpga/netlist.json"
+        --artifact
+        "$fpga.placement=$phase7a/$fpga/placement-openparf/placement.json"
+        --artifact "$fpga.mapped_verilog=$phase7b/$fpga/mapped.v"
+        --artifact "$fpga.routed_dcp=$phase7b/$fpga/vivado/routed.dcp"
+      )
+    done
+    args+=(
+      --artifact "runtime.contract=$phase7c/runtime_contract.json"
+      --artifact "runtime.timing_xdc=$phase7c/runtime_timing.xdc"
+      --artifact "runtime.physical_summary=$phase7c/physical_summary.json"
+      --artifact "release.qor=$phase7c/qor_report.json"
+      --source-commit "$source_commit"
+      --out "$target"
+    )
+    /usr/bin/time -v -o "$target-time.txt" \
+      "${args[@]}" > "$stdout"
+  }
+
+  rm -rf "$output" "$repeat"
+  run_audit "$output" "$root/phase7d-stdout.json"
+  run_audit "$repeat" "$root/phase7d-repeat-stdout.json"
+  cmp "$output/release_manifest.json" "$repeat/release_manifest.json"
+
+  python3 - "$output" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+manifest_path = root / "release_manifest.json"
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+report = json.loads((root / "phase7d_report.json").read_text(encoding="utf-8"))
+if manifest["status"] != "pass" or report["status"] != "pass":
+    raise SystemExit("NVDLA Phase 7D release audit did not pass")
+if set(manifest["gates"]) != {f"G{index}" for index in range(10)}:
+    raise SystemExit("NVDLA Phase 7D did not cover exactly G0-G9")
+if any(gate["status"] != "pass" for gate in manifest["gates"].values()):
+    raise SystemExit("NVDLA Phase 7D contains a failing gate")
+metrics = manifest["metrics"]
+expected = {
+    "original_cells": 731313,
+    "transport_cells": 74,
+    "routed_cells": 731387,
+    "physical_cells": 731388,
+    "infrastructure_cells": 1,
+    "cut_nets": 3,
+    "scheduled_bit_hops": 4,
+    "equivalence_cycles": 2,
+}
+for key, value in expected.items():
+    if metrics[key] != value:
+        raise SystemExit(f"NVDLA Phase 7D {key} mismatch")
+if metrics["source_files"] < 250:
+    raise SystemExit("NVDLA Phase 7D source inventory is incomplete")
+if len(manifest["artifacts"]) != 26:
+    raise SystemExit("NVDLA Phase 7D artifact inventory count mismatch")
+digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+print(
+    "EMUFLOW_NVDLA_PHASE7D "
+    f"status=pass gates={len(manifest['gates'])} "
+    f"source_files={metrics['source_files']} "
+    f"artifacts={len(manifest['artifacts'])} "
+    f"original_cells={metrics['original_cells']} "
+    f"transport_cells={metrics['transport_cells']} "
+    f"routed_cells={metrics['routed_cells']} "
+    f"physical_cells={metrics['physical_cells']} "
+    f"infrastructure_cells={metrics['infrastructure_cells']} "
+    f"cut_nets={metrics['cut_nets']} "
+    f"worst_wns_ns={metrics['worst_wns_ns']} "
+    f"manifest_sha256={digest}"
+)
+PY
+}
+
 cd "$repo"
 case "$command_name" in
   phase7a)
@@ -493,6 +635,9 @@ case "$command_name" in
     ;;
   phase7c-finalize)
     run_phase7c_finalize
+    ;;
+  phase7d)
+    run_phase7d
     ;;
   *)
     usage >&2

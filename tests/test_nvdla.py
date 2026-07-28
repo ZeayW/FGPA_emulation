@@ -2,10 +2,41 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.benchmarks.nvdla_release_inventory import (
+    collect_nvdla_source_files,
+)
 from scripts.benchmarks.nvdla_ram_stubs import generate
 
 
 class NvdlaRamStubTest(unittest.TestCase):
+    def test_release_inventory_covers_frontend_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "third_party" / "rtl" / "nvdla"
+            (source / "vmod" / "nvdla" / "top").mkdir(parents=True)
+            (source / "vmod" / "vlibs").mkdir(parents=True)
+            (source / "vmod" / "include").mkdir(parents=True)
+            (source / "vmod" / "rams" / "synth").mkdir(parents=True)
+            (source / ".emuflow-source.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            for index in range(250):
+                (source / "vmod" / "nvdla" / "top" / f"rtl_{index}.v").write_text(
+                    "module rtl; endmodule\n", encoding="utf-8"
+                )
+            expected = [
+                source / "vmod" / "vlibs" / "cell.v",
+                source / "vmod" / "include" / "config.vh",
+                source / "vmod" / "rams" / "synth" / "nv_ram_demo.v",
+            ]
+            for path in expected:
+                path.write_text("// dependency\n", encoding="utf-8")
+            inventory = collect_nvdla_source_files(repo)
+            self.assertEqual(len(inventory), 254)
+            self.assertTrue(
+                all(path.resolve() in inventory for path in expected)
+            )
+
     def test_parameter_and_port_order_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
