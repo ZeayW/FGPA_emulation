@@ -394,11 +394,20 @@ run_phase7c_finalize() {
         'import json,sys; print(json.load(open(sys.argv[1]))["instances"])' \
         "$phase7b/$fpga/emission-report.json"
     )"
+    runtime_args=(
+      "$phase7b/$fpga/vivado/routed.dcp"
+      "$physical_dir/$fpga"
+      "$expected_cells"
+      "$phase7b/$fpga/vivado/cells_before_xdc.txt"
+    )
+    if [ -s "$phase7b/$fpga/vivado/timing_optimization_cells.tsv" ]; then
+      runtime_args+=(
+        "$phase7b/$fpga/vivado/timing_optimization_cells.tsv"
+      )
+    fi
     "$vivado" -mode batch -nojournal -nolog \
       -source "$repo/scripts/vivado/report_runtime_contract.tcl" \
-      -tclargs "$phase7b/$fpga/vivado/routed.dcp" \
-        "$physical_dir/$fpga" "$expected_cells" \
-        "$phase7b/$fpga/vivado/cells_before_xdc.txt" \
+      -tclargs "${runtime_args[@]}" \
       > "$physical_dir/$fpga-vivado-runtime.log" 2>&1
     grep 'EMUFLOW_RUNTIME_VIVADO status=pass' \
       "$physical_dir/$fpga-vivado-runtime.log"
@@ -460,6 +469,7 @@ for fpga in ("fpga0", "fpga1", "fpga2", "fpga3"):
             "routed_cells": int(metrics["mapped_cells"]),
             "physical_cells": int(metrics["physical_cells"]),
             "infrastructure_cells": int(metrics["infrastructure_cells"]),
+            "optimization_cells": int(metrics["optimization_cells"]),
             "nets": int(metrics["nets"]),
             "ports": int(metrics["ports"]),
             "unrouted_nets": int(metrics["unrouted_nets"]),

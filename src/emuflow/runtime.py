@@ -361,6 +361,7 @@ def validate_physical_summary(
     total_cells = 0
     total_physical_cells = 0
     total_infrastructure_cells = 0
+    total_optimization_cells = 0
     total_original = 0
     total_transport = 0
     worst_slack = None
@@ -396,6 +397,17 @@ def validate_physical_summary(
                 f"physical summary {fpga_id} physical cell accounting "
                 "is inconsistent"
             )
+        optimization_cells = item.get("optimization_cells", 0)
+        if (
+            isinstance(optimization_cells, bool)
+            or not isinstance(optimization_cells, int)
+            or optimization_cells < 0
+            or optimization_cells > item["infrastructure_cells"]
+        ):
+            raise ValidationError(
+                f"physical summary {fpga_id}.optimization_cells must be "
+                "a non-negative subset of infrastructure_cells"
+            )
         if item["unrouted_nets"] or item["drc_violations"]:
             raise ValidationError(
                 f"physical summary {fpga_id} did not close route/DRC"
@@ -414,14 +426,18 @@ def validate_physical_summary(
             raise ValidationError(
                 f"physical summary {fpga_id} fabric period mismatch"
             )
-        if not math.isclose(
-            float(clocks.get("dut_period_ns", -1)),
-            expected_dut,
-            rel_tol=0.0,
-            abs_tol=1e-6,
+        physical_dut_period = float(clocks.get("dut_period_ns", -1))
+        # A backend may intentionally close DUT logic at a faster clock than
+        # the virtual frame rate. That is conservative: the runtime still
+        # releases exactly one DUT edge per complete frame. Reject only a
+        # physical constraint slower than the nominal runtime period.
+        if (
+            physical_dut_period <= 0.0
+            or physical_dut_period - expected_dut > 1e-6
         ):
             raise ValidationError(
-                f"physical summary {fpga_id} DUT period mismatch"
+                f"physical summary {fpga_id} DUT period is slower than "
+                "the nominal runtime"
             )
         slack = item.get("wns_ns")
         if isinstance(slack, bool) or not isinstance(slack, (int, float)):
@@ -453,6 +469,7 @@ def validate_physical_summary(
         total_cells += item["routed_cells"]
         total_physical_cells += item["physical_cells"]
         total_infrastructure_cells += item["infrastructure_cells"]
+        total_optimization_cells += optimization_cells
         total_original += item["original_cells"]
         total_transport += item["transport_cells"]
         worst_slack = float(slack) if worst_slack is None else min(
@@ -484,6 +501,7 @@ def validate_physical_summary(
         "routed_cells": total_cells,
         "physical_cells": total_physical_cells,
         "infrastructure_cells": total_infrastructure_cells,
+        "optimization_cells": total_optimization_cells,
         "unrouted_nets": 0,
         "drc_violations": 0,
         "worst_wns_ns": worst_slack,

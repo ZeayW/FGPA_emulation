@@ -1,5 +1,5 @@
-if {$argc < 2 || $argc > 5} {
-    error "usage: vivado -mode batch -source optimize_routed_timing.tcl -tclargs INPUT_DCP OUTPUT_DIR ?TARGET_WNS_NS? ?PHYS_OPT_DIRECTIVE? ?ROUTE_DIRECTIVE?"
+if {$argc < 2 || $argc > 6} {
+    error "usage: vivado -mode batch -source optimize_routed_timing.tcl -tclargs INPUT_DCP OUTPUT_DIR ?TARGET_WNS_NS? ?PHYS_OPT_DIRECTIVE? ?ROUTE_DIRECTIVE? ?FORCE_REPLICATION_NET_LIST?"
 }
 
 set input_dcp [file normalize [lindex $argv 0]]
@@ -15,6 +15,10 @@ if {$argc >= 4} {
 set route_directive AggressiveExplore
 if {$argc >= 5} {
     set route_directive [lindex $argv 4]
+}
+set force_replication_net_names {}
+if {$argc >= 6} {
+    set force_replication_net_names [lindex $argv 5]
 }
 
 if {![file isfile $input_dcp]} {
@@ -44,7 +48,18 @@ set baseline_wns_ns [emuflow_worst_setup_slack]
 report_timing_summary -file "$output_dir/baseline_timing_summary.rpt"
 puts "EMUFLOW_TIMING_OPT_BASELINE cells=[llength $baseline_cells] wns_ns=$baseline_wns_ns"
 
-puts "EMUFLOW_TIMING_OPT_DIRECTIVES phys_opt=$phys_opt_directive route=$route_directive"
+set force_replication_nets {}
+foreach name $force_replication_net_names {
+    set matches [get_nets -quiet -hier -filter "NAME == $name"]
+    if {[llength $matches] != 1} {
+        error "forced-replication net $name resolved to [llength $matches] nets"
+    }
+    lappend force_replication_nets [lindex $matches 0]
+}
+puts "EMUFLOW_TIMING_OPT_DIRECTIVES phys_opt=$phys_opt_directive route=$route_directive forced_replication_nets=[llength $force_replication_nets]"
+if {[llength $force_replication_nets] != 0} {
+    phys_opt_design -force_replication_on_nets $force_replication_nets
+}
 phys_opt_design -directive $phys_opt_directive
 write_checkpoint -force "$output_dir/physopt.dcp"
 route_design -directive $route_directive
@@ -85,11 +100,28 @@ foreach name [lsort -ascii [array names optimized_ref_by_name]] {
 }
 close $added_file
 
+set changed_file [open "$output_dir/changed_cell_types.tsv" w]
+puts $changed_file "name\tbaseline_ref_name\toptimized_ref_name"
+set changed_cell_types 0
+foreach name [lsort -ascii [array names baseline_ref_by_name]] {
+    if {[info exists optimized_ref_by_name($name)] &&
+        $baseline_ref_by_name($name) ne $optimized_ref_by_name($name)} {
+        puts $changed_file \
+            "$name\t$baseline_ref_by_name($name)\t$optimized_ref_by_name($name)"
+        incr changed_cell_types
+    }
+}
+close $changed_file
+
 set unrouted [get_nets -quiet -filter {ROUTE_STATUS == UNROUTED}]
 set drc_violations [get_drc_violations -quiet]
 set optimized_wns_ns [emuflow_worst_setup_slack]
+puts "EMUFLOW_TIMING_OPT_RESULT baseline_cells=[llength $baseline_cells] optimized_cells=[llength $optimized_cells] added_cells=$added_cells missing_cells=$missing_cells changed_cell_types=$changed_cell_types unrouted_nets=[llength $unrouted] drc_violations=[llength $drc_violations] baseline_wns_ns=$baseline_wns_ns optimized_wns_ns=$optimized_wns_ns target_wns_ns=$target_wns_ns"
 if {$missing_cells != 0} {
     error "timing optimization dropped $missing_cells baseline cells"
+}
+if {$changed_cell_types != 0} {
+    error "timing optimization changed the type of $changed_cell_types baseline cells"
 }
 if {[llength $unrouted] != 0} {
     error "timing optimization left [llength $unrouted] unrouted nets"
@@ -101,4 +133,4 @@ if {$optimized_wns_ns < $target_wns_ns} {
     error "timing optimization WNS $optimized_wns_ns ns is below target $target_wns_ns ns"
 }
 
-puts "EMUFLOW_TIMING_OPT status=pass baseline_cells=[llength $baseline_cells] optimized_cells=[llength $optimized_cells] added_cells=$added_cells missing_cells=0 unrouted_nets=0 drc_violations=0 baseline_wns_ns=$baseline_wns_ns optimized_wns_ns=$optimized_wns_ns"
+puts "EMUFLOW_TIMING_OPT status=pass baseline_cells=[llength $baseline_cells] optimized_cells=[llength $optimized_cells] added_cells=$added_cells missing_cells=0 changed_cell_types=0 unrouted_nets=0 drc_violations=0 baseline_wns_ns=$baseline_wns_ns optimized_wns_ns=$optimized_wns_ns"

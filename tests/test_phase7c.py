@@ -205,6 +205,7 @@ class Phase7CTest(unittest.TestCase):
         self.assertEqual(result["routed_cells"], 120)
         self.assertEqual(result["physical_cells"], 121)
         self.assertEqual(result["infrastructure_cells"], 1)
+        self.assertEqual(result["optimization_cells"], 0)
         self.assertEqual(result["transport_cells"], 20)
         self.assertEqual(result["worst_wns_ns"], 0.75)
         self.assertEqual(result["worst_dut_wns_ns"], 120.0)
@@ -230,6 +231,22 @@ class Phase7CTest(unittest.TestCase):
         broken["fpgas"][0]["physical_cells"] += 1
         with self.assertRaisesRegex(ValidationError, "physical cell"):
             validate_physical_summary(broken, runtime, self.platform)
+        broken = copy.deepcopy(physical)
+        broken["fpgas"][0]["optimization_cells"] = 2
+        with self.assertRaisesRegex(ValidationError, "optimization_cells"):
+            validate_physical_summary(broken, runtime, self.platform)
+        conservative = copy.deepcopy(physical)
+        conservative["fpgas"][0]["clocks"]["dut_period_ns"] = 64.0
+        self.assertEqual(
+            validate_physical_summary(
+                conservative, runtime, self.platform
+            )["status"],
+            "pass",
+        )
+        slower = copy.deepcopy(physical)
+        slower["fpgas"][0]["clocks"]["dut_period_ns"] = 129.0
+        with self.assertRaisesRegex(ValidationError, "slower"):
+            validate_physical_summary(slower, runtime, self.platform)
 
     def test_phase7c_writes_generated_then_physically_closed_report(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

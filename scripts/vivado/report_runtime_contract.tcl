@@ -1,5 +1,5 @@
-if {$argc != 3 && $argc != 4} {
-    error "usage: vivado -mode batch -source report_runtime_contract.tcl -tclargs ROUTED_DCP OUTPUT_DIR EXPECTED_CELLS ?MAPPED_CELL_INVENTORY?"
+if {$argc < 3 || $argc > 5} {
+    error "usage: vivado -mode batch -source report_runtime_contract.tcl -tclargs ROUTED_DCP OUTPUT_DIR EXPECTED_CELLS ?MAPPED_CELL_INVENTORY? ?TIMING_OPTIMIZATION_CELL_INVENTORY?"
 }
 
 set checkpoint [file normalize [lindex $argv 0]]
@@ -11,6 +11,7 @@ open_checkpoint $checkpoint
 set cells [get_cells -hier -filter {REF_NAME != GND && REF_NAME != VCC}]
 set physical_cells [llength $cells]
 set infrastructure_cells 0
+set optimization_cells 0
 if {$argc == 3} {
     if {$physical_cells != $expected_cells} {
         error "routed checkpoint has $physical_cells cells; expected $expected_cells"
@@ -51,17 +52,53 @@ if {$argc == 3} {
     if {$mapped_inventory_cells != $expected_cells} {
         error "mapped-cell inventory has $mapped_inventory_cells cells; expected $expected_cells"
     }
+    array set approved_optimization_ref_by_name {}
+    if {$argc == 5} {
+        set optimization_inventory_path [file normalize [lindex $argv 4]]
+        if {![file isfile $optimization_inventory_path]} {
+            error "timing-optimization inventory does not exist: $optimization_inventory_path"
+        }
+        set optimization_inventory_file [open $optimization_inventory_path r]
+        set optimization_inventory_lines \
+            [split [read $optimization_inventory_file] "\n"]
+        close $optimization_inventory_file
+        foreach line [lrange $optimization_inventory_lines 1 end] {
+            if {$line eq ""} {
+                continue
+            }
+            set fields [split $line "\t"]
+            if {[llength $fields] != 2} {
+                error "malformed timing-optimization inventory row: $line"
+            }
+            set name [lindex $fields 0]
+            set ref_name [lindex $fields 1]
+            if {[info exists approved_optimization_ref_by_name($name)]} {
+                error "duplicate timing-optimization cell $name"
+            }
+            set approved_optimization_ref_by_name($name) $ref_name
+        }
+    }
     set infrastructure_inventory [open "$output_dir/infrastructure_cells.tsv" w]
-    puts $infrastructure_inventory "name\tref_name"
+    puts $infrastructure_inventory "name\tref_name\tclass"
     foreach name [lsort -ascii [array names routed_ref_by_name]] {
         set ref_name $routed_ref_by_name($name)
-        if {![string match "BUFG*" $ref_name]} {
+        if {[string match "BUFG*" $ref_name]} {
+            set class clock
+        } elseif {[info exists approved_optimization_ref_by_name($name)] &&
+                  $approved_optimization_ref_by_name($name) eq $ref_name} {
+            set class timing_optimization
+            unset approved_optimization_ref_by_name($name)
+            incr optimization_cells
+        } else {
             error "unapproved physical infrastructure cell $name has type $ref_name"
         }
-        puts $infrastructure_inventory "$name\t$ref_name"
+        puts $infrastructure_inventory "$name\t$ref_name\t$class"
         incr infrastructure_cells
     }
     close $infrastructure_inventory
+    if {[array size approved_optimization_ref_by_name] != 0} {
+        error "timing-optimization inventory contains [array size approved_optimization_ref_by_name] cells absent from the routed checkpoint"
+    }
     if {$physical_cells != $expected_cells + $infrastructure_cells} {
         error "physical/mapped/infrastructure cell accounting is inconsistent"
     }
@@ -137,6 +174,7 @@ puts $metrics "cells\t$expected_cells"
 puts $metrics "mapped_cells\t$expected_cells"
 puts $metrics "physical_cells\t$physical_cells"
 puts $metrics "infrastructure_cells\t$infrastructure_cells"
+puts $metrics "optimization_cells\t$optimization_cells"
 puts $metrics "nets\t[llength [get_nets]]"
 puts $metrics "ports\t[llength [get_ports]]"
 puts $metrics "unrouted_nets\t[llength $unrouted]"
@@ -152,4 +190,4 @@ puts $metrics "fabric_path_present\t$fabric_path_present"
 puts $metrics "fabric_to_dut_path_present\t$fabric_to_dut_path_present"
 close $metrics
 
-puts "EMUFLOW_RUNTIME_VIVADO status=pass mapped_cells=$expected_cells physical_cells=$physical_cells infrastructure_cells=$infrastructure_cells unrouted_nets=0 drc_violations=0 dut_period_ns=$dut_period fabric_period_ns=$fabric_period wns_ns=$wns dut_wns_ns=$dut_wns dut_path_present=$dut_path_present fabric_wns_ns=$fabric_wns fabric_path_present=$fabric_path_present fabric_to_dut_wns_ns=$fabric_to_dut_wns fabric_to_dut_path_present=$fabric_to_dut_path_present"
+puts "EMUFLOW_RUNTIME_VIVADO status=pass mapped_cells=$expected_cells physical_cells=$physical_cells infrastructure_cells=$infrastructure_cells optimization_cells=$optimization_cells unrouted_nets=0 drc_violations=0 dut_period_ns=$dut_period fabric_period_ns=$fabric_period wns_ns=$wns dut_wns_ns=$dut_wns dut_path_present=$dut_path_present fabric_wns_ns=$fabric_wns fabric_path_present=$fabric_path_present fabric_to_dut_wns_ns=$fabric_to_dut_wns fabric_to_dut_path_present=$fabric_to_dut_path_present"

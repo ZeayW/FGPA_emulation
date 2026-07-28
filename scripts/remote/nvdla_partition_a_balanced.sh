@@ -8,6 +8,7 @@ Usage:
   nvdla_partition_a_balanced.sh logical ROOT PHASE1_IR
   nvdla_partition_a_balanced.sh phase7a ROOT
   nvdla_partition_a_balanced.sh phase7b ROOT
+  nvdla_partition_a_balanced.sh phase7b-timing-close ROOT
   nvdla_partition_a_balanced.sh phase7c-finalize ROOT
   nvdla_partition_a_balanced.sh phase7d ROOT
 
@@ -22,13 +23,19 @@ The phase7a command synthesizes transport RTL, lowers each FPGA placement IR,
 and runs OpenPARF. It expects the logical command's ROOT layout.
 The phase7b command emits structural netlists and runs Vivado with sparse
 OpenPARF anchors on all four balanced partitions.
+The phase7b-timing-close command applies the recorded pre-route forced-fanout
+replication strategy to the largest partition and promotes only a routed,
+DRC-clean, timing-closed checkpoint.
 
 Environment overrides:
   EMUFLOW_REPO
   EMUFLOW_OPENROAD
+  EMUFLOW_VIVADO
   EMUFLOW_PHASE7A_ORDER
   EMUFLOW_GLOBAL_PLACE_FPGAS
   EMUFLOW_EQUIVALENCE_CYCLES
+  EMUFLOW_TIMING_CLOSE_FPGA
+  EMUFLOW_FORCE_REPLICATION_NETS
   EMUFLOW_NVDLA_SYNTHESIS_DIR
                       Original checked NVDLA synthesis directory containing
                       mapped.json; required by phase7d unless ROOT/synthesis
@@ -45,6 +52,7 @@ command_name="$1"
 root="$(mkdir -p "$2" && realpath "$2")"
 repo="${EMUFLOW_REPO:-/home/ziyiwang21/work/FGPA_emulation}"
 openroad="${EMUFLOW_OPENROAD:-/home/ziyiwang21/work/tools/openroad-2.0-17598-ga008522d8/bin/openroad}"
+vivado="${EMUFLOW_VIVADO:-/data2/vivado/2025.2/Vivado/bin/vivado}"
 phase7a_order="${EMUFLOW_PHASE7A_ORDER:-fpga3 fpga2 fpga0 fpga1}"
 global_place_fpgas="${EMUFLOW_GLOBAL_PLACE_FPGAS:-fpga0 fpga1 fpga2 fpga3}"
 equivalence_cycles="${EMUFLOW_EQUIVALENCE_CYCLES:-2}"
@@ -158,6 +166,34 @@ run_phase7b() {
     "$repo/scripts/remote/nvdla_partition_a_phase7.sh" phase7b "$root"
 }
 
+run_phase7b_timing_close() {
+  local fpga="${EMUFLOW_TIMING_CLOSE_FPGA:-fpga1}"
+  local force_nets="${EMUFLOW_FORCE_REPLICATION_NETS:-__emuflow_net_1226}"
+  local source="$root/phase7b/$fpga/vivado"
+  local target="$root/phase7b/$fpga/vivado-timing-close"
+
+  require_file "$vivado"
+  require_file "$repo/scripts/vivado/optimize_routed_timing.tcl"
+  require_file "$source/placed.dcp"
+  rm -rf "$target"
+  mkdir -p "$target"
+  /usr/bin/time -v -o "$target/total-time.txt" \
+    "$vivado" -mode batch -nojournal -nolog \
+      -source "$repo/scripts/vivado/optimize_routed_timing.tcl" \
+      -tclargs "$source/placed.dcp" "$target/results" 0.0 \
+        AggressiveExplore AggressiveExplore "$force_nets" \
+      > "$target/vivado.log" 2>&1
+  grep 'EMUFLOW_TIMING_OPT status=pass' "$target/vivado.log"
+  require_file "$target/results/optimized_routed.dcp"
+  require_file "$target/results/added_cells.tsv"
+  if [ ! -s "$source/routed-default.dcp" ]; then
+    cp -p "$source/routed.dcp" "$source/routed-default.dcp"
+  fi
+  cp -p "$target/results/optimized_routed.dcp" "$source/routed.dcp"
+  cp -p "$target/results/added_cells.tsv" \
+    "$source/timing_optimization_cells.tsv"
+}
+
 run_phase7c_finalize() {
   require_file "$root/phase7c/runtime_contract.json"
   require_file "$repo/scripts/remote/nvdla_partition_a_phase7.sh"
@@ -205,6 +241,13 @@ case "$command_name" in
       exit 2
     fi
     run_phase7b
+    ;;
+  phase7b-timing-close)
+    if [ "$#" -ne 2 ]; then
+      usage >&2
+      exit 2
+    fi
+    run_phase7b_timing_close
     ;;
   phase7c-finalize)
     if [ "$#" -ne 2 ]; then

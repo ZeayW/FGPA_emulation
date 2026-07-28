@@ -17,16 +17,17 @@ board-independent flow:
   -> four per-FPGA netlists, transport RTL, and mapped equivalence
   -> independent Phase 6 reload/check
   -> Phase 7 transport synthesis and OpenPARF placement
+  -> Vivado placement, routing, DRC, and 250 MHz fabric timing closure
+  -> independent four-DCP Phase 7C runtime/QoR closure
 ```
 
-Validation date: 2026-07-28.
+Validation date: 2026-07-28 through 2026-07-29.
 
-Phases 3-6 and the initial Phase 7C runtime contract pass on `proj169-2`.
-Phase 7A physical-backend execution is recorded separately below as it
-completes. The experiment root is:
+Phases 3-7C pass on `proj169-2` for the real 731,313-cell design. The
+experiment root is:
 
 ```text
-/data/zywang/emuflow/nvdla-balanced-phase3b
+/data/zywang/emuflow/nvdla-balanced-phase3b/balanced-flow
 ```
 
 The input is the official NVDLA `NV_NVDLA_partition_a` design already
@@ -247,8 +248,11 @@ The initial Phase 7C runtime contract passes its logical checks:
 - 2,250 shadow-settle slots;
 - nominal virtual DUT frequency 0.06103515625 MHz.
 
-Its physical status remains `pending` until all four FPGA implementations are
-independently reopened and checked.
+The physical implementation closes DUT logic at a deliberately stricter
+256 ns period while the one-edge-per-4,096-slot runtime has a 16,384 ns
+nominal virtual period. Phase 7C accepts a backend period only when it is no
+slower than the runtime period; the physical result therefore has 64x
+conservative DUT timing headroom.
 
 ## Phase 7A status
 
@@ -325,8 +329,99 @@ independently and reproduced the 251.3 MB EmuIR byte for byte with SHA-256
 The resume path now validates status, provider, legal placement, and exact
 cell coverage before skipping a completed partition.
 
-Vivado routing, DRC, and timing metrics remain pending until the Phase 7B and
-final Phase 7C physical gates complete.
+## Phase 7B Vivado placement, routing, and timing closure
+
+Vivado 2025.2 reads each structural mapped netlist, verifies the exact
+OpenPARF/ArchitectureDB cell order, fixes a deterministic sparse subset of
+LUT Site/BEL anchors, and leaves the remaining LUTs and all FFs movable.
+`SSI_SpreadLogic_high` performs congestion-aware placement and `route_design`
+produces a fully routed out-of-context VU9P checkpoint.
+
+The `ff_loc_repairs` marker counts FFs intentionally freed from the coarse
+OpenPARF anchors; it is not a failed-cell count. Exact mapped identities are
+checked again after placement and routing.
+
+| FPGA | Mapped cells | Physical cells | Fixed LUT anchors | Fully routed / logical nets | DRC | WNS / TNS / WHS (ns) | Accepted wall time / peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fpga0` | 319,073 | 319,073 | 293 | 256,984 / 267,691 | 0 | +0.122 / 0 / +0.040 | 47:34.97 / 7,818,764 KiB |
+| `fpga1` | 383,009 | 383,156 | 384 | 372,814 / 384,123 | 0 | +0.010 / 0 / +0.021 | 2:04:36 / 6,906,880 KiB |
+| `fpga2` | 214,025 | 214,025 | 295 | 199,737 / 210,329 | 0 | +0.453 / 0 / +0.019 | 38:45.06 / 6,749,192 KiB |
+| `fpga3` | 201,297 | 201,297 | 302 | 170,949 / 175,058 | 0 | +0.047 / 0 / +0.043 | 25:57.39 / 6,644,400 KiB |
+
+The initial four-part route took 3:11:20 wall time and peaked at 8,535,612
+KiB RSS. Three partitions met the 4 ns fabric constraint immediately.
+`fpga1` was fully routed and DRC-clean but failed setup with WNS
+-0.648 ns, TNS -479.400 ns, and 4,333 failing endpoints.
+
+The worst path is generated transport control, not NVDLA DUT logic. It runs
+from the virtual runtime slot counter to a shadow-register CE, has three LUT
+levels, and spends 4.287 of 4.543 ns in routing. One decoder net,
+`__emuflow_net_1226`, has fanout 1,095 and contributes 1.867 ns in the
+default route.
+
+A post-route `AggressiveFanoutOpt` plus `AggressiveExplore` pass reduces the
+result to WNS -0.471 ns, TNS -127.196 ns, and 1,576 failing endpoints without
+adding or dropping cells. Repeating the same strategy reaches only
+-0.458 ns before rerouting and is stopped when its routed intermediate value
+degrades to -0.463 ns. Vivado rejects forced replication in post-route mode,
+so the accepted flow starts from `placed.dcp`.
+
+The timing-close pass first forces replication of the measured 1,095-fanout
+decoder, then runs pre-route `AggressiveExplore` and an aggressive route.
+Vivado creates 146 audited replicas:
+
+| Replica type | Count |
+| --- | ---: |
+| FDRE | 11 |
+| LUT2 | 66 |
+| LUT3 | 5 |
+| LUT4 | 64 |
+
+No baseline cell is missing or changes primitive type. Router overlap
+convergence begins at 92,929 and reaches zero; timing-driven iterations
+improve setup through -0.229, -0.181, and -0.022 ns before post-hold cleanup
+closes at WNS +0.010 ns, TNS 0, and WHS +0.021 ns. The final route has no
+critical warnings or errors and 0 DRC checks.
+
+The original failing checkpoint is retained as `routed-default.dcp`.
+The accepted checkpoint and replica manifest SHA-256 values are:
+
+```text
+b96c2f91d1d0ec7f6f6e5eb49a1454ec2019620349fbc952ef93746964bb904d  routed.dcp
+17585734485fd9ac8d085db0ff9cb096d25f946c5ec6d9f168e30d92d388b770  timing_optimization_cells.tsv
+```
+
+## Phase 7C independent physical and runtime closure
+
+Phase 7C opens all four promoted DCPs in fresh Vivado processes. It does not
+trust the route process's in-memory state. Each checker independently
+requires:
+
+- every mapped cell identity to be present;
+- every non-clock extra cell to match the exact timing-optimization manifest;
+- only explicitly recognized BUFG clock infrastructure outside that manifest;
+- no unrouted nets, no DRC checks, and non-negative WNS;
+- the 4 ns fabric period and a DUT period no slower than the 16,384 ns runtime
+  period.
+
+All four checks pass. The final aggregate contains 1,117,404 mapped cells and
+1,117,551 physical cells. The 147-cell difference is exactly 146 timing
+replicas plus one BUFG inserted in `fpga1`. There are zero unrouted nets,
+zero DRC violations, and the worst cross-FPGA physical WNS is +0.010 ns.
+
+The regenerated runtime testbench executes 64 virtual frames across four
+controllers, injects three barrier-stall cycles, and reports:
+
+```text
+EMUFLOW_RUNTIME_TB status=pass frames=64 stalled_cycles=3 controllers=4
+EMUFLOW_NVDLA_PHASE7C status=pass routed_cells=1117404 \
+physical_cells=1117551 infrastructure_cells=147 optimization_cells=146 \
+original_cells=731313 transport_cells=386091 unrouted_nets=0 \
+drc_violations=0 worst_wns_ns=0.01
+```
+
+The resulting `phase7c_report.json` and `qor_report.json` both have
+`status: pass`.
 
 ## Reproduction
 
@@ -336,6 +431,7 @@ Starting from the checked Phase 1 EmuIR:
 scripts/remote/nvdla_partition_a_balanced.sh logical ROOT PHASE1_IR
 scripts/remote/nvdla_partition_a_balanced.sh phase7a ROOT
 scripts/remote/nvdla_partition_a_balanced.sh phase7b ROOT
+scripts/remote/nvdla_partition_a_balanced.sh phase7b-timing-close ROOT
 scripts/remote/nvdla_partition_a_balanced.sh phase7c-finalize ROOT
 EMUFLOW_NVDLA_SYNTHESIS_DIR=ORIGINAL_SYNTHESIS \
   scripts/remote/nvdla_partition_a_balanced.sh phase7d ROOT
