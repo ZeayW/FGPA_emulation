@@ -389,6 +389,19 @@ Yosys synth_xilinx -family xcup
 Add real-board link training, PRBS, deskew, barrier diagnostics, host control,
 and golden-workload testing.
 
+Phase 8A is now implemented as the board-independent readiness increment. It
+seals a versioned hardware-BSP requirements artifact from the G0-G9 release,
+Phase 6 anchors, and virtual BoardDB. It expands physical lane endpoints,
+clock/link-channel bindings, per-FPGA bitstream slots, and pending G10 checks,
+then independently reconstructs and byte-reproduces the result. It explicitly
+reports `awaiting_hardware_bsp` and does not claim G10. See
+`docs/PHASE8A_VALIDATION.md`.
+
+Phase 8B begins after a board is selected: validate a hardware BoardDB/BSP,
+bind package pins/banks/IOSTANDARDs and clocking, apply board IO timing, and
+generate the first checked bitstreams. Hardware PRBS/training and a golden
+workload remain the following G10 increments.
+
 ## 6. Provider interfaces
 
 Algorithms are replaceable providers:

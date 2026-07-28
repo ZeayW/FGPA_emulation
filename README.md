@@ -5,8 +5,8 @@ UltraScale+ devices. The long-term flow covers logic synthesis, partitioning,
 board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
 FPGA routing, and vendor-assisted bitstream generation.
 
-The repository implements the board-independent path through Phase 7C plus
-the Phase 7D reproducible release audit:
+The repository implements the board-independent path through Phase 7D plus
+the Phase 8A hardware-BSP readiness contract:
 frontend synthesis/import, multi-FPGA partitioning, system routing, TDM,
 per-FPGA transport generation, OpenPARF placement, Vivado routing, and the
 virtual runtime/timing contract:
@@ -45,6 +45,8 @@ virtual runtime/timing contract:
 - separate DUT, fabric, and fabric-to-DUT timing gates;
 - machine-readable end-to-end physical and emulation QoR.
 - a reproducible G0-G9 release manifest with source/artifact hashing.
+- a versioned hardware-BSP requirements artifact that keeps G10 explicitly
+  pending until a board is selected.
 
 See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
@@ -185,6 +187,9 @@ two independent G0-G9 manifests are byte-identical at commit
 `63b05710466d35a64759ae51a1c51772e957c7ab`. Its algorithms, controls, and
 measured results are recorded in
 [docs/NVDLA_PARTITION_A_BALANCED_FLOW.md](docs/NVDLA_PARTITION_A_BALANCED_FLOW.md).
+Its Phase 8A readiness audit also checks 512 logical anchors against 512
+physical BoardDB lane endpoints and seals the remaining clock, channel,
+bitstream, and G10 requirements without claiming hardware closure.
 The intermediate connected VeeR EH1 CPU result is recorded in
 [docs/VEER_EH1_VALIDATION.md](docs/VEER_EH1_VALIDATION.md).
 The completed Phase 3 implementation and the real two-FPGA partition
@@ -210,6 +215,9 @@ end-to-end PicoRV32 QoR are recorded in
 [docs/PHASE7C_VALIDATION.md](docs/PHASE7C_VALIDATION.md).
 The Phase 7D cross-phase G0-G9 audit and sealed release manifest are recorded
 in [docs/PHASE7D_VALIDATION.md](docs/PHASE7D_VALIDATION.md).
+The Phase 8A hardware-BSP requirements contract and real balanced-NVDLA
+validation are recorded in
+[docs/PHASE8A_VALIDATION.md](docs/PHASE8A_VALIDATION.md).
 
 Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
 and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,

@@ -20,11 +20,12 @@ board-independent flow:
   -> Vivado placement, routing, DRC, and 250 MHz fabric timing closure
   -> independent four-DCP Phase 7C runtime/QoR closure
   -> reproducible Phase 7D G0-G9 release audit
+  -> Phase 8A hardware-BSP requirements closure
 ```
 
 Validation date: 2026-07-28 through 2026-07-29.
 
-Phases 3-7D pass on `proj169-2` for the real 731,313-cell design. The
+Phases 3-8A pass on `proj169-2` for the real 731,313-cell design. The
 experiment root is:
 
 ```text
@@ -465,6 +466,21 @@ both have SHA-256
 The complete source-inventory plus double-audit command takes 34.98 seconds
 and peaks at 21,028 KiB RSS.
 
+## Phase 8A board-readiness contract
+
+Phase 8A expands the four source-synchronous BoardDB links into 512 physical
+data-lane endpoints and proves that all 512 used logical anchors are legal
+members of that set. It also seals four fabric-clock bindings, eight directed
+link-channel timing/training bindings, four routed-DCP-to-bitstream slots, and
+five pending G10 hardware checks.
+
+Two independent requirements artifacts are byte-identical with SHA-256
+`8d9d745ba5ac5b1b5495db8e335ad830ccb7404a34263eef2cb05319ec1f02b8`.
+The report passes the readiness audit while explicitly retaining
+`board_binding=awaiting_hardware_bsp` and `g10_status=not_run`. See
+`docs/PHASE8A_VALIDATION.md` for the algorithm, exact result, and remaining
+board boundary.
+
 ## Reproduction
 
 Starting from the checked Phase 1 EmuIR:
@@ -477,6 +493,7 @@ scripts/remote/nvdla_partition_a_balanced.sh phase7b-timing-close ROOT
 scripts/remote/nvdla_partition_a_balanced.sh phase7c-finalize ROOT
 EMUFLOW_NVDLA_SYNTHESIS_DIR=ORIGINAL_SYNTHESIS \
   scripts/remote/nvdla_partition_a_balanced.sh phase7d ROOT
+scripts/remote/nvdla_partition_a_balanced.sh phase8a ROOT
 ```
 
 The logical script executes real TritonPart rather than importing the
