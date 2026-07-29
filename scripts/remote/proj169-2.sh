@@ -849,7 +849,7 @@ test -s "\$root/phase3/assignment.json"
 test -s "\$root/phase6/manifest.json"
 cd "\$remote_dir"
 /usr/bin/time -v -o "\$root/${phase}-total-time.txt" \
-  env EMUFLOW_REPO="\$remote_dir" \
+  env EMUFLOW_REPO="\$remote_dir" EMUFLOW_RESUME=1 \
     scripts/remote/nvdla_partition_a_balanced.sh ${phase} "\$root"
 REMOTE
 }

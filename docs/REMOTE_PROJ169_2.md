@@ -28,6 +28,14 @@ to synchronize a dirty worktree, records the source commit in
 | `sync` | Stream `git archive HEAD` into the remote deployment directory. |
 | `bootstrap` | Use the server OSS CAD Suite Yosys, or install `yowasp-yosys` as a fallback. |
 | `tritonpart-bootstrap` | Cache the pinned OpenROAD package locally, atomically upload it through the gateway, verify SHA-256 remotely, and install TritonPart without root. |
+| `repart-bootstrap` | Build pinned RePart with EmuFlow's explicit partition-only/replication switch in user space. |
+| `repart-phase3-smoke` | Run two byte-compared RePart partitions of real synthesized counter RTL. |
+| `repart-phase3-picorv32` | Validate connected PicoRV32 and 121,984-cell PicoRV32 x32 with two deterministic RePart runs. |
+| `repart-phase3-nvdla` | Compare two deterministic 731,313-cell NVDLA RePart runs against the frozen TritonPart assignment. |
+| `repart-nvdla-downstream` | Run the frozen Phase 4-6 algorithms and initial runtime contract on the RePart NVDLA assignment. |
+| `repart-nvdla-phase7a` | Lower and place all four RePart NVDLA partitions with OpenPARF. |
+| `repart-nvdla-phase7b` | Emit and route all four RePart NVDLA partitions with Vivado. |
+| `repart-nvdla-phase7c-finalize` | Reopen and independently audit all four routed checkpoints and finalize physical/runtime QoR. |
 | `test` | Run all Python unit tests and byte-compile the source. |
 | `synth` | Run a real Yosys process with `synth_xilinx -family xcup` on `counter.v`. |
 | `phase1` | Import the synthesized JSON and run the Phase 1 platform/resource checks. |

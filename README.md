@@ -28,6 +28,9 @@ virtual runtime/timing contract:
 - combinationally safe sequential clustering and hard-macro/group closure;
 - OpenROAD/TritonPart multilevel hypergraph partitioning with cell/LUT/FF
   weights, fixed constraints, and deterministic fixed-seed execution;
+- external RePart FPGA-aware multilevel partitioning with native topology and
+  multi-resource limits, fixed-seed determinism, and an independently checked
+  partition-only Phase 3A provider;
 - a dependency-free greedy partitioner retained only as a fallback/baseline;
 - independent G4 coverage, capacity, constraint, and cut-legality checking.
 - directed BoardDB routing with multicast trees and negotiated congestion;
@@ -143,6 +146,7 @@ Yosys, and runs synthesis plus Phase 1:
 ```bash
 scripts/remote/proj169-2.sh probe
 scripts/remote/proj169-2.sh tritonpart-bootstrap
+scripts/remote/proj169-2.sh repart-bootstrap
 scripts/remote/proj169-2.sh all
 scripts/remote/proj169-2.sh openparf-sync
 scripts/remote/proj169-2.sh openparf-build
@@ -198,6 +202,10 @@ The intermediate connected VeeR EH1 CPU result is recorded in
 The completed Phase 3 implementation and the real two-FPGA partition
 experiments are recorded in
 [docs/PHASE3_VALIDATION.md](docs/PHASE3_VALIDATION.md).
+The RePart Phase 3A algorithm integration, deterministic small-to-731k-cell
+campaign, frozen downstream comparison, and physical-backend checks are
+recorded in
+[docs/PHASE3_REPART_VALIDATION.md](docs/PHASE3_REPART_VALIDATION.md).
 The completed Phase 4 system router and the 140-net connected-PicoRV32
 experiment are recorded in
 [docs/PHASE4_VALIDATION.md](docs/PHASE4_VALIDATION.md).
