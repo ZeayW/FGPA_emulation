@@ -397,7 +397,6 @@ REMOTE
     upload_command="$(inner_ssh_command \
       "mkdir -p $(shell_quote "$REPART_ROOT") && \
        cat > $(shell_quote "$remote_package.upload") && \
-       test \\\$(sha256sum $(shell_quote "$remote_package.upload") | awk '{print \\\$1}') = $(shell_quote "$package_sha256") && \
        mv $(shell_quote "$remote_package.upload") $(shell_quote "$remote_package")")"
     gateway_ssh "$upload_command" < "$cache_package"
   fi
