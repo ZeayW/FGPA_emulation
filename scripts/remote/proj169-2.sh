@@ -38,6 +38,8 @@ Commands:
              Validate RePart on connected PicoRV32 and the 121k-cell x32 RTL.
   repart-phase3-nvdla
              Validate RePart twice on the 731,313-cell connected NVDLA design.
+  repart-nvdla-downstream
+             Run frozen Phases 4-6 and initial Phase 7C on RePart NVDLA.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -695,6 +697,127 @@ for run in run1 run2; do
     "$root/$run-time.txt"
 done
 du -sh "$root/run1" "$root/run2"
+REMOTE
+}
+
+repart_nvdla_downstream_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+root=/data/zywang/emuflow/nvdla-repart-phase3a
+flow="$root/flow"
+phase3="$root/run1"
+baseline=/data/zywang/emuflow/nvdla-balanced-phase3b/balanced-flow
+ir="$baseline/phase1/design.emuir.json"
+platform=platforms/virtual/xcvu9p_4fpga_mesh.json
+test -s "$ir"
+test -s "$phase3/assignment.json"
+mkdir -p "$flow"
+
+/usr/bin/time -v -o "$flow/phase4-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase4 \
+    --assignment "$phase3/assignment.json" \
+    --platform "$platform" \
+    --frame-slots 4096 \
+    --out "$flow/phase4" \
+    > "$flow/phase4-stdout.json"
+PYTHONPATH=src python3 -m emuflow route validate \
+  "$flow/phase4/routes.json" \
+  --assignment "$phase3/assignment.json" \
+  --platform "$platform" \
+  > "$flow/phase4-independent-check.json"
+
+/usr/bin/time -v -o "$flow/phase5-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase5 \
+    --routes "$flow/phase4/routes.json" \
+    --platform "$platform" \
+    --simulation-frames 16 \
+    --out "$flow/phase5" \
+    > "$flow/phase5-stdout.json"
+
+/usr/bin/time -v -o "$flow/phase6-time.txt" \
+  env PYTHONPATH=src python3 -m emuflow phase6 \
+    --ir "$ir" \
+    --assignment "$phase3/assignment.json" \
+    --schedule "$flow/phase5/schedule.json" \
+    --platform "$platform" \
+    --equivalence-cycles 2 \
+    --equivalence-seed 20260727 \
+    --out "$flow/phase6" \
+    > "$flow/phase6-stdout.json"
+PYTHONPATH=src python3 -m emuflow split validate \
+  "$flow/phase6/manifest.json" \
+  --ir "$ir" \
+  --assignment "$phase3/assignment.json" \
+  --schedule "$flow/phase5/schedule.json" \
+  --platform "$platform" \
+  > "$flow/phase6-independent-check.json"
+
+PYTHONPATH=src python3 -m emuflow phase7c \
+  --schedule "$flow/phase5/schedule.json" \
+  --platform "$platform" \
+  --phase3-report "$phase3/phase3_report.json" \
+  --phase4-report "$flow/phase4/phase4_report.json" \
+  --phase5-report "$flow/phase5/phase5_report.json" \
+  --phase6-report "$flow/phase6/phase6_report.json" \
+  --simulation-frames 64 \
+  --out "$flow/phase7c" \
+  > "$flow/phase7c-initial-stdout.json"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("/data/zywang/emuflow/nvdla-repart-phase3a")
+flow = root / "flow"
+phase3 = json.loads((root / "run1/phase3_report.json").read_text())
+phase4 = json.loads((flow / "phase4/phase4_report.json").read_text())
+phase5 = json.loads((flow / "phase5/phase5_report.json").read_text())
+phase6 = json.loads((flow / "phase6/phase6_report.json").read_text())
+for name, report in (
+    ("phase3", phase3),
+    ("phase4", phase4),
+    ("phase5", phase5),
+    ("phase6", phase6),
+):
+    if report["status"] != "pass":
+        raise SystemExit(f"{name} report did not pass")
+if phase4["validation"]["demands"] != phase3["validation"]["cut_nets"]:
+    raise SystemExit("Phase 3/4 demand count mismatch")
+if phase5["validation"]["demands"] != phase4["validation"]["demands"]:
+    raise SystemExit("Phase 4/5 demand count mismatch")
+summary = {
+    "schema": "emuflow.repart-nvdla-downstream/v1",
+    "phase3": phase3["validation"],
+    "phase4": phase4["validation"],
+    "phase5": phase5["validation"],
+    "phase6": phase6["validation"],
+}
+(flow / "downstream-summary.json").write_text(
+    json.dumps(summary, indent=2, sort_keys=True) + "\n"
+)
+print(
+    "EMUFLOW_REPART_NVDLA_DOWNSTREAM status=pass "
+    f"demands={phase4['validation']['demands']} "
+    f"routed_sinks={phase4['validation']['routed_sinks']} "
+    f"bit_hops={phase4['validation']['total_link_bit_hops']} "
+    f"max_link_utilization="
+    f"{phase4['validation']['max_link_utilization']} "
+    f"scheduled_hops={phase5['validation']['scheduled_bit_hops']} "
+    f"completion_slot={phase5['validation']['completion_slot']} "
+    f"collisions={phase5['validation']['collisions']}"
+)
+PY
+
+for phase in phase4 phase5 phase6; do
+  printf '%s\n' "$phase"
+  grep -E 'Elapsed \\(wall clock\\)|Maximum resident set size' \
+    "$flow/$phase-time.txt"
+done
+du -sh "$flow/phase4" "$flow/phase5" "$flow/phase6"
 REMOTE
 }
 
@@ -2911,6 +3034,9 @@ case "$command" in
     ;;
   repart-phase3-nvdla)
     repart_phase3_nvdla_remote
+    ;;
+  repart-nvdla-downstream)
+    repart_nvdla_downstream_remote
     ;;
   test)
     test_remote
