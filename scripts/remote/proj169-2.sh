@@ -553,6 +553,39 @@ designs = {
     "connected": Path("build/remote/benchmarks/picorv32-l2"),
     "scale": Path("build/remote/benchmarks/picorv32-x32-l5"),
 }
+for name, root in designs.items():
+    report = json.loads(
+        (root / "phase3-repart-run1/phase3_report.json").read_text()
+    )
+    validation = report["validation"]
+    if report["status"] != "pass":
+        raise SystemExit(f"{name} RePart report did not pass")
+    if validation["used_fpgas"] != 2:
+        raise SystemExit(f"{name} RePart did not use both FPGAs")
+    if validation["illegal_cuts"] != 0:
+        raise SystemExit(f"{name} RePart produced illegal cuts")
+    if name == "connected" and validation["cut_nets"] <= 0:
+        raise SystemExit("connected RePart produced no cross-FPGA cuts")
+    if name == "scale" and validation["instances"] < 100_000:
+        raise SystemExit("scale RePart did not cover 100k cells")
+    print(
+        "EMUFLOW_REPART_PICORV32 "
+        f"design={name} status=pass "
+        f"instances={validation['instances']} "
+        f"clusters={validation['clusters']} "
+        f"cut_nets={validation['cut_nets']} "
+        f"partition_cells="
+        f"{','.join(str(item['instance_count']) for item in report['partitions'])}"
+    )
+PY
+
+sha256sum \
+  "$connected_root/phase3-repart-run1/assignment.json" \
+  "$connected_root/phase3-repart-run2/assignment.json" \
+  "$scale_root/phase3-repart-run1/assignment.json" \
+  "$scale_root/phase3-repart-run2/assignment.json"
+REMOTE
+}
 
 repart_phase3_nvdla_remote() {
   remote_script <<'REMOTE'
@@ -662,39 +695,6 @@ for run in run1 run2; do
     "$root/$run-time.txt"
 done
 du -sh "$root/run1" "$root/run2"
-REMOTE
-}
-for name, root in designs.items():
-    report = json.loads(
-        (root / "phase3-repart-run1/phase3_report.json").read_text()
-    )
-    validation = report["validation"]
-    if report["status"] != "pass":
-        raise SystemExit(f"{name} RePart report did not pass")
-    if validation["used_fpgas"] != 2:
-        raise SystemExit(f"{name} RePart did not use both FPGAs")
-    if validation["illegal_cuts"] != 0:
-        raise SystemExit(f"{name} RePart produced illegal cuts")
-    if name == "connected" and validation["cut_nets"] <= 0:
-        raise SystemExit("connected RePart produced no cross-FPGA cuts")
-    if name == "scale" and validation["instances"] < 100_000:
-        raise SystemExit("scale RePart did not cover 100k cells")
-    print(
-        "EMUFLOW_REPART_PICORV32 "
-        f"design={name} status=pass "
-        f"instances={validation['instances']} "
-        f"clusters={validation['clusters']} "
-        f"cut_nets={validation['cut_nets']} "
-        f"partition_cells="
-        f"{','.join(str(item['instance_count']) for item in report['partitions'])}"
-    )
-PY
-
-sha256sum \
-  "$connected_root/phase3-repart-run1/assignment.json" \
-  "$connected_root/phase3-repart-run2/assignment.json" \
-  "$scale_root/phase3-repart-run1/assignment.json" \
-  "$scale_root/phase3-repart-run2/assignment.json"
 REMOTE
 }
 
