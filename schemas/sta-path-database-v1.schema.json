@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/sta-path-database-v1.schema.json",
+  "title": "EmuFlow partition-independent STA path database",
+  "type": "object",
+  "required": ["schema", "design", "source", "paths"],
+  "properties": {
+    "schema": {
+      "const": "emuflow.sta-path-database/v1"
+    },
+    "design": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": ["provider"],
+      "properties": {
+        "provider": {
+          "const": "vivado-get-timing-path-database-v1"
+        },
+        "input": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "clock_domain",
+          "clock_period_ns",
+          "slack_ns",
+          "fixed_delay_ns",
+          "path_nets"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "clock_domain": {
+            "type": "string",
+            "minLength": 1
+          },
+          "clock_period_ns": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "slack_ns": {
+            "type": "number"
+          },
+          "fixed_delay_ns": {
+            "type": "number",
+            "minimum": 0
+          },
+          "path_nets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

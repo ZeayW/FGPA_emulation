@@ -33,7 +33,13 @@ from .synthesis import (
     VALID_XILINX_FAMILIES,
     run_yosys,
 )
-from .sta import import_vivado_sta_tsv, write_vivado_cut_net_map
+from .sta import (
+    import_vivado_path_database_tsv,
+    import_vivado_sta_tsv,
+    project_sta_path_database,
+    write_vivado_cut_net_map,
+    write_vivado_net_map,
+)
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
 from .timing_routing import ROUTE_TDM_PROVIDER, TLR_PROVIDER
@@ -350,6 +356,34 @@ def _build_parser() -> argparse.ArgumentParser:
     sta_import.add_argument("--input", type=Path, required=True)
     sta_import.add_argument("--assignment", type=Path, required=True)
     sta_import.add_argument("--output", "-o", type=Path, required=True)
+    sta_net_map = sta_subparsers.add_parser(
+        "emit-vivado-net-map",
+        help="map every stable EmuIR net to its mapped-Verilog name",
+    )
+    sta_net_map.add_argument("--ir", type=Path, required=True)
+    sta_net_map.add_argument("--output", "-o", type=Path, required=True)
+    sta_database_import = sta_subparsers.add_parser(
+        "import-vivado-path-database",
+        help="import export_timing_path_database.tcl output",
+    )
+    sta_database_import.add_argument("--input", type=Path, required=True)
+    sta_database_import.add_argument("--ir", type=Path, required=True)
+    sta_database_import.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    sta_database_project = sta_subparsers.add_parser(
+        "project-path-database",
+        help="project partition-independent paths onto candidate cut nets",
+    )
+    sta_database_project.add_argument(
+        "--database", type=Path, required=True
+    )
+    sta_database_project.add_argument(
+        "--assignment", type=Path, required=True
+    )
+    sta_database_project.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
 
     route_parser = subparsers.add_parser(
         "route", help="board-level system route artifact operations"
@@ -807,9 +841,19 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = write_vivado_cut_net_map(
                 args.ir, args.assignment, args.output
             )
-        else:
+        elif args.sta_command == "import-vivado-tsv":
             report = import_vivado_sta_tsv(
                 args.input, args.assignment, args.output
+            )
+        elif args.sta_command == "emit-vivado-net-map":
+            report = write_vivado_net_map(args.ir, args.output)
+        elif args.sta_command == "import-vivado-path-database":
+            report = import_vivado_path_database_tsv(
+                args.input, args.ir, args.output
+            )
+        else:
+            report = project_sta_path_database(
+                args.database, args.assignment, args.output
             )
         _print_json(report)
         return 0

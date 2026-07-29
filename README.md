@@ -158,6 +158,12 @@ controlled comparisons. A provider-neutral checker evaluates negotiated and
 timing-aware routes against the same normalized STA artifact and reports
 absolute-slack and normalized-slack extrema separately across clock domains.
 
+Cross-stage partition/routing/TDM work uses a partition-independent STA path
+database. The Vivado adapter records ordered stable EmuIR net identities for
+each global path; `emuflow sta project-path-database` projects the same
+database onto every candidate partition's cut nets. This prevents an outer
+optimization loop from comparing candidates with different timing samples.
+
 The academic Phase 5 provider is likewise rooted in editable C++17 source at
 `src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the
 versioned timing model, realizes the optimized ratio/lane groups as an exact

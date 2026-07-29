@@ -68,6 +68,22 @@
       "integration": "default-in-tree-build"
     },
     {
+      "id": "partition-independent-sta",
+      "stage": "Phase 3/4/5 cross-stage timing projection",
+      "source_paths": [
+        "src/emuflow/sta.py",
+        "scripts/vivado/export_timing_path_database.tcl",
+        "schemas/sta-path-database-v1.schema.json"
+      ],
+      "build_targets": [
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow"
+      ],
+      "integration": "in-tree-python"
+    },
+    {
       "id": "partition-tdm-feedback",
       "stage": "Phase 3/4/5 joint optimization",
       "source_paths": [

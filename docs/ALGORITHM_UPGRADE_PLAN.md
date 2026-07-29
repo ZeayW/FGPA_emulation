@@ -323,5 +323,32 @@ Each provider increment follows the same sequence:
 
 Exact commands, machine configuration, artifact hashes, raw measurements, and
 QoR tables are maintained as local experiment records and are not committed.
-The default provider changes only at step 8. Cross-stage feedback remains
-disabled until Phases 3-6 all have promoted academic providers.
+The default provider changes only at step 8.
+
+## Cross-stage campaign
+
+The accepted single-stage providers remain frozen baselines. Partition/TDM
+feedback is enabled only through an outer loop with candidate-level
+accept/rollback; generating a weight file alone is not considered joint
+optimization.
+
+The first prerequisite is `emuflow.sta-path-database/v1`. A global mapped
+design exports ordered stable EmuIR net identities for each STA path without
+using a partition assignment. Each candidate partition projects that same
+database onto its own cut-net set before Phase 4 and Phase 5. The projection
+reports both covered and uncovered cut nets, so candidate timing coverage
+cannot change silently.
+
+The first complete outer loop will:
+
+1. route and schedule the accepted partition;
+2. derive checked channel-usage/timing net weights;
+3. rerun RePart with those weights;
+4. project the frozen STA database onto the candidate cuts;
+5. rerun the accepted route and TDM providers; and
+6. accept or roll back using a lexicographic objective of realized worst
+   normalized slack, minimum legal frame length, maximum FPGA/link
+   utilization, cut endpoints, and replica cost.
+
+The loop becomes a default only after deterministic small, medium, and NVDLA
+comparisons against the frozen single-stage flow.
