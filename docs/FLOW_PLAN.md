@@ -212,8 +212,8 @@ Vivado/OpenSTA-derived timing weights, topology-aware repartition feedback,
 and resource-specific heterogeneous FPGA capacity ratios remain QoR
 extensions.
 
-### Phase 4 — Board-level system routing (academic provider implemented;
-real-STA promotion in progress)
+### Phase 4 — Board-level system routing (academic provider implemented and
+real-STA validated)
 
 Implement a negotiated-congestion router over BoardDB:
 
@@ -257,10 +257,19 @@ checker reconstructs every tree, capacity domain, direction lock, route
 delay, compressed-path signature, slack, and normalized slack from the
 returned artifact.
 
-The provider is deliberately opt-in until the real-STA acceptance gate is
-complete. Its large-design route, determinism, and frozen Phase 5/6
-compatibility gates have passed. The baseline remains
-`negotiated-shortest-path-tree-v1`.
+For real STA input, `emuflow sta emit-vivado-cut-map` produces a lossless
+UTF-8-hex map from stable EmuIR cut-net IDs to the deterministic
+`__emuflow_net_<index>` names in emitted mapped Verilog.
+`scripts/vivado/export_cut_timing_paths.tcl` queries Vivado timing-path
+objects that traverse those nets and exports clock group, requirement, slack,
+data-path delay, and exact cut-net membership. `emuflow sta
+import-vivado-tsv` converts that result to `emuflow.sta-paths/v1`; no
+human-readable timing-report scraping or heuristic name matching is used.
+
+The academic provider is selected automatically when a timing-path artifact
+is supplied. Its real-STA large-design route, determinism, and frozen Phase
+5/6 compatibility gates pass. With no STA artifact, the dependency-free
+`negotiated-shortest-path-tree-v1` remains the explicit feasibility fallback.
 
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 

@@ -26,6 +26,7 @@ from .synthesis import (
     VALID_XILINX_FAMILIES,
     run_yosys,
 )
+from .sta import import_vivado_sta_tsv, write_vivado_cut_net_map
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
 
@@ -301,6 +302,27 @@ def _build_parser() -> argparse.ArgumentParser:
         default=3600,
     )
 
+    sta_parser = subparsers.add_parser(
+        "sta", help="STA path extraction artifact operations"
+    )
+    sta_subparsers = sta_parser.add_subparsers(
+        dest="sta_command", required=True
+    )
+    sta_map = sta_subparsers.add_parser(
+        "emit-vivado-cut-map",
+        help="map stable EmuIR cut nets to mapped-Verilog net names",
+    )
+    sta_map.add_argument("--ir", type=Path, required=True)
+    sta_map.add_argument("--assignment", type=Path, required=True)
+    sta_map.add_argument("--output", "-o", type=Path, required=True)
+    sta_import = sta_subparsers.add_parser(
+        "import-vivado-tsv",
+        help="import export_cut_timing_paths.tcl output",
+    )
+    sta_import.add_argument("--input", type=Path, required=True)
+    sta_import.add_argument("--assignment", type=Path, required=True)
+    sta_import.add_argument("--output", "-o", type=Path, required=True)
+
     route_parser = subparsers.add_parser(
         "route", help="board-level system route artifact operations"
     )
@@ -330,7 +352,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "negotiated-shortest-path-tree-v1",
             "timing-aware-load-balanced-v1",
         ],
-        default="negotiated-shortest-path-tree-v1",
+        default=None,
+        help=(
+            "defaults to timing-aware-load-balanced-v1 when --timing-paths "
+            "is supplied, otherwise the negotiated baseline"
+        ),
     )
     phase4.add_argument(
         "--timing-paths",
@@ -624,6 +650,18 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
+
+    if args.command == "sta":
+        if args.sta_command == "emit-vivado-cut-map":
+            report = write_vivado_cut_net_map(
+                args.ir, args.assignment, args.output
+            )
+        else:
+            report = import_vivado_sta_tsv(
+                args.input, args.assignment, args.output
+            )
+        _print_json(report)
+        return 0
 
     if args.command == "route":
         report = validate_phase4(

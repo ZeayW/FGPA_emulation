@@ -205,7 +205,6 @@ class Phase4Test(unittest.TestCase):
                 platform_path=platform_path,
                 output_dir=root / "phase4",
                 constraints_path=constraints_path,
-                provider="timing-aware-load-balanced-v1",
                 timing_paths_path=timing_path,
                 router=str(executable),
             )

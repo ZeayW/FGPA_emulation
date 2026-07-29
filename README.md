@@ -51,7 +51,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | --- | --- | --- |
 | Synthesis/import | Yosys JSON to versioned EmuIR | Implemented |
 | Partitioning | Greedy baseline, TritonPart, RePart partitioning and logic replication | Implemented; Phase 3B validated |
-| System routing | Negotiated baseline plus in-tree C++ timing-aware load-balanced routing | Academic provider implemented; real-STA promotion in progress |
+| System routing | In-tree C++ timing-aware load-balanced routing plus negotiated baseline | Academic provider promoted when STA paths are supplied |
 | TDM | Legal lane/slot scheduling with precedence and collision checks | Implemented; academic upgrade planned |
 | Netlist/transport | Per-FPGA split, shadow endpoints, generated TDM RTL | Implemented |
 | Pin planning | Logical lanes and virtual I/O anchors | Implemented |

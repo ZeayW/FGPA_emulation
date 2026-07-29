@@ -43,6 +43,7 @@ REQUIRED_SOURCE_FILES = {
 
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/tlr_router.cpp",
+    "scripts/vivado/export_cut_timing_paths.tcl",
 )
 
 OPAQUE_SUFFIXES = {

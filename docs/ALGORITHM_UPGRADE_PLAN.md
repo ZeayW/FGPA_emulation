@@ -131,6 +131,12 @@ first-party C++17 target `emuflow_tlr_router`, built by the repository root
 CMake project. The Python layer only performs versioned STA/BoardDB artifact
 adaptation and independent result checking.
 
+The real-STA adapter uses Vivado timing objects rather than parsing formatted
+reports. A repository Tcl exporter enumerates nets on each returned path and
+joins them through an emitted EmuIR-to-mapped-net identity map. All names are
+UTF-8 hex encoded in the interchange TSV before the Python importer creates
+the versioned STA artifact.
+
 Implemented algorithm details:
 
 - Eq. (2) multi-clock normalized slack and a lossless compression proof that
@@ -150,9 +156,13 @@ the critical net over the 2 ns path where the baseline assigns it the 10 ns
 path; ordered-signature compression, shared-direction locking, independent
 delay/slack recomputation, and corruption rejection all pass. The NVDLA
 large-design scale, determinism, and frozen Phase 5/6 compatibility gates also
-pass with a deterministic structural timing workload. This workload is not a
-substitute for STA: real Vivado/OpenSTA path import and frozen-baseline QoR
-remain the promotion gate before this provider becomes the default.
+pass with a deterministic structural timing workload. The real-STA gate also
+passes on the same 731,313-cell NVDLA design: Vivado timing objects are joined
+to stable cut-net identities, repeated route artifacts are byte-identical,
+and the frozen-baseline worst normalized slack improves without capacity or
+downstream Phase 5/6 violations. The academic provider is therefore selected
+automatically whenever `--timing-paths` is present; the negotiated provider
+remains the no-STA feasibility fallback.
 
 The existing negotiated-congestion router remains
 `negotiated-shortest-path-tree-v1`.

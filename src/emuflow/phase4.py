@@ -27,7 +27,7 @@ def run_phase4(
     constraints_path: Optional[Path] = None,
     frame_slots: Optional[int] = None,
     max_iterations: Optional[int] = None,
-    provider: str = "negotiated-shortest-path-tree-v1",
+    provider: Optional[str] = None,
     timing_paths_path: Optional[Path] = None,
     router: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -39,6 +39,12 @@ def run_phase4(
         frame_slots=frame_slots,
         max_iterations=max_iterations,
     )
+    if provider is None:
+        provider = (
+            TLR_PROVIDER
+            if timing_paths_path is not None
+            else "negotiated-shortest-path-tree-v1"
+        )
     timing_paths = None
     if provider == "negotiated-shortest-path-tree-v1":
         if timing_paths_path is not None:
