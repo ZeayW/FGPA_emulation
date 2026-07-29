@@ -171,6 +171,13 @@ TDM slack independently from route trees and BoardDB. The joint provider is
 selected automatically whenever `--timing-paths` is present; the negotiated
 provider remains the no-STA feasibility fallback.
 
+For frozen-baseline comparisons, the negotiated provider may also consume the
+same normalized STA artifact without using it during optimization. A
+provider-neutral checker then reconstructs route-only and analytical TDM
+timing for both solutions. In a multi-clock design it tracks the path with
+minimum absolute slack separately from the path with minimum normalized slack;
+these extrema are not assumed to be the same path.
+
 The existing negotiated-congestion router remains
 `negotiated-shortest-path-tree-v1`.
 

@@ -13,6 +13,7 @@ from .timing_routing import (
     ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
     load_sta_paths,
+    reconstruct_system_route_timing,
     route_system_timing_aware,
     validate_timing_aware_system_routes,
 )
@@ -48,13 +49,19 @@ def run_phase4(
         )
     timing_paths = None
     if provider == "negotiated-shortest-path-tree-v1":
-        if timing_paths_path is not None:
-            raise ValueError(
-                "--timing-paths requires "
-                f"--provider {ROUTE_TDM_PROVIDER}"
-            )
         routes = route_system(assignment, platform, constraints)
-        validation = validate_system_routes(assignment, platform, routes)
+        if timing_paths_path is None:
+            validation = validate_system_routes(
+                assignment, platform, routes
+            )
+        else:
+            timing_paths = load_sta_paths(
+                timing_paths_path,
+                demands_from_assignment(assignment, platform),
+            )
+            validation = reconstruct_system_route_timing(
+                assignment, platform, routes, timing_paths
+            )
     elif provider in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
         if timing_paths_path is None:
             raise ValueError(
@@ -128,4 +135,13 @@ def validate_phase4(
         return validate_timing_aware_system_routes(
             assignment, platform, routes, timing_paths
         )
-    return validate_system_routes(assignment, platform, routes)
+    validation = validate_system_routes(assignment, platform, routes)
+    if timing_paths_path is not None:
+        timing_paths = load_sta_paths(
+            timing_paths_path,
+            demands_from_assignment(assignment, platform),
+        )
+        return reconstruct_system_route_timing(
+            assignment, platform, routes, timing_paths
+        )
+    return validation

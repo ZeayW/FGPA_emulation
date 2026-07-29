@@ -154,7 +154,9 @@ serialization ratio while constructing and refining multicast trees. Python
 imports versioned STA paths, invokes the root-build product, and independently
 reconstructs topology, capacity, direction locks, delay, the TDM proxy, slack,
 and path signatures. The earlier route-only provider remains available for
-controlled comparisons.
+controlled comparisons. A provider-neutral checker evaluates negotiated and
+timing-aware routes against the same normalized STA artifact and reports
+absolute-slack and normalized-slack extrema separately across clock domains.
 
 The academic Phase 5 provider is likewise rooted in editable C++17 source at
 `src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the

@@ -21,7 +21,10 @@ from emuflow.routing import (
     validate_system_routes,
 )
 from emuflow.timing_routing import (
+    compress_sta_paths,
     load_sta_paths,
+    normalize_sta_paths,
+    reconstruct_system_route_timing,
     validate_timing_aware_system_routes,
 )
 from emuflow.yosys import import_yosys_json
@@ -90,6 +93,76 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_common_timing_checker_keeps_multiclock_extrema_separate(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "multiclock",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=1, latency=1)],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [("long_period", "a", ["b"]), ("short_period", "a", ["b"])],
+        )
+        routes = route_system(
+            assignment,
+            platform,
+            normalize_route_constraints(
+                {
+                    "schema": "emuflow.system-route-constraints/v1",
+                    "frame_slots": 64,
+                },
+                platform,
+            ),
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "raw_slack_worst",
+                            "clock_domain": "slow",
+                            "clock_period_ns": 100.0,
+                            "slack_ns": -1.0,
+                            "fixed_delay_ns": 110.0,
+                            "cut_nets": ["long_period"],
+                        },
+                        {
+                            "id": "normalized_worst",
+                            "clock_domain": "fast",
+                            "clock_period_ns": 10.0,
+                            "slack_ns": -1.0,
+                            "fixed_delay_ns": 10.0,
+                            "cut_nets": ["short_period"],
+                        },
+                    ],
+                },
+                routes["demands"],
+            )
+        )
+        checked = reconstruct_system_route_timing(
+            assignment, platform, routes, timing
+        )
+        self.assertEqual(
+            checked["worst_slack_path"], "raw_slack_worst"
+        )
+        self.assertEqual(
+            checked["worst_normalized_path"], "normalized_worst"
+        )
+        self.assertEqual(
+            checked["estimated_worst_tdm_slack_path"],
+            "raw_slack_worst",
+        )
+        self.assertEqual(
+            checked["estimated_worst_tdm_normalized_path"],
+            "normalized_worst",
+        )
+
     def test_timing_aware_cpp_router_prioritizes_critical_clock_domain(
         self,
     ) -> None:
@@ -246,10 +319,33 @@ class Phase4Test(unittest.TestCase):
                 timing_path,
                 routes["demands"],
             )
+            baseline_timing = reconstruct_system_route_timing(
+                assignment, platform, baseline, normalized
+            )
             checked = validate_timing_aware_system_routes(
                 assignment, platform, routes, normalized
             )
             self.assertEqual(checked["status"], "pass")
+            self.assertGreater(
+                checked["worst_normalized_slack"],
+                baseline_timing["worst_normalized_slack"],
+            )
+            baseline_report = run_phase4(
+                assignment_path=assignment_path,
+                platform_path=platform_path,
+                output_dir=root / "phase4-baseline",
+                constraints_path=constraints_path,
+                provider="negotiated-shortest-path-tree-v1",
+                timing_paths_path=timing_path,
+            )
+            self.assertEqual(
+                baseline_report["validation"],
+                baseline_timing,
+            )
+            self.assertEqual(
+                baseline_report["artifacts"]["timing_paths"],
+                "timing_paths.normalized.json",
+            )
             normalized_reload = load_sta_paths(
                 root / "phase4" / "timing_paths.normalized.json",
                 routes["demands"],

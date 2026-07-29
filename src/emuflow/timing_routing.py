@@ -768,6 +768,197 @@ def route_system_timing_aware(
     }
 
 
+def reconstruct_system_route_timing(
+    assignment: Mapping[str, Any],
+    platform: Platform,
+    routes: Mapping[str, Any],
+    timing_paths: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Evaluate any legal route provider against one normalized STA input."""
+    validation = validate_system_routes(assignment, platform, routes)
+    constraints = normalize_route_constraints(
+        routes.get("constraints"), platform
+    )
+    _, arcs, capacities = build_directed_graph(platform, constraints)
+    link_by_id = {link.id: link for link in platform.links}
+
+    route_delay_by_net = {}
+    capacity_usage = {key: 0 for key in capacities}
+    for route in routes["routes"]:
+        graph: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+        for edge in route["tree_edges"]:
+            key = _arc_key(edge["link"], edge["from"], edge["to"])
+            graph[edge["from"]].append((edge["to"], edge["link"]))
+            capacity_usage[arcs[key]["capacity_key"]] += int(
+                route["width_bits"]
+            )
+        delay_by_node = {route["source"]: 0.0}
+        queue = deque([route["source"]])
+        while queue:
+            node = queue.popleft()
+            for sink, link_id in graph[node]:
+                delay_by_node[sink] = (
+                    delay_by_node[node]
+                    + _link_delay_ns(platform, link_id, constraints)
+                )
+                queue.append(sink)
+        route_delay_by_net[route["net"]] = max(
+            delay_by_node[sink] for sink in route["sinks"]
+        )
+
+    ratios = {}
+    quantum = constraints["tdm_ratio_quantum"]
+    for key, capacity in capacities.items():
+        lanes = link_by_id[
+            capacity["link"]
+        ].data_lanes_per_direction
+        signals = capacity_usage[key]
+        if signals <= lanes:
+            ratio = 1
+        else:
+            raw = (signals + lanes - 1) // lanes
+            ratio = ((raw + quantum - 1) // quantum) * quantum
+            ratio = min(constraints["frame_slots"], ratio)
+        ratios[key] = ratio
+
+    route_tdm_delay_by_net = {}
+    for route in routes["routes"]:
+        graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
+        for edge in route["tree_edges"]:
+            key = _arc_key(edge["link"], edge["from"], edge["to"])
+            graph[edge["from"]].append(
+                (
+                    edge["to"],
+                    edge["link"],
+                    arcs[key]["capacity_key"],
+                )
+            )
+        delay_by_node = {route["source"]: 0.0}
+        queue = deque([route["source"]])
+        while queue:
+            node = queue.popleft()
+            for sink, link_id, capacity_key in graph[node]:
+                link = link_by_id[link_id]
+                delay_by_node[sink] = (
+                    delay_by_node[node]
+                    + _link_delay_ns(platform, link_id, constraints)
+                    + (1000.0 / link.fabric_clock_mhz)
+                    * (ratios[capacity_key] - 1)
+                )
+                queue.append(sink)
+        route_tdm_delay_by_net[route["net"]] = max(
+            delay_by_node[sink] for sink in route["sinks"]
+        )
+
+    normalization = timing_paths["normalization"]
+    path_records = []
+    for path in timing_paths["paths"]:
+        delay = path["fixed_delay_ns"] + sum(
+            route_delay_by_net[net] for net in path["cut_nets"]
+        )
+        slack = path["clock_period_ns"] - delay
+        normalized = (
+            slack
+            * path["clock_period_ns"]
+            / (
+                normalization["positive_slack_scale_ns"]
+                * normalization["max_clock_period_ns"]
+            )
+            if slack >= 0.0
+            else slack
+            / (
+                normalization["negative_slack_scale_ns"]
+                * path["clock_period_ns"]
+            )
+        )
+        tdm_delay = path["fixed_delay_ns"] + sum(
+            route_tdm_delay_by_net[net] for net in path["cut_nets"]
+        )
+        tdm_slack = path["clock_period_ns"] - tdm_delay
+        tdm_normalized = (
+            tdm_slack
+            * path["clock_period_ns"]
+            / (
+                normalization["positive_slack_scale_ns"]
+                * normalization["max_clock_period_ns"]
+            )
+            if tdm_slack >= 0.0
+            else tdm_slack
+            / (
+                normalization["negative_slack_scale_ns"]
+                * path["clock_period_ns"]
+            )
+        )
+        path_records.append(
+            {
+                "path": path["id"],
+                "slack_ns": slack,
+                "normalized_slack": normalized,
+                "estimated_tdm_slack_ns": tdm_slack,
+                "estimated_tdm_normalized_slack": tdm_normalized,
+            }
+        )
+    if not path_records:
+        raise ValidationError(
+            "route timing reconstruction has no normalized STA paths"
+        )
+    worst_slack = min(
+        path_records,
+        key=lambda record: (
+            record["slack_ns"],
+            record["path"],
+        ),
+    )
+    worst_normalized = min(
+        path_records,
+        key=lambda record: (
+            record["normalized_slack"],
+            record["path"],
+        ),
+    )
+    worst_tdm_slack = min(
+        path_records,
+        key=lambda record: (
+            record["estimated_tdm_slack_ns"],
+            record["path"],
+        ),
+    )
+    worst_tdm_normalized = min(
+        path_records,
+        key=lambda record: (
+            record["estimated_tdm_normalized_slack"],
+            record["path"],
+        ),
+    )
+    return {
+        **validation,
+        "provider": routes["provider"],
+        "timing_paths_original": timing_paths["compression"][
+            "original_paths"
+        ],
+        "timing_paths_compressed": timing_paths["compression"][
+            "compressed_paths"
+        ],
+        "worst_slack_path": worst_slack["path"],
+        "worst_slack_ns": worst_slack["slack_ns"],
+        "worst_normalized_path": worst_normalized["path"],
+        "worst_normalized_slack": worst_normalized[
+            "normalized_slack"
+        ],
+        "estimated_worst_tdm_slack_path": worst_tdm_slack["path"],
+        "estimated_worst_tdm_slack_ns": worst_tdm_slack[
+            "estimated_tdm_slack_ns"
+        ],
+        "estimated_worst_tdm_normalized_path": (
+            worst_tdm_normalized["path"]
+        ),
+        "estimated_worst_tdm_normalized_slack": worst_tdm_normalized[
+            "estimated_tdm_normalized_slack"
+        ],
+        "estimated_max_tdm_ratio": max(ratios.values(), default=1),
+    }
+
+
 def validate_timing_aware_system_routes(
     assignment: Mapping[str, Any],
     platform: Platform,
@@ -1048,22 +1239,25 @@ def validate_timing_aware_system_routes(
                 f"routes.metrics.{key} does not match independent "
                 "route/TDM proxy recomputation"
             )
-    return {
-        **validation,
-        "provider": routes["provider"],
-        "timing_paths_original": timing_paths["compression"][
-            "original_paths"
-        ],
-        "timing_paths_compressed": timing_paths["compression"][
-            "compressed_paths"
-        ],
-        "worst_slack_ns": worst_slack,
-        "worst_normalized_slack": worst_normalized,
-        "estimated_worst_tdm_slack_ns": estimated_worst_tdm_slack,
-        "estimated_worst_tdm_normalized_slack": (
-            estimated_worst_tdm_normalized
+    common_timing = reconstruct_system_route_timing(
+        assignment, platform, routes, timing_paths
+    )
+    for key, expected in (
+        ("worst_slack_ns", worst_slack),
+        ("worst_normalized_slack", worst_normalized),
+        ("estimated_worst_tdm_slack_ns", estimated_worst_tdm_slack),
+        (
+            "estimated_worst_tdm_normalized_slack",
+            estimated_worst_tdm_normalized,
         ),
-        "estimated_max_tdm_ratio": max(ratios.values(), default=1),
+        ("estimated_max_tdm_ratio", max(ratios.values(), default=1)),
+    ):
+        if abs(float(common_timing[key]) - expected) > 1.0e-9:
+            raise ValidationError(
+                f"common route timing reconstruction disagrees on {key}"
+            )
+    return {
+        **common_timing,
         "direction_locks": len(locks),
         "accepted_reroutes": metrics.get("accepted_reroutes"),
         "rolled_back_reroutes": metrics.get("rolled_back_reroutes"),
