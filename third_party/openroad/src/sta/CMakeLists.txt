@@ -499,8 +499,14 @@ target_include_directories(sta_swig
 # Library
 ###########################################################
 
-# compatibility with configure
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${STA_HOME}/app)
+# EmuFlow integration: keep generated libraries outside the imported source
+# tree. Upstream's configure-compatible default writes into ${STA_HOME}/app,
+# which makes a normal out-of-source OpenROAD build mutate repository source.
+set(STA_BUILD_OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/app"
+    CACHE PATH
+    "Directory for generated OpenSTA libraries and executables")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${STA_BUILD_OUTPUT_DIRECTORY})
 
 add_library(OpenSTA)
 
@@ -581,8 +587,7 @@ target_compile_features(OpenSTA PUBLIC cxx_std_17)
 # Executable
 ###########################################################
 
-# compatibility with configure
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${STA_HOME}/app)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${STA_BUILD_OUTPUT_DIRECTORY})
 
 # Note executable and lib name cannot be the same because
 # on osx something is case insensitive. Using STA for the
@@ -594,7 +599,7 @@ target_link_libraries(sta
   OpenSTA
   )
 
-message(STATUS "STA executable: ${STA_HOME}/app/sta")
+message(STATUS "STA executable: ${STA_BUILD_OUTPUT_DIRECTORY}/sta")
 
 ################################################################
 # Install

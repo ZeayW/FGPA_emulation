@@ -9,9 +9,17 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 
 REQUIRED_SOURCE_FILES = {
+    "cudd": (
+        "configure",
+        "cudd/cudd.h",
+        "cudd/cuddAPI.c",
+        "LICENSE",
+        "EMUFLOW_PROVENANCE.md",
+    ),
     "yosys": (
         "Makefile",
         "kernel/yosys.cc",
@@ -30,6 +38,10 @@ REQUIRED_SOURCE_FILES = {
         "CMakeLists.txt",
         "src/par/src/TritonPart.cpp",
         "src/sta/CMakeLists.txt",
+        "src/gui/resources/resource.qrc",
+        "src/gui/resources/icon.png",
+        "src/gui/resources/google_icons/LICENSE",
+        "src/gui/resources/google_icons/round_zoom_in_black_36dp.png",
         "third-party/abc/CMakeLists.txt",
         "LICENSE",
         "EMUFLOW_PROVENANCE.md",
@@ -58,9 +70,11 @@ REQUIRED_SOURCE_FILES = {
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/tlr_router.cpp",
     "src/native/tdm_ratio_optimizer.cpp",
+    "src/native/tdm_partition_feedback.cpp",
     "src/native/placement_aware_pin_planner.cpp",
     "src/native/bsp_pin_solver.cpp",
     "schemas/tdm-ratio-plan-v1.schema.json",
+    "schemas/partition-net-weights-v1.schema.json",
     "schemas/signal-position-hints-v1.schema.json",
     "schemas/placement-aware-pin-plan-v1.schema.json",
     "schemas/hardware-bsp-v1.schema.json",
@@ -72,6 +86,8 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
 
 OPAQUE_SUFFIXES = {
     ".a",
+    ".bin",
+    ".bit",
     ".dll",
     ".dylib",
     ".exe",
@@ -81,6 +97,18 @@ OPAQUE_SUFFIXES = {
     ".so",
 }
 
+OPAQUE_MAGICS = (
+    b"\x7fELF",
+    b"!<arch>\n",
+    b"MZ",
+    b"\xca\xfe\xba\xbe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xfe\xed\xfa\xce",
+)
+GIT_LFS_POINTER = b"version https://git-lfs.github.com/spec/v1\n"
+
 SOURCE_MANIFEST = "SOURCE_MANIFEST.json"
 ALLOWED_INTEGRATIONS = {
     "default-in-tree-build",
@@ -89,6 +117,21 @@ ALLOWED_INTEGRATIONS = {
     "source-present-runner-pending",
     "source-present-ultrascale-plus-integration-pending",
 }
+
+
+def _opaque_format(path: Path) -> Optional[str]:
+    if path.suffix.lower() in OPAQUE_SUFFIXES:
+        return "opaque build or bitstream suffix"
+    try:
+        with path.open("rb") as stream:
+            prefix = stream.read(128)
+    except OSError as error:
+        return f"unreadable file: {error}"
+    if prefix.startswith(GIT_LFS_POINTER):
+        return "Git LFS pointer"
+    if any(prefix.startswith(magic) for magic in OPAQUE_MAGICS):
+        return "opaque executable/library format"
+    return None
 
 
 def audit(repo_root: Path) -> list[str]:
@@ -147,10 +190,10 @@ def audit(repo_root: Path) -> list[str]:
             )
     native_root = repo_root / "src" / "native"
     for path in native_root.rglob("*"):
-        if path.is_file() and path.suffix.lower() in OPAQUE_SUFFIXES:
+        if path.is_file() and (reason := _opaque_format(path)) is not None:
             errors.append(
-                "first-party native tree contains an opaque build artifact: "
-                f"{path.relative_to(repo_root)}"
+                "first-party native tree contains a non-source artifact "
+                f"({reason}): {path.relative_to(repo_root)}"
             )
     third_party = repo_root / "third_party"
     for component, relative_files in REQUIRED_SOURCE_FILES.items():
@@ -163,15 +206,15 @@ def audit(repo_root: Path) -> list[str]:
                 )
 
         for path in component_root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in OPAQUE_SUFFIXES:
+            if path.is_file() and (reason := _opaque_format(path)) is not None:
                 errors.append(
-                    f"{component}: opaque build artifact is checked in: "
+                    f"{component}: non-source artifact is present ({reason}): "
                     f"{path.relative_to(repo_root)}"
                 )
 
     try:
         staged = subprocess.run(
-            ["git", "ls-files", "--stage"],
+            ["git", "-c", "core.quotePath=false", "ls-files", "--stage"],
             cwd=repo_root,
             check=True,
             capture_output=True,
@@ -182,10 +225,31 @@ def audit(repo_root: Path) -> list[str]:
     else:
         for line in staged.splitlines():
             mode, _object_id, _stage_and_path = line.split(maxsplit=2)
+            relative_path = _stage_and_path.split("\t", 1)[-1]
+            tracked_path = repo_root / relative_path
             if mode == "160000":
                 errors.append(
                     "git submodules are not allowed in the source-complete "
-                    f"tree: {_stage_and_path.split(chr(9), 1)[-1]}"
+                    f"tree: {relative_path}"
+                )
+                continue
+            if mode == "120000":
+                try:
+                    target = tracked_path.resolve(strict=False)
+                    target.relative_to(repo_root)
+                except (OSError, ValueError):
+                    errors.append(
+                        "tracked symlink escapes the source-complete tree: "
+                        f"{relative_path}"
+                    )
+                continue
+            if not tracked_path.is_file():
+                errors.append(f"tracked file is missing: {relative_path}")
+                continue
+            if (reason := _opaque_format(tracked_path)) is not None:
+                errors.append(
+                    f"tracked non-source artifact is not allowed ({reason}): "
+                    f"{relative_path}"
                 )
     return errors
 

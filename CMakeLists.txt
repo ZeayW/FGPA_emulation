@@ -21,6 +21,11 @@ find_program(EMUFLOW_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
 option(EMUFLOW_BUILD_REPART "Build the in-tree RePart source" ON)
 option(
+  EMUFLOW_BUILD_CUDD
+  "Build the in-tree CUDD source required by OpenROAD/OpenSTA"
+  ON
+)
+option(
   EMUFLOW_BUILD_TLR_ROUTER
   "Build the in-tree timing-aware load-balanced system router"
   ON
@@ -28,6 +33,11 @@ option(
 option(
   EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER
   "Build the in-tree Lagrangian/KKT TDM ratio optimizer"
+  ON
+)
+option(
+  EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK
+  "Build the in-tree channel-usage partition feedback optimizer"
   ON
 )
 option(
@@ -60,6 +70,18 @@ set(
   CACHE FILEPATH
   "Python interpreter containing the PyTorch used to compile OpenPARF"
 )
+set(
+  EMUFLOW_SWIG_EXECUTABLE
+  ""
+  CACHE FILEPATH
+  "Optional explicit SWIG executable used to compile the in-tree OpenROAD"
+)
+set(
+  EMUFLOW_SWIG_DIR
+  ""
+  CACHE PATH
+  "Optional explicit SWIG library directory paired with the executable"
+)
 option(
   EMUFLOW_OPENPARF_ENABLE_CUDA
   "Compile the in-tree OpenPARF PyTorch operators with CUDA"
@@ -74,6 +96,23 @@ option(
 set(EMUFLOW_INSTALL_ROOT "${CMAKE_BINARY_DIR}/install")
 set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
+
+# Keep root-built products self-consistent without installing libraries into
+# system directories. General-purpose dependency prefixes remain external to
+# the source tree, but their runtime libraries are recorded in local products.
+set(
+  EMUFLOW_RUNTIME_RPATH
+  "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_LIBDIR}"
+)
+foreach(EMUFLOW_DEPENDENCY_PREFIX IN LISTS EMUFLOW_CMAKE_PREFIX_PATH)
+  list(
+    APPEND EMUFLOW_RUNTIME_RPATH
+    "${EMUFLOW_DEPENDENCY_PREFIX}/lib"
+    "${EMUFLOW_DEPENDENCY_PREFIX}/lib64"
+  )
+endforeach()
+list(REMOVE_DUPLICATES EMUFLOW_RUNTIME_RPATH)
+string(REPLACE ";" "|" EMUFLOW_RUNTIME_RPATH_ARG "${EMUFLOW_RUNTIME_RPATH}")
 
 file(
   GLOB_RECURSE EMUFLOW_PYTHON_SOURCES
@@ -137,6 +176,20 @@ if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
   target_compile_options(emuflow_tdm_ratio_optimizer PRIVATE -O3)
   set_target_properties(
     emuflow_tdm_ratio_optimizer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK)
+  add_executable(
+    emuflow_tdm_partition_feedback
+    "${CMAKE_SOURCE_DIR}/src/native/tdm_partition_feedback.cpp"
+  )
+  target_compile_features(emuflow_tdm_partition_feedback PRIVATE cxx_std_17)
+  target_compile_options(emuflow_tdm_partition_feedback PRIVATE -O3)
+  set_target_properties(
+    emuflow_tdm_partition_feedback
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -273,7 +326,77 @@ if(EMUFLOW_BUILD_YOSYS)
   )
 endif()
 
+if(EMUFLOW_BUILD_CUDD)
+  ExternalProject_Add(
+    cudd_native
+    SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/cudd"
+    BINARY_DIR "${CMAKE_BINARY_DIR}/cudd"
+    DOWNLOAD_COMMAND ""
+    UPDATE_COMMAND ""
+    PATCH_COMMAND ""
+    CONFIGURE_COMMAND
+      "<SOURCE_DIR>/configure"
+      "--prefix=${EMUFLOW_INSTALL_ROOT}"
+      --enable-shared
+      --enable-static
+    BUILD_COMMAND
+      "${EMUFLOW_MAKE_EXECUTABLE}" -j "${EMUFLOW_EXTERNAL_JOBS}"
+    INSTALL_COMMAND "${EMUFLOW_MAKE_EXECUTABLE}" install
+    BUILD_BYPRODUCTS "${EMUFLOW_INSTALL_ROOT}/lib/libcudd.a"
+  )
+endif()
+
 if(EMUFLOW_BUILD_OPENROAD)
+  set(
+    EMUFLOW_OPENROAD_CMAKE_ARGS
+    "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    "-DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>"
+    "-DCMAKE_PREFIX_PATH=${EMUFLOW_CMAKE_PREFIX_PATH}"
+    "-DCUDD_DIR=${EMUFLOW_INSTALL_ROOT}"
+    "-DOPENROAD_VERSION=a008522d"
+    "-DENABLE_TESTS=OFF"
+    "-DBUILD_PYTHON=OFF"
+    "-DBUILD_MAN=OFF"
+  )
+  if(EMUFLOW_SWIG_EXECUTABLE)
+    list(
+      APPEND EMUFLOW_OPENROAD_CMAKE_ARGS
+      "-DSWIG_EXECUTABLE=${EMUFLOW_SWIG_EXECUTABLE}"
+    )
+  endif()
+  if(EMUFLOW_SWIG_DIR)
+    list(
+      APPEND EMUFLOW_OPENROAD_CMAKE_ARGS
+      "-DSWIG_DIR=${EMUFLOW_SWIG_DIR}"
+    )
+    set(
+      EMUFLOW_OPENROAD_BUILD_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+    set(
+      EMUFLOW_OPENROAD_INSTALL_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --target install
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+  else()
+    set(
+      EMUFLOW_OPENROAD_BUILD_COMMAND
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+    set(
+      EMUFLOW_OPENROAD_INSTALL_COMMAND
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --target install
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+  endif()
   ExternalProject_Add(
     openroad_native
     SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/openroad"
@@ -282,21 +405,11 @@ if(EMUFLOW_BUILD_OPENROAD)
     DOWNLOAD_COMMAND ""
     UPDATE_COMMAND ""
     PATCH_COMMAND ""
-    CMAKE_ARGS
-      "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-      "-DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>"
-      "-DCMAKE_PREFIX_PATH=${EMUFLOW_CMAKE_PREFIX_PATH}"
-      "-DOPENROAD_VERSION=a008522d"
-      "-DENABLE_TESTS=OFF"
-      "-DBUILD_PYTHON=OFF"
-      "-DBUILD_MAN=OFF"
-    BUILD_COMMAND
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    INSTALL_COMMAND
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --target install
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    LIST_SEPARATOR "|"
+    CMAKE_ARGS ${EMUFLOW_OPENROAD_CMAKE_ARGS}
+      "-DCMAKE_INSTALL_RPATH=${EMUFLOW_RUNTIME_RPATH_ARG}"
+    BUILD_COMMAND ${EMUFLOW_OPENROAD_BUILD_COMMAND}
+    INSTALL_COMMAND ${EMUFLOW_OPENROAD_INSTALL_COMMAND}
     BUILD_BYPRODUCTS "${EMUFLOW_INSTALL_BINDIR}/openroad"
   )
 endif()
@@ -319,6 +432,13 @@ if(EMUFLOW_BUILD_OPENPARF)
       "-DOPENPARF_ENABLE_CUDA=${EMUFLOW_OPENPARF_ENABLE_CUDA}"
       "-DBUILD_TESTING=OFF"
       "-DENABLE_ROUTER=${EMUFLOW_OPENPARF_BUILD_EXPERIMENTAL_ROUTER}"
+      # OpenPARF uses LEMON's graph algorithms but not its optional external
+      # LP/MIP backends. Disabling them also prevents unrelated OR-Tools
+      # transitive COIN headers from being mistaken for a complete COIN install.
+      "-DLEMON_ENABLE_COIN=NO"
+      "-DLEMON_ENABLE_GLPK=NO"
+      "-DLEMON_ENABLE_ILOG=NO"
+      "-DLEMON_ENABLE_SOPLEX=NO"
     BUILD_COMMAND
       "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
       --parallel "${EMUFLOW_EXTERNAL_JOBS}"
@@ -337,6 +457,9 @@ endif()
 # Preserve one-command behavior while avoiding three concurrent compiler farms.
 if(EMUFLOW_BUILD_YOSYS AND EMUFLOW_BUILD_OPENROAD)
   add_dependencies(openroad_native yosys_native)
+endif()
+if(EMUFLOW_BUILD_CUDD AND EMUFLOW_BUILD_OPENROAD)
+  add_dependencies(openroad_native cudd_native)
 endif()
 if(EMUFLOW_BUILD_OPENROAD AND EMUFLOW_BUILD_OPENPARF)
   add_dependencies(openparf_native openroad_native)
@@ -386,6 +509,13 @@ if(BUILD_TESTING)
     )
   endif()
 
+  if(EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK)
+    add_test(
+      NAME emuflow_tdm_partition_feedback_cli
+      COMMAND "$<TARGET_FILE:emuflow_tdm_partition_feedback>" --help
+    )
+  endif()
+
   if(EMUFLOW_BUILD_PIN_PLANNER)
     add_test(
       NAME emuflow_pin_planner_cli
@@ -419,6 +549,17 @@ if(BUILD_TESTING)
     add_test(
       NAME openroad_version
       COMMAND "${EMUFLOW_INSTALL_BINDIR}/openroad" -version
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_OPENPARF)
+    add_test(
+      NAME openparf_import
+      COMMAND
+        "${CMAKE_COMMAND}" -E env
+        "PYTHONPATH=${EMUFLOW_INSTALL_ROOT}/openparf"
+        "${EMUFLOW_OPENPARF_PYTHON}" -c
+        "import openparf; import openparf.openparf"
     )
   endif()
 endif()

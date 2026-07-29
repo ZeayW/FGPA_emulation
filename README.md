@@ -131,6 +131,7 @@ open-source EmuFlow component.
 EmuFlow does not publish opaque provider binaries or download flow engines
 after checkout. Implementations are editable source in this repository:
 
+- `third_party/cudd/`: CUDD decision-diagram source required by OpenSTA;
 - `third_party/yosys/`: Yosys synthesis, ABC mapping, and cxxopts source;
 - `third_party/repart/`: RePart C++ hypergraph partitioner;
 - `third_party/openroad/`: OpenROAD and TritonPart C++ source;

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/partition-net-weights-v1.schema.json",
+  "title": "EmuFlow partition net weights",
+  "type": "object",
+  "required": ["schema", "weights"],
+  "properties": {
+    "schema": {
+      "const": "emuflow.partition-net-weights/v1"
+    },
+    "design": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "net",
+          "criticality",
+          "discrete_ratio",
+          "group_size",
+          "channel_usage",
+          "combined_usage",
+          "weight"
+        ]
+      }
+    }
+  },
+  "additionalProperties": true
+}

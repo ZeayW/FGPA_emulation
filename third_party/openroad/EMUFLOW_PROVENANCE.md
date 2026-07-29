@@ -21,7 +21,13 @@ excluded because they are not implementation source and are not required by
 an `ENABLE_TESTS=OFF` production build. The TritonPart implementation is
 visible under `src/par/`; its OpenDB, OpenSTA, utility, ABC, and
 OR-Tools-facing source dependencies are present in the same tree.
+The GUI's build-time `src/gui/resources/` files are retained because the Qt
+resource compiler consumes them during a normal OpenROAD build. They are
+source assets, not precompiled objects or documentation screenshots.
 
 Because those regression directories are intentionally absent, their
 `add_subdirectory(test)` calls are guarded by source-existence checks. This is
-a build-only integration change; no OpenROAD algorithm is replaced or hidden.
+a build-only integration change. OpenSTA's archive and executable output
+directories are also redirected from its source `app/` directory into the
+CMake binary tree so a root build cannot mutate tracked implementation source.
+No OpenROAD algorithm is replaced or hidden.

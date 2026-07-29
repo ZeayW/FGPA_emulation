@@ -18,6 +18,7 @@ from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
+from .partition_feedback import run_partition_feedback
 from .physical_pins import run_phase6b, validate_package_pin_binding
 from .placement import Placement
 from .platform import Platform
@@ -444,6 +445,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase5.add_argument("--ratio-convergence", type=float, default=1.0e-9)
 
+    partition_feedback = subparsers.add_parser(
+        "partition-feedback",
+        help="derive channel-usage partition weights from routed TDM results",
+    )
+    partition_feedback.add_argument("--routes", type=Path, required=True)
+    partition_feedback.add_argument("--ratio-plan", type=Path, required=True)
+    partition_feedback.add_argument("--platform", type=Path, required=True)
+    partition_feedback.add_argument("--output", "-o", type=Path, required=True)
+    partition_feedback.add_argument("--optimizer")
+    partition_feedback.add_argument(
+        "--pair-pressure-weight", type=float, default=1.0
+    )
+
     pin_plan_parser = subparsers.add_parser(
         "pin-plan",
         help="placement-aware TDM grouping and virtual pin planning",
@@ -851,6 +865,18 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
+
+    if args.command == "partition-feedback":
+        report = run_partition_feedback(
+            routes_path=args.routes,
+            ratio_plan_path=args.ratio_plan,
+            platform_path=args.platform,
+            output_path=args.output,
+            executable=args.optimizer,
+            pair_pressure_weight=args.pair_pressure_weight,
+        )
+        _print_json(report)
+        return 0
 
     if args.command == "pin-plan":
         schedule = read_json(args.schedule)

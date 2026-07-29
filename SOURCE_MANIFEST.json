@@ -7,6 +7,20 @@
   },
   "components": [
     {
+      "id": "decision-diagram-library",
+      "stage": "OpenSTA build dependency",
+      "source_paths": [
+        "third_party/cudd"
+      ],
+      "build_targets": [
+        "cudd_native"
+      ],
+      "runtime_products": [
+        "libcudd"
+      ],
+      "integration": "default-in-tree-build"
+    },
+    {
       "id": "logic-synthesis",
       "stage": "Phase 1",
       "source_paths": [
@@ -27,9 +41,11 @@
       "stage": "Phase 3",
       "source_paths": [
         "third_party/openroad/src/par",
-        "third_party/openroad/src/sta"
+        "third_party/openroad/src/sta",
+        "third_party/cudd"
       ],
       "build_targets": [
+        "cudd_native",
         "openroad_native"
       ],
       "runtime_products": [
@@ -48,6 +64,27 @@
       ],
       "runtime_products": [
         "repart"
+      ],
+      "integration": "default-in-tree-build"
+    },
+    {
+      "id": "partition-tdm-feedback",
+      "stage": "Phase 3/4/5 joint optimization",
+      "source_paths": [
+        "src/native/tdm_partition_feedback.cpp",
+        "src/emuflow/partition_feedback.py",
+        "schemas/partition-net-weights-v1.schema.json",
+        "third_party/repart/RePart"
+      ],
+      "build_targets": [
+        "emuflow_tdm_partition_feedback",
+        "repart",
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow_tdm_partition_feedback",
+        "repart",
+        "emuflow"
       ],
       "integration": "default-in-tree-build"
     },
