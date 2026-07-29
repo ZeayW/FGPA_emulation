@@ -2,7 +2,7 @@
 
 - Upstream: https://github.com/The-OpenROAD-Project/OpenROAD
 - Imported commit: `a008522d88b669ac4c985609533cf5a3d2649222`
-- Upstream license: BSD-3-Clause (`LICENSE`)
+- OpenROAD license: BSD-3-Clause (`LICENSE`)
 
 This directory contains the OpenROAD implementation source and bundled
 third-party source needed to compile the TritonPart provider in the EmuFlow
@@ -12,7 +12,7 @@ The two upstream Git submodules are materialized as ordinary source
 directories:
 
 - `src/sta/`: The-OpenROAD-Project/OpenSTA commit
-  `aa598a2f14c5c142e90391a69988523505e7db3d`
+  `aa598a2f14c5c142e90391a69988523505e7db3d`, GPL-3.0-or-later
 - `third-party/abc/`: The-OpenROAD-Project/abc commit
   `ef5389d31526003c2ebd7e6d6d6fe3848a20f0a2`
 
