@@ -262,15 +262,11 @@ def build_release_manifest(
         if (
             placement.get("schema") != PHASE2_REPORT_SCHEMA
             or placement.get("status") != "pass"
-            or placement.get("provider")
-            not in {
-                "openparf",
-                "openparf-global+emuflow-archdb-legalizer",
-            }
+            or placement.get("provider") != "openparf-root-build"
             or placement.get("placement", {}).get("status") != "legal"
         ):
             raise ValidationError(
-                f"{fpga_id} OpenPARF placement report did not pass"
+                f"{fpga_id} root-built OpenPARF placement report did not pass"
             )
         if (
             emission.get("schema") != MAPPED_VERILOG_REPORT_SCHEMA

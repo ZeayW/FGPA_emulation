@@ -55,8 +55,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree logical lanes and virtual I/O anchors | Logical planning works; physical package pins await a board |
-| Placement | In-tree OpenPARF source plus EmuFlow adapters | Source is present; automatic OpenPARF runner is still missing |
-| FPGA routing | In-tree OpenPARF router source | UltraScale+ device-model and flow integration are still missing |
+| Placement | Root-built OpenPARF plus EmuFlow adapters/checker | Default path builds, runs, and independently validates repository source |
+| FPGA routing | Provider not yet selected | Open device/timing database and detailed router remain blockers |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -157,6 +157,13 @@ versioned timing model, realizes the optimized ratio/lane groups as an exact
 slot schedule, and independently checks capacity, ratio legality, timing,
 collisions, precedence, round barriers, and transported values.
 
+FPGA placement follows the same rule. The default Phase 2/7 path launches the
+OpenPARF Python, C++, and PyTorch-operator source compiled by the root CMake
+build, then independently reloads and checks every Site/BEL assignment against
+the ArchitectureDB. Importing an externally generated `.pl` file remains
+available only as an explicitly labelled comparison path and cannot pass the
+source-complete release gate.
+
 Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,
 library, or Python extension is checked in.
@@ -183,6 +190,12 @@ A compiler, CMake, Python, and general-purpose libraries such as Boost,
 PyTorch, Tcl, SWIG, Protobuf, and OR-Tools remain build dependencies; they are
 not opaque replacements for an EmuFlow stage. The build never downloads a
 partitioner, placer, router, or synthesis executable.
+
+OpenPARF's optional experimental `fpga-router` is not a selected flow engine:
+its upstream build currently requires proprietary GUROBI, so the root build
+excludes it and the release gate cannot count it. Selecting or reproducing an
+open detailed UltraScale+ router, together with an open device/timing database,
+remains an explicit project blocker rather than a hidden binary dependency.
 
 This distinction is deliberate: a C++ provider runs as a compiled executable,
 but that executable is disposable output below `build/`. The editable

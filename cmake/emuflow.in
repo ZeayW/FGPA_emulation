@@ -8,4 +8,5 @@ else
   export PYTHONPATH="${install_root}/lib"
 fi
 export EMUFLOW_NATIVE_ROOT="${EMUFLOW_NATIVE_ROOT:-${install_root}}"
+export EMUFLOW_OPENPARF_PYTHON="${EMUFLOW_OPENPARF_PYTHON:-@EMUFLOW_OPENPARF_PYTHON@}"
 exec "@Python3_EXECUTABLE@" -m emuflow "$@"

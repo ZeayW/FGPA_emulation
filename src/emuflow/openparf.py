@@ -1,11 +1,25 @@
 import json
+import os
+import subprocess
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Set, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from .architecture import ArchitectureDB
+from .errors import EmuFlowError
 from .io import write_json
 from .ir import EmuIR
+from .native_tools import native_install_roots
 
 
 OPENPARF_MANIFEST_SCHEMA = "emuflow.openparf-manifest/v1"
@@ -20,6 +34,118 @@ _KNOWN_CELL_PINS: Dict[str, Dict[str, str]] = {
         "R": "INPUT",
     },
 }
+
+
+def resolve_openparf_install(
+    explicit: Optional[Path] = None,
+) -> Path:
+    """Resolve only an explicit or root-build OpenPARF installation."""
+    candidates = (
+        (explicit.expanduser(),)
+        if explicit is not None
+        else tuple(root / "openparf" for root in native_install_roots())
+    )
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if (
+            (resolved / "openparf.py").is_file()
+            and (resolved / "openparf").is_dir()
+        ):
+            return resolved
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise EmuFlowError(
+        "in-tree OpenPARF build product was not found; searched: "
+        f"{searched}. Build the monorepo with `cmake --preset release && "
+        "cmake --build --preset release`."
+    )
+
+
+def run_openparf(
+    config_path: Path,
+    *,
+    log_path: Optional[Path] = None,
+    install_root: Optional[Path] = None,
+    python_executable: Optional[Path] = None,
+) -> Path:
+    """Run OpenPARF built from this repository and return its .pl output."""
+    config_path = config_path.resolve()
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise EmuFlowError(
+            f"cannot load OpenPARF configuration {config_path}: {error}"
+        ) from error
+    benchmark = config.get("benchmark_name")
+    result_dir = config.get("result_dir")
+    if (
+        not isinstance(benchmark, str)
+        or not benchmark
+        or not isinstance(result_dir, str)
+        or not result_dir
+    ):
+        raise EmuFlowError(
+            "OpenPARF configuration requires benchmark_name and result_dir"
+        )
+    installation = resolve_openparf_install(install_root)
+    python = (
+        python_executable
+        if python_executable is not None
+        else Path(
+            os.environ.get("EMUFLOW_OPENPARF_PYTHON", sys.executable)
+        )
+    ).expanduser()
+    if not python.is_file():
+        raise EmuFlowError(
+            f"OpenPARF Python interpreter does not exist: {python}"
+        )
+    if log_path is None:
+        log_path = config_path.with_suffix(".log")
+    log_path = log_path.resolve()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    console_log_path = log_path.with_name(
+        f"{log_path.stem}.console{log_path.suffix}"
+    )
+    environment = os.environ.copy()
+    python_path = str(installation)
+    if environment.get("PYTHONPATH"):
+        python_path += os.pathsep + environment["PYTHONPATH"]
+    environment["PYTHONPATH"] = python_path
+    with console_log_path.open("w", encoding="utf-8") as console_log:
+        completed = subprocess.run(
+            [
+                str(python.resolve()),
+                str(installation / "openparf.py"),
+                "--config",
+                str(config_path),
+                "--log",
+                str(log_path),
+            ],
+            cwd=config_path.parent,
+            env=environment,
+            stdout=console_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    if completed.returncode != 0:
+        try:
+            lines = console_log_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+            detail = "\n".join(lines[-40:])
+        except OSError:
+            detail = f"see {console_log_path}"
+        raise EmuFlowError(
+            "in-tree OpenPARF failed with exit code "
+            f"{completed.returncode}: {detail}"
+        )
+    placement = Path(result_dir) / f"{benchmark}.pl"
+    if not placement.is_file():
+        raise EmuFlowError(
+            "in-tree OpenPARF completed without expected placement: "
+            f"{placement}"
+        )
+    return placement.resolve()
 
 
 def _pins_by_cell_type(ir: EmuIR) -> Dict[str, Dict[str, str]]:

@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 from .architecture import ArchitectureDB
 from .io import write_json
 from .ir import EmuIR
-from .openparf import export_bookshelf
+from .openparf import export_bookshelf, run_openparf
 from .placement import Placement
 
 
@@ -19,18 +19,42 @@ def run_phase2(
     openparf_global_result: bool = False,
     site_utilization_limit: float = 0.75,
     site_y_range: Optional[Tuple[int, int]] = None,
+    openparf_install: Optional[Path] = None,
+    openparf_python: Optional[Path] = None,
+    reference_placement: bool = False,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     architecture = ArchitectureDB.load(architecture_path)
     bookshelf_dir = output_dir / "openparf"
     manifest = export_bookshelf(ir, architecture, bookshelf_dir)
     if openparf_result is None:
-        if openparf_global_result:
-            raise ValueError(
-                "openparf_global_result requires openparf_result"
+        if reference_placement:
+            if openparf_global_result:
+                raise ValueError(
+                    "openparf_global_result is incompatible with "
+                    "reference_placement"
+                )
+            placement = Placement.greedy_reference(architecture, ir)
+            provider = "emuflow-greedy-reference"
+        else:
+            openparf_result = run_openparf(
+                bookshelf_dir / "openparf.json",
+                log_path=bookshelf_dir / "openparf.log",
+                install_root=openparf_install,
+                python_executable=openparf_python,
             )
-        placement = Placement.greedy_reference(architecture, ir)
-        provider = "emuflow-greedy-reference"
+            placement = Placement.from_openparf_pl(
+                openparf_result, architecture, ir
+            )
+            provider = (
+                "openparf-root-build"
+                if openparf_install is None
+                else "openparf-comparison-install"
+            )
+    elif reference_placement:
+        raise ValueError(
+            "reference_placement is incompatible with openparf_result"
+        )
     elif openparf_global_result:
         placement = Placement.from_openparf_global_pl(
             openparf_result,
@@ -44,7 +68,7 @@ def run_phase2(
         placement = Placement.from_openparf_pl(
             openparf_result, architecture, ir
         )
-        provider = "openparf"
+        provider = "openparf-comparison-import"
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "placement.json", placement.to_dict())

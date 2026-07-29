@@ -179,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase2.add_argument(
         "--openparf-result",
         type=Path,
-        help="OpenPARF output .pl; omit only for deterministic adapter testing",
+        help="explicit comparison/import .pl; default runs root-built OpenPARF",
     )
     phase2.add_argument(
         "--openparf-global-result",
@@ -204,6 +204,24 @@ def _build_parser() -> argparse.ArgumentParser:
             "affinely map OpenPARF y coordinates into this inclusive "
             "ArchitectureDB region (for example, one SLR)"
         ),
+    )
+    phase2.add_argument(
+        "--openparf-install",
+        type=Path,
+        help="explicit comparison override for an OpenPARF install root",
+    )
+    phase2.add_argument(
+        "--openparf-python",
+        type=Path,
+        help=(
+            "Python used to load root-built OpenPARF; defaults to the "
+            "interpreter recorded by the root CMake build"
+        ),
+    )
+    phase2.add_argument(
+        "--reference-placement",
+        action="store_true",
+        help="use the deterministic greedy adapter reference in tests only",
     )
 
     partition_parser = subparsers.add_parser(
@@ -637,6 +655,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 if args.site_y_range is not None
                 else None
             ),
+            openparf_install=args.openparf_install,
+            openparf_python=args.openparf_python,
+            reference_placement=args.reference_placement,
         )
         _print_json(report)
         return 0

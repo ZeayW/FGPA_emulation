@@ -10,10 +10,10 @@ must be editable source in this repository and built from the repository root.
 Vivado is an optional comparison/sign-off and bitstream backend; it cannot
 satisfy an open-flow completion gate.
 
-The current implementation has not yet reached that target. Open placement is
-blocked on the automatic OpenPARF runner, and open UltraScale+ routing is
-blocked on the device-resource/timing database and router integration. The
-authoritative, machine-checked inventory is `SOURCE_MANIFEST.json`.
+The current implementation has not yet reached that target. Root-built
+OpenPARF placement is integrated; open UltraScale+ routing remains blocked on
+an openly reproducible device-resource/timing database and detailed router.
+The authoritative, machine-checked inventory is `SOURCE_MANIFEST.json`.
 
 The initial semantic envelope is intentionally narrow:
 
@@ -53,10 +53,10 @@ Per-FPGA netlist + transport RTL generation
 UltraScale+ packing and FPGA Interchange
         |
         v
-OpenPARF placement (runner pending)
+Root-built OpenPARF placement
         |
         v
-OpenPARF FPGA routing (UltraScale+ integration pending)
+Open FPGA routing (provider/device model pending)
         |
         v
 Open routed physical artifact
@@ -152,6 +152,7 @@ The first executable increment implements:
 - ArchitectureDB v1 and Placement v1;
 - Vivado Site/BEL inventory to ArchitectureDB;
 - EmuIR to OpenPARF Bookshelf;
+- automatic execution of root-built OpenPARF;
 - OpenPARF `x/y/z` result to legal UltraScale+ Site/BEL placement;
 - one-instance/one-BEL, compatibility, completeness, and collision checks;
 - LOC/BEL XDC generation;
@@ -338,7 +339,7 @@ board support package is selected.
 
 Implement source-complete provider interfaces for:
 
-- OpenPARF FPGA'24-style router;
+- a selected open detailed FPGA router;
 - an openly reproducible UltraScale+ device-resource/timing model;
 - optional Vivado route/DRC/timing comparison;
 - optional vendor-assisted bitstream generation.
@@ -354,10 +355,15 @@ Acceptance:
 - setup/hold and board-interface timing are reported separately;
 - reproducible QoR reports include placement, route, TDM, and emulation speed.
 
-The Phase 7A artifact adapters and placement checker are implemented. The
-OpenPARF source is in-tree and built by the root build, but the Phase 7 runner
-does not yet automatically launch that product. Therefore open placement is
-not yet an end-to-end completed stage.
+The Phase 7A artifact adapters, automatic OpenPARF runner, and independent
+placement checker are implemented. The default runner resolves only the
+OpenPARF product compiled by the root build. External placement files and
+installations are comparison-only providers and cannot satisfy the release
+gate.
+
+OpenPARF's optional experimental router is not the selected detailed-routing
+provider because its upstream build requires proprietary GUROBI. Its source is
+retained for provenance, but it is excluded from the open default build.
 
 Physical IO-net preservation, routed DCP validation, timing, and bitstream
 generation remain separate gates and are not implied by the placement gate.
@@ -467,8 +473,8 @@ Until a board is selected:
 - logical link: 32 lanes per direction at 250 MHz;
 - modeled link latency: two fabric cycles;
 - physical mode: out-of-context, no package-pin binding;
-- placement target: in-tree OpenPARF, automatic runner pending;
-- routing target: in-tree OpenPARF router, UltraScale+ integration pending;
+- placement provider: root-built in-tree OpenPARF;
+- routing provider: not selected; open UltraScale+ integration pending;
 - optional proprietary comparison: Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will

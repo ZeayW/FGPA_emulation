@@ -219,11 +219,7 @@ class Phase7DTest(unittest.TestCase):
             fpga: {
                 "schema": "emuflow.phase2-report/v1",
                 "status": "pass",
-                "provider": (
-                    "openparf-global+emuflow-archdb-legalizer"
-                    if fpga == "fpga0"
-                    else "openparf"
-                ),
+                "provider": "openparf-root-build",
                 "placement": {
                     "status": "legal",
                     "cells": 8 if fpga == "fpga0" else 5,
@@ -289,6 +285,33 @@ class Phase7DTest(unittest.TestCase):
                 manifest["metrics"]["infrastructure_cells"], 0
             )
             self.assertEqual(len(manifest["artifacts"]), 1)
+
+    def test_external_openparf_result_is_rejected_by_release_gate(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            values = self._inputs(Path(temporary_directory))
+            values["placement"]["fpga0"]["provider"] = (
+                "openparf-comparison-import"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "root-built OpenPARF"
+            ):
+                build_release_manifest(
+                    values["benchmark"],
+                    values["phase3"],
+                    values["phase4"],
+                    values["phase5"],
+                    values["phase6"],
+                    values["phase7c"],
+                    values["runtime"],
+                    values["qor"],
+                    values["physical"],
+                    values["platform"],
+                    values["lowering"],
+                    values["placement"],
+                    values["emission"],
+                    values["artifacts"],
+                    "abc123",
+                )
 
     def test_cross_phase_count_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

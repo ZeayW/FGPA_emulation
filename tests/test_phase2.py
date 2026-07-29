@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +7,11 @@ from pathlib import Path
 from emuflow.architecture import ArchitectureDB, compatible_cells_for_bel
 from emuflow.errors import ImportError, ValidationError
 from emuflow.ir import EmuIR
-from emuflow.openparf import _lut_size, openparf_instance_names
+from emuflow.openparf import (
+    _lut_size,
+    openparf_instance_names,
+    run_openparf,
+)
 from emuflow.phase2 import run_phase2
 from emuflow.placement import Placement, _vivado_regexp_literal
 from emuflow.yosys import import_yosys_json
@@ -161,6 +166,61 @@ class PlacementTest(unittest.TestCase):
 
 
 class Phase2PipelineTest(unittest.TestCase):
+    def test_root_built_openparf_runner_returns_expected_result(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            installation = root / "install"
+            (installation / "openparf").mkdir(parents=True)
+            driver = installation / "openparf.py"
+            driver.write_text(
+                "\n".join(
+                    (
+                        "import argparse",
+                        "import json",
+                        "from pathlib import Path",
+                        "parser = argparse.ArgumentParser()",
+                        "parser.add_argument('--config', required=True)",
+                        "parser.add_argument('--log', required=True)",
+                        "args = parser.parse_args()",
+                        "config = json.loads(",
+                        "    Path(args.config).read_text(encoding='utf-8')",
+                        ")",
+                        "result = Path(config['result_dir'])",
+                        "result.mkdir(parents=True, exist_ok=True)",
+                        "(result / (config['benchmark_name'] + '.pl')).write_text(",
+                        "    'i0 0 0 0\\n', encoding='utf-8'",
+                        ")",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = root / "openparf.json"
+            result_dir = root / "results"
+            config.write_text(
+                json.dumps(
+                    {
+                        "benchmark_name": "runner",
+                        "result_dir": str(result_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            placement = run_openparf(
+                config,
+                install_root=installation,
+                python_executable=Path(sys.executable),
+            )
+            self.assertEqual(
+                placement, (result_dir / "runner.pl").resolve()
+            )
+            self.assertEqual(
+                placement.read_text(encoding="utf-8"),
+                "i0 0 0 0\n",
+            )
+
     def test_pipeline_writes_adapter_and_placement_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -174,7 +234,12 @@ class Phase2PipelineTest(unittest.TestCase):
                 json.dumps(ir.to_dict(), indent=2) + "\n", encoding="utf-8"
             )
             output = root / "phase2"
-            report = run_phase2(ir_path, ARCH_PATH, output)
+            report = run_phase2(
+                ir_path,
+                ARCH_PATH,
+                output,
+                reference_placement=True,
+            )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["provider"], "emuflow-greedy-reference")
             for filename in (

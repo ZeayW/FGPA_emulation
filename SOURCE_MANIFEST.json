@@ -104,29 +104,22 @@
     },
     {
       "id": "fpga-placement",
-      "stage": "Phase 7",
+      "stage": "Phase 2 / Phase 7",
       "source_paths": [
         "third_party/openparf/openparf/placement",
+        "third_party/openparf/openparf/ops",
+        "third_party/openparf/openparf/pybind",
         "src/emuflow/openparf.py",
         "src/emuflow/placement.py"
       ],
       "build_targets": [
         "openparf_native"
       ],
-      "runtime_products": [],
-      "integration": "source-present-runner-pending"
-    },
-    {
-      "id": "fpga-routing",
-      "stage": "Phase 7",
-      "source_paths": [
-        "third_party/openparf/openparf/routing/fpga-router"
+      "runtime_products": [
+        "openparf/openparf.py",
+        "openparf/openparf"
       ],
-      "build_targets": [
-        "openparf_native"
-      ],
-      "runtime_products": [],
-      "integration": "source-present-ultrascale-plus-integration-pending"
+      "integration": "default-in-tree-build"
     }
   ],
   "open_path_blockers": [
@@ -136,14 +129,9 @@
       "reason": "The repository has virtual planning models, but not yet a complete openly reproducible UltraScale+ routing-resource and timing database."
     },
     {
-      "id": "openparf-placement-runner",
-      "status": "pending",
-      "reason": "Phase 2 exports and imports OpenPARF artifacts but does not yet launch the in-tree OpenPARF build automatically."
-    },
-    {
       "id": "ultrascale-plus-open-routing",
       "status": "pending",
-      "reason": "The OpenPARF router source is present but is not yet connected to the EmuFlow per-FPGA netlist and an UltraScale+ device model."
+      "reason": "No detailed UltraScale+ FPGA-routing provider is selected for the open completion path yet. OpenPARF's experimental router subtree is retained only for provenance because it requires proprietary GUROBI and therefore cannot qualify as an EmuFlow open-flow implementation."
     },
     {
       "id": "open-ultrascale-plus-bitstream",

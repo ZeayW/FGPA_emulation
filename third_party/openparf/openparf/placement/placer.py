@@ -65,7 +65,13 @@ class Placer(nn.Module):
         np.random.seed(params.random_seed)
         random.seed(params.random_seed)
         if params.deterministic_flag:
-            torch.set_deterministic(True)
+            # ``set_deterministic`` was renamed before the PyTorch versions
+            # supported by EmuFlow. Keep compatibility with both APIs while
+            # preserving OpenPARF's deterministic-placement contract.
+            if hasattr(torch, "use_deterministic_algorithms"):
+                torch.use_deterministic_algorithms(True)
+            else:
+                torch.set_deterministic(True)
 
         super(Placer, self).__init__()
 

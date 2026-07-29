@@ -50,6 +50,16 @@ set(
   CACHE FILEPATH
   "Python interpreter containing the PyTorch used to compile OpenPARF"
 )
+option(
+  EMUFLOW_OPENPARF_ENABLE_CUDA
+  "Compile the in-tree OpenPARF PyTorch operators with CUDA"
+  OFF
+)
+option(
+  EMUFLOW_OPENPARF_BUILD_EXPERIMENTAL_ROUTER
+  "Build OpenPARF's optional experimental router (requires non-open GUROBI)"
+  OFF
+)
 
 set(EMUFLOW_INSTALL_ROOT "${CMAKE_BINARY_DIR}/install")
 set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
@@ -268,8 +278,9 @@ if(EMUFLOW_BUILD_OPENPARF)
       "-DCMAKE_PREFIX_PATH=${EMUFLOW_CMAKE_PREFIX_PATH}"
       "-DPython3_EXECUTABLE=${EMUFLOW_OPENPARF_PYTHON}"
       "-DPYTHON_EXECUTABLE=${EMUFLOW_OPENPARF_PYTHON}"
+      "-DOPENPARF_ENABLE_CUDA=${EMUFLOW_OPENPARF_ENABLE_CUDA}"
       "-DBUILD_TESTING=OFF"
-      "-DENABLE_ROUTER=ON"
+      "-DENABLE_ROUTER=${EMUFLOW_OPENPARF_BUILD_EXPERIMENTAL_ROUTER}"
     BUILD_COMMAND
       "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
       --parallel "${EMUFLOW_EXTERNAL_JOBS}"
@@ -277,6 +288,10 @@ if(EMUFLOW_BUILD_OPENPARF)
       "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
       --target install
       --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+      COMMAND
+      "${CMAKE_COMMAND}" -E copy_directory
+      "${CMAKE_SOURCE_DIR}/scripts/openparf/shims/hummingbird"
+      "<INSTALL_DIR>/hummingbird"
   )
 endif()
 
