@@ -91,19 +91,27 @@
       "stage": "Phase 6",
       "source_paths": [
         "src/native/placement_aware_pin_planner.cpp",
+        "src/native/bsp_pin_solver.cpp",
         "src/emuflow/pin_planning.py",
+        "src/emuflow/physical_pins.py",
         "src/emuflow/netlist.py",
         "src/emuflow/phase6.py",
         "schemas/signal-position-hints-v1.schema.json",
         "schemas/placement-aware-pin-plan-v1.schema.json",
+        "schemas/hardware-bsp-v1.schema.json",
+        "schemas/package-pin-binding-v1.schema.json",
+        "scripts/generate_synthetic_vu9p_bsp.py",
+        "platforms/synthetic/xcvu9p_4fpga_mesh_bsp.json",
         "rtl/transport"
       ],
       "build_targets": [
         "emuflow_pin_planner",
+        "emuflow_bsp_pin_solver",
         "emuflow_python"
       ],
       "runtime_products": [
         "emuflow_pin_planner",
+        "emuflow_bsp_pin_solver",
         "emuflow"
       ],
       "integration": "default-in-tree-build"

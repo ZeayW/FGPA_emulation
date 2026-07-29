@@ -35,6 +35,11 @@ option(
   "Build the in-tree placement-aware TDM grouping and pin planner"
   ON
 )
+option(
+  EMUFLOW_BUILD_BSP_PIN_SOLVER
+  "Build the in-tree electrical package-pin min-cost-flow solver"
+  ON
+)
 option(EMUFLOW_BUILD_OPENROAD "Build the in-tree OpenROAD/TritonPart source" ON)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
@@ -146,6 +151,20 @@ if(EMUFLOW_BUILD_PIN_PLANNER)
   target_compile_options(emuflow_pin_planner PRIVATE -O3)
   set_target_properties(
     emuflow_pin_planner
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
+  add_executable(
+    emuflow_bsp_pin_solver
+    "${CMAKE_SOURCE_DIR}/src/native/bsp_pin_solver.cpp"
+  )
+  target_compile_features(emuflow_bsp_pin_solver PRIVATE cxx_std_17)
+  target_compile_options(emuflow_bsp_pin_solver PRIVATE -O3)
+  set_target_properties(
+    emuflow_bsp_pin_solver
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -374,6 +393,17 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
       emuflow_pin_planner_cli
+      PROPERTIES WILL_FAIL TRUE
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
+    add_test(
+      NAME emuflow_bsp_pin_solver_cli
+      COMMAND "$<TARGET_FILE:emuflow_bsp_pin_solver>"
+    )
+    set_tests_properties(
+      emuflow_bsp_pin_solver_cli
       PROPERTIES WILL_FAIL TRUE
     )
   endif()

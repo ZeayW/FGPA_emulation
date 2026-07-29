@@ -261,23 +261,32 @@ retains the existing mapped cycle-equivalence gate.
 
 ## Phase 6B — Physical package-pin assignment
 
-Phase 6B is implemented as a constraint solver over a versioned hardware
-BoardDB/BSP. Hard constraints include:
+Phase 6B is implemented as an exact sparse min-cost-flow solver over a
+versioned hardware BSP. Python independently filters and checks the following
+hard constraints before and after the root-built C++17 optimization:
 
 - package pin, connector, and peer-pin connectivity;
 - I/O bank voltage and IOSTANDARD;
 - direction;
-- differential pairs;
-- clock-capable pins and forwarded-clock requirements;
 - per-bank capacity; and
-- reserved and unavailable pins.
+- reserved and unavailable pins; and
+- per-channel fabric-frequency limits.
 
-The objective combines timing criticality, SLR-to-I/O distance, connector and
-bank congestion, skew, and deterministic tie breaking. CP-SAT/ILP and
-min-cost-flow formulations will be evaluated against exact small fixtures.
+Each homogeneous Phase 6A group becomes one demand, and every fixed
+source/sink package-pin pair becomes a capacity-one physical channel.
+Compatible demand/channel edges are weighted by timing criticality,
+OpenPARF-to-I/O-region distance, and channel skew. Successive shortest
+augmenting paths produce the exact global minimum; deterministic traversal
+provides stable tie breaking. The independent checker reconstructs every
+electrical rule, package-pin collision, port name, and objective value without
+trusting the solver summary.
 
-Until a board is selected, the solver is validated on a fully specified
-synthetic UltraScale+ BSP and is not described as hardware closure.
+Until a board is selected, the solver is validated on the checked-in explicit
+512-pin/256-channel synthetic UltraScale+ mesh BSP and is not described as
+hardware closure. Its generated package identifiers and XDC carry a synthetic
+hardware warning. Differential-pair, clock-capable/forwarded-clock, and GT
+channel models remain Phase 6B extensions that require the selected board's
+actual electrical topology.
 
 ## Promotion and experiment protocol
 

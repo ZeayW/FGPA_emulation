@@ -335,9 +335,13 @@ reconstructs group legality and lane/slot occupancy before Phase 6 generates
 schedule-specific mux/capture RTL and rechecks exact instance coverage,
 endpoint agreement, and mapped cycle behavior.
 
-Package-pin, bank, IOSTANDARD, reference-clock, and GT binding remains the
-hardware-BSP increment; it cannot be electrically validated until a real
-board support package is selected.
+Package-pin, bank, IOSTANDARD, direction, connector, frequency, and skew
+binding is implemented as the Phase 6B source-complete min-cost-flow
+increment. It is exercised against an explicit synthetic UltraScale+ BSP and
+emits per-FPGA XDC with a synthetic-use warning. Reference-clock, differential
+pair/GT specialization, real connector data, and vendor electrical/timing DRC
+still require a concrete board-revision-controlled BSP; synthetic validation
+is not hardware closure.
 
 ### Phase 7 — Integrated open placement and routing
 

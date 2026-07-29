@@ -18,6 +18,7 @@ from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
+from .physical_pins import run_phase6b, validate_package_pin_binding
 from .placement import Placement
 from .platform import Platform
 from .pin_planning import (
@@ -509,6 +510,47 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--equivalence-cycles", type=int, default=16)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
 
+    phase6b = subparsers.add_parser(
+        "phase6b",
+        help="bind virtual link anchors to electrical BSP package pins",
+    )
+    phase6b.add_argument("--schedule", type=Path, required=True)
+    phase6b.add_argument("--platform", type=Path, required=True)
+    phase6b.add_argument("--position-hints", type=Path, required=True)
+    phase6b.add_argument("--pin-plan", type=Path, required=True)
+    phase6b.add_argument(
+        "--anchor", action="append", default=[], metavar="FPGA=PATH"
+    )
+    phase6b.add_argument("--bsp", type=Path, required=True)
+    phase6b.add_argument("--solver")
+    phase6b.add_argument("--iostandard", default="LVCMOS18")
+    phase6b.add_argument("--placement-weight", type=float, default=1.0)
+    phase6b.add_argument("--skew-weight", type=float, default=1.0)
+    phase6b.add_argument("--out", type=Path, required=True)
+
+    package_pin = subparsers.add_parser(
+        "package-pin",
+        help="physical package-pin binding artifact operations",
+    )
+    package_pin_subparsers = package_pin.add_subparsers(
+        dest="package_pin_command", required=True
+    )
+    package_pin_validate = package_pin_subparsers.add_parser(
+        "validate",
+        help="independently validate a package-pin binding",
+    )
+    package_pin_validate.add_argument("binding", type=Path)
+    package_pin_validate.add_argument("--schedule", type=Path, required=True)
+    package_pin_validate.add_argument("--platform", type=Path, required=True)
+    package_pin_validate.add_argument(
+        "--position-hints", type=Path, required=True
+    )
+    package_pin_validate.add_argument("--pin-plan", type=Path, required=True)
+    package_pin_validate.add_argument(
+        "--anchor", action="append", default=[], metavar="FPGA=PATH"
+    )
+    package_pin_validate.add_argument("--bsp", type=Path, required=True)
+
     lower = subparsers.add_parser(
         "lower-placement-ir",
         help="merge one partition with its synthesized transport EmuIR",
@@ -880,6 +922,42 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
+
+    if args.command == "phase6b":
+        report = run_phase6b(
+            schedule_path=args.schedule,
+            platform_path=args.platform,
+            positions_path=args.position_hints,
+            pin_plan_path=args.pin_plan,
+            anchor_paths=_keyed_paths(args.anchor, "--anchor"),
+            bsp_path=args.bsp,
+            output_dir=args.out,
+            executable=args.solver,
+            iostandard=args.iostandard,
+            placement_weight=args.placement_weight,
+            skew_weight=args.skew_weight,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
+
+    if args.command == "package-pin":
+        platform = Platform.load(args.platform)
+        report = validate_package_pin_binding(
+            read_json(args.schedule),
+            platform,
+            read_json(args.position_hints),
+            read_json(args.pin_plan),
+            {
+                fpga: read_json(path)
+                for fpga, path in _keyed_paths(
+                    args.anchor, "--anchor"
+                ).items()
+            },
+            read_json(args.bsp),
+            read_json(args.binding),
+        )
+        _print_json(report)
+        return 0
 
     if args.command == "lower-placement-ir":
         report = run_placement_ir_lowering(

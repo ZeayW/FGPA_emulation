@@ -59,9 +59,14 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/tlr_router.cpp",
     "src/native/tdm_ratio_optimizer.cpp",
     "src/native/placement_aware_pin_planner.cpp",
+    "src/native/bsp_pin_solver.cpp",
     "schemas/tdm-ratio-plan-v1.schema.json",
     "schemas/signal-position-hints-v1.schema.json",
     "schemas/placement-aware-pin-plan-v1.schema.json",
+    "schemas/hardware-bsp-v1.schema.json",
+    "schemas/package-pin-binding-v1.schema.json",
+    "scripts/generate_synthetic_vu9p_bsp.py",
+    "platforms/synthetic/xcvu9p_4fpga_mesh_bsp.json",
     "scripts/vivado/export_cut_timing_paths.tcl",
 )
 

@@ -54,7 +54,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | System routing | In-tree C++ TLR kernel plus independent checker | Default academic provider builds and runs repository source |
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
-| Pin planning | In-tree C++17 placement-aware grouping and exact pin matching | Board-independent virtual-pin planning works; package pins await a BSP |
+| Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
 | Placement | Root-built OpenPARF plus EmuFlow adapters/checker | Default path builds, runs, and independently validates repository source |
 | FPGA routing | Provider not yet selected | Open device/timing database and detailed router remain blockers |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
@@ -137,7 +137,7 @@ after checkout. Implementations are editable source in this repository:
 - `third_party/openparf/`: OpenPARF C++/CUDA/Python source; and
 - `src/native/`: first-party C++ optimization kernels, including the
   timing-aware system router, Lagrangian/KKT TDM-ratio optimizer, and
-  placement-aware pin planner;
+  placement-aware logical-pin and physical package-pin planners;
 - `src/emuflow/`: EmuFlow control plane, artifact contracts, baseline
   implementations, adapters, and independent checkers.
 
@@ -165,8 +165,16 @@ dispersion costs by deterministic swaps, and solves group-to-virtual-pin
 matching exactly with the Hungarian algorithm. The Python layer derives
 lookahead coordinates from OpenPARF, materializes the plan, and independently
 reconstructs group capacity, slot collisions, objective values, and split
-netlists. Concrete `PACKAGE_PIN`, I/O-bank, and IOSTANDARD binding remains a
-separate Phase 6B BSP problem.
+netlists.
+
+Phase 6B is also source-complete: `src/native/bsp_pin_solver.cpp` implements
+exact sparse minimum-cost bipartite flow over electrically legal physical
+channels. The checker independently enforces pin uniqueness, directed
+connectivity, bank capacity, bank/pin IOSTANDARD support, reserved pins,
+frequency limits, and binding cost before emitting per-FPGA XDC. The checked-in
+explicit VU9P mesh BSP is deliberately synthetic and is only an algorithm
+validation target; a real board still requires revision-controlled pin data
+and vendor DRC/timing sign-off.
 
 FPGA placement follows the same rule. The default Phase 2/7 path launches the
 OpenPARF Python, C++, and PyTorch-operator source compiled by the root CMake
