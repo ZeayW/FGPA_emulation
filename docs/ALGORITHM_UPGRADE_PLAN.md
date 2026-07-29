@@ -2,9 +2,12 @@
 
 ## Objective
 
-EmuFlow has a board-independent, feasibility-complete path through G0-G9.
-The next development campaign improves the optimization quality of each
-stage independently before introducing any cross-stage co-optimization.
+EmuFlow has validated the board-independent logical contracts through G0-G9.
+The source-complete physical path is not yet closed: the automatic OpenPARF
+placement runner and the open UltraScale+ routing/device-model integration are
+still required. The next algorithm campaign improves each optimization stage
+independently before introducing any cross-stage co-optimization, without
+weakening those source-completeness gates.
 
 The existing algorithms remain available as named baselines. A new provider
 becomes the default only after it:
@@ -33,11 +36,13 @@ The first campaign replaces the optimization cores in Phases 3-6:
 3. TDM ratio and concrete lane/slot assignment; and
 4. logical signal grouping and physical package-pin assignment.
 
-Yosys/ABC remains the Phase 1 synthesis backend, OpenPARF remains the Phase 7A
-placement backend, and Vivado remains the UltraScale+ implementation router
-while no complete open UltraScale+ routing-resource database and bitstream
-flow is available. These backends can receive separate algorithm campaigns
-after Phases 3-6.
+Yosys/ABC remains the Phase 1 synthesis backend and OpenPARF is the Phase 7A
+placement/routing target. Their implementation source is in-tree and must be
+launched from the root build. Vivado is retained only for optional
+UltraScale+ comparison, DRC, timing, and bitstream sign-off; it is not an
+implementation of the open path. Closing the open placement runner,
+device-resource/timing database, and FPGA router integration is a separate
+hard gate alongside the Phase 3-6 algorithm campaign.
 
 ## Phase 3A — RePart partition-only provider
 

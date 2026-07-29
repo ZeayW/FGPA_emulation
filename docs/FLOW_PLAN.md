@@ -3,10 +3,17 @@
 ## 1. Goal and scope
 
 EmuFlow compiles a synchronous RTL design into multiple AMD UltraScale+ FPGA
-implementations connected by statically scheduled board links. The target
-implementation is open through synthesis, partitioning, system routing, TDM,
-pin planning, placement, and optionally routing. Vivado remains the validation
-and bitstream backend until an open UltraScale+ bitstream generator is viable.
+implementations connected by statically scheduled board links. The target is
+a source-complete implementation through synthesis, partitioning, system
+routing, TDM, pin planning, placement, and FPGA routing. Every default engine
+must be editable source in this repository and built from the repository root.
+Vivado is an optional comparison/sign-off and bitstream backend; it cannot
+satisfy an open-flow completion gate.
+
+The current implementation has not yet reached that target. Open placement is
+blocked on the automatic OpenPARF runner, and open UltraScale+ routing is
+blocked on the device-resource/timing database and router integration. The
+authoritative, machine-checked inventory is `SOURCE_MANIFEST.json`.
 
 The initial semantic envelope is intentionally narrow:
 
@@ -46,13 +53,15 @@ Per-FPGA netlist + transport RTL generation
 UltraScale+ packing and FPGA Interchange
         |
         v
-OpenPARF placement
+OpenPARF placement (runner pending)
         |
         v
-Vivado / RWRoute / OpenPARF FPGA routing
+OpenPARF FPGA routing (UltraScale+ integration pending)
         |
         v
-Validated DCP and Vivado bitstream
+Open routed physical artifact
+        |
+        +---- optional Vivado comparison / DRC / bitstream
 ```
 
 The layers communicate through explicit, versioned artifacts rather than
@@ -104,8 +113,9 @@ global/design.emuir.json
   -> fpga_N/packed.phys
   -> fpga_N/openparf/result.pl
   -> fpga_N/placed.phys
-  -> fpga_N/routed.dcp
-  -> fpga_N/design.bit
+  -> fpga_N/routed.phys
+  -> optional/fpga_N/routed.dcp
+  -> optional/fpga_N/design.bit
 ```
 
 Every artifact records a schema version and upstream inputs. A later runner
@@ -324,42 +334,47 @@ Package-pin, bank, IOSTANDARD, reference-clock, and GT binding remains the
 hardware-BSP increment; it cannot be electrically validated until a real
 board support package is selected.
 
-### Phase 7 — Integrated placement, routing, and bitstream
+### Phase 7 — Integrated open placement and routing
 
-Implement provider interfaces for:
+Implement source-complete provider interfaces for:
 
-- Vivado routing baseline;
-- RWRoute;
 - OpenPARF FPGA'24-style router;
-- Vivado route/DRC/timing validation;
-- vendor-assisted bitstream generation.
+- an openly reproducible UltraScale+ device-resource/timing model;
+- optional Vivado route/DRC/timing comparison;
+- optional vendor-assisted bitstream generation.
 
 Acceptance:
 
-- all per-FPGA designs route;
-- Vivado reports legal routes and passes DRC;
+- a clean checkout builds the selected placer and router from repository
+  source using the root build;
+- the default runner invokes only those local build products;
+- all per-FPGA designs place and route without a proprietary implementation
+  tool;
+- the independent checker accepts placement and routing;
 - setup/hold and board-interface timing are reported separately;
 - reproducible QoR reports include placement, route, TDM, and emulation speed.
 
-The Phase 7A placement increment is implemented. It synthesizes each generated
-transport module with real Yosys, stitches the mapped transport graph into its
-per-FPGA partition, and runs OpenPARF plus the independent Site/BEL checker on
-both results.
+The Phase 7A artifact adapters and placement checker are implemented. The
+OpenPARF source is in-tree and built by the root build, but the Phase 7 runner
+does not yet automatically launch that product. Therefore open placement is
+not yet an end-to-end completed stage.
 
 Physical IO-net preservation, routed DCP validation, timing, and bitstream
 generation remain separate gates and are not implied by the placement gate.
 
-Phase 7B now emits complete structural primitive Verilog for both merged
-partitions and applies the OpenPARF placements in Vivado.
+Phase 7B emits complete structural primitive Verilog for merged partitions.
+Applying placements in Vivado is retained only as optional cross-validation,
+not as evidence that the open physical backend is complete.
 
-Phase 7C now integrates one lockstep frame controller per transport and
-formalizes the current pausible-clock runtime. The final QoR artifact covers
-partitioning through routed timing.
+Phase 7C integrates one lockstep frame controller per transport and formalizes
+the current pausible-clock runtime. Existing routed timing measurements are
+proprietary cross-validation results until the open router path is connected.
 
-This closes the board-independent G0-G9 path for the current logic-only,
-single-virtual-clock envelope. Hardware BSP pin binding, source-synchronous
-board timing, dedicated clock-buffer binding, bitstream generation, link
-training, and a golden hardware workload remain Phase 8/G10.
+This validates the board-independent logical/runtime contracts for the current
+logic-only, single-virtual-clock envelope. It does not close the open physical
+placement/routing gate. Hardware BSP pin binding, source-synchronous board
+timing, dedicated clock-buffer binding, bitstream generation, link training,
+and a golden hardware workload remain later gates.
 
 Phase 7D seals that result with a versioned release manifest. It rehashes the
 pinned RTL and critical artifacts, cross-checks every boundary from partition
@@ -416,6 +431,12 @@ executable is only a local build artifact, never the published implementation.
 The default runtime resolver deliberately does not search `PATH`; it selects
 the products of this monorepo build.
 
+Presence of source alone is insufficient. A stage is complete only when its
+root build target, automatic runner, versioned artifact contract, independent
+checker, and clean-checkout end-to-end test all pass. The source manifest
+distinguishes `default-in-tree-build` from `source-present-*-pending`; pending
+components may not be described as implemented.
+
 Python is the control plane and independent reference/checking layer.
 Performance-critical production providers use native C++/CUDA implementations.
 The process boundary keeps the GPL-licensed RePart program separate from the
@@ -446,8 +467,9 @@ Until a board is selected:
 - logical link: 32 lanes per direction at 250 MHz;
 - modeled link latency: two fabric cycles;
 - physical mode: out-of-context, no package-pin binding;
-- placement: OpenPARF target;
-- routing baseline: Vivado, followed later by RWRoute/OpenPARF.
+- placement target: in-tree OpenPARF, automatic runner pending;
+- routing target: in-tree OpenPARF router, UltraScale+ integration pending;
+- optional proprietary comparison: Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will
 replace them with values derived from the selected FPGA Interchange

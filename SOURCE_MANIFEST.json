@@ -1,0 +1,161 @@
+{
+  "schema": "emuflow.source-manifest/v1",
+  "policy": {
+    "implementation_boundary": "Every default flow engine is editable source in this repository and is built from the repository root.",
+    "runtime_boundary": "Compiled executables and extension modules are local build products, never published implementations.",
+    "external_tools": "Proprietary tools may be optional comparison or sign-off backends, but may not satisfy an open-flow completion gate."
+  },
+  "components": [
+    {
+      "id": "logic-synthesis",
+      "stage": "Phase 1",
+      "source_paths": [
+        "third_party/yosys",
+        "third_party/yosys/abc"
+      ],
+      "build_targets": [
+        "yosys_native"
+      ],
+      "runtime_products": [
+        "yosys",
+        "yosys-abc"
+      ],
+      "integration": "default-in-tree-build"
+    },
+    {
+      "id": "tritonpart-partitioning",
+      "stage": "Phase 3",
+      "source_paths": [
+        "third_party/openroad/src/par",
+        "third_party/openroad/src/sta"
+      ],
+      "build_targets": [
+        "openroad_native"
+      ],
+      "runtime_products": [
+        "openroad"
+      ],
+      "integration": "default-in-tree-build"
+    },
+    {
+      "id": "repart-partitioning",
+      "stage": "Phase 3",
+      "source_paths": [
+        "third_party/repart/RePart"
+      ],
+      "build_targets": [
+        "repart"
+      ],
+      "runtime_products": [
+        "repart"
+      ],
+      "integration": "default-in-tree-build"
+    },
+    {
+      "id": "system-routing",
+      "stage": "Phase 4",
+      "source_paths": [
+        "src/native/tlr_router.cpp",
+        "src/emuflow/timing_routing.py"
+      ],
+      "build_targets": [
+        "emuflow_tlr_router"
+      ],
+      "runtime_products": [
+        "emuflow_tlr_router"
+      ],
+      "integration": "default-in-tree-build"
+    },
+    {
+      "id": "tdm-assignment",
+      "stage": "Phase 5",
+      "source_paths": [
+        "src/emuflow/tdm.py",
+        "src/emuflow/phase5.py"
+      ],
+      "build_targets": [
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow"
+      ],
+      "integration": "in-tree-python-baseline"
+    },
+    {
+      "id": "netlist-transport-pin-generation",
+      "stage": "Phase 6",
+      "source_paths": [
+        "src/emuflow/netlist.py",
+        "src/emuflow/phase6.py",
+        "rtl/transport"
+      ],
+      "build_targets": [
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow"
+      ],
+      "integration": "in-tree-python"
+    },
+    {
+      "id": "fpga-placement",
+      "stage": "Phase 7",
+      "source_paths": [
+        "third_party/openparf/openparf/placement",
+        "src/emuflow/openparf.py",
+        "src/emuflow/placement.py"
+      ],
+      "build_targets": [
+        "openparf_native"
+      ],
+      "runtime_products": [],
+      "integration": "source-present-runner-pending"
+    },
+    {
+      "id": "fpga-routing",
+      "stage": "Phase 7",
+      "source_paths": [
+        "third_party/openparf/openparf/routing/fpga-router"
+      ],
+      "build_targets": [
+        "openparf_native"
+      ],
+      "runtime_products": [],
+      "integration": "source-present-ultrascale-plus-integration-pending"
+    }
+  ],
+  "open_path_blockers": [
+    {
+      "id": "ultrascale-plus-device-database",
+      "status": "pending",
+      "reason": "The repository has virtual planning models, but not yet a complete openly reproducible UltraScale+ routing-resource and timing database."
+    },
+    {
+      "id": "openparf-placement-runner",
+      "status": "pending",
+      "reason": "Phase 2 exports and imports OpenPARF artifacts but does not yet launch the in-tree OpenPARF build automatically."
+    },
+    {
+      "id": "ultrascale-plus-open-routing",
+      "status": "pending",
+      "reason": "The OpenPARF router source is present but is not yet connected to the EmuFlow per-FPGA netlist and an UltraScale+ device model."
+    },
+    {
+      "id": "open-ultrascale-plus-bitstream",
+      "status": "out-of-scope-until-viable",
+      "reason": "Vivado bitstream generation is optional proprietary sign-off and cannot count as completion of the source-complete path."
+    }
+  ],
+  "optional_external_validation": [
+    {
+      "tool": "Vivado",
+      "uses": [
+        "architecture comparison",
+        "timing comparison",
+        "route and DRC comparison",
+        "bitstream generation"
+      ],
+      "counts_as_open_flow_implementation": false
+    }
+  ]
+}

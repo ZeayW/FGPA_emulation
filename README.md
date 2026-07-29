@@ -5,7 +5,7 @@ UltraScale+ devices. Its purpose is to compile one synchronous RTL design into
 multiple FPGA implementations and a deterministic communication fabric while
 keeping every stage inspectable, replaceable, and independently verifiable.
 
-The project targets the complete path from logic synthesis to per-FPGA
+The project targets a source-complete path from logic synthesis to per-FPGA
 placement and routing:
 
 ```text
@@ -47,26 +47,30 @@ reset, deterministic static communication schedules, and lockstep execution
 with a global frame barrier. Partition cuts are restricted to safe sequential
 boundaries; combinational loops and hard macros remain atomic.
 
-| Stage | Current implementation | Status |
+| Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
-| Synthesis/import | Yosys JSON to versioned EmuIR | Implemented |
-| Partitioning | Greedy baseline, TritonPart, RePart partitioning and logic replication | Implemented; Phase 3B validated |
-| System routing | In-tree C++ timing-aware load-balanced routing plus negotiated baseline | Academic provider promoted when STA paths are supplied |
-| TDM | Legal lane/slot scheduling with precedence and collision checks | Implemented; academic upgrade planned |
-| Netlist/transport | Per-FPGA split, shadow endpoints, generated TDM RTL | Implemented |
-| Pin planning | Logical lanes and virtual I/O anchors | Implemented |
-| Placement | OpenPARF global placement plus UltraScale+ legalization | Implemented |
-| FPGA routing | Vivado validation backend | Implemented |
-| Hardware BSP | Versioned requirements contract | Pending board selection |
+| Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
+| Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
+| System routing | In-tree C++ TLR kernel plus independent checker | Default academic provider builds and runs repository source |
+| TDM | In-tree Python legal scheduler/checker | Working baseline; C++ academic provider is under development |
+| Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
+| Pin planning | In-tree logical lanes and virtual I/O anchors | Logical planning works; physical package pins await a board |
+| Placement | In-tree OpenPARF source plus EmuFlow adapters | Source is present; automatic OpenPARF runner is still missing |
+| FPGA routing | In-tree OpenPARF router source | UltraScale+ device-model and flow integration are still missing |
+| Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
+| Hardware BSP | In-tree contract | Pending board selection |
 
-The board-independent flow has been exercised from small counter and CPU
-designs through a connected 731,313-cell NVDLA partition. Promotion gates
-include deterministic partitioning, independent legality checks, transport
-simulation, OpenPARF placement, and routed-checkpoint validation.
+Individual board-independent stages have been exercised from small counter
+and CPU designs through a connected 731,313-cell NVDLA partition. Those
+experiments validate stage contracts, but do **not** yet prove that a clean
+checkout can execute the entire open placement-and-routing path with one
+command. That end-to-end source-build gate remains open.
 
-EmuFlow is not yet a fully open UltraScale+ bitstream flow. Yosys, the
-partitioners, EmuFlow's system algorithms, and OpenPARF are open-source;
-Vivado currently remains the routing/bitstream validation backend.
+EmuFlow is not yet a fully open UltraScale+ physical implementation or
+bitstream flow. The complete public UltraScale+ routing-resource/timing
+database and open bitstream generator needed for that claim are not currently
+part of this repository. Vivado may be used to compare results or generate a
+bitstream, but success in Vivado cannot satisfy an open-flow completion gate.
 
 ## Design principles
 
@@ -124,9 +128,8 @@ open-source EmuFlow component.
 
 ## Source-complete monorepo
 
-EmuFlow does not publish opaque provider binaries or require source downloads
-after checkout. The implementation source used by the flow is present in this
-repository:
+EmuFlow does not publish opaque provider binaries or download flow engines
+after checkout. Implementations are editable source in this repository:
 
 - `third_party/yosys/`: Yosys synthesis, ABC mapping, and cxxopts source;
 - `third_party/repart/`: RePart C++ hypergraph partitioner;
@@ -152,7 +155,12 @@ Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,
 library, or Python extension is checked in.
 
-Configure and build all open components from the repository root:
+[`SOURCE_MANIFEST.json`](SOURCE_MANIFEST.json) is the machine-readable source
+inventory. It records each implementation path, root build target, local
+runtime product, integration state, and remaining open-path blocker.
+
+Configure and build all currently integrated open components from the
+repository root:
 
 ```bash
 cmake --preset release
@@ -164,11 +172,17 @@ Build products are written below `build/` and are never the source of truth.
 Developers can edit any in-tree C++ implementation and rebuild through the
 same top-level command.
 
-The repository includes every direct flow-engine implementation. A compiler,
-CMake, Python, and general-purpose build libraries such as Boost, PyTorch, Tcl,
-SWIG, Protobuf, and OR-Tools remain declared build dependencies; they are not
-opaque replacements for an EmuFlow stage. The build never downloads a
+The repository includes the source of every currently selected flow engine.
+A compiler, CMake, Python, and general-purpose libraries such as Boost,
+PyTorch, Tcl, SWIG, Protobuf, and OR-Tools remain build dependencies; they are
+not opaque replacements for an EmuFlow stage. The build never downloads a
 partitioner, placer, router, or synthesis executable.
+
+This distinction is deliberate: a C++ provider runs as a compiled executable,
+but that executable is disposable output below `build/`. The editable
+implementation is its tracked C++/CUDA source, built by the root CMake graph.
+An externally supplied executable may be used only for an explicitly labelled
+comparison experiment and is never the default provider.
 
 ## Repository layout
 
