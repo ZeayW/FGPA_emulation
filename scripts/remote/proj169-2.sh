@@ -349,57 +349,112 @@ REMOTE
 }
 
 repart_bootstrap() {
-  remote_script <<'REMOTE'
+  local upstream
+  local commit
+  local cache_dir
+  local cache_source
+  local cache_package
+  local cache_temporary
+  local package_sha256
+  local remote_package
+  local upload_command
+
+  upstream="https://github.com/Welement-zyf/RePart.git"
+  commit="211a9d8fd526576387cad7ac6dd3531354aeb31c"
+  cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/emuflow"
+  cache_source="$cache_dir/repart-$commit"
+  cache_package="$cache_dir/repart-$commit.tar.gz"
+  cache_temporary="$cache_package.build.$$"
+  remote_package="$REPART_ROOT/repart-$commit.tar.gz"
+
+  mkdir -p "$cache_dir"
+  if [ ! -s "$cache_package" ]; then
+    if [ ! -d "$cache_source/.git" ]; then
+      git clone "$upstream" "$cache_source"
+    fi
+    test "$(git -C "$cache_source" rev-parse HEAD)" = "$commit"
+    git -C "$cache_source" archive \
+      --format=tar.gz \
+      --prefix=upstream/ \
+      -o "$cache_temporary" \
+      "$commit"
+    mv "$cache_temporary" "$cache_package"
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    package_sha256="$(sha256sum "$cache_package" | awk '{print $1}')"
+  else
+    package_sha256="$(shasum -a 256 "$cache_package" | awk '{print $1}')"
+  fi
+
+  if ! remote_script <<REMOTE
 set -eu
-remote_dir="$1"
-repart_root="$5"
-repart_path="$6"
+package=$(shell_quote "$remote_package")
+sha256=$(shell_quote "$package_sha256")
+test -s "\$package"
+test "\$(sha256sum "\$package" | awk '{print \$1}')" = "\$sha256"
+REMOTE
+  then
+    upload_command="$(inner_ssh_command \
+      "mkdir -p $(shell_quote "$REPART_ROOT") && \
+       cat > $(shell_quote "$remote_package.upload") && \
+       test \\\$(sha256sum $(shell_quote "$remote_package.upload") | awk '{print \\\$1}') = $(shell_quote "$package_sha256") && \
+       mv $(shell_quote "$remote_package.upload") $(shell_quote "$remote_package")")"
+    gateway_ssh "$upload_command" < "$cache_package"
+  fi
+
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+repart_root="\$5"
+repart_path="\$6"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-upstream="https://github.com/Welement-zyf/RePart.git"
-commit="211a9d8fd526576387cad7ac6dd3531354aeb31c"
-source="$repart_root/source"
-patch="$remote_dir/third_party/patches/repart-phase3a-disable-replication.patch"
+commit=$(shell_quote "$commit")
+package=$(shell_quote "$remote_package")
+package_sha256=$(shell_quote "$package_sha256")
+source="\$repart_root/upstream"
+patch="\$remote_dir/third_party/patches/repart-phase3a-disable-replication.patch"
 
-command -v git >/dev/null
 command -v g++ >/dev/null
-test -f "$patch"
-mkdir -p "$repart_root" "$(dirname "$repart_path")"
+command -v patch >/dev/null
+test -f "\$patch"
+printf '%s  %s\n' "\$package_sha256" "\$package" | sha256sum -c -
+mkdir -p "\$repart_root" "\$(dirname "\$repart_path")"
 
-if [ -d "$source/.git" ] &&
-   [ "$(git -C "$source" rev-parse HEAD)" != "$commit" ]; then
-  stale="$source.stale.$(date +%Y%m%d%H%M%S)"
-  mv "$source" "$stale"
+if [ -d "\$source" ] &&
+   { [ ! -f "\$source/.emuflow-upstream-commit" ] ||
+     [ "\$(cat "\$source/.emuflow-upstream-commit")" != "\$commit" ]; }; then
+  stale="\$source.stale.\$(date +%Y%m%d%H%M%S)"
+  mv "\$source" "\$stale"
 fi
-if [ ! -d "$source/.git" ]; then
-  git clone "$upstream" "$source"
+if [ ! -d "\$source" ]; then
+  tar -xzf "\$package" -C "\$repart_root"
+  printf '%s\n' "\$commit" > "\$source/.emuflow-upstream-commit"
 fi
-git -C "$source" fetch --depth 1 origin "$commit"
-git -C "$source" checkout --detach "$commit"
-if git -C "$source" apply --reverse --check "$patch" >/dev/null 2>&1; then
+if patch --dry-run --reverse --silent -d "\$source" -p1 < "\$patch"; then
   :
 else
-  git -C "$source" apply --check "$patch"
-  git -C "$source" apply "$patch"
+  patch --dry-run --silent -d "\$source" -p1 < "\$patch"
+  patch --batch -d "\$source" -p1 < "\$patch"
 fi
 
 g++ -Ofast -DNDEBUG \
-  -o "$repart_path.build" "$source/RePart/partitioner.cpp" \
-  -I"$source/boost_1_86_0/include" \
-  -L"$source/boost_1_86_0/lib" \
+  -o "\$repart_path.build" "\$source/RePart/partitioner.cpp" \
+  -I"\$source/boost_1_86_0/include" \
+  -L"\$source/boost_1_86_0/lib" \
   -static -lboost_thread -lboost_system -pthread
-mv "$repart_path.build" "$repart_path"
-chmod +x "$repart_path"
-printf '%s\n' "$commit" > "$repart_root/upstream.commit"
+mv "\$repart_path.build" "\$repart_path"
+chmod +x "\$repart_path"
+printf '%s\n' "\$commit" > "\$repart_root/upstream.commit"
 
 set +e
-usage="$("$repart_path" 2>&1)"
-status=$?
+usage="\$("\$repart_path" 2>&1)"
+status=\$?
 set -e
-test "$status" -ne 0
-printf '%s\n' "$usage" | grep -q -- '\[-r 0|1\]'
-printf 'repart=%s\n' "$repart_path"
-printf 'upstream_commit=%s\n' "$(cat "$repart_root/upstream.commit")"
+test "\$status" -ne 0
+printf '%s\n' "\$usage" | grep -q -- '\[-r 0|1\]'
+printf 'repart=%s\n' "\$repart_path"
+printf 'upstream_commit=%s\n' "\$(cat "\$repart_root/upstream.commit")"
 REMOTE
 }
 
