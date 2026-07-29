@@ -15,11 +15,13 @@ from .partition import (
 )
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
+from .replication import apply_replication, replicable_clusters
 from .tritonpart import load_partition_net_weights
 
 
 REPART_INPUT_SCHEMA = "emuflow.repart-input/v1"
 REPART_PROVIDER = "repart-fpga-aware-multilevel-v1"
+REPART_REPLICATION_PROVIDER = "repart-logic-replication-v1"
 REPART_UPSTREAM_COMMIT = "211a9d8fd526576387cad7ac6dd3531354aeb31c"
 REPART_FIXED_SEED = 42
 REPART_RESOURCE_DIMENSIONS = 8
@@ -248,6 +250,7 @@ def export_repart_inputs(
     constraints: Mapping[str, Any],
     output_dir: Path,
     net_weights: Optional[Mapping[str, float]] = None,
+    replication_enabled: bool = False,
 ) -> Dict[str, Any]:
     clusters = sorted(
         clusters_artifact["clusters"], key=lambda item: item["id"]
@@ -293,6 +296,7 @@ def export_repart_inputs(
     net_path = output_dir / "design.net"
     info_path = output_dir / "design.info"
     topology_path = output_dir / "design.topo"
+    replicability_path = output_dir / "design.rep"
     solution_path = output_dir / "design.fpga.out"
 
     area_lines = []
@@ -364,6 +368,23 @@ def export_repart_inputs(
         + "\n",
         encoding="utf-8",
     )
+    legal_replication_clusters, _ = replicable_clusters(
+        ir, clusters_artifact
+    )
+    legal_replication_cluster_set = set(legal_replication_clusters)
+    def replication_mask(cluster_id: str) -> int:
+        return int(
+            replication_enabled
+            and cluster_id in legal_replication_cluster_set
+        )
+
+    replicability_path.write_text(
+        "".join(
+            f"{cluster['id']} {replication_mask(cluster['id'])}\n"
+            for cluster in clusters
+        ),
+        encoding="utf-8",
+    )
 
     weight_scale = (
         hyperedges[0]["integer_weight"] / hyperedges[0]["weight"]
@@ -395,13 +416,17 @@ def export_repart_inputs(
             }
             for fpga, capacities in zip(platform.fpgas, allowed_capacities)
         },
-        "replication_enabled": False,
+        "replication_enabled": replication_enabled,
+        "replicable_clusters": (
+            legal_replication_clusters if replication_enabled else []
+        ),
         "fixed_seed": REPART_FIXED_SEED,
         "files": {
             "area": area_path.name,
             "net": net_path.name,
             "info": info_path.name,
             "topology": topology_path.name,
+            "replicability": replicability_path.name,
             "solution": solution_path.name,
         },
     }
@@ -486,6 +511,7 @@ def run_repart(
     solution_input: Optional[Path] = None,
     net_weights_path: Optional[Path] = None,
     timeout_seconds: int = 3600,
+    enable_replication: bool = False,
 ) -> Dict[str, Any]:
     repart_input = export_repart_inputs(
         ir,
@@ -494,6 +520,7 @@ def run_repart(
         constraints,
         output_dir,
         net_weights=load_partition_net_weights(net_weights_path),
+        replication_enabled=enable_replication,
     )
     solution_path = output_dir / repart_input["files"]["solution"]
     log_path: Optional[Path] = None
@@ -517,7 +544,7 @@ def run_repart(
             "-s",
             str(solution_path.resolve()),
             "-r",
-            "0",
+            "1" if enable_replication else "0",
         ]
         try:
             completed = subprocess.run(
@@ -549,7 +576,7 @@ def run_repart(
     cluster_assignment, replicas = parse_repart_solution(
         solution_path, repart_input
     )
-    if replicas:
+    if replicas and not enable_replication:
         raise ValidationError(
             "Phase 3A requires replication-disabled RePart, but the solution "
             f"contains {sum(len(items) for items in replicas.values())} replicas"
@@ -572,13 +599,30 @@ def run_repart(
         )
         cluster_assignment[cluster_id] = fixed_fpga
 
-    return build_partition_assignment(
+    normalized_replicas = {
+        cluster_id: [
+            fpga_id
+            for fpga_id in fpga_ids
+            if fpga_id != cluster_assignment[cluster_id]
+        ]
+        for cluster_id, fpga_ids in replicas.items()
+    }
+    normalized_replicas = {
+        cluster_id: fpga_ids
+        for cluster_id, fpga_ids in normalized_replicas.items()
+        if fpga_ids
+    }
+    primary_assignment = build_partition_assignment(
         ir,
         platform,
         clusters_artifact,
         constraints,
         cluster_assignment,
-        provider=REPART_PROVIDER,
+        provider=(
+            REPART_REPLICATION_PROVIDER
+            if enable_replication
+            else REPART_PROVIDER
+        ),
         seed=REPART_FIXED_SEED,
         provider_metadata={
             "mode": mode,
@@ -586,7 +630,10 @@ def run_repart(
             "input_schema": REPART_INPUT_SCHEMA,
             "upstream_commit": REPART_UPSTREAM_COMMIT,
             "license": "GPL-3.0-only",
-            "replication_enabled": False,
+            "replication_enabled": enable_replication,
+            "replicable_clusters": len(
+                repart_input["replicable_clusters"]
+            ),
             "active_resource_dimensions": repart_input[
                 "active_resource_dimensions"
             ],
@@ -612,4 +659,13 @@ def run_repart(
                 "log": log_path.name if log_path is not None else None,
             },
         },
+    )
+    if not enable_replication:
+        return primary_assignment
+    return apply_replication(
+        ir,
+        platform,
+        clusters_artifact,
+        primary_assignment,
+        normalized_replicas,
     )

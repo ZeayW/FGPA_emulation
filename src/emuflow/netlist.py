@@ -34,6 +34,32 @@ def _sv_name(value: str) -> str:
     return name
 
 
+def _instance_copies(
+    ir: EmuIR,
+    assignment: Mapping[str, Any],
+) -> Dict[str, List[Tuple[str, str, bool]]]:
+    primary = assignment["instance_assignment"]
+    copies = {
+        instance["id"]: [(primary[instance["id"]], instance["id"], False)]
+        for instance in ir.value["instances"]
+    }
+    replication = assignment.get("replication")
+    if replication is None:
+        return copies
+    for record in replication["replicas"]:
+        target = record["target_fpga"]
+        for item in record["instances"]:
+            original = item["original_instance"]
+            if original not in copies:
+                raise ValidationError(
+                    f"replica references unknown original instance {original!r}"
+                )
+            copies[original].append(
+                (target, item["replica_instance"], True)
+            )
+    return copies
+
+
 def build_split_artifacts(
     ir: EmuIR,
     assignment: Mapping[str, Any],
@@ -64,17 +90,30 @@ def build_split_artifacts(
         raise ValidationError("assignment.instance_assignment: expected object")
     if set(instance_assignment.values()) - fpga_set:
         raise ValidationError("assignment contains unknown FPGA identifiers")
+    copies_by_instance = _instance_copies(ir, assignment)
+    replica_instance_ids = {
+        copy_id
+        for copies in copies_by_instance.values()
+        for _, copy_id, is_replica in copies
+        if is_replica
+    }
 
     instances_by_fpga: Dict[str, List[Dict[str, Any]]] = {
         fpga_id: [] for fpga_id in fpga_ids
     }
     for instance in ir.value["instances"]:
-        fpga_id = instance_assignment.get(instance["id"])
-        if fpga_id is None:
+        locations = copies_by_instance.get(instance["id"])
+        if not locations:
             raise ValidationError(
                 f"instance {instance['id']!r} has no partition assignment"
             )
-        instances_by_fpga[fpga_id].append(dict(instance))
+        for fpga_id, copy_id, is_replica in locations:
+            copied_instance = dict(instance)
+            copied_instance["id"] = copy_id
+            if is_replica:
+                copied_instance["replica_of"] = instance["id"]
+                copied_instance["replica_target_fpga"] = fpga_id
+            instances_by_fpga[fpga_id].append(copied_instance)
 
     route_by_demand = {
         route["id"]: route for route in schedule_routes(schedule)
@@ -176,9 +215,15 @@ def build_split_artifacts(
             for endpoint in net[collection]:
                 if endpoint["instance"] is None:
                     continue
-                fpga_id = instance_assignment[endpoint["instance"]]
-                original_by_fpga[fpga_id][collection].append(dict(endpoint))
-                touched.add(fpga_id)
+                for fpga_id, copy_id, _ in copies_by_instance[
+                    endpoint["instance"]
+                ]:
+                    copied_endpoint = dict(endpoint)
+                    copied_endpoint["instance"] = copy_id
+                    original_by_fpga[fpga_id][collection].append(
+                        copied_endpoint
+                    )
+                    touched.add(fpga_id)
 
         top_drivers = [
             dict(endpoint)
@@ -215,6 +260,11 @@ def build_split_artifacts(
                     )
                 )
                 source_kind = "transport_shadow"
+            elif any(
+                endpoint["instance"] in replica_instance_ids
+                for endpoint in drivers
+            ):
+                source_kind = "logic_replica"
             net_segments[fpga_id].append(
                 {
                     "id": f"{net['id']}@{fpga_id}",
@@ -591,10 +641,19 @@ def validate_split_artifacts(
         for instance in netlist["instances"]
     )
     original_instances = {item["id"] for item in ir.value["instances"]}
-    if set(instance_counts) != original_instances or any(
+    expected_replica_instances = set(
+        assignment.get("replication", {}).get(
+            "replica_instance_assignment", {}
+        )
+    )
+    expected_instances = original_instances | expected_replica_instances
+    if set(instance_counts) != expected_instances or any(
         count != 1 for count in instance_counts.values()
     ):
-        raise ValidationError("per-FPGA netlists do not exactly cover instances")
+        raise ValidationError(
+            "per-FPGA netlists do not exactly cover original and replica "
+            "instances"
+        )
 
     endpoint_ids = {
         endpoint["id"]
@@ -609,27 +668,31 @@ def validate_split_artifacts(
     if endpoint_ids != lane_endpoint_ids:
         raise ValidationError("logical lane map endpoint agreement failed")
 
-    cut_sink_endpoints = 0
-    assignment_map = assignment["instance_assignment"]
-    cut_nets = {item["net"] for item in assignment["cut_nets"]}
-    for net in ir.value["nets"]:
-        if net["id"] not in cut_nets:
-            continue
-        for endpoint in net["sinks"]:
-            if endpoint["instance"] is None:
-                continue
-            driver_fpgas = {
-                assignment_map[item["instance"]]
-                for item in net["drivers"]
-                if item["instance"] is not None
-            }
-            if assignment_map[endpoint["instance"]] not in driver_fpgas:
-                cut_sink_endpoints += 1
+    cut_sink_endpoints = sum(
+        sum(
+            endpoint["instance"] is not None
+            for endpoint in segment["sinks"]
+        )
+        for netlist in artifacts["netlists"].values()
+        for segment in netlist["nets"]
+        if segment["source_kind"] == "transport_shadow"
+    )
+    expected_cut_sink_endpoints = sum(
+        cut["sink_endpoints"] for cut in assignment["cut_nets"]
+    )
+    if cut_sink_endpoints != expected_cut_sink_endpoints:
+        raise ValidationError(
+            "split netlists do not realize the effective replicated cut "
+            f"endpoints: expected {expected_cut_sink_endpoints}, got "
+            f"{cut_sink_endpoints}"
+        )
 
     return {
         "status": "pass",
         "fpgas": len(platform.fpgas),
         "instances": len(original_instances),
+        "replica_instances": len(expected_replica_instances),
+        "physical_instances": len(expected_instances),
         "net_segments": sum(
             len(netlist["nets"])
             for netlist in artifacts["netlists"].values()

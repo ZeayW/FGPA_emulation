@@ -51,9 +51,11 @@ Integrate the open-source RePart implementation from:
 
 RePart contributes an FPGA-aware multilevel flow with enhanced coarsening,
 initial assignment, move/exchange refinement, topology constraints, and
-multi-resource capacity constraints. The upstream implementation is GPL-3.0;
-EmuFlow will invoke a separately built external binary and record its source
-revision and license rather than copy its implementation into this repository.
+multi-resource capacity constraints. The upstream implementation is
+GPL-3.0-only. Its C++ source, exact revision, license, and EmuFlow changes are
+included under `third_party/repart/` and compiled by the root build. The
+runtime executes that local build product; no opaque or externally supplied
+partitioner binary is part of the provider contract.
 
 Phase 3A first uses RePart's unique-owner partition result. EmuFlow atomic
 clusters preserve sequential, hard-macro, and user group constraints. Fixed
@@ -88,6 +90,15 @@ The increment will:
 
 This remains a Phase 3 algorithm upgrade: routing and TDM solutions are frozen
 and do not feed costs back into partitioning.
+
+The v1 implementation exposes a per-vertex replicability mask to the in-tree
+RePart C++ kernel. Only mapped LUT clusters that pass an independent acyclic,
+fanin-closed combinational proof may be copied. The resulting
+`emuflow.partition-replication/v1` artifact names every physical copy, charges
+its resources to the target FPGA, records effective cut-demand deltas, and is
+reconstructed independently during validation. Phase 6 materializes those
+copies in per-FPGA netlists and compares replica outputs against the original
+mapped model over the transport simulation trace.
 
 ## Phase 4 — Timing-aware load-balanced die-level router
 

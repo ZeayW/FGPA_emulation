@@ -229,7 +229,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--balance-tolerance", type=float)
     phase3.add_argument(
         "--provider",
-        choices=("repart", "tritonpart", "greedy"),
+        choices=("repart-replication", "repart", "tritonpart", "greedy"),
         default="tritonpart",
         help="partition provider (default: tritonpart)",
     )
@@ -290,7 +290,10 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--repart-solution",
         type=Path,
-        help="import a precomputed replication-disabled RePart solution",
+        help=(
+            "import a precomputed RePart solution; '*' records are accepted "
+            "only by --provider repart-replication"
+        ),
     )
     phase3.add_argument(
         "--repart-timeout-seconds",

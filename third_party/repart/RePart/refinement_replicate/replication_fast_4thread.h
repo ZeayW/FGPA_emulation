@@ -9,9 +9,9 @@
 #include "../io/fpga_manager.h"
 #include "../datastructure/binary_heap.h"
 
-#include "../../boost_1_86_0/include/boost/thread/thread.hpp"
-#include "../../boost_1_86_0/include/boost/thread/mutex.hpp"
-#include "../../boost_1_86_0/include/boost/thread/shared_mutex.hpp"
+#include <boost/thread/thread.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/shared_mutex.hpp>
 
 class Replication {
 public:
@@ -22,6 +22,7 @@ public:
     std::vector<int>& communication_usage; 
     long long& total_cost; 
     std::vector<BinaryMaxHeap<int, int>> gain_priority_queues; 
+    boost::mutex gain_queue_mutex;
 
     const long long top_k = 10000000; 
     int rep_num = 0; 
@@ -127,6 +128,9 @@ private:
     }
 
     void calculateGain_node(const Hypernode& hn) {
+        if(!hn.replicable) {
+            return;
+        }
 
         int source_id = hn.id;
         int source_fpga = hn.label;
@@ -187,7 +191,7 @@ private:
         }
 
         {
-            boost::mutex::scoped_lock lock(boost::mutex); 
+            boost::mutex::scoped_lock lock(gain_queue_mutex);
             for(const auto& fg: fpgas_gain) {
                 int target_fpga = fg.first;
                 int gain = fg.second;
@@ -309,6 +313,9 @@ private:
     }
 
     bool canReplicate(int node_id, int target_fpga, std::unordered_map<int, int>& fpgas_comm_change, std::unordered_map<int, std::vector<int>>& hyperedges_target_pins_in_part_new) {
+        if(!hypergraph.hypernodes[node_id].replicable) {
+            return false;
+        }
         if(hypergraph.hypernodes[node_id].replication_fpga_labels.find(target_fpga) != hypergraph.hypernodes[node_id].replication_fpga_labels.end()) {
             return false; 
         }
@@ -350,6 +357,9 @@ private:
 
 
     void updateGain_node(const Hypernode& hn) {
+        if(!hn.replicable) {
+            return;
+        }
 
         int source_id = hn.id;
         int source_fpga = hn.label;

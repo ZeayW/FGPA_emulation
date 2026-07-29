@@ -15,9 +15,9 @@
 #include "../datastructure/hypergraph.h"
 
 
-#include "../../boost_1_86_0/include/boost/thread/thread.hpp"
-#include "../../boost_1_86_0/include/boost/thread/mutex.hpp"
-#include "../../boost_1_86_0/include/boost/thread/shared_mutex.hpp"
+#include <boost/thread/thread.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/shared_mutex.hpp>
 
 
 

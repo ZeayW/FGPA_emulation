@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/partition-replication-v1.schema.json",
+  "title": "EmuFlow partition logic replication artifact v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "design",
+    "platform",
+    "replicas",
+    "replica_instance_assignment",
+    "fanin_proofs",
+    "cut_deltas",
+    "resources_by_fpga",
+    "metrics",
+    "digests",
+    "policy"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.partition-replication/v1"},
+    "design": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "replicas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "cluster",
+          "primary_fpga",
+          "target_fpga",
+          "resources",
+          "instances"
+        ],
+        "properties": {
+          "cluster": {"type": "string", "minLength": 1},
+          "primary_fpga": {"type": "string", "minLength": 1},
+          "target_fpga": {"type": "string", "minLength": 1},
+          "resources": {"type": "object"},
+          "instances": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["original_instance", "replica_instance"],
+              "properties": {
+                "original_instance": {"type": "string", "minLength": 1},
+                "replica_instance": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "replica_instance_assignment": {"type": "object"},
+    "fanin_proofs": {"type": "array", "items": {"type": "object"}},
+    "cut_deltas": {"type": "array", "items": {"type": "object"}},
+    "resources_by_fpga": {"type": "object"},
+    "metrics": {"type": "object"},
+    "digests": {
+      "type": "object",
+      "required": [
+        "base_cut_nets_sha256",
+        "effective_cut_nets_sha256"
+      ],
+      "properties": {
+        "base_cut_nets_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "effective_cut_nets_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {"type": "object"}
+  },
+  "additionalProperties": false
+}

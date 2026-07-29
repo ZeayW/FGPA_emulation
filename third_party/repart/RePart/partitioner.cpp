@@ -65,6 +65,7 @@ int main(int argc, char* argv[]) {
 
     std::string are_file = inputDirectory + "/design.are";
     std::string net_file = inputDirectory + "/design.net";
+    std::string replicability_file = inputDirectory + "/design.rep";
     std::string info_filepath = inputDirectory + "/design.info";
     std::string topo_filepath = inputDirectory + "/design.topo";
 
@@ -72,7 +73,7 @@ int main(int argc, char* argv[]) {
     fpga_manager.init(info_filepath, topo_filepath);
 
 
-    read_in(are_file, net_file, vertex_name_to_id, vertex_id_to_name, hypergraph_init, fpga_manager);
+    read_in(are_file, net_file, replicability_file, vertex_name_to_id, vertex_id_to_name, hypergraph_init, fpga_manager);
     std::cout << "Hypergraph initialized\n";
     long long best_cost = std::numeric_limits<long long>::max();
 

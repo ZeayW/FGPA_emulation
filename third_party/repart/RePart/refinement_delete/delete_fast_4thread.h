@@ -10,10 +10,10 @@
 #include "../io/fpga_manager.h"
 #include "../datastructure/binary_heap.h"
 
-#include "../../boost_1_86_0/include/boost/thread/thread.hpp"
-#include "../../boost_1_86_0/include/boost/thread/mutex.hpp"
-#include "../../boost_1_86_0/include/boost/thread/shared_mutex.hpp"
-#include "../../boost_1_86_0/include/boost/thread/barrier.hpp"
+#include <boost/thread/thread.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/shared_mutex.hpp>
+#include <boost/thread/barrier.hpp>
 
 class Delete {
 public:
@@ -24,6 +24,7 @@ public:
     std::vector<int>& communication_usage; 
     long long& total_cost; 
     std::vector<BinaryMaxHeap<int, int>> gain_priority_queues; 
+    boost::mutex gain_queue_mutex;
 
     Delete(Hypergraph& hypergraph, const FPGAManager& fpga_manager,
                 std::vector<std::vector<int>>& current_resource_usage,
@@ -199,7 +200,7 @@ private:
                 }
 
                 {
-                    boost::mutex::scoped_lock lock(boost::mutex); 
+                    boost::mutex::scoped_lock lock(gain_queue_mutex);
                     for (const auto& fg : fpgas_gain) {
                         int target_fpga = fg.first;
                         int gain = fg.second;

@@ -5,11 +5,13 @@
 #include <unordered_map>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include "../datastructure/hypergraph.h"
 #include "../io/fpga_manager.h"
 
 void read_in(const std::string& are_file,
              const std::string& net_file,
+             const std::string& replicability_file,
              std::unordered_map<std::string,int>& vertex_name_to_id,
              std::unordered_map<int,std::string>& vertex_id_to_name,
              Hypergraph& hypergraph_init,
@@ -29,6 +31,37 @@ void read_in(const std::string& are_file,
     are.close();
     hypergraph_init._num_vertices_initial = id;
     hypergraph_init._num_vertices_current = id;
+
+    std::ifstream replicability(replicability_file);
+    if(replicability.good()) {
+        for(auto& node : hypergraph_init.hypernodes) {
+            node.replicable = false;
+        }
+        std::unordered_set<int> seen_vertices;
+        std::string vertex_name;
+        int may_replicate = 0;
+        while(replicability >> vertex_name >> may_replicate) {
+            const auto vertex = vertex_name_to_id.find(vertex_name);
+            if(vertex == vertex_name_to_id.end()) {
+                throw std::runtime_error(
+                    "replicability file references unknown vertex " +
+                    vertex_name
+                );
+            }
+            if(!seen_vertices.insert(vertex->second).second) {
+                throw std::runtime_error(
+                    "replicability file repeats vertex " + vertex_name
+                );
+            }
+            hypergraph_init.hypernodes[vertex->second].replicable =
+                may_replicate != 0;
+        }
+        if(seen_vertices.size() != hypergraph_init.hypernodes.size()) {
+            throw std::runtime_error(
+                "replicability file does not cover every vertex"
+            );
+        }
+    }
 
     std::ifstream net(net_file);
     std::string line;

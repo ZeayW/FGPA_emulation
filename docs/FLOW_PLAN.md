@@ -182,6 +182,7 @@ Implement:
 - carry, DSP, BRAM/URAM cascade grouping;
 - fixed/group constraints for hard IP and board shells;
 - TritonPart adapter with multi-dimensional resource weights;
+- in-tree RePart multilevel partitioning with legal LUT replication;
 - topology-aware refinement and utilization headroom.
 
 Acceptance:
@@ -199,6 +200,13 @@ hyperedges, maps fixed constraints, executes TritonPart's multilevel
 partitioner, and imports the solution into the common assignment schema. The
 dependency-free greedy provider remains available explicitly as a fallback
 and A/B baseline.
+
+The RePart replication provider adds a versioned replication artifact without
+changing the unique-owner primary assignment. A C++-kernel replicability mask
+prevents stateful or unsupported vertices from entering the replication move
+queue. Independent checks prove mapped LUT-only, acyclic, fanin-closed replica
+clusters; charge every copy to target-FPGA capacity; recompute effective cut
+demands; and require Phase 6 to materialize and cycle-check the copies.
 
 Vivado/OpenSTA-derived timing weights, topology-aware repartition feedback,
 and resource-specific heterogeneous FPGA capacity ratios remain QoR

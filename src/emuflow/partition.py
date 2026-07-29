@@ -1035,7 +1035,7 @@ def validate_partition_artifacts(
                 f"{fixed['fpga']!r}, got {actual!r}"
             )
 
-    resources_by_fpga = {
+    primary_resources_by_fpga = {
         fpga_id: ResourceVector.sum(
             ResourceVector.from_mapping(instances[instance_id]["resources"])
             for instance_id, assigned_fpga in raw_assignment.items()
@@ -1043,6 +1043,19 @@ def validate_partition_artifacts(
         )
         for fpga_id in fpga_by_id
     }
+    replication_validation = None
+    if assignment_artifact.get("replication") is not None:
+        from .replication import validate_replication_artifact
+
+        replication_validation = validate_replication_artifact(
+            ir,
+            platform,
+            clusters_artifact,
+            assignment_artifact,
+        )
+        resources_by_fpga = replication_validation["resources_by_fpga"]
+    else:
+        resources_by_fpga = primary_resources_by_fpga
     for fpga_id, resources in resources_by_fpga.items():
         if not resources.fits_capacity(fpga_by_id[fpga_id].effective_capacity):
             raise ValidationError(
@@ -1099,7 +1112,13 @@ def validate_partition_artifacts(
             f"{illegal_cuts[:8]}"
         )
 
-    expected_cuts, expected_metrics = compute_cut_nets(ir, raw_assignment)
+    if replication_validation is None:
+        expected_cuts, expected_metrics = compute_cut_nets(
+            ir, raw_assignment
+        )
+    else:
+        expected_cuts = replication_validation["cut_nets"]
+        expected_metrics = replication_validation["metrics"]
     if assignment_artifact.get("cut_nets") != expected_cuts:
         raise ValidationError("assignment.cut_nets does not match recomputed cuts")
     metrics = assignment_artifact.get("metrics")
@@ -1112,7 +1131,7 @@ def validate_partition_artifacts(
                 f"got {metrics.get(key)!r}"
             )
 
-    return {
+    result = {
         "status": "pass",
         "instances": len(instance_ids),
         "clusters": len(raw_clusters),
@@ -1125,3 +1144,20 @@ def validate_partition_artifacts(
             for fpga_id, resources in resources_by_fpga.items()
         },
     }
+    if replication_validation is not None:
+        replication_metrics = replication_validation["artifact"]["metrics"]
+        for key, expected in replication_metrics.items():
+            if metrics.get(key) != expected:
+                raise ValidationError(
+                    f"assignment.metrics.{key}: expected {expected}, "
+                    f"got {metrics.get(key)!r}"
+                )
+        result["replication"] = {
+            "status": "pass",
+            **replication_metrics,
+        }
+        result["primary_resources_by_fpga"] = {
+            fpga_id: resources.to_dict(include_zeros=False)
+            for fpga_id, resources in primary_resources_by_fpga.items()
+        }
+    return result

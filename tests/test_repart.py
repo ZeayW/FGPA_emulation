@@ -10,6 +10,9 @@ from emuflow.partition import (
     normalize_partition_constraints,
 )
 from emuflow.phase3 import run_phase3
+from emuflow.phase4 import run_phase4
+from emuflow.phase5 import run_phase5
+from emuflow.phase6 import run_phase6
 from emuflow.platform import Platform
 from emuflow.repart import (
     REPART_FIXED_SEED,
@@ -206,6 +209,151 @@ class RePartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     balance_tolerance=1.0,
                     provider="repart",
+                    repart_solution=solution,
+                )
+
+    def test_phase3_imports_and_validates_legal_logic_replica(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            ir_path = output / "design.emuir.json"
+            ir_path.write_text(
+                json.dumps(self.ir.to_dict()), encoding="utf-8"
+            )
+            baseline = assign_clusters(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                seed=9,
+            )
+            assignment = baseline["cluster_assignment"]
+            lut_cluster = next(
+                cluster["id"]
+                for cluster in self.clusters["clusters"]
+                if cluster["resources"].get("lut", 0)
+            )
+            replica_fpga = (
+                "fpga1" if assignment[lut_cluster] == "fpga0" else "fpga0"
+            )
+            solution = output / "repart.out"
+            self._write_solution(
+                solution,
+                assignment,
+                replica=(lut_cluster, replica_fpga),
+            )
+            report = run_phase3(
+                ir_path=ir_path,
+                platform_path=PLATFORM_PATH,
+                output_dir=output / "phase3",
+                balance_tolerance=1.0,
+                provider="repart-replication",
+                repart_solution=solution,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["provider"], "repart-logic-replication-v1"
+            )
+            self.assertEqual(
+                report["validation"]["replication"]["replica_copies"], 1
+            )
+            self.assertTrue(
+                (output / "phase3" / "replication.json").is_file()
+            )
+            repart_input = json.loads(
+                (
+                    output
+                    / "phase3"
+                    / "repart"
+                    / "repart_input.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertTrue(repart_input["replication_enabled"])
+            self.assertIn(lut_cluster, repart_input["replicable_clusters"])
+            masks = {
+                cluster_id: int(enabled)
+                for cluster_id, enabled in (
+                    line.split()
+                    for line in (
+                        output
+                        / "phase3"
+                        / "repart"
+                        / "design.rep"
+                    ).read_text(encoding="utf-8").splitlines()
+                )
+            }
+            self.assertEqual(masks[lut_cluster], 1)
+            self.assertTrue(
+                all(
+                    masks[cluster["id"]] == 0
+                    for cluster in self.clusters["clusters"]
+                    if cluster["resources"].get("ff", 0)
+                )
+            )
+            phase4 = run_phase4(
+                assignment_path=output / "phase3" / "assignment.json",
+                platform_path=PLATFORM_PATH,
+                output_dir=output / "phase4",
+            )
+            phase5 = run_phase5(
+                routes_path=output / "phase4" / "routes.json",
+                platform_path=PLATFORM_PATH,
+                output_dir=output / "phase5",
+            )
+            phase6 = run_phase6(
+                ir_path=ir_path,
+                assignment_path=output / "phase3" / "assignment.json",
+                schedule_path=output / "phase5" / "schedule.json",
+                platform_path=PLATFORM_PATH,
+                output_dir=output / "phase6",
+            )
+            self.assertEqual(phase4["status"], "pass")
+            self.assertEqual(phase5["status"], "pass")
+            self.assertEqual(phase6["status"], "pass")
+            self.assertEqual(
+                phase6["validation"]["replica_instances"], 1
+            )
+            self.assertGreater(
+                phase6["equivalence"]["compared_replica_output_bits"], 0
+            )
+
+    def test_phase3_rejects_stateful_replica(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            ir_path = output / "design.emuir.json"
+            ir_path.write_text(
+                json.dumps(self.ir.to_dict()), encoding="utf-8"
+            )
+            baseline = assign_clusters(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                seed=9,
+            )
+            assignment = baseline["cluster_assignment"]
+            ff_cluster = next(
+                cluster["id"]
+                for cluster in self.clusters["clusters"]
+                if cluster["resources"].get("ff", 0)
+            )
+            replica_fpga = (
+                "fpga1" if assignment[ff_cluster] == "fpga0" else "fpga0"
+            )
+            solution = output / "repart.out"
+            self._write_solution(
+                solution,
+                assignment,
+                replica=(ff_cluster, replica_fpga),
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "combinational-fanin proof"
+            ):
+                run_phase3(
+                    ir_path=ir_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=output / "phase3",
+                    balance_tolerance=1.0,
+                    provider="repart-replication",
                     repart_solution=solution,
                 )
 

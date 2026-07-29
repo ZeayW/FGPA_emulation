@@ -58,9 +58,10 @@ class Hypernode {
     std::unordered_set<int> incident_nets_as_target;
     int label; 
     bool deleted; 
+    bool replicable;
     std::unordered_set<int> replication_fpga_labels; 
-    Hypernode():id(-1),vertex_ids(),weights(),incident_nets_as_source(),incident_nets_as_target(),deleted(0),label(-1) {}
-    Hypernode(int i, std::vector<int> v_ids, std::vector<int> w):id(i),vertex_ids(v_ids),weights(w),incident_nets_as_source(),incident_nets_as_target(),deleted(0),label(-1) {};
+    Hypernode():id(-1),vertex_ids(),weights(),incident_nets_as_source(),incident_nets_as_target(),label(-1),deleted(0),replicable(true) {}
+    Hypernode(int i, std::vector<int> v_ids, std::vector<int> w):id(i),vertex_ids(v_ids),weights(w),incident_nets_as_source(),incident_nets_as_target(),label(-1),deleted(0),replicable(true) {};
 };
 
 class Hypergraph {
@@ -134,6 +135,8 @@ class Hypergraph {
 
 
     void contract(const int u, const int v) {
+        hypernodes[u].replicable =
+            hypernodes[u].replicable && hypernodes[v].replicable;
         for(int i=0;i<8;++i) {
             hypernodes[u].weights[i] += hypernodes[v].weights[i];
         }
@@ -457,5 +460,3 @@ void updataFormerLayer(std::vector<Hypergraph>& hypergraphs, int hypergraph_idx)
         }
     }
 }
-
-

@@ -246,6 +246,70 @@ class _MappedModel:
         }
         return values, next_state, outputs
 
+    def evaluate_lut_subset(
+        self,
+        instance_ids: Set[str],
+        reference_values: Mapping[str, int],
+        overrides: Mapping[Tuple[str, str], int],
+    ) -> Dict[str, int]:
+        """Evaluate one fanin-closed replica cone without resimulating the DUT."""
+
+        unsupported = sorted(set(instance_ids) - set(self.lut_ids))
+        if unsupported:
+            raise ValidationError(
+                "replica subset contains non-LUT instances "
+                f"{unsupported[:8]}"
+            )
+        values: Dict[str, int] = {}
+        pending = set(instance_ids)
+        while pending:
+            progressed = False
+            for instance_id in sorted(pending):
+                instance = self.instances[instance_id]
+                width = int(instance["type"][3:])
+                inputs = []
+                unresolved = False
+                for index in range(width):
+                    net = self.input_net.get(
+                        (instance_id, f"I{index}", 0)
+                    )
+                    if net is None:
+                        value = self.constants.get(
+                            (instance_id, f"I{index}", 0), 0
+                        )
+                    elif (instance_id, net) in overrides:
+                        value = overrides[(instance_id, net)]
+                    elif net in values:
+                        value = values[net]
+                    else:
+                        value = reference_values.get(net)
+                    if value is None:
+                        unresolved = True
+                        break
+                    inputs.append(value)
+                if unresolved:
+                    continue
+                address = sum(
+                    int(value) << offset
+                    for offset, value in enumerate(inputs)
+                )
+                init = instance.get("parameters", {}).get("INIT")
+                if init is None:
+                    raise ValidationError(
+                        f"LUT {instance_id!r} lacks INIT parameter"
+                    )
+                output_net = self.output_net.get((instance_id, "O", 0))
+                if output_net is not None:
+                    values[output_net] = (int(str(init), 2) >> address) & 1
+                pending.remove(instance_id)
+                progressed = True
+            if not progressed:
+                raise ValidationError(
+                    "replica subset simulation found unresolved "
+                    f"LUTs {sorted(pending)[:8]}"
+                )
+        return values
+
 
 def simulate_partition_equivalence(
     ir: EmuIR,
@@ -268,6 +332,20 @@ def simulate_partition_equivalence(
     route_by_net = {
         route["net"]: route for route in schedule.get("routes", [])
     }
+    replica_records = assignment.get("replication", {}).get("replicas", [])
+    output_nets_by_instance: Dict[str, Set[str]] = {
+        instance_id: set() for instance_id in model.instances
+    }
+    sink_nets_by_instance: Dict[str, Set[str]] = {
+        instance_id: set() for instance_id in model.instances
+    }
+    for net in ir.value["nets"]:
+        for endpoint in net["drivers"]:
+            if endpoint["instance"] is not None:
+                output_nets_by_instance[endpoint["instance"]].add(net["id"])
+        for endpoint in net["sinks"]:
+            if endpoint["instance"] is not None:
+                sink_nets_by_instance[endpoint["instance"]].add(net["id"])
     first_source_slot: Dict[str, int] = {}
     completion_by_round: Dict[int, int] = {}
     for entry in schedule.get("entries", []):
@@ -309,6 +387,7 @@ def simulate_partition_equivalence(
     trace = hashlib.sha256()
     compared_outputs = 0
     compared_state_bits = 0
+    compared_replica_outputs = 0
     for cycle in range(cycles):
         reference_values, reference_next, reference_outputs = model.evaluate(
             state, cycle, seed
@@ -348,7 +427,7 @@ def simulate_partition_equivalence(
                 if instance_id is None:
                     continue
                 fpga_id = assignment_map[instance_id]
-                if fpga_id != source_fpga:
+                if fpga_id in route_by_net[net["id"]]["sinks"]:
                     key = (demand, fpga_id)
                     if key not in shadow:
                         raise ValidationError(
@@ -359,6 +438,42 @@ def simulate_partition_equivalence(
         _, partition_next, partition_outputs = model.evaluate(
             state, cycle, seed, overrides=overrides
         )
+        for record in replica_records:
+            target = record["target_fpga"]
+            members = {
+                item["original_instance"] for item in record["instances"]
+            }
+            replica_overrides: Dict[Tuple[str, str], int] = {}
+            for instance_id in members:
+                for net_id in sink_nets_by_instance[instance_id]:
+                    route = route_by_net.get(net_id)
+                    if route is None or target not in route["sinks"]:
+                        continue
+                    demand = route["id"]
+                    key = (demand, target)
+                    if key not in shadow:
+                        raise ValidationError(
+                            f"replica {record['cluster']!r} at {target!r} "
+                            f"lacks shadow {key}"
+                        )
+                    replica_overrides[(instance_id, net_id)] = shadow[key]
+            replica_values = model.evaluate_lut_subset(
+                members,
+                reference_values,
+                replica_overrides,
+            )
+            output_nets = {
+                net_id
+                for instance_id in members
+                for net_id in output_nets_by_instance[instance_id]
+            }
+            for net_id in output_nets:
+                if replica_values.get(net_id) != reference_values.get(net_id):
+                    raise ValidationError(
+                        f"cycle {cycle}: replica {record['cluster']!r} at "
+                        f"{target!r} mismatches net {net_id!r}"
+                    )
+                compared_replica_outputs += 1
         if partition_next != reference_next:
             mismatch = next(
                 instance_id
@@ -407,6 +522,8 @@ def simulate_partition_equivalence(
         "round_barrier_checks": round_barrier_checks,
         "compared_state_bits": compared_state_bits,
         "compared_output_bits": compared_outputs,
+        "replica_copies": len(replica_records),
+        "compared_replica_output_bits": compared_replica_outputs,
         "mismatches": 0,
         "trace_sha256": trace.hexdigest(),
     }

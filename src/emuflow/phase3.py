@@ -71,7 +71,7 @@ def run_phase3(
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
             repair_balance=tritonpart_repair_balance,
         )
-    elif provider == "repart":
+    elif provider in {"repart", "repart-replication"}:
         assignment = run_repart(
             ir,
             platform,
@@ -82,11 +82,13 @@ def run_phase3(
             solution_input=repart_solution,
             net_weights_path=net_weights_path,
             timeout_seconds=repart_timeout_seconds,
+            enable_replication=provider == "repart-replication",
         )
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "
-            "expected 'repart', 'tritonpart', or 'greedy'"
+            "expected 'repart-replication', 'repart', 'tritonpart', "
+            "or 'greedy'"
         )
     validation = validate_partition_artifacts(
         ir,
@@ -120,13 +122,17 @@ def run_phase3(
     }
     if provider == "tritonpart":
         report["artifacts"]["tritonpart"] = "tritonpart/tritonpart_input.json"
-    elif provider == "repart":
+    elif provider in {"repart", "repart-replication"}:
         report["artifacts"]["repart"] = "repart/repart_input.json"
+        if provider == "repart-replication":
+            report["artifacts"]["replication"] = "replication.json"
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "clusters.json", clusters)
     write_json(output_dir / "constraints.normalized.json", constraints)
     write_json(output_dir / "assignment.json", assignment)
+    if "replication" in assignment:
+        write_json(output_dir / "replication.json", assignment["replication"])
     write_json(output_dir / "phase3_report.json", report)
     return report
 

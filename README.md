@@ -50,7 +50,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Stage | Current implementation | Status |
 | --- | --- | --- |
 | Synthesis/import | Yosys JSON to versioned EmuIR | Implemented |
-| Partitioning | Greedy baseline, TritonPart, RePart Phase 3A | Implemented; algorithm upgrade in progress |
+| Partitioning | Greedy baseline, TritonPart, RePart partitioning and logic replication | Implemented; Phase 3B validated |
 | System routing | Directed multicast negotiated-congestion routing | Implemented; academic upgrade planned |
 | TDM | Legal lane/slot scheduling with precedence and collision checks | Implemented; academic upgrade planned |
 | Netlist/transport | Per-FPGA split, shadow endpoints, generated TDM RTL | Implemented |
@@ -134,6 +134,11 @@ repository:
 - `third_party/openparf/`: OpenPARF C++/CUDA/Python source; and
 - `src/emuflow/`: EmuFlow control plane, artifact contracts, reference
   implementations, and independent checkers.
+
+RePart is not consumed as a published binary. Its C++ optimization source is
+compiled by the root CMake build. EmuFlow's small Python adapter emits the
+versioned hypergraph/replicability inputs and independently checks the C++
+result; it is not a replacement partitioning algorithm.
 
 Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,
