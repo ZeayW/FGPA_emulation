@@ -37,10 +37,12 @@ def _resource_dimensions(
             for fpga in platform.fpgas
         )
     ]
-    if len(dimensions) > REPART_RESOURCE_DIMENSIONS:
+    maximum_physical_dimensions = REPART_RESOURCE_DIMENSIONS - 1
+    if len(dimensions) > maximum_physical_dimensions:
         raise ValidationError(
-            f"RePart supports {REPART_RESOURCE_DIMENSIONS} resource dimensions, "
-            f"but this design needs {len(dimensions)}: {dimensions}"
+            "RePart reserves one of its eight resource dimensions for cells "
+            f"and supports at most {maximum_physical_dimensions} active physical "
+            f"resources, but this design needs {len(dimensions)}: {dimensions}"
         )
     return dimensions
 
@@ -149,10 +151,100 @@ def _platform_hop_diameter(platform: Platform) -> int:
     return diameter
 
 
+def _balanced_repart_capacities(
+    clusters: Sequence[Mapping[str, Any]],
+    platform: Platform,
+    resource_dimensions: Sequence[str],
+    requested_tolerance: float,
+) -> Tuple[List[str], List[List[int]], float]:
+    dimensions = ["cells", *resource_dimensions]
+    weights = [
+        [
+            len(cluster["instances"]),
+            *[
+                cluster["resources"].get(dimension, 0)
+                for dimension in resource_dimensions
+            ],
+        ]
+        for cluster in clusters
+    ]
+    totals = [
+        sum(item[dimension] for item in weights)
+        for dimension in range(len(dimensions))
+    ]
+    fpga_ids = [fpga.id for fpga in platform.fpgas]
+    shares: List[List[float]] = []
+    for dimension in dimensions:
+        if dimension == "cells":
+            shares.append([1.0 / len(fpga_ids)] * len(fpga_ids))
+            continue
+        capacities = [
+            float(fpga.effective_capacity[dimension])
+            for fpga in platform.fpgas
+        ]
+        total_capacity = sum(capacities)
+        shares.append(
+            [capacity / total_capacity for capacity in capacities]
+        )
+
+    required_tolerance = requested_tolerance
+    fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
+    fixed_loads = [
+        [0] * len(dimensions) for _ in fpga_ids
+    ]
+    for cluster, item_weights in zip(clusters, weights):
+        fixed_fpga = cluster["fixed_fpga"]
+        for dimension, total in enumerate(totals):
+            if total == 0:
+                continue
+            target_share = (
+                shares[dimension][fpga_index[fixed_fpga]]
+                if fixed_fpga is not None
+                else max(shares[dimension])
+            )
+            required_tolerance = max(
+                required_tolerance,
+                item_weights[dimension] / total / target_share - 1.0,
+            )
+        if fixed_fpga is not None:
+            target = fixed_loads[fpga_index[fixed_fpga]]
+            for dimension, value in enumerate(item_weights):
+                target[dimension] += value
+    for part, item_weights in enumerate(fixed_loads):
+        for dimension, total in enumerate(totals):
+            if total == 0:
+                continue
+            required_tolerance = max(
+                required_tolerance,
+                item_weights[dimension]
+                / total
+                / shares[dimension][part]
+                - 1.0,
+            )
+    effective_tolerance = max(0.0, required_tolerance) + 1e-6
+
+    allowed: List[List[int]] = []
+    for part, fpga in enumerate(platform.fpgas):
+        part_allowed = []
+        for dimension_index, dimension in enumerate(dimensions):
+            value = math.floor(
+                totals[dimension_index]
+                * shares[dimension_index][part]
+                * (1.0 + effective_tolerance)
+                + 1e-7
+            )
+            if dimension != "cells":
+                value = min(value, fpga.effective_capacity[dimension])
+            part_allowed.append(value)
+        allowed.append(part_allowed)
+    return dimensions, allowed, effective_tolerance
+
+
 def export_repart_inputs(
     ir: EmuIR,
     platform: Platform,
     clusters_artifact: Mapping[str, Any],
+    constraints: Mapping[str, Any],
     output_dir: Path,
     net_weights: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
@@ -162,13 +254,21 @@ def export_repart_inputs(
     if len(clusters) < len(platform.fpgas):
         raise ValidationError("RePart needs at least one atomic cluster per FPGA")
 
-    dimensions = _resource_dimensions(clusters, platform)
+    resource_dimensions = _resource_dimensions(clusters, platform)
     omitted_dimensions = [
         field
         for field in RESOURCE_FIELDS
         if any(cluster["resources"].get(field, 0) for cluster in clusters)
-        and field not in dimensions
+        and field not in resource_dimensions
     ]
+    dimensions, allowed_capacities, effective_tolerance = (
+        _balanced_repart_capacities(
+            clusters,
+            platform,
+            resource_dimensions,
+            float(constraints["balance_tolerance"]),
+        )
+    )
     padded_dimensions = [
         *dimensions,
         *[
@@ -198,7 +298,11 @@ def export_repart_inputs(
     vertex_weights = []
     for cluster in clusters:
         weights = [
-            cluster["resources"].get(dimension, 0) for dimension in dimensions
+            len(cluster["instances"]),
+            *[
+                cluster["resources"].get(dimension, 0)
+                for dimension in resource_dimensions
+            ],
         ]
         weights.extend([0] * (REPART_RESOURCE_DIMENSIONS - len(weights)))
         vertex_weights.append(weights)
@@ -229,10 +333,8 @@ def export_repart_inputs(
         1, sum(edge["integer_weight"] for edge in hyperedges)
     )
     info_lines = []
-    for fpga in platform.fpgas:
-        capacities = [
-            fpga.effective_capacity[dimension] for dimension in dimensions
-        ]
+    for fpga, raw_capacities in zip(platform.fpgas, allowed_capacities):
+        capacities = list(raw_capacities)
         capacities.extend(
             [0] * (REPART_RESOURCE_DIMENSIONS - len(capacities))
         )
@@ -276,12 +378,22 @@ def export_repart_inputs(
         "cluster_order": [cluster["id"] for cluster in clusters],
         "resource_dimensions": padded_dimensions,
         "active_resource_dimensions": dimensions,
+        "active_physical_resource_dimensions": resource_dimensions,
         "omitted_unconstrained_resource_dimensions": omitted_dimensions,
         "vertex_weights": vertex_weights,
         "hyperedges": hyperedges,
         "edge_weight_scale": weight_scale,
         "max_hop_distance": max_hop,
         "communication_limit": communication_limit,
+        "requested_balance_tolerance": constraints["balance_tolerance"],
+        "effective_balance_tolerance": effective_tolerance,
+        "allowed_capacities": {
+            fpga.id: {
+                dimension: value
+                for dimension, value in zip(dimensions, capacities)
+            }
+            for fpga, capacities in zip(platform.fpgas, allowed_capacities)
+        },
         "replication_enabled": False,
         "fixed_seed": REPART_FIXED_SEED,
         "files": {
@@ -378,6 +490,7 @@ def run_repart(
         ir,
         platform,
         clusters_artifact,
+        constraints,
         output_dir,
         net_weights=load_partition_net_weights(net_weights_path),
     )
@@ -481,12 +594,21 @@ def run_repart(
             "active_resource_dimensions": repart_input[
                 "active_resource_dimensions"
             ],
+            "active_physical_resource_dimensions": repart_input[
+                "active_physical_resource_dimensions"
+            ],
             "omitted_unconstrained_resource_dimensions": repart_input[
                 "omitted_unconstrained_resource_dimensions"
             ],
             "hyperedges": len(repart_input["hyperedges"]),
             "max_hop_distance": repart_input["max_hop_distance"],
             "communication_limit": repart_input["communication_limit"],
+            "requested_balance_tolerance": repart_input[
+                "requested_balance_tolerance"
+            ],
+            "effective_balance_tolerance": repart_input[
+                "effective_balance_tolerance"
+            ],
             "fixed_repairs": fixed_repairs,
             "artifacts": {
                 **repart_input["files"],

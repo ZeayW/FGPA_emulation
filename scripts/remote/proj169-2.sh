@@ -477,7 +477,7 @@ for run in run1 run2; do
     --provider repart \
     --repart "$repart_path" \
     --min-used-fpgas 2 \
-    --balance-tolerance 1.0
+    --balance-tolerance 0.5
   PYTHONPATH=src python3 -m emuflow partition validate \
     "build/remote/repart-phase3-smoke/$run/assignment.json" \
     --clusters "build/remote/repart-phase3-smoke/$run/clusters.json" \

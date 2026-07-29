@@ -70,6 +70,7 @@ class RePartTest(unittest.TestCase):
                 self.ir,
                 self.platform,
                 self.clusters,
+                self.constraints,
                 output,
             )
             self.assertEqual(artifact["schema"], REPART_INPUT_SCHEMA)
@@ -95,6 +96,7 @@ class RePartTest(unittest.TestCase):
                 self.ir,
                 self.platform,
                 self.clusters,
+                self.constraints,
                 output,
             )
             assignment = assign_clusters(
@@ -125,6 +127,7 @@ class RePartTest(unittest.TestCase):
                 self.ir,
                 self.platform,
                 self.clusters,
+                self.constraints,
                 output,
             )
             solution = output / "solution.out"
