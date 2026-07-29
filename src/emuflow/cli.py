@@ -313,6 +313,7 @@ def _build_parser() -> argparse.ArgumentParser:
     route_validate.add_argument("routes", type=Path)
     route_validate.add_argument("--assignment", type=Path, required=True)
     route_validate.add_argument("--platform", type=Path, required=True)
+    route_validate.add_argument("--timing-paths", type=Path)
 
     phase4 = subparsers.add_parser(
         "phase4", help="route partition cut nets over BoardDB links"
@@ -323,6 +324,26 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument("--constraints", type=Path)
     phase4.add_argument("--frame-slots", type=int)
     phase4.add_argument("--max-iterations", type=int)
+    phase4.add_argument(
+        "--provider",
+        choices=[
+            "negotiated-shortest-path-tree-v1",
+            "timing-aware-load-balanced-v1",
+        ],
+        default="negotiated-shortest-path-tree-v1",
+    )
+    phase4.add_argument(
+        "--timing-paths",
+        type=Path,
+        help="emuflow.sta-paths/v1 input required by the timing-aware provider",
+    )
+    phase4.add_argument(
+        "--router",
+        help=(
+            "explicit comparison override; defaults to the in-tree "
+            "emuflow_tlr_router build"
+        ),
+    )
 
     schedule_parser = subparsers.add_parser(
         "schedule", help="TDM schedule artifact operations"
@@ -609,6 +630,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             assignment_path=args.assignment,
             platform_path=args.platform,
             routes_path=args.routes,
+            timing_paths_path=args.timing_paths,
         )
         _print_json(report)
         return 0
@@ -621,6 +643,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             constraints_path=args.constraints,
             frame_slots=args.frame_slots,
             max_iterations=args.max_iterations,
+            provider=args.provider,
+            timing_paths_path=args.timing_paths,
+            router=args.router,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

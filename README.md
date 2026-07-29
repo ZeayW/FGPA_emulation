@@ -51,7 +51,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | --- | --- | --- |
 | Synthesis/import | Yosys JSON to versioned EmuIR | Implemented |
 | Partitioning | Greedy baseline, TritonPart, RePart partitioning and logic replication | Implemented; Phase 3B validated |
-| System routing | Directed multicast negotiated-congestion routing | Implemented; academic upgrade planned |
+| System routing | Negotiated baseline plus in-tree C++ timing-aware load-balanced routing | Academic provider implemented; real-STA promotion in progress |
 | TDM | Legal lane/slot scheduling with precedence and collision checks | Implemented; academic upgrade planned |
 | Netlist/transport | Per-FPGA split, shadow endpoints, generated TDM RTL | Implemented |
 | Pin planning | Logical lanes and virtual I/O anchors | Implemented |
@@ -132,13 +132,21 @@ repository:
 - `third_party/repart/`: RePart C++ hypergraph partitioner;
 - `third_party/openroad/`: OpenROAD and TritonPart C++ source;
 - `third_party/openparf/`: OpenPARF C++/CUDA/Python source; and
-- `src/emuflow/`: EmuFlow control plane, artifact contracts, reference
-  implementations, and independent checkers.
+- `src/native/`: first-party C++ optimization kernels, including the
+  timing-aware system router; and
+- `src/emuflow/`: EmuFlow control plane, artifact contracts, baseline
+  implementations, adapters, and independent checkers.
 
 RePart is not consumed as a published binary. Its C++ optimization source is
 compiled by the root CMake build. EmuFlow's small Python adapter emits the
 versioned hypergraph/replicability inputs and independently checks the C++
 result; it is not a replacement partitioning algorithm.
+
+The academic Phase 4 provider follows the same boundary: the TLR/TRR
+optimization kernel is editable C++17 source in `src/native/tlr_router.cpp`.
+Python imports versioned STA paths, invokes the root-build product, and
+independently reconstructs topology, capacity, direction-lock, delay, slack,
+and path-signature results.
 
 Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,

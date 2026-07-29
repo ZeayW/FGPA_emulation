@@ -41,6 +41,10 @@ REQUIRED_SOURCE_FILES = {
     ),
 }
 
+REQUIRED_FIRST_PARTY_NATIVE_FILES = (
+    "src/native/tlr_router.cpp",
+)
+
 OPAQUE_SUFFIXES = {
     ".a",
     ".dll",
@@ -55,6 +59,18 @@ OPAQUE_SUFFIXES = {
 
 def audit(repo_root: Path) -> list[str]:
     errors: list[str] = []
+    for relative_file in REQUIRED_FIRST_PARTY_NATIVE_FILES:
+        if not (repo_root / relative_file).is_file():
+            errors.append(
+                f"first-party native source is missing: {relative_file}"
+            )
+    native_root = repo_root / "src" / "native"
+    for path in native_root.rglob("*"):
+        if path.is_file() and path.suffix.lower() in OPAQUE_SUFFIXES:
+            errors.append(
+                "first-party native tree contains an opaque build artifact: "
+                f"{path.relative_to(repo_root)}"
+            )
     third_party = repo_root / "third_party"
     for component, relative_files in REQUIRED_SOURCE_FILES.items():
         component_root = third_party / component

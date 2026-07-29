@@ -20,6 +20,11 @@ find_program(EMUFLOW_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 
 option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
 option(EMUFLOW_BUILD_REPART "Build the in-tree RePart source" ON)
+option(
+  EMUFLOW_BUILD_TLR_ROUTER
+  "Build the in-tree timing-aware load-balanced system router"
+  ON
+)
 option(EMUFLOW_BUILD_OPENROAD "Build the in-tree OpenROAD/TritonPart source" ON)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
@@ -83,6 +88,20 @@ add_custom_target(
   emuflow_python ALL
   DEPENDS "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
 )
+
+if(EMUFLOW_BUILD_TLR_ROUTER)
+  add_executable(
+    emuflow_tlr_router
+    "${CMAKE_SOURCE_DIR}/src/native/tlr_router.cpp"
+  )
+  target_compile_features(emuflow_tlr_router PRIVATE cxx_std_17)
+  target_compile_options(emuflow_tlr_router PRIVATE -O3)
+  set_target_properties(
+    emuflow_tlr_router
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
 
 if(EMUFLOW_BUILD_REPART)
   find_package(Boost 1.65 REQUIRED COMPONENTS system thread)
@@ -279,6 +298,13 @@ if(BUILD_TESTING)
   if(EMUFLOW_BUILD_REPART)
     add_test(NAME repart_cli COMMAND "$<TARGET_FILE:repart>")
     set_tests_properties(repart_cli PROPERTIES WILL_FAIL TRUE)
+  endif()
+
+  if(EMUFLOW_BUILD_TLR_ROUTER)
+    add_test(
+      NAME emuflow_tlr_router_cli
+      COMMAND "$<TARGET_FILE:emuflow_tlr_router>" --help
+    )
   endif()
 
   if(EMUFLOW_BUILD_YOSYS)

@@ -66,11 +66,71 @@ def normalize_route_constraints(
             f"route constraints.unavailable_links: unknown links {unknown}"
         )
 
+    raw_link_delays = raw.get("link_delay_ns", {})
+    if not isinstance(raw_link_delays, dict):
+        raise ValidationError(
+            "route constraints.link_delay_ns: expected an object"
+        )
+    unknown_delays = sorted(set(raw_link_delays) - link_ids)
+    if unknown_delays:
+        raise ValidationError(
+            "route constraints.link_delay_ns: unknown links "
+            f"{unknown_delays}"
+        )
+    link_delays = {}
+    for link_id, value in raw_link_delays.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or float(value) < 0.0
+        ):
+            raise ValidationError(
+                f"route constraints.link_delay_ns.{link_id}: "
+                "expected a non-negative number"
+            )
+        link_delays[link_id] = float(value)
+
+    raw_sll_links = raw.get("sll_links", [])
+    if not isinstance(raw_sll_links, list) or not all(
+        isinstance(link_id, str) for link_id in raw_sll_links
+    ):
+        raise ValidationError(
+            "route constraints.sll_links: expected an array of strings"
+        )
+    unknown_sll = sorted(set(raw_sll_links) - link_ids)
+    if unknown_sll:
+        raise ValidationError(
+            f"route constraints.sll_links: unknown links {unknown_sll}"
+        )
+
+    optimization_values = {}
+    for key, default, integer in (
+        ("reroute_rounds", 8, True),
+        ("lambda_load", 2.0, False),
+        ("lambda_timing", 4.0, False),
+        ("lambda_history", 1.0, False),
+    ):
+        value = raw.get(key, default)
+        valid = (
+            not isinstance(value, bool)
+            and isinstance(value, int if integer else (int, float))
+            and value >= 0
+        )
+        if not valid:
+            kind = "non-negative integer" if integer else "non-negative number"
+            raise ValidationError(
+                f"route constraints.{key}: expected a {kind}"
+            )
+        optimization_values[key] = int(value) if integer else float(value)
+
     return {
         "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
         "frame_slots": raw_frame_slots,
         "max_iterations": raw_iterations,
         "unavailable_links": sorted(set(raw_unavailable)),
+        "link_delay_ns": dict(sorted(link_delays.items())),
+        "sll_links": sorted(set(raw_sll_links)),
+        **optimization_values,
     }
 
 

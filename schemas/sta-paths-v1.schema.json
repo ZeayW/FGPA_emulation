@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ZeayW/FGPA_emulation/schemas/sta-paths-v1.schema.json",
+  "title": "EmuFlow STA timing paths v1",
+  "type": "object",
+  "required": ["schema", "design", "paths"],
+  "properties": {
+    "schema": {"const": "emuflow.sta-paths/v1"},
+    "design": {"type": "string", "minLength": 1},
+    "paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "clock_domain",
+          "clock_period_ns",
+          "slack_ns",
+          "fixed_delay_ns",
+          "cut_nets"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "clock_domain": {"type": "string", "minLength": 1},
+          "clock_period_ns": {"type": "number", "exclusiveMinimum": 0},
+          "slack_ns": {"type": "number"},
+          "fixed_delay_ns": {"type": "number", "minimum": 0},
+          "cut_nets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "cut_signature": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

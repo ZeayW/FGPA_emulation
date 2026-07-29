@@ -125,6 +125,35 @@ Required components are:
 - selective critical-path rip-up/reroute; and
 - accept/rollback refinement based on worst normalized slack.
 
+The source implementation is now present as the opt-in
+`timing-aware-load-balanced-v1` provider. Its optimization core is the
+first-party C++17 target `emuflow_tlr_router`, built by the repository root
+CMake project. The Python layer only performs versioned STA/BoardDB artifact
+adaptation and independent result checking.
+
+Implemented algorithm details:
+
+- Eq. (2) multi-clock normalized slack and a lossless compression proof that
+  additionally requires equal clock normalization and cut-net sequence;
+- fixed link-delay lookup with explicit SLL/cable classification;
+- Floyd/Dijkstra-equivalent all-pairs shortest-delay preprocessing for
+  majority-flow direction locking;
+- ascending normalized-slack and descending predicted-delay demand ordering;
+- dynamic delay, criticality, utilization, and historical-overflow weights;
+- multicast tree construction by shared predecessor backtrace;
+- selective rerouting of nets on the current worst normalized-slack path; and
+- lexicographic accept/rollback on worst normalized slack, then maximum
+  utilization and bit-hops.
+
+The fixture gate is complete: a multi-clock capacity-constrained diamond sends
+the critical net over the 2 ns path where the baseline assigns it the 10 ns
+path; ordered-signature compression, shared-direction locking, independent
+delay/slack recomputation, and corruption rejection all pass. The NVDLA
+large-design scale, determinism, and frozen Phase 5/6 compatibility gates also
+pass with a deterministic structural timing workload. This workload is not a
+substitute for STA: real Vivado/OpenSTA path import and frozen-baseline QoR
+remain the promotion gate before this provider becomes the default.
+
 The existing negotiated-congestion router remains
 `negotiated-shortest-path-tree-v1`.
 

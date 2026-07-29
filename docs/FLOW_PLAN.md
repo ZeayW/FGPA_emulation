@@ -212,7 +212,8 @@ Vivado/OpenSTA-derived timing weights, topology-aware repartition feedback,
 and resource-specific heterogeneous FPGA capacity ratios remain QoR
 extensions.
 
-### Phase 4 — Board-level system routing (implemented)
+### Phase 4 — Board-level system routing (academic provider implemented;
+real-STA promotion in progress)
 
 Implement a negotiated-congestion router over BoardDB:
 
@@ -233,6 +234,33 @@ The dependency-free negotiated shortest-path baseline is implemented with
 versioned constraint, route, and report artifacts. Four-FPGA diamond,
 multicast, unavailable-link, infeasible-capacity, and half-duplex tests cover
 non-trivial topology cases.
+
+The optional `timing-aware-load-balanced-v1` provider adds an in-tree C++17
+TLR/TRR kernel based on the routing portion of Chen et al., ASP-DAC 2026. Its
+versioned `emuflow.sta-paths/v1` input carries clock domain, period, slack,
+fixed delay, ordered cut signature, and cut-net sequence. The adapter:
+
+- normalizes slack across clock domains using the paper's definition;
+- losslessly compresses paths only when clock normalization and ordered cut
+  behavior are equivalent, retaining the largest-fixed-delay representative;
+- derives a fixed predicted delay table from BoardDB or explicit per-link
+  overrides;
+- distinguishes cable and SLL-class links; and
+- represents flexible shared physical direction groups as half-duplex
+  BoardDB links.
+
+The C++ kernel applies majority-flow direction locking, timing-aware demand
+ordering, criticality/utilization/history-weighted Dijkstra multicast trees,
+negotiated congestion, and worst-path selective rip-up/reroute with
+accept/rollback. Python does not reproduce the optimization. Its independent
+checker reconstructs every tree, capacity domain, direction lock, route
+delay, compressed-path signature, slack, and normalized slack from the
+returned artifact.
+
+The provider is deliberately opt-in until the real-STA acceptance gate is
+complete. Its large-design route, determinism, and frozen Phase 5/6
+compatibility gates have passed. The baseline remains
+`negotiated-shortest-path-tree-v1`.
 
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 
