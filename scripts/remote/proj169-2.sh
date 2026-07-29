@@ -40,6 +40,12 @@ Commands:
              Validate RePart twice on the 731,313-cell connected NVDLA design.
   repart-nvdla-downstream
              Run frozen Phases 4-6 and initial Phase 7C on RePart NVDLA.
+  repart-nvdla-phase7a
+             Lower and place all four RePart NVDLA partitions with OpenPARF.
+  repart-nvdla-phase7b
+             Emit and route all four RePart NVDLA partitions with Vivado.
+  repart-nvdla-phase7c-finalize
+             Validate the four routed DCPs and finalize physical/runtime QoR.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -818,6 +824,33 @@ for phase in phase4 phase5 phase6; do
     "$flow/$phase-time.txt"
 done
 du -sh "$flow/phase4" "$flow/phase5" "$flow/phase6"
+REMOTE
+}
+
+repart_nvdla_physical_remote() {
+  local phase="$1"
+  remote_script <<REMOTE
+set -eu
+remote_dir="\$1"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+source_root=/data/zywang/emuflow/nvdla-repart-phase3a
+root="\$source_root/full-flow"
+baseline=/data/zywang/emuflow/nvdla-balanced-phase3b/balanced-flow
+mkdir -p "\$root"
+ln -sfn "\$baseline/phase1" "\$root/phase1"
+ln -sfn "\$source_root/run1" "\$root/phase3"
+for stage in phase4 phase5 phase6 phase7c; do
+  ln -sfn "\$source_root/flow/\$stage" "\$root/\$stage"
+done
+
+test -s "\$root/phase1/design.emuir.json"
+test -s "\$root/phase3/assignment.json"
+test -s "\$root/phase6/manifest.json"
+cd "\$remote_dir"
+/usr/bin/time -v -o "\$root/${phase}-total-time.txt" \
+  env EMUFLOW_REPO="\$remote_dir" \
+    scripts/remote/nvdla_partition_a_balanced.sh ${phase} "\$root"
 REMOTE
 }
 
@@ -3037,6 +3070,15 @@ case "$command" in
     ;;
   repart-nvdla-downstream)
     repart_nvdla_downstream_remote
+    ;;
+  repart-nvdla-phase7a)
+    repart_nvdla_physical_remote phase7a
+    ;;
+  repart-nvdla-phase7b)
+    repart_nvdla_physical_remote phase7b
+    ;;
+  repart-nvdla-phase7c-finalize)
+    repart_nvdla_physical_remote phase7c-finalize
     ;;
   test)
     test_remote
