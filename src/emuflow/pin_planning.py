@@ -509,12 +509,47 @@ def validate_pin_plan(
         or metrics_document.get("groups") != len(groups)
     ):
         raise ValidationError("pin plan count metrics do not agree")
+    objective_improvement = (
+        100.0
+        * (baseline_metrics["objective"] - metrics["objective"])
+        / baseline_metrics["objective"]
+        if baseline_metrics["objective"]
+        else 0.0
+    )
+    pin_distance_improvement = (
+        100.0
+        * (
+            baseline_metrics["pin_distance"]
+            - metrics["pin_distance"]
+        )
+        / baseline_metrics["pin_distance"]
+        if baseline_metrics["pin_distance"]
+        else 0.0
+    )
     return {
         "status": "pass",
         "signals": len(raw),
         "groups": len(groups),
         "physical_lane_slot_collisions": 0,
         **metrics,
+        "baseline_logical_lane_objective": baseline_metrics[
+            "objective"
+        ],
+        "baseline_logical_lane_crossing_bits": baseline_metrics[
+            "crossing_bits"
+        ],
+        "baseline_logical_lane_position_sse": baseline_metrics[
+            "position_sse"
+        ],
+        "baseline_logical_lane_pin_distance": baseline_metrics[
+            "pin_distance"
+        ],
+        "objective_improvement_percent": objective_improvement,
+        "crossing_bits_reduction": (
+            baseline_metrics["crossing_bits"]
+            - metrics["crossing_bits"]
+        ),
+        "pin_distance_improvement_percent": pin_distance_improvement,
     }
 
 

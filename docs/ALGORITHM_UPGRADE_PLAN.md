@@ -273,6 +273,11 @@ lane/slot collisions, placement objective, and pin-distance cost. Phase 6
 then regenerates both endpoints and the lane map from the checked plan and
 retains the existing mapped cycle-equivalence gate.
 
+The same checker independently reconstructs the frozen logical-lane baseline
+and reports objective improvement, crossing-bit reduction, and pin-distance
+improvement. These QoR values therefore do not rely on metrics emitted by the
+native planner.
+
 ## Phase 6B — Physical package-pin assignment
 
 Phase 6B is implemented as an exact sparse min-cost-flow solver over a

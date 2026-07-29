@@ -174,7 +174,8 @@ dispersion costs by deterministic swaps, and solves group-to-virtual-pin
 matching exactly with the Hungarian algorithm. The Python layer derives
 lookahead coordinates from OpenPARF, materializes the plan, and independently
 reconstructs group capacity, slot collisions, objective values, and split
-netlists.
+netlists. Its validation report includes the reconstructed logical-lane
+baseline and objective, crossing-bit, and pin-distance improvements.
 
 Phase 6B is also source-complete: `src/native/bsp_pin_solver.cpp` implements
 exact sparse minimum-cost bipartite flow over electrically legal physical

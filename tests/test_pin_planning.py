@@ -81,7 +81,7 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
                     "to": "fpga1",
                     "tdm_ratio": 3,
                     "slot": index % 3,
-                    "lane": index // 3,
+                    "lane": index % 2,
                 }
                 for index in range(6)
             ],
@@ -134,6 +134,16 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
         self.assertEqual(validation["status"], "pass")
         self.assertEqual(
             validation["physical_lane_slot_collisions"], 0
+        )
+        self.assertGreater(
+            validation["objective_improvement_percent"], 0.0
+        )
+        self.assertGreater(
+            validation["pin_distance_improvement_percent"], 0.0
+        )
+        self.assertGreater(
+            validation["baseline_logical_lane_objective"],
+            validation["objective"],
         )
         low_pins = {
             item["physical_lane"]
