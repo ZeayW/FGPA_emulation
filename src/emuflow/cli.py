@@ -8,7 +8,7 @@ from .architecture import ArchitectureDB
 from .benchmark import run_benchmark
 from .bsp import run_phase8a
 from .errors import EmuFlowError
-from .io import write_json
+from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
 from .phase1 import run_phase1
@@ -20,6 +20,11 @@ from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
 from .placement import Placement
 from .platform import Platform
+from .pin_planning import (
+    build_pin_plan,
+    build_signal_position_hints,
+    validate_pin_plan,
+)
 from .release import run_phase7d
 from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
@@ -436,6 +441,43 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase5.add_argument("--ratio-convergence", type=float, default=1.0e-9)
 
+    pin_plan_parser = subparsers.add_parser(
+        "pin-plan",
+        help="placement-aware TDM grouping and virtual pin planning",
+    )
+    pin_plan_subparsers = pin_plan_parser.add_subparsers(
+        dest="pin_plan_command", required=True
+    )
+    pin_plan_build = pin_plan_subparsers.add_parser(
+        "build", help="build a plan from OpenPARF lookahead placements"
+    )
+    pin_plan_build.add_argument("--ir", type=Path, required=True)
+    pin_plan_build.add_argument("--schedule", type=Path, required=True)
+    pin_plan_build.add_argument("--platform", type=Path, required=True)
+    pin_plan_build.add_argument(
+        "--placement",
+        action="append",
+        default=[],
+        required=True,
+        metavar="FPGA=PATH",
+    )
+    pin_plan_build.add_argument("--positions-out", type=Path, required=True)
+    pin_plan_build.add_argument("--output", "-o", type=Path, required=True)
+    pin_plan_build.add_argument("--planner")
+    pin_plan_build.add_argument("--region-count", type=int, default=3)
+    pin_plan_build.add_argument(
+        "--refinement-iterations", type=int, default=100
+    )
+    pin_plan_build.add_argument("--crossing-weight", type=float, default=1.0)
+    pin_plan_build.add_argument("--position-weight", type=float, default=1.0)
+    pin_plan_validate = pin_plan_subparsers.add_parser(
+        "validate", help="independently validate a pin plan"
+    )
+    pin_plan_validate.add_argument("plan", type=Path)
+    pin_plan_validate.add_argument("--schedule", type=Path, required=True)
+    pin_plan_validate.add_argument("--platform", type=Path, required=True)
+    pin_plan_validate.add_argument("--positions", type=Path, required=True)
+
     split_parser = subparsers.add_parser(
         "split", help="per-FPGA netlist split artifact operations"
     )
@@ -450,6 +492,8 @@ def _build_parser() -> argparse.ArgumentParser:
     split_validate.add_argument("--assignment", type=Path, required=True)
     split_validate.add_argument("--schedule", type=Path, required=True)
     split_validate.add_argument("--platform", type=Path, required=True)
+    split_validate.add_argument("--pin-plan", type=Path)
+    split_validate.add_argument("--position-hints", type=Path)
 
     phase6 = subparsers.add_parser(
         "phase6",
@@ -460,6 +504,8 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--schedule", type=Path, required=True)
     phase6.add_argument("--platform", type=Path, required=True)
     phase6.add_argument("--out", type=Path, required=True)
+    phase6.add_argument("--pin-plan", type=Path)
+    phase6.add_argument("--position-hints", type=Path)
     phase6.add_argument("--equivalence-cycles", type=int, default=16)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
 
@@ -762,6 +808,51 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
 
+    if args.command == "pin-plan":
+        schedule = read_json(args.schedule)
+        platform = Platform.load(args.platform)
+        if args.pin_plan_command == "build":
+            ir = EmuIR.load(args.ir)
+            placements = {
+                fpga: read_json(path)
+                for fpga, path in _keyed_paths(
+                    args.placement, "--placement"
+                ).items()
+            }
+            positions = build_signal_position_hints(
+                ir.value,
+                schedule,
+                placements,
+                region_count=args.region_count,
+            )
+            plan = build_pin_plan(
+                schedule,
+                platform,
+                positions,
+                executable=args.planner,
+                refinement_iterations=args.refinement_iterations,
+                crossing_weight=args.crossing_weight,
+                position_weight=args.position_weight,
+            )
+            write_json(args.positions_out, positions)
+            write_json(args.output, plan)
+            _print_json(
+                {
+                    "status": "pass",
+                    "positions": positions["metrics"],
+                    "plan": plan["metrics"],
+                }
+            )
+        else:
+            report = validate_pin_plan(
+                schedule,
+                platform,
+                read_json(args.positions),
+                read_json(args.plan),
+            )
+            _print_json(report)
+        return 0
+
     if args.command == "split":
         report = validate_phase6(
             ir_path=args.ir,
@@ -769,6 +860,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             schedule_path=args.schedule,
             platform_path=args.platform,
             manifest_path=args.manifest,
+            pin_plan_path=args.pin_plan,
+            position_hints_path=args.position_hints,
         )
         _print_json(report)
         return 0
@@ -780,6 +873,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             schedule_path=args.schedule,
             platform_path=args.platform,
             output_dir=args.out,
+            pin_plan_path=args.pin_plan,
+            position_hints_path=args.position_hints,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
         )

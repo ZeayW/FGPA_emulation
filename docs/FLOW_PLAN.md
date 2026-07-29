@@ -325,11 +325,15 @@ Acceptance:
 - logical lane maps agree at both ends of each link;
 - hardware BSP pin constraints pass an independent electrical-rule checker.
 
-The board-independent increment is implemented with versioned per-FPGA
-netlist, transport-endpoint, logical lane-map, virtual-anchor, manifest, and
-report artifacts. It generates schedule-specific transport mux/capture RTL,
-retains mapped primitive constant pins, and independently reconstructs the
-split to check exact instance coverage and both ends of every lane binding.
+The board-independent increment is implemented with versioned lookahead
+position hints, placement-aware pin plans, per-FPGA netlists,
+transport-endpoint maps, logical lane maps, virtual anchors, manifests, and
+reports. Its root-built C++17 planner constructs minimum-count
+ratio-homogeneous TDM groups, refines a placement-region/dispersion objective,
+and performs exact group-to-virtual-pin matching. The independent checker
+reconstructs group legality and lane/slot occupancy before Phase 6 generates
+schedule-specific mux/capture RTL and rechecks exact instance coverage,
+endpoint agreement, and mapped cycle behavior.
 
 Package-pin, bank, IOSTANDARD, reference-clock, and GT binding remains the
 hardware-BSP increment; it cannot be electrically validated until a real

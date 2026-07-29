@@ -30,6 +30,11 @@ option(
   "Build the in-tree Lagrangian/KKT TDM ratio optimizer"
   ON
 )
+option(
+  EMUFLOW_BUILD_PIN_PLANNER
+  "Build the in-tree placement-aware TDM grouping and pin planner"
+  ON
+)
 option(EMUFLOW_BUILD_OPENROAD "Build the in-tree OpenROAD/TritonPart source" ON)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
@@ -127,6 +132,20 @@ if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
   target_compile_options(emuflow_tdm_ratio_optimizer PRIVATE -O3)
   set_target_properties(
     emuflow_tdm_ratio_optimizer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_PIN_PLANNER)
+  add_executable(
+    emuflow_pin_planner
+    "${CMAKE_SOURCE_DIR}/src/native/placement_aware_pin_planner.cpp"
+  )
+  target_compile_features(emuflow_pin_planner PRIVATE cxx_std_17)
+  target_compile_options(emuflow_pin_planner PRIVATE -O3)
+  set_target_properties(
+    emuflow_pin_planner
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -345,6 +364,17 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_tdm_ratio_optimizer_cli
       COMMAND "$<TARGET_FILE:emuflow_tdm_ratio_optimizer>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_PIN_PLANNER)
+    add_test(
+      NAME emuflow_pin_planner_cli
+      COMMAND "$<TARGET_FILE:emuflow_pin_planner>"
+    )
+    set_tests_properties(
+      emuflow_pin_planner_cli
+      PROPERTIES WILL_FAIL TRUE
     )
   endif()
 

@@ -1,6 +1,6 @@
 import re
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Mapping, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import ValidationError
 from .ir import EmuIR
@@ -65,6 +65,7 @@ def build_split_artifacts(
     assignment: Mapping[str, Any],
     schedule: Mapping[str, Any],
     platform: Platform,
+    pin_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError(
@@ -82,6 +83,23 @@ def build_split_artifacts(
         raise ValidationError("assignment.platform does not match BoardDB")
     if schedule.get("platform") != platform.name:
         raise ValidationError("schedule.platform does not match BoardDB")
+    physical_lane_by_entry: Dict[str, int] = {}
+    if pin_plan is not None:
+        if pin_plan.get("schema") != "emuflow.placement-aware-pin-plan/v1":
+            raise ValidationError("pin plan has an unsupported schema")
+        physical_lane_by_entry = {
+            item["schedule_entry"]: item["physical_lane"]
+            for item in pin_plan.get("entries", [])
+        }
+        expected_entries = {item["id"] for item in schedule["entries"]}
+        if (
+            set(physical_lane_by_entry) != expected_entries
+            or len(physical_lane_by_entry)
+            != len(pin_plan.get("entries", []))
+        ):
+            raise ValidationError(
+                "pin plan must cover every schedule entry exactly"
+            )
 
     fpga_ids = [fpga.id for fpga in platform.fpgas]
     fpga_set = set(fpga_ids)
@@ -146,7 +164,8 @@ def build_split_artifacts(
             "link": entry["link"],
             "slot": entry["slot"],
             "arrival_slot": entry["arrival_slot"],
-            "lane": entry["lane"],
+            "lane": physical_lane_by_entry.get(entry["id"], entry["lane"]),
+            "logical_lane": entry["lane"],
         }
         endpoints_by_fpga[entry["from"]].append(
             {
@@ -178,7 +197,10 @@ def build_split_artifacts(
                 "from": entry["from"],
                 "to": entry["to"],
                 "slot": entry["slot"],
-                "lane": entry["lane"],
+                "lane": physical_lane_by_entry.get(
+                    entry["id"], entry["lane"]
+                ),
+                "logical_lane": entry["lane"],
                 "tx_endpoint": tx_id,
                 "rx_endpoint": rx_id,
             }
@@ -355,7 +377,11 @@ def build_split_artifacts(
         "schema": SPLIT_MANIFEST_SCHEMA,
         "design": ir.value["design"]["name"],
         "platform": platform.name,
-        "provider": "deterministic-cut-shadow-split-v1",
+        "provider": (
+            "chimew-placement-aware-pin-split-v1"
+            if pin_plan is not None
+            else "deterministic-cut-shadow-split-v1"
+        ),
         "board_binding": {
             "status": "virtual",
             "requires_hardware_bsp_for_package_pins": True,
@@ -375,6 +401,14 @@ def build_split_artifacts(
         ],
         "lane_map": "lane_map.json",
         "runtime_controller_rtl": "virtual_runtime_controller.sv",
+        **(
+            {
+                "pin_plan": "pin_plan.json",
+                "position_hints": "position_hints.json",
+            }
+            if pin_plan is not None
+            else {}
+        ),
     }
     return {
         "manifest": manifest,
@@ -626,8 +660,11 @@ def validate_split_artifacts(
     schedule: Mapping[str, Any],
     platform: Platform,
     artifacts: Mapping[str, Any],
+    pin_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    expected = build_split_artifacts(ir, assignment, schedule, platform)
+    expected = build_split_artifacts(
+        ir, assignment, schedule, platform, pin_plan
+    )
     for key in ("manifest", "lane_map", "netlists", "transports", "anchors"):
         if artifacts.get(key) != expected[key]:
             raise ValidationError(

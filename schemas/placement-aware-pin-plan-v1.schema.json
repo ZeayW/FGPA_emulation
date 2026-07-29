@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/placement-aware-pin-plan-v1.schema.json",
+  "title": "EmuFlow placement-aware logical pin plan",
+  "type": "object",
+  "required": [
+    "schema",
+    "design",
+    "platform",
+    "provider",
+    "configuration",
+    "weights",
+    "metrics",
+    "entries"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.placement-aware-pin-plan/v1"
+    },
+    "design": {
+      "type": "string",
+      "minLength": 1
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider": {
+      "const": "chimew-placement-aware-grouping-mcf-v1"
+    },
+    "configuration": {
+      "type": "object",
+      "required": [
+        "refinement_iterations"
+      ],
+      "properties": {
+        "refinement_iterations": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "weights": {
+      "type": "object",
+      "required": [
+        "crossing",
+        "position"
+      ],
+      "properties": {
+        "crossing": {
+          "type": "number",
+          "minimum": 0
+        },
+        "position": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "schedule_entry",
+          "group",
+          "physical_lane",
+          "logical_lane"
+        ],
+        "properties": {
+          "schedule_entry": {
+            "type": "string",
+            "minLength": 1
+          },
+          "group": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "physical_lane": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "logical_lane": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

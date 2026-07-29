@@ -1,5 +1,6 @@
 import copy
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,10 @@ from emuflow.partition import (
     normalize_partition_constraints,
 )
 from emuflow.phase6 import run_phase6, validate_phase6
+from emuflow.pin_planning import (
+    SIGNAL_POSITION_HINTS_SCHEMA,
+    build_pin_plan,
+)
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints, route_system
 from emuflow.tdm import build_tdm_schedule
@@ -127,6 +132,107 @@ class Phase6Test(unittest.TestCase):
                 "fpga1/virtual_anchors.xdc.template",
             ):
                 self.assertTrue((output / filename).is_file(), filename)
+
+    def test_phase6_materializes_validated_placement_aware_pin_plan(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule = copy.deepcopy(self.schedule)
+            for entry in schedule["entries"]:
+                entry["tdm_ratio"] = schedule["metrics"]["frame_slots"]
+            executable = root / "emuflow_pin_planner"
+            subprocess.run(
+                [
+                    "c++",
+                    "-std=c++17",
+                    "-O2",
+                    str(
+                        ROOT
+                        / "src/native/placement_aware_pin_planner.cpp"
+                    ),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+            )
+            positions = {
+                "schema": SIGNAL_POSITION_HINTS_SCHEMA,
+                "design": schedule["design"],
+                "platform": schedule["platform"],
+                "provider": "openparf-lookahead-centroid-v1",
+                "region_count": 3,
+                "metrics": {
+                    "signals": len(schedule["entries"]),
+                    "endpoint_centroid_fallbacks": 0,
+                },
+                "entries": [
+                    {
+                        "schedule_entry": entry["id"],
+                        "source_y": 0.25,
+                        "sink_y": 0.75,
+                        "source_region": 0,
+                        "sink_region": 2,
+                        "source_fallback": False,
+                        "sink_fallback": False,
+                    }
+                    for entry in schedule["entries"]
+                ],
+            }
+            plan = build_pin_plan(
+                schedule,
+                self.platform,
+                positions,
+                executable=str(executable),
+                refinement_iterations=4,
+            )
+            paths = {
+                "ir": root / "ir.json",
+                "assignment": root / "assignment.json",
+                "schedule": root / "schedule.json",
+                "positions": root / "positions.json",
+                "plan": root / "plan.json",
+            }
+            documents = {
+                "ir": self.ir.to_dict(),
+                "assignment": self.assignment,
+                "schedule": schedule,
+                "positions": positions,
+                "plan": plan,
+            }
+            for name, path in paths.items():
+                path.write_text(
+                    json.dumps(documents[name]), encoding="utf-8"
+                )
+            output = root / "phase6"
+            report = run_phase6(
+                paths["ir"],
+                paths["assignment"],
+                paths["schedule"],
+                PLATFORM_PATH,
+                output,
+                equivalence_cycles=4,
+                pin_plan_path=paths["plan"],
+                position_hints_path=paths["positions"],
+            )
+            self.assertEqual(
+                report["provider"],
+                "chimew-placement-aware-pin-split-v1",
+            )
+            self.assertEqual(
+                report["pin_plan_validation"]["status"], "pass"
+            )
+            self.assertEqual(report["artifacts"]["pin_plan"], "pin_plan.json")
+            self.assertTrue((output / "pin_plan.json").is_file())
+            self.assertTrue((output / "position_hints.json").is_file())
+            validation = validate_phase6(
+                paths["ir"],
+                paths["assignment"],
+                paths["schedule"],
+                PLATFORM_PATH,
+                output / "manifest.json",
+            )
+            self.assertEqual(validation["status"], "pass")
 
     def test_lane_map_corruption_is_rejected(self) -> None:
         artifacts = build_split_artifacts(

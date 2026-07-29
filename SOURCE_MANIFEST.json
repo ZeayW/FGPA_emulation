@@ -90,17 +90,23 @@
       "id": "netlist-transport-pin-generation",
       "stage": "Phase 6",
       "source_paths": [
+        "src/native/placement_aware_pin_planner.cpp",
+        "src/emuflow/pin_planning.py",
         "src/emuflow/netlist.py",
         "src/emuflow/phase6.py",
+        "schemas/signal-position-hints-v1.schema.json",
+        "schemas/placement-aware-pin-plan-v1.schema.json",
         "rtl/transport"
       ],
       "build_targets": [
+        "emuflow_pin_planner",
         "emuflow_python"
       ],
       "runtime_products": [
+        "emuflow_pin_planner",
         "emuflow"
       ],
-      "integration": "in-tree-python"
+      "integration": "default-in-tree-build"
     },
     {
       "id": "fpga-placement",

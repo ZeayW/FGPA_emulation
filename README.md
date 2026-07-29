@@ -54,7 +54,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | System routing | In-tree C++ TLR kernel plus independent checker | Default academic provider builds and runs repository source |
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
-| Pin planning | In-tree logical lanes and virtual I/O anchors | Logical planning works; physical package pins await a board |
+| Pin planning | In-tree C++17 placement-aware grouping and exact pin matching | Board-independent virtual-pin planning works; package pins await a BSP |
 | Placement | Root-built OpenPARF plus EmuFlow adapters/checker | Default path builds, runs, and independently validates repository source |
 | FPGA routing | Provider not yet selected | Open device/timing database and detailed router remain blockers |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
@@ -136,7 +136,8 @@ after checkout. Implementations are editable source in this repository:
 - `third_party/openroad/`: OpenROAD and TritonPart C++ source;
 - `third_party/openparf/`: OpenPARF C++/CUDA/Python source; and
 - `src/native/`: first-party C++ optimization kernels, including the
-  timing-aware system router and Lagrangian/KKT TDM-ratio optimizer; and
+  timing-aware system router, Lagrangian/KKT TDM-ratio optimizer, and
+  placement-aware pin planner;
 - `src/emuflow/`: EmuFlow control plane, artifact contracts, baseline
   implementations, adapters, and independent checkers.
 
@@ -156,6 +157,16 @@ The academic Phase 5 provider is likewise rooted in editable C++17 source at
 versioned timing model, realizes the optimized ratio/lane groups as an exact
 slot schedule, and independently checks capacity, ratio legality, timing,
 collisions, precedence, round barriers, and transported values.
+
+Phase 6A uses the same source boundary. The C++17 planner at
+`src/native/placement_aware_pin_planner.cpp` forms the minimum feasible number
+of homogeneous TDM groups, improves their placement-region and endpoint
+dispersion costs by deterministic swaps, and solves group-to-virtual-pin
+matching exactly with the Hungarian algorithm. The Python layer derives
+lookahead coordinates from OpenPARF, materializes the plan, and independently
+reconstructs group capacity, slot collisions, objective values, and split
+netlists. Concrete `PACKAGE_PIN`, I/O-bank, and IOSTANDARD binding remains a
+separate Phase 6B BSP problem.
 
 FPGA placement follows the same rule. The default Phase 2/7 path launches the
 OpenPARF Python, C++, and PyTorch-operator source compiled by the root CMake

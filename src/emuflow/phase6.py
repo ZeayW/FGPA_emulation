@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 from .equivalence import simulate_partition_equivalence
 from .io import read_json, write_json
@@ -11,6 +11,7 @@ from .netlist import (
     validate_split_artifacts,
 )
 from .platform import Platform
+from .pin_planning import validate_pin_plan
 from .runtime import virtual_runtime_controller_to_systemverilog
 
 
@@ -44,14 +45,40 @@ def run_phase6(
     output_dir: Path,
     equivalence_cycles: int = 16,
     equivalence_seed: int = 20260727,
+    pin_plan_path: Optional[Path] = None,
+    position_hints_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
-    artifacts = build_split_artifacts(ir, assignment, schedule, platform)
+    pin_plan = read_json(pin_plan_path) if pin_plan_path is not None else None
+    position_hints = (
+        read_json(position_hints_path)
+        if position_hints_path is not None
+        else None
+    )
+    pin_validation = None
+    if pin_plan is not None:
+        if position_hints is None:
+            raise ValueError(
+                "position_hints_path is required with pin_plan_path"
+            )
+        pin_validation = validate_pin_plan(
+            schedule,
+            platform,
+            position_hints,
+            pin_plan,
+        )
+    elif position_hints is not None:
+        raise ValueError(
+            "pin_plan_path is required with position_hints_path"
+        )
+    artifacts = build_split_artifacts(
+        ir, assignment, schedule, platform, pin_plan
+    )
     validation = validate_split_artifacts(
-        ir, assignment, schedule, platform, artifacts
+        ir, assignment, schedule, platform, artifacts, pin_plan
     )
     equivalence = simulate_partition_equivalence(
         ir,
@@ -63,6 +90,9 @@ def run_phase6(
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "manifest.json", artifacts["manifest"])
     write_json(output_dir / "lane_map.json", artifacts["lane_map"])
+    if pin_plan is not None:
+        write_json(output_dir / "pin_plan.json", pin_plan)
+        write_json(output_dir / "position_hints.json", position_hints)
     (output_dir / "virtual_runtime_controller.sv").write_text(
         virtual_runtime_controller_to_systemverilog(),
         encoding="utf-8",
@@ -99,11 +129,26 @@ def run_phase6(
         "validation": validation,
         "equivalence": equivalence,
         "board_binding": artifacts["manifest"]["board_binding"],
+        **(
+            {"pin_plan_validation": pin_validation}
+            if pin_validation is not None
+            else {}
+        ),
         "artifacts": {
             "manifest": "manifest.json",
             "lane_map": "lane_map.json",
             "runtime_controller_rtl": "virtual_runtime_controller.sv",
             "report": "phase6_report.json",
+            **(
+                {"pin_plan": "pin_plan.json"}
+                if pin_plan is not None
+                else {}
+            ),
+            **(
+                {"position_hints": "position_hints.json"}
+                if pin_plan is not None
+                else {}
+            ),
         },
     }
     write_json(output_dir / "phase6_report.json", report)
@@ -116,6 +161,8 @@ def validate_phase6(
     schedule_path: Path,
     platform_path: Path,
     manifest_path: Path,
+    pin_plan_path: Optional[Path] = None,
+    position_hints_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
@@ -123,6 +170,32 @@ def validate_phase6(
     platform = Platform.load(platform_path)
     manifest = read_json(manifest_path)
     artifacts = _load_artifacts(manifest_path.parent, manifest)
+    pin_plan = (
+        read_json(pin_plan_path)
+        if pin_plan_path is not None
+        else (
+            read_json(manifest_path.parent / manifest["pin_plan"])
+            if "pin_plan" in manifest
+            else None
+        )
+    )
+    if pin_plan is not None:
+        resolved_positions = (
+            position_hints_path
+            if position_hints_path is not None
+            else manifest_path.parent / manifest["position_hints"]
+        )
+        validate_pin_plan(
+            schedule,
+            platform,
+            read_json(resolved_positions),
+            pin_plan,
+        )
+    elif position_hints_path is not None:
+        raise ValueError(
+            "pin_plan_path or manifest pin plan is required with "
+            "position_hints_path"
+        )
     return validate_split_artifacts(
-        ir, assignment, schedule, platform, artifacts
+        ir, assignment, schedule, platform, artifacts, pin_plan
     )

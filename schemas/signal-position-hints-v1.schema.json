@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/signal-position-hints-v1.schema.json",
+  "title": "EmuFlow lookahead-placement signal position hints",
+  "type": "object",
+  "required": [
+    "schema",
+    "design",
+    "platform",
+    "provider",
+    "region_count",
+    "metrics",
+    "entries"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.signal-position-hints/v1"
+    },
+    "design": {
+      "type": "string",
+      "minLength": 1
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider": {
+      "const": "openparf-lookahead-centroid-v1"
+    },
+    "region_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 31
+    },
+    "metrics": {
+      "type": "object"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "schedule_entry",
+          "source_y",
+          "sink_y",
+          "source_region",
+          "sink_region",
+          "source_fallback",
+          "sink_fallback"
+        ],
+        "properties": {
+          "schedule_entry": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_y": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "sink_y": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "source_region": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30
+          },
+          "sink_region": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30
+          },
+          "source_fallback": {
+            "type": "boolean"
+          },
+          "sink_fallback": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

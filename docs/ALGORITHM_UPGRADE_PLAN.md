@@ -237,22 +237,27 @@ without STA metadata retain
 - The fixed 4,096-slot NVDLA baseline must be compared against the smallest
   independently legal frame found by the new provider.
 
-## Phase 6A — Timing-aware logical signal grouping
+## Phase 6A — Placement-aware TDM grouping and virtual-pin assignment
 
-With the Phase 5 route and ratio solution frozen, group compatible signals
-into logical channels using:
+The implemented provider follows the formulation used by Chimew
+([Wang et al., FPGA 2026](https://magic3007.github.io/data/publications/FPGA_FPGA2026_Wang/FPGA_FPGA2026_Wang.pdf)).
+OpenPARF lookahead placements are reduced to source/sink endpoint centroids
+and I/O-region crossing signatures. The in-tree C++17 engine then:
 
-- direction and route compatibility;
-- clock domain;
-- timing criticality;
-- register-output/register-input transport round;
-- serialization ratio; and
-- deterministic lane occupancy.
+1. separates signals by directed physical link and serialization ratio;
+2. computes the minimum feasible group count from capacity and equal-slot
+   conflict lower bounds;
+3. constructs a balanced legal coloring with no repeated slot per group;
+4. minimizes region-crossing union cost and endpoint dispersion with
+   deterministic pairwise swaps; and
+5. assigns groups to virtual physical lanes by exact rectangular Hungarian
+   matching.
 
-The result must keep the exact endpoint/lane-map contract and mapped
-cycle-equivalence checks. It must improve logical-channel count, critical
-channel pressure, or completion slot without changing partition or route
-topology.
+The plan is reloaded by an independent checker that reconstructs exact signal
+coverage, homogeneous ratios, group capacity, slot uniqueness, lane bounds,
+lane/slot collisions, placement objective, and pin-distance cost. Phase 6
+then regenerates both endpoints and the lane map from the checked plan and
+retains the existing mapped cycle-equivalence gate.
 
 ## Phase 6B — Physical package-pin assignment
 
