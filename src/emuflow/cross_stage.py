@@ -17,7 +17,12 @@ from .partition import (
     load_partition_constraints,
     validate_partition_artifacts,
 )
-from .partition_feedback import run_partition_feedback
+from .partition_feedback import (
+    run_damped_partition_feedback,
+    run_partition_feedback,
+    validate_damped_partition_feedback,
+    validate_partition_feedback,
+)
 from .phase3 import run_phase3
 from .phase4 import run_phase4
 from .phase5 import run_phase5
@@ -36,6 +41,8 @@ from .timing_routing import ROUTE_TDM_PROVIDER
 
 CROSS_STAGE_CANDIDATE_SCHEMA = "emuflow.cross-stage-candidate/v1"
 CROSS_STAGE_REPORT_SCHEMA = "emuflow.cross-stage-report/v1"
+CROSS_STAGE_PROVIDER = "tdm-feedback-proximal-line-search-v1"
+DEFAULT_FEEDBACK_STEPS = (1.0, 0.5, 0.25, 0.125)
 CROSS_STAGE_OBJECTIVE = (
     "lexicographic(all-path worst normalized slack, all-path total "
     "negative normalized slack, negative path count, maximum TDM ratio, "
@@ -49,6 +56,37 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _normalize_feedback_steps(
+    values: Optional[Tuple[float, ...]],
+) -> Tuple[float, ...]:
+    raw = DEFAULT_FEEDBACK_STEPS if values is None else values
+    if not isinstance(raw, tuple) or not raw:
+        raise ValidationError(
+            "cross-stage feedback steps must be a non-empty tuple"
+        )
+    steps = []
+    for index, value in enumerate(raw):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+            or float(value) > 1.0
+        ):
+            raise ValidationError(
+                f"cross-stage feedback step {index} must be in (0, 1]"
+            )
+        steps.append(float(value))
+    if any(
+        left <= right
+        for left, right in zip(steps, steps[1:])
+    ):
+        raise ValidationError(
+            "cross-stage feedback steps must be strictly decreasing"
+        )
+    return tuple(steps)
 
 
 def _link_delay_ns(
@@ -375,6 +413,52 @@ def compare_candidate_objectives(
     }
 
 
+def reconstruct_partition_migration(
+    incumbent_assignment: Mapping[str, Any],
+    candidate_assignment: Mapping[str, Any],
+) -> Dict[str, Any]:
+    incumbent = incumbent_assignment.get("cluster_assignment")
+    candidate = candidate_assignment.get("cluster_assignment")
+    if not isinstance(incumbent, dict) or not isinstance(candidate, dict):
+        raise ValidationError(
+            "cross-stage partition migration assignments are invalid"
+        )
+    if set(incumbent) != set(candidate) or not incumbent:
+        raise ValidationError(
+            "cross-stage partition migration coverage mismatch"
+        )
+    pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+    for cluster in sorted(incumbent):
+        source = incumbent[cluster]
+        target = candidate[cluster]
+        if (
+            not isinstance(source, str)
+            or not source
+            or not isinstance(target, str)
+            or not target
+        ):
+            raise ValidationError(
+                "cross-stage partition migration owner is invalid"
+            )
+        if source != target:
+            pair_counts[(source, target)] += 1
+    moved = sum(pair_counts.values())
+    total = len(incumbent)
+    return {
+        "clusters": total,
+        "moved_clusters": moved,
+        "moved_fraction": moved / total,
+        "moves": [
+            {
+                "from": source,
+                "to": target,
+                "clusters": count,
+            }
+            for (source, target), count in sorted(pair_counts.items())
+        ],
+    }
+
+
 def build_cross_stage_candidate(
     database: Mapping[str, Any],
     assignment: Mapping[str, Any],
@@ -606,6 +690,7 @@ def run_cross_stage_optimization(
     post_refinement_iterations: int = 200,
     ratio_convergence: float = 1.0e-9,
     pair_pressure_weight: float = 1.0,
+    feedback_steps: Optional[Tuple[float, ...]] = None,
 ) -> Dict[str, Any]:
     if (
         isinstance(max_outer_iterations, bool)
@@ -615,6 +700,7 @@ def run_cross_stage_optimization(
         raise ValidationError(
             "cross-stage max outer iterations must be non-negative"
         )
+    steps = _normalize_feedback_steps(feedback_steps)
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValidationError(
             f"cross-stage output directory is not empty: {output_dir}"
@@ -679,79 +765,27 @@ def run_cross_stage_optimization(
     incumbent_index = 0
     termination = "iteration-limit"
 
-    for iteration in range(1, max_outer_iterations + 1):
+    for outer_iteration in range(1, max_outer_iterations + 1):
         incumbent = candidates[incumbent_index]
         incumbent_root = output_dir / f"iteration_{incumbent_index:03d}"
-        iteration_root = output_dir / f"iteration_{iteration:03d}"
-        iteration_root.mkdir(parents=True, exist_ok=True)
-        feedback_path = iteration_root / "partition_feedback.json"
+        outer_root = output_dir / f"outer_{outer_iteration:03d}"
+        outer_root.mkdir(parents=True, exist_ok=True)
+        raw_feedback_path = outer_root / "raw_partition_feedback.json"
         try:
-            feedback_validation = run_partition_feedback(
+            raw_feedback_validation = run_partition_feedback(
                 incumbent_root / "phase4" / "routes.json",
                 incumbent_root / "phase5" / "ratio_plan.json",
                 platform_path,
-                feedback_path,
+                raw_feedback_path,
                 executable=feedback_optimizer,
                 pair_pressure_weight=pair_pressure_weight,
             )
-            phase3_root = iteration_root / "phase3"
-            phase3_report = run_phase3(
-                ir_path,
-                platform_path,
-                phase3_root,
-                constraints_path=phase3_constraints_path,
-                seed=seed,
-                min_used_fpgas=min_used_fpgas,
-                balance_tolerance=balance_tolerance,
-                provider=phase3_provider,
-                openroad=openroad,
-                net_weights_path=feedback_path,
-                tritonpart_timeout_seconds=partition_timeout_seconds,
-                repart=repart,
-                repart_timeout_seconds=partition_timeout_seconds,
-            )
-            candidate = _run_candidate_flow(
-                root=output_dir,
-                iteration=iteration,
-                assignment_path=phase3_root / "assignment.json",
-                database_path=database_path,
-                platform_path=platform_path,
-                route_constraints_path=route_constraints_path,
-                frame_slots=frame_slots,
-                route_max_iterations=route_max_iterations,
-                router=router,
-                simulation_frames=simulation_frames,
-                ratio_optimizer=ratio_optimizer,
-                ratio_max_iterations=ratio_max_iterations,
-                max_ratio=max_ratio,
-                ratio_quantum=ratio_quantum,
-                post_refinement_iterations=post_refinement_iterations,
-                ratio_convergence=ratio_convergence,
-            )
-            candidate["feedback"] = _relative(
-                feedback_path, output_dir
-            )
-            candidate["feedback_validation"] = feedback_validation
-            candidate["phase3_validation"] = phase3_report["validation"]
-            decision = compare_candidate_objectives(
-                read_json(output_dir / candidate["score"]),
-                read_json(output_dir / incumbent["score"]),
-            )
-            candidate["decision"] = decision
-            candidates.append(candidate)
-            if decision["accepted"]:
-                incumbent_index = iteration
-                continue
-            termination = (
-                "candidate-regressed"
-                if decision["deciding_level"] is not None
-                else "fixed-point"
-            )
-            break
         except (EmuFlowError, ValidationError, ValueError) as error:
             candidates.append(
                 {
-                    "iteration": iteration,
+                    "iteration": len(candidates),
+                    "outer_iteration": outer_iteration,
+                    "trial": None,
                     "status": "rejected",
                     "decision": {
                         "accepted": False,
@@ -759,15 +793,134 @@ def run_cross_stage_optimization(
                     },
                 }
             )
-            termination = "infeasible-candidate"
+            termination = "feedback-generation-failed"
             break
+        accepted_step = False
+        feasible_trials = 0
+        for trial, step_size in enumerate(steps):
+            iteration = len(candidates)
+            iteration_root = output_dir / f"iteration_{iteration:03d}"
+            iteration_root.mkdir(parents=True, exist_ok=True)
+            feedback_path = iteration_root / "partition_feedback.json"
+            try:
+                feedback_validation = run_damped_partition_feedback(
+                    raw_feedback_path,
+                    feedback_path,
+                    step_size=step_size,
+                )
+                phase3_root = iteration_root / "phase3"
+                phase3_report = run_phase3(
+                    ir_path,
+                    platform_path,
+                    phase3_root,
+                    constraints_path=phase3_constraints_path,
+                    seed=seed,
+                    min_used_fpgas=min_used_fpgas,
+                    balance_tolerance=balance_tolerance,
+                    provider=phase3_provider,
+                    openroad=openroad,
+                    net_weights_path=feedback_path,
+                    tritonpart_timeout_seconds=(
+                        partition_timeout_seconds
+                    ),
+                    repart=repart,
+                    repart_timeout_seconds=partition_timeout_seconds,
+                )
+                candidate = _run_candidate_flow(
+                    root=output_dir,
+                    iteration=iteration,
+                    assignment_path=phase3_root / "assignment.json",
+                    database_path=database_path,
+                    platform_path=platform_path,
+                    route_constraints_path=route_constraints_path,
+                    frame_slots=frame_slots,
+                    route_max_iterations=route_max_iterations,
+                    router=router,
+                    simulation_frames=simulation_frames,
+                    ratio_optimizer=ratio_optimizer,
+                    ratio_max_iterations=ratio_max_iterations,
+                    max_ratio=max_ratio,
+                    ratio_quantum=ratio_quantum,
+                    post_refinement_iterations=(
+                        post_refinement_iterations
+                    ),
+                    ratio_convergence=ratio_convergence,
+                )
+                candidate.update(
+                    {
+                        "outer_iteration": outer_iteration,
+                        "trial": trial,
+                        "feedback_step": step_size,
+                        "raw_feedback": _relative(
+                            raw_feedback_path, output_dir
+                        ),
+                        "feedback": _relative(
+                            feedback_path, output_dir
+                        ),
+                        "raw_feedback_validation": (
+                            raw_feedback_validation
+                        ),
+                        "feedback_validation": feedback_validation,
+                        "phase3_validation": phase3_report["validation"],
+                        "partition_migration": (
+                            reconstruct_partition_migration(
+                                read_json(
+                                    output_dir
+                                    / incumbent["assignment"]
+                                ),
+                                read_json(
+                                    phase3_root / "assignment.json"
+                                ),
+                            )
+                        ),
+                    }
+                )
+                decision = compare_candidate_objectives(
+                    read_json(output_dir / candidate["score"]),
+                    read_json(output_dir / incumbent["score"]),
+                )
+                candidate["decision"] = decision
+                candidates.append(candidate)
+                feasible_trials += 1
+                if decision["accepted"]:
+                    incumbent_index = iteration
+                    accepted_step = True
+                    break
+            except (EmuFlowError, ValidationError, ValueError) as error:
+                candidates.append(
+                    {
+                        "iteration": iteration,
+                        "outer_iteration": outer_iteration,
+                        "trial": trial,
+                        "feedback_step": step_size,
+                        "raw_feedback": _relative(
+                            raw_feedback_path, output_dir
+                        ),
+                        "feedback": _relative(
+                            feedback_path, output_dir
+                        ),
+                        "status": "rejected",
+                        "decision": {
+                            "accepted": False,
+                            "reason": str(error),
+                        },
+                    }
+                )
+        if accepted_step:
+            continue
+        termination = (
+            "line-search-rejected"
+            if feasible_trials
+            else "line-search-infeasible"
+        )
+        break
 
     report = {
         "schema": CROSS_STAGE_REPORT_SCHEMA,
         "status": "pass",
         "design": ir.value["design"]["name"],
         "platform": platform.name,
-        "provider": "tdm-feedback-iterative-partition-route-schedule-v1",
+        "provider": CROSS_STAGE_PROVIDER,
         "objective": CROSS_STAGE_OBJECTIVE,
         "configuration": {
             "phase3_provider": phase3_provider,
@@ -775,6 +928,11 @@ def run_cross_stage_optimization(
             "seed": seed,
             "simulation_frames": simulation_frames,
             "pair_pressure_weight": pair_pressure_weight,
+            "partition_timeout_seconds": partition_timeout_seconds,
+            "feedback_steps": list(steps),
+            "feedback_interpolation": (
+                "exp(step_size*log(raw_weight))"
+            ),
         },
         "source_sha256": {
             "ir": _sha256(ir_path),
@@ -826,6 +984,8 @@ def validate_cross_stage_report(
     report = read_json(report_path)
     if report.get("schema") != CROSS_STAGE_REPORT_SCHEMA:
         raise ValidationError("cross-stage report schema is invalid")
+    if report.get("provider") != CROSS_STAGE_PROVIDER:
+        raise ValidationError("cross-stage report provider is invalid")
     root = report_path.parent
     candidates = report.get("candidates")
     if not isinstance(candidates, list) or not candidates:
@@ -844,20 +1004,106 @@ def validate_cross_stage_report(
             raise ValidationError(
                 f"cross-stage report source hash {name!r} mismatch"
             )
+    configuration = report.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValidationError(
+            "cross-stage report configuration is invalid"
+        )
+    raw_steps = configuration.get("feedback_steps")
+    if not isinstance(raw_steps, list):
+        raise ValidationError(
+            "cross-stage report feedback steps are invalid"
+        )
+    steps = _normalize_feedback_steps(tuple(raw_steps))
+    if configuration.get("feedback_interpolation") != (
+        "exp(step_size*log(raw_weight))"
+    ):
+        raise ValidationError(
+            "cross-stage report feedback interpolation is invalid"
+        )
+    partition_timeout = configuration.get("partition_timeout_seconds")
+    if (
+        isinstance(partition_timeout, bool)
+        or not isinstance(partition_timeout, int)
+        or partition_timeout <= 0
+    ):
+        raise ValidationError(
+            "cross-stage report partition timeout is invalid"
+        )
     incumbent = None
+    incumbent_record = None
     selected = 0
     validated = 0
+    active_outer = 1
+    expected_trial = 0
     for index, candidate in enumerate(candidates):
         if candidate.get("iteration") != index:
             raise ValidationError(
                 "cross-stage candidate iterations are not contiguous"
             )
+        if index > 0:
+            if candidate.get("outer_iteration") != active_outer:
+                raise ValidationError(
+                    "cross-stage candidate outer iteration mismatch"
+                )
+            trial = candidate.get("trial")
+            if trial is None:
+                if (
+                    candidate.get("status") != "rejected"
+                    or index != len(candidates) - 1
+                ):
+                    raise ValidationError(
+                        "cross-stage feedback failure record is invalid"
+                    )
+            elif (
+                isinstance(trial, bool)
+                or not isinstance(trial, int)
+                or trial != expected_trial
+                or trial >= len(steps)
+                or candidate.get("feedback_step") != steps[trial]
+            ):
+                raise ValidationError(
+                    "cross-stage line-search trial metadata mismatch"
+                )
+            else:
+                expected_trial += 1
         if candidate.get("status") != "pass":
             if candidate.get("decision", {}).get("accepted"):
                 raise ValidationError(
                     "failed cross-stage candidate cannot be accepted"
                 )
-            break
+            continue
+        if index > 0:
+            assert incumbent_record is not None
+            raw_feedback = read_json(root / candidate["raw_feedback"])
+            expected_raw_validation = validate_partition_feedback(
+                read_json(root / incumbent_record["routes"]),
+                read_json(root / incumbent_record["ratio_plan"]),
+                platform,
+                raw_feedback,
+            )
+            if (
+                candidate.get("raw_feedback_validation")
+                != expected_raw_validation
+            ):
+                raise ValidationError(
+                    "cross-stage raw feedback validation mismatch"
+                )
+            damped_feedback = read_json(root / candidate["feedback"])
+            expected_feedback_validation = (
+                validate_damped_partition_feedback(
+                    raw_feedback, damped_feedback
+                )
+            )
+            if (
+                candidate.get("feedback_validation")
+                != expected_feedback_validation
+                or expected_feedback_validation["step_size"]
+                != candidate["feedback_step"]
+            ):
+                raise ValidationError(
+                    "cross-stage damped feedback validation mismatch"
+                )
         validate_cross_stage_candidate(
             root / candidate["score"],
             database_path,
@@ -869,6 +1115,16 @@ def validate_cross_stage_report(
         )
         assignment_path = root / candidate["assignment"]
         clusters_path = assignment_path.parent / "clusters.json"
+        if index > 0:
+            assert incumbent_record is not None
+            expected_migration = reconstruct_partition_migration(
+                read_json(root / incumbent_record["assignment"]),
+                read_json(assignment_path),
+            )
+            if candidate.get("partition_migration") != expected_migration:
+                raise ValidationError(
+                    "cross-stage partition migration mismatch"
+                )
         phase3_validation = validate_partition_artifacts(
             ir,
             platform,
@@ -898,6 +1154,7 @@ def validate_cross_stage_report(
                     "cross-stage initial candidate must be accepted"
                 )
             incumbent = score
+            incumbent_record = candidate
         else:
             expected = compare_candidate_objectives(score, incumbent)
             if decision != expected:
@@ -906,7 +1163,10 @@ def validate_cross_stage_report(
                 )
             if expected["accepted"]:
                 incumbent = score
+                incumbent_record = candidate
                 selected = index
+                active_outer += 1
+                expected_trial = 0
         validated += 1
     if report.get("selected_iteration") != selected:
         raise ValidationError(

@@ -627,6 +627,16 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--pair-pressure-weight", type=float, default=1.0
     )
+    cross_stage_optimize.add_argument(
+        "--feedback-step",
+        type=float,
+        action="append",
+        default=[],
+        help=(
+            "strictly decreasing proximal line-search step in (0,1]; "
+            "repeat to override the default 1,0.5,0.25,0.125 sequence"
+        ),
+    )
 
     pin_plan_parser = subparsers.add_parser(
         "pin-plan",
@@ -1119,6 +1129,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 ratio_convergence=args.ratio_convergence,
                 pair_pressure_weight=args.pair_pressure_weight,
+                feedback_steps=(
+                    tuple(args.feedback_step)
+                    if args.feedback_step
+                    else None
+                ),
             )
         _print_json(report)
         return 0

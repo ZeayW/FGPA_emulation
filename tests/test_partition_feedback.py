@@ -7,7 +7,9 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.partition_feedback import (
+    build_damped_partition_feedback,
     build_partition_feedback,
+    validate_damped_partition_feedback,
     validate_partition_feedback,
 )
 from emuflow.platform import Platform
@@ -112,6 +114,31 @@ class PartitionFeedbackTest(unittest.TestCase):
             by_net = {record["net"]: record for record in artifact["records"]}
             self.assertEqual(by_net["n00"]["group_size"], 1)
             self.assertEqual(by_net["n01"]["group_size"], 16)
+
+            quarter = build_damped_partition_feedback(artifact, 0.25)
+            quarter_repeated = build_damped_partition_feedback(
+                artifact, 0.25
+            )
+            full = build_damped_partition_feedback(artifact, 1.0)
+            self.assertEqual(quarter, quarter_repeated)
+            self.assertEqual(full["weights"], artifact["weights"])
+            self.assertLess(
+                quarter["metrics"]["maximum_feedback_weight"],
+                artifact["metrics"]["maximum_feedback_weight"],
+            )
+            self.assertEqual(
+                validate_damped_partition_feedback(artifact, quarter)[
+                    "status"
+                ],
+                "pass",
+            )
+
+            corrupted = copy.deepcopy(quarter)
+            corrupted["records"][0]["weight"] += 0.1
+            with self.assertRaisesRegex(
+                ValidationError, "record 0 mismatch"
+            ):
+                validate_damped_partition_feedback(artifact, corrupted)
 
             corrupted = copy.deepcopy(artifact)
             corrupted["records"][0]["channel_usage"] += 0.1

@@ -304,7 +304,10 @@ proxy. The candidate checker reconstructs transport delay for every path in
 the global database; paths with no candidate cut nets remain in the objective
 with their fixed delay. A lexicographically worse, tied, infeasible, or
 unchecked candidate is rolled back. The report checker reconstructs all
-successful candidates and replays the acceptance sequence.
+successful candidates and replays the acceptance sequence. Raw channel
+feedback is not applied as an uncontrolled jump: log-space proximal damping
+and deterministic descending backtracking generate positive, reproducible
+trial weights between the unweighted and full-feedback objectives.
 
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 

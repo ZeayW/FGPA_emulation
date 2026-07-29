@@ -352,6 +352,15 @@ The first complete outer loop is exposed as `emuflow cross-stage optimize`:
    normalized slack, negative-path count, maximum TDM ratio, completion slot,
    link bit-hops, cut bits, and replica LUT cost in lexicographic order.
 
+Raw feedback can span more than an order of magnitude and a discrete
+partitioner can replace many previously unweighted internal edges with new
+cuts. The outer loop therefore uses the mirror-descent update
+`w_eta = exp(eta * log(w_raw))` and deterministic descending backtracking.
+The unit step exactly recovers the raw feedback, while smaller steps converge
+to the unweighted hypergraph. Every legal trial is routed and concretely
+scheduled; the first lexicographically improving step is accepted, and an
+exhausted line search rolls back.
+
 `emuflow.cross-stage-candidate/v1` hashes all candidate inputs and records the
 all-path objective. `emuflow.cross-stage-report/v1` records each accepted or
 rejected iteration and the selected incumbent. The report checker reloads the

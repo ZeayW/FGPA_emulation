@@ -1,3 +1,4 @@
+import copy
 import json
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ from emuflow.cross_stage import (
     run_cross_stage_optimization,
     validate_cross_stage_report,
 )
+from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase3 import run_phase3
@@ -323,10 +325,37 @@ class CrossStageCandidateTest(unittest.TestCase):
                 )
                 self.assertEqual(checked["status"], "pass")
                 self.assertEqual(report["selected_iteration"], 0)
-                self.assertEqual(report["termination"], "fixed-point")
-                self.assertEqual(len(report["candidates"]), 2)
-                self.assertFalse(
-                    report["candidates"][1]["decision"]["accepted"]
+                self.assertEqual(
+                    report["termination"], "line-search-rejected"
+                )
+                self.assertEqual(
+                    report["configuration"][
+                        "partition_timeout_seconds"
+                    ],
+                    3600,
+                )
+                self.assertEqual(len(report["candidates"]), 5)
+                self.assertEqual(
+                    [
+                        candidate["feedback_step"]
+                        for candidate in report["candidates"][1:]
+                    ],
+                    [1.0, 0.5, 0.25, 0.125],
+                )
+                self.assertTrue(
+                    all(
+                        not candidate["decision"]["accepted"]
+                        for candidate in report["candidates"][1:]
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        candidate["partition_migration"][
+                            "moved_clusters"
+                        ]
+                        == 0
+                        for candidate in report["candidates"][1:]
+                    )
                 )
                 reports.append(report)
             self.assertEqual(
@@ -337,6 +366,35 @@ class CrossStageCandidateTest(unittest.TestCase):
                 reports[0]["candidates"][0]["objective_key"],
                 reports[1]["candidates"][0]["objective_key"],
             )
+            corrupted = copy.deepcopy(reports[0])
+            corrupted["candidates"][1]["feedback_validation"][
+                "maximum_feedback_weight"
+            ] += 0.1
+            corrupted_path = root / "run_0" / "corrupted_report.json"
+            write_json(corrupted_path, corrupted)
+            with self.assertRaisesRegex(
+                ValidationError, "damped feedback validation mismatch"
+            ):
+                validate_cross_stage_report(
+                    corrupted_path,
+                    ir_path,
+                    database_path,
+                    platform_path,
+                )
+            corrupted = copy.deepcopy(reports[0])
+            corrupted["configuration"][
+                "partition_timeout_seconds"
+            ] = 0
+            write_json(corrupted_path, corrupted)
+            with self.assertRaisesRegex(
+                ValidationError, "partition timeout is invalid"
+            ):
+                validate_cross_stage_report(
+                    corrupted_path,
+                    ir_path,
+                    database_path,
+                    platform_path,
+                )
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@
     "design": {"type": "string", "minLength": 1},
     "platform": {"type": "string", "minLength": 1},
     "provider": {
-      "const": "tdm-feedback-iterative-partition-route-schedule-v1"
+      "const": "tdm-feedback-proximal-line-search-v1"
     },
     "objective": {"type": "string", "minLength": 1},
     "configuration": {"type": "object"},

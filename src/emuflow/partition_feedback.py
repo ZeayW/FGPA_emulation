@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import subprocess
 import tempfile
@@ -18,6 +20,14 @@ from .tritonpart import PARTITION_NET_WEIGHTS_SCHEMA
 
 
 PARTITION_FEEDBACK_PROVIDER = "channel-usage-pair-pressure-v1"
+DAMPED_PARTITION_FEEDBACK_PROVIDER = "proximal-log-space-damping-v1"
+
+
+def _canonical_digest(value: Any) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _model(
@@ -412,3 +422,222 @@ def run_partition_feedback(
     )
     write_json(output_path, artifact)
     return validate_partition_feedback(routes, ratio_plan, platform, artifact)
+
+
+def build_damped_partition_feedback(
+    raw_feedback: Mapping[str, Any],
+    step_size: float,
+) -> Dict[str, Any]:
+    """Interpolate unit edge costs and raw feedback in log space.
+
+    ``weight = exp(step_size * log(raw_weight))`` is the multiplicative
+    mirror-descent/proximal update.  It preserves positivity, is exactly the
+    identity at a unit step, and converges continuously to unweighted
+    partitioning as the step approaches zero.
+    """
+
+    if (
+        isinstance(step_size, bool)
+        or not isinstance(step_size, (int, float))
+        or not math.isfinite(float(step_size))
+        or float(step_size) <= 0.0
+        or float(step_size) > 1.0
+    ):
+        raise ValidationError(
+            "damped partition feedback step size must be in (0, 1]"
+        )
+    if (
+        raw_feedback.get("schema") != PARTITION_NET_WEIGHTS_SCHEMA
+        or raw_feedback.get("provider") != PARTITION_FEEDBACK_PROVIDER
+    ):
+        raise ValidationError(
+            "damped partition feedback requires checked raw feedback"
+        )
+    raw_records = raw_feedback.get("records")
+    raw_weights = raw_feedback.get("weights")
+    if (
+        not isinstance(raw_records, list)
+        or not raw_records
+        or not isinstance(raw_weights, dict)
+    ):
+        raise ValidationError("raw partition feedback coverage is invalid")
+
+    step = float(step_size)
+    records = []
+    weights = {}
+    for index, raw in enumerate(raw_records):
+        if not isinstance(raw, dict):
+            raise ValidationError(
+                f"raw partition feedback records[{index}] is invalid"
+            )
+        net = raw.get("net")
+        raw_weight = raw.get("weight")
+        if (
+            not isinstance(net, str)
+            or not net
+            or net in weights
+            or isinstance(raw_weight, bool)
+            or not isinstance(raw_weight, (int, float))
+            or not math.isfinite(float(raw_weight))
+            or float(raw_weight) <= 0.0
+            or raw_weights.get(net) != raw_weight
+        ):
+            raise ValidationError(
+                f"raw partition feedback records[{index}] is invalid"
+            )
+        damped = math.exp(step * math.log(float(raw_weight)))
+        records.append(
+            {
+                **raw,
+                "raw_weight": float(raw_weight),
+                "weight": damped,
+            }
+        )
+        weights[net] = damped
+    if set(weights) != set(raw_weights):
+        raise ValidationError(
+            "raw partition feedback weight coverage is not exact"
+        )
+    values = list(weights.values())
+    artifact = {
+        "schema": PARTITION_NET_WEIGHTS_SCHEMA,
+        "design": raw_feedback.get("design"),
+        "platform": raw_feedback.get("platform"),
+        "provider": DAMPED_PARTITION_FEEDBACK_PROVIDER,
+        "configuration": {
+            "step_size": step,
+            "interpolation": "exp(step_size*log(raw_weight))",
+            "raw_provider": PARTITION_FEEDBACK_PROVIDER,
+            "raw_feedback_sha256": _canonical_digest(raw_feedback),
+        },
+        "slack_range": raw_feedback.get("slack_range"),
+        "weights": weights,
+        "records": records,
+        "metrics": {
+            "nets": len(records),
+            "critical_nets": sum(
+                float(record["criticality"]) > 0.0
+                for record in records
+            ),
+            "minimum_raw_weight": min(
+                float(record["raw_weight"]) for record in records
+            ),
+            "maximum_raw_weight": max(
+                float(record["raw_weight"]) for record in records
+            ),
+            "minimum_feedback_weight": min(values),
+            "maximum_feedback_weight": max(values),
+        },
+    }
+    validate_damped_partition_feedback(raw_feedback, artifact)
+    return artifact
+
+
+def validate_damped_partition_feedback(
+    raw_feedback: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+) -> Dict[str, Any]:
+    if artifact.get("schema") != PARTITION_NET_WEIGHTS_SCHEMA:
+        raise ValidationError("damped partition feedback schema is invalid")
+    if artifact.get("provider") != DAMPED_PARTITION_FEEDBACK_PROVIDER:
+        raise ValidationError("damped partition feedback provider is invalid")
+    for key in ("design", "platform", "slack_range"):
+        if artifact.get(key) != raw_feedback.get(key):
+            raise ValidationError(
+                f"damped partition feedback {key} mismatch"
+            )
+    configuration = artifact.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValidationError(
+            "damped partition feedback configuration is invalid"
+        )
+    step = configuration.get("step_size")
+    if (
+        isinstance(step, bool)
+        or not isinstance(step, (int, float))
+        or not math.isfinite(float(step))
+        or float(step) <= 0.0
+        or float(step) > 1.0
+    ):
+        raise ValidationError(
+            "damped partition feedback step size is invalid"
+        )
+    expected_configuration = {
+        "step_size": float(step),
+        "interpolation": "exp(step_size*log(raw_weight))",
+        "raw_provider": PARTITION_FEEDBACK_PROVIDER,
+        "raw_feedback_sha256": _canonical_digest(raw_feedback),
+    }
+    if configuration != expected_configuration:
+        raise ValidationError(
+            "damped partition feedback configuration mismatch"
+        )
+    raw_records = raw_feedback.get("records")
+    records = artifact.get("records")
+    weights = artifact.get("weights")
+    if (
+        not isinstance(raw_records, list)
+        or not isinstance(records, list)
+        or len(records) != len(raw_records)
+        or not isinstance(weights, dict)
+    ):
+        raise ValidationError(
+            "damped partition feedback coverage is invalid"
+        )
+    expected_weights = {}
+    for index, (raw, record) in enumerate(zip(raw_records, records)):
+        net = raw["net"]
+        raw_weight = float(raw["weight"])
+        damped = math.exp(float(step) * math.log(raw_weight))
+        expected = {
+            **raw,
+            "raw_weight": raw_weight,
+            "weight": damped,
+        }
+        if record != expected or weights.get(net) != damped:
+            raise ValidationError(
+                f"damped partition feedback record {index} mismatch"
+            )
+        expected_weights[net] = damped
+    if weights != expected_weights:
+        raise ValidationError(
+            "damped partition feedback weights mismatch"
+        )
+    values = list(expected_weights.values())
+    expected_metrics = {
+        "nets": len(records),
+        "critical_nets": sum(
+            float(record["criticality"]) > 0.0 for record in records
+        ),
+        "minimum_raw_weight": min(
+            float(record["raw_weight"]) for record in records
+        ),
+        "maximum_raw_weight": max(
+            float(record["raw_weight"]) for record in records
+        ),
+        "minimum_feedback_weight": min(values),
+        "maximum_feedback_weight": max(values),
+    }
+    if artifact.get("metrics") != expected_metrics:
+        raise ValidationError(
+            "damped partition feedback metrics mismatch"
+        )
+    return {
+        "status": "pass",
+        "provider": DAMPED_PARTITION_FEEDBACK_PROVIDER,
+        "step_size": float(step),
+        "nets": len(records),
+        "maximum_feedback_weight": max(values),
+    }
+
+
+def run_damped_partition_feedback(
+    raw_feedback_path: Path,
+    output_path: Path,
+    *,
+    step_size: float,
+) -> Dict[str, Any]:
+    raw = read_json(raw_feedback_path)
+    artifact = build_damped_partition_feedback(raw, step_size)
+    write_json(output_path, artifact)
+    return validate_damped_partition_feedback(raw, artifact)
