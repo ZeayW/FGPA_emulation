@@ -52,7 +52,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++ TLR kernel plus independent checker | Default academic provider builds and runs repository source |
-| TDM | In-tree Python legal scheduler/checker | Working baseline; C++ academic provider is under development |
+| TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree logical lanes and virtual I/O anchors | Logical planning works; physical package pins await a board |
 | Placement | In-tree OpenPARF source plus EmuFlow adapters | Source is present; automatic OpenPARF runner is still missing |
@@ -136,7 +136,7 @@ after checkout. Implementations are editable source in this repository:
 - `third_party/openroad/`: OpenROAD and TritonPart C++ source;
 - `third_party/openparf/`: OpenPARF C++/CUDA/Python source; and
 - `src/native/`: first-party C++ optimization kernels, including the
-  timing-aware system router; and
+  timing-aware system router and Lagrangian/KKT TDM-ratio optimizer; and
 - `src/emuflow/`: EmuFlow control plane, artifact contracts, baseline
   implementations, adapters, and independent checkers.
 
@@ -150,6 +150,12 @@ optimization kernel is editable C++17 source in `src/native/tlr_router.cpp`.
 Python imports versioned STA paths, invokes the root-build product, and
 independently reconstructs topology, capacity, direction-lock, delay, slack,
 and path-signature results.
+
+The academic Phase 5 provider is likewise rooted in editable C++17 source at
+`src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the
+versioned timing model, realizes the optimized ratio/lane groups as an exact
+slot schedule, and independently checks capacity, ratio legality, timing,
+collisions, precedence, round barriers, and transported values.
 
 Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,

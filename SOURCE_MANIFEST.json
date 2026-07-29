@@ -70,16 +70,21 @@
       "id": "tdm-assignment",
       "stage": "Phase 5",
       "source_paths": [
+        "src/native/tdm_ratio_optimizer.cpp",
+        "src/emuflow/tdm_ratio.py",
         "src/emuflow/tdm.py",
-        "src/emuflow/phase5.py"
+        "src/emuflow/phase5.py",
+        "schemas/tdm-ratio-plan-v1.schema.json"
       ],
       "build_targets": [
+        "emuflow_tdm_ratio_optimizer",
         "emuflow_python"
       ],
       "runtime_products": [
+        "emuflow_tdm_ratio_optimizer",
         "emuflow"
       ],
-      "integration": "in-tree-python-baseline"
+      "integration": "default-in-tree-build"
     },
     {
       "id": "netlist-transport-pin-generation",

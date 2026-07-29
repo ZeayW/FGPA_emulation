@@ -45,6 +45,8 @@ REQUIRED_SOURCE_FILES = {
 
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/tlr_router.cpp",
+    "src/native/tdm_ratio_optimizer.cpp",
+    "schemas/tdm-ratio-plan-v1.schema.json",
     "scripts/vivado/export_cut_timing_paths.tcl",
 )
 

@@ -25,6 +25,11 @@ option(
   "Build the in-tree timing-aware load-balanced system router"
   ON
 )
+option(
+  EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER
+  "Build the in-tree Lagrangian/KKT TDM ratio optimizer"
+  ON
+)
 option(EMUFLOW_BUILD_OPENROAD "Build the in-tree OpenROAD/TritonPart source" ON)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
@@ -98,6 +103,20 @@ if(EMUFLOW_BUILD_TLR_ROUTER)
   target_compile_options(emuflow_tlr_router PRIVATE -O3)
   set_target_properties(
     emuflow_tlr_router
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
+  add_executable(
+    emuflow_tdm_ratio_optimizer
+    "${CMAKE_SOURCE_DIR}/src/native/tdm_ratio_optimizer.cpp"
+  )
+  target_compile_features(emuflow_tdm_ratio_optimizer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_tdm_ratio_optimizer PRIVATE -O3)
+  set_target_properties(
+    emuflow_tdm_ratio_optimizer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -304,6 +323,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_tlr_router_cli
       COMMAND "$<TARGET_FILE:emuflow_tlr_router>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
+    add_test(
+      NAME emuflow_tdm_ratio_optimizer_cli
+      COMMAND "$<TARGET_FILE:emuflow_tdm_ratio_optimizer>" --help
     )
   endif()
 

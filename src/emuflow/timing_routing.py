@@ -686,6 +686,8 @@ def route_system_timing_aware(
                 "path": path["id"],
                 "clock_domain": path["clock_domain"],
                 "clock_period_ns": path["clock_period_ns"],
+                "fixed_delay_ns": path["fixed_delay_ns"],
+                "cut_nets": path["cut_nets"],
                 "cut_signature": path["cut_signature"],
                 "compressed_path_ids": path["compressed_path_ids"],
                 **native["timing"][index],
@@ -703,6 +705,7 @@ def route_system_timing_aware(
         "direction_locks": direction_locks,
         "timing": {
             "schema": STA_PATHS_SCHEMA,
+            "normalization": timing_paths["normalization"],
             "compression": timing_paths["compression"],
             "paths": timing_records,
         },
@@ -829,6 +832,10 @@ def validate_timing_aware_system_routes(
         timing_paths["paths"]
     ):
         raise ValidationError("routes.timing.paths: coverage is not exact")
+    if timing.get("normalization") != timing_paths["normalization"]:
+        raise ValidationError(
+            "routes.timing.normalization does not match normalized STA input"
+        )
     positive_scale = timing_paths["normalization"][
         "positive_slack_scale_ns"
     ]
@@ -844,6 +851,8 @@ def validate_timing_aware_system_routes(
         for key in (
             "clock_domain",
             "clock_period_ns",
+            "fixed_delay_ns",
+            "cut_nets",
             "cut_signature",
             "compressed_path_ids",
         ):

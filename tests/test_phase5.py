@@ -1,5 +1,7 @@
 import copy
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +16,10 @@ from emuflow.tdm import (
     schedule_to_systemverilog_testbench,
     simulate_tdm_schedule,
     validate_tdm_schedule,
+)
+from emuflow.tdm_ratio import (
+    build_tdm_ratio_plan,
+    validate_tdm_ratio_plan,
 )
 
 
@@ -84,6 +90,293 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_academic_ratio_optimizer_drives_lane_and_slot_schedule(
+        self,
+    ) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("a C++17 compiler is required")
+        platform = Platform.from_dict(
+            _platform_value(
+                "ratio",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [
+                (f"n{index:02d}", "a", ["b"])
+                for index in range(17)
+            ],
+            frame_slots=32,
+        )
+        for route in routes["routes"]:
+            route["transport_round"] = (
+                0 if int(route["net"][1:]) < 8 else 1
+            )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "compression": {
+                "original_paths": 2,
+                "compressed_paths": 2,
+            },
+            "paths": [
+                {
+                    "path": "critical",
+                    "clock_domain": "fast",
+                    "clock_period_ns": 20.0,
+                    "fixed_delay_ns": 12.0,
+                    "cut_nets": ["n00"],
+                },
+                {
+                    "path": "relaxed",
+                    "clock_domain": "slow",
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": ["n01"],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            executable = root / "emuflow_tdm_ratio_optimizer"
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c++17",
+                    "-O2",
+                    str(
+                        ROOT
+                        / "src"
+                        / "native"
+                        / "tdm_ratio_optimizer.cpp"
+                    ),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+            )
+            plan = build_tdm_ratio_plan(
+                routes,
+                platform,
+                executable=str(executable),
+                max_ratio=16,
+                post_refinement_iterations=20,
+            )
+            repeated = build_tdm_ratio_plan(
+                routes,
+                platform,
+                executable=str(executable),
+                max_ratio=16,
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(plan, repeated)
+            plan_validation = validate_tdm_ratio_plan(
+                routes, platform, plan
+            )
+            self.assertEqual(plan_validation["status"], "pass")
+            self.assertEqual(
+                plan["round_barrier_legalization"]["active_rounds"],
+                [0, 1],
+            )
+            self.assertIsNotNone(
+                plan["round_barrier_legalization"][
+                    "source_ready_slot"
+                ]
+            )
+            by_net = {hop["net"]: hop for hop in plan["hops"]}
+            self.assertEqual(by_net["n00"]["discrete_ratio"], 1)
+            self.assertEqual(by_net["n01"]["discrete_ratio"], 16)
+            self.assertNotEqual(
+                by_net["n00"]["lane"], by_net["n01"]["lane"]
+            )
+
+            schedule = build_tdm_schedule(routes, platform, plan)
+            validation = validate_tdm_schedule(
+                routes, platform, schedule, plan
+            )
+            simulation = simulate_tdm_schedule(
+                routes, schedule, frames=7
+            )
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(validation["ratio_constrained_hops"], 17)
+            self.assertEqual(validation["round_barriers"], 1)
+            self.assertEqual(simulation["delivered_sink_values"], 119)
+            entry_by_net = {
+                entry["net"]: entry for entry in schedule["entries"]
+            }
+            self.assertEqual(
+                entry_by_net["n00"]["lane"], by_net["n00"]["lane"]
+            )
+            self.assertLess(
+                entry_by_net["n00"]["ratio_wait_slots"],
+                entry_by_net["n00"]["tdm_ratio"],
+            )
+
+            broken_plan = copy.deepcopy(plan)
+            broken_plan["timing_paths"][0][
+                "normalized_slack"
+            ] += 0.25
+            with self.assertRaisesRegex(
+                ValidationError,
+                "does not match independent recomputation",
+            ):
+                validate_tdm_ratio_plan(
+                    routes, platform, broken_plan
+                )
+
+            broken_schedule = copy.deepcopy(schedule)
+            broken_schedule["entries"][0]["lane"] = (
+                1 - broken_schedule["entries"][0]["lane"]
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "does not match ratio plan"
+            ):
+                validate_tdm_schedule(
+                    routes, platform, broken_schedule, plan
+                )
+
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            routes_path.write_text(
+                json.dumps(routes), encoding="utf-8"
+            )
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            report = run_phase5(
+                routes_path=routes_path,
+                platform_path=platform_path,
+                output_dir=root / "phase5",
+                simulation_frames=7,
+                ratio_optimizer=str(executable),
+                max_ratio=16,
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(
+                report["optimization_provider"],
+                "lagrangian-kkt-timing-aware-v1",
+            )
+            self.assertTrue(
+                (root / "phase5" / "ratio_plan.json").is_file()
+            )
+
+    def test_academic_post_refinement_improves_worst_slack(
+        self,
+    ) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("a C++17 compiler is required")
+        platform = Platform.from_dict(
+            _platform_value(
+                "post_refinement",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=5, latency=1)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [(f"n{index}", "a", ["b"]) for index in range(6)],
+            frame_slots=64,
+        )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "compression": {
+                "original_paths": 2,
+                "compressed_paths": 2,
+            },
+            "paths": [
+                {
+                    "path": "short_period",
+                    "clock_domain": "fast",
+                    "clock_period_ns": 10.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": ["n4", "n5"],
+                },
+                {
+                    "path": "longer_path",
+                    "clock_domain": "medium",
+                    "clock_period_ns": 20.0,
+                    "fixed_delay_ns": 5.0,
+                    "cut_nets": ["n0", "n1", "n3"],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            executable = (
+                Path(temporary_directory)
+                / "emuflow_tdm_ratio_optimizer"
+            )
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c++17",
+                    "-O2",
+                    str(
+                        ROOT
+                        / "src"
+                        / "native"
+                        / "tdm_ratio_optimizer.cpp"
+                    ),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+            )
+            unrefined = build_tdm_ratio_plan(
+                routes,
+                platform,
+                executable=str(executable),
+                max_iterations=120,
+                max_ratio=32,
+                post_refinement_iterations=0,
+            )
+            refined = build_tdm_ratio_plan(
+                routes,
+                platform,
+                executable=str(executable),
+                max_iterations=120,
+                max_ratio=32,
+                post_refinement_iterations=100,
+            )
+            self.assertEqual(
+                refined["metrics"]["post_refinement_swaps"], 1
+            )
+            self.assertGreater(
+                refined["metrics"][
+                    "discrete_worst_normalized_slack"
+                ],
+                unrefined["metrics"][
+                    "discrete_worst_normalized_slack"
+                ],
+            )
+            self.assertEqual(
+                validate_tdm_ratio_plan(routes, platform, refined)[
+                    "status"
+                ],
+                "pass",
+            )
+            schedule = build_tdm_schedule(
+                routes, platform, refined
+            )
+            self.assertEqual(
+                validate_tdm_schedule(
+                    routes, platform, schedule, refined
+                )["status"],
+                "pass",
+            )
+
     def test_schedule_validate_simulate_and_write_artifacts(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

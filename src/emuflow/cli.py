@@ -27,6 +27,8 @@ from .synthesis import (
     run_yosys,
 )
 from .sta import import_vivado_sta_tsv, write_vivado_cut_net_map
+from .tdm import TDM_BASELINE_PROVIDER
+from .tdm_ratio import TDM_RATIO_PROVIDER
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
 
@@ -383,6 +385,7 @@ def _build_parser() -> argparse.ArgumentParser:
     schedule_validate.add_argument("schedule", type=Path)
     schedule_validate.add_argument("--routes", type=Path, required=True)
     schedule_validate.add_argument("--platform", type=Path, required=True)
+    schedule_validate.add_argument("--ratio-plan", type=Path)
 
     phase5 = subparsers.add_parser(
         "phase5", help="schedule routed bit-hops into TDM lanes and slots"
@@ -391,6 +394,29 @@ def _build_parser() -> argparse.ArgumentParser:
     phase5.add_argument("--platform", type=Path, required=True)
     phase5.add_argument("--out", type=Path, required=True)
     phase5.add_argument("--simulation-frames", type=int, default=16)
+    phase5.add_argument(
+        "--provider",
+        choices=(TDM_RATIO_PROVIDER, TDM_BASELINE_PROVIDER),
+        default=None,
+        help=(
+            "defaults to the academic provider when routes contain timing, "
+            "otherwise the deterministic baseline"
+        ),
+    )
+    phase5.add_argument(
+        "--ratio-optimizer",
+        help=(
+            "explicit comparison override; defaults to the in-tree "
+            "emuflow_tdm_ratio_optimizer build"
+        ),
+    )
+    phase5.add_argument("--ratio-max-iterations", type=int, default=500)
+    phase5.add_argument("--max-ratio", type=int)
+    phase5.add_argument("--ratio-quantum", type=int, default=8)
+    phase5.add_argument(
+        "--post-refinement-iterations", type=int, default=200
+    )
+    phase5.add_argument("--ratio-convergence", type=float, default=1.0e-9)
 
     split_parser = subparsers.add_parser(
         "split", help="per-FPGA netlist split artifact operations"
@@ -693,6 +719,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             routes_path=args.routes,
             platform_path=args.platform,
             schedule_path=args.schedule,
+            ratio_plan_path=args.ratio_plan,
         )
         _print_json(report)
         return 0
@@ -703,6 +730,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             platform_path=args.platform,
             output_dir=args.out,
             simulation_frames=args.simulation_frames,
+            provider=args.provider,
+            ratio_optimizer=args.ratio_optimizer,
+            ratio_max_iterations=args.ratio_max_iterations,
+            max_ratio=args.max_ratio,
+            ratio_quantum=args.ratio_quantum,
+            post_refinement_iterations=args.post_refinement_iterations,
+            convergence=args.ratio_convergence,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

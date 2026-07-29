@@ -93,7 +93,7 @@ class Phase4Test(unittest.TestCase):
     def test_timing_aware_cpp_router_prioritizes_critical_clock_domain(
         self,
     ) -> None:
-        compiler = shutil.which("clang++") or shutil.which("g++")
+        compiler = shutil.which("g++") or shutil.which("clang++")
         if compiler is None:
             self.skipTest("a C++17 compiler is required")
         platform = Platform.from_dict(

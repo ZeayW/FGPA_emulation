@@ -205,6 +205,27 @@ The current successor-set earliest-slot scheduler and its independent
 collision, precedence, round-barrier, and value-transport checkers remain the
 exact schedule realization and validation layer.
 
+The implementation is now available as
+`lagrangian-kkt-timing-aware-v1`. Its optimization kernel is the first-party
+C++17 target `emuflow_tdm_ratio_optimizer`, compiled by the root CMake
+project. It solves the bounded continuous channel-capacity problem with path
+dual multipliers and per-domain KKT updates, legalizes to ratio 1 or
+quantized multiples of 8, forms direction-homogeneous lane groups, and applies
+timing-aware ratio/lane swaps.
+
+EmuFlow's two transport rounds add a global barrier constraint that is not
+explicit in the cited fixed-route formulations. A deterministic legalization
+layer therefore searches a common round boundary, promotes only the ratio
+groups needed to remove lane fragmentation, and rebalances signals within
+homogeneous groups before exact list scheduling. The independent checker
+reconstructs continuous capacity, discrete group legality, barrier capacity,
+path delay/slack, lane/slot occupancy, multi-hop precedence, and value
+transport without trusting optimizer summary fields.
+
+Timing-annotated Phase 4 routes select this provider automatically. Routes
+without STA metadata retain
+`deterministic-round-barrier-earliest-slot-v2` as the feasibility baseline.
+
 ### Acceptance
 
 - Preserve G6 collision, precedence, round-barrier, and transport simulation.

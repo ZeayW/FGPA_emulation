@@ -1,6 +1,6 @@
 import hashlib
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Mapping, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import ValidationError
 from .platform import Platform
@@ -12,6 +12,10 @@ from .routing import (
 
 
 TDM_SCHEDULE_SCHEMA = "emuflow.tdm-schedule/v1"
+TDM_BASELINE_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
+TDM_ACADEMIC_SCHEDULE_PROVIDER = (
+    "lagrangian-kkt-ratio-aware-list-schedule-v1"
+)
 COMBINATIONAL_SETTLE_SLOTS = 1
 HopKey = Tuple[str, str, str, str]
 
@@ -63,6 +67,7 @@ def _link_by_id(platform: Platform):
 
 def _round_order(
     routes: Sequence[Mapping[str, Any]],
+    planned_hops: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
 ) -> Tuple[List[Mapping[str, Any]], List[int]]:
     for route in routes:
         transport_round = route.get("transport_round", 0)
@@ -79,6 +84,22 @@ def _round_order(
         routes,
         key=lambda route: (
             route.get("transport_round", 0),
+            min(
+                (
+                    planned_hops[
+                        _hop_key(
+                            route["id"],
+                            edge["link"],
+                            edge["from"],
+                            edge["to"],
+                        )
+                    ]["continuous_ratio"]
+                    for _depth, edge in _route_hops(route)
+                ),
+                default=float("inf"),
+            )
+            if planned_hops is not None
+            else 0.0,
             -max((depth for depth, _ in _route_hops(route)), default=0),
             route["net"],
             route["id"],
@@ -93,6 +114,7 @@ def _round_order(
 def build_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
+    ratio_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
         raise ValidationError(
@@ -106,12 +128,26 @@ def build_tdm_schedule(
     frame_slots = constraints["frame_slots"]
     _, arcs, capacity_records = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
+    planned_hops = None
+    planned_round_one_ready = None
+    if ratio_plan is not None:
+        from .tdm_ratio import (
+            ratio_plan_by_hop,
+            validate_tdm_ratio_plan,
+        )
+
+        validate_tdm_ratio_plan(routes, platform, ratio_plan)
+        planned_hops = ratio_plan_by_hop(ratio_plan)
+        planned_round_one_ready = ratio_plan[
+            "round_barrier_legalization"
+        ]["source_ready_slot"]
     slot_fill: Dict[str, List[int]] = {
         key: [0] * frame_slots for key in capacity_records
     }
     next_available: Dict[str, List[int]] = {
         key: list(range(frame_slots + 1)) for key in capacity_records
     }
+    planned_occupancy: Dict[str, Set[Tuple[int, int]]] = defaultdict(set)
 
     def first_available_slot(capacity_key: str, start: int) -> int:
         parents = next_available[capacity_key]
@@ -133,7 +169,9 @@ def build_tdm_schedule(
     raw_routes = routes.get("routes")
     if not isinstance(raw_routes, list):
         raise ValidationError("routes.routes: expected an array")
-    ordered_routes, active_rounds = _round_order(raw_routes)
+    ordered_routes, active_rounds = _round_order(
+        raw_routes, planned_hops
+    )
     completion_by_round: Dict[int, int] = {}
     entry_index = 0
     for route in ordered_routes:
@@ -150,6 +188,16 @@ def build_tdm_schedule(
             ),
             default=0,
         )
+        if (
+            transport_round == 1
+            and planned_round_one_ready is not None
+            and source_ready_slot > planned_round_one_ready
+        ):
+            raise ValidationError(
+                "TDM ratio schedule exceeded its legalized round barrier: "
+                f"actual={source_ready_slot}, "
+                f"planned={planned_round_one_ready}"
+            )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
             arc_key = (edge["link"], edge["from"], edge["to"])
@@ -165,14 +213,51 @@ def build_tdm_schedule(
                 else arrival_by_node[edge["from"]] + 1
             )
             latest_exclusive = frame_slots - link.latency_cycles
-            slot = (
-                frame_slots
-                if ready_slot >= frame_slots
-                else first_available_slot(
-                    arc["capacity_key"],
-                    ready_slot,
+            plan_hop = (
+                planned_hops.get(
+                    _hop_key(
+                        route["id"],
+                        edge["link"],
+                        edge["from"],
+                        edge["to"],
+                    )
                 )
+                if planned_hops is not None
+                else None
             )
+            if planned_hops is not None and plan_hop is None:
+                raise ValidationError(
+                    f"TDM ratio plan is missing demand {route['id']!r} "
+                    f"edge {arc_key}"
+                )
+            if plan_hop is None:
+                slot = (
+                    frame_slots
+                    if ready_slot >= frame_slots
+                    else first_available_slot(
+                        arc["capacity_key"],
+                        ready_slot,
+                    )
+                )
+                lane = (
+                    slot_fill[arc["capacity_key"]][slot]
+                    if slot < frame_slots
+                    else 0
+                )
+            else:
+                lane = plan_hop["lane"]
+                ratio = plan_hop["discrete_ratio"]
+                ratio_window_end = min(
+                    latest_exclusive,
+                    ready_slot + ratio,
+                )
+                slot = ready_slot
+                while (
+                    slot < ratio_window_end
+                    and (slot, lane)
+                    in planned_occupancy[arc["capacity_key"]]
+                ):
+                    slot += 1
             if slot >= latest_exclusive:
                 raise ValidationError(
                     f"TDM scheduling is infeasible for demand {route['id']!r} "
@@ -180,22 +265,31 @@ def build_tdm_schedule(
                     f"frame_slots={frame_slots}, "
                     f"latency={link.latency_cycles}"
                 )
-            lane = slot_fill[arc["capacity_key"]][slot]
-            slot_fill[arc["capacity_key"]][slot] += 1
-            if (
-                slot_fill[arc["capacity_key"]][slot]
-                == link.data_lanes_per_direction
-            ):
-                next_available[arc["capacity_key"]][slot] = (
-                    first_available_slot(
-                        arc["capacity_key"],
-                        slot + 1,
+            if plan_hop is not None and slot >= ready_slot + ratio:
+                raise ValidationError(
+                    f"TDM ratio schedule is infeasible for demand "
+                    f"{route['id']!r} edge {arc_key}: ready={ready_slot}, "
+                    f"ratio={ratio}, lane={lane}"
+                )
+            if plan_hop is None:
+                slot_fill[arc["capacity_key"]][slot] += 1
+                if (
+                    slot_fill[arc["capacity_key"]][slot]
+                    == link.data_lanes_per_direction
+                ):
+                    next_available[arc["capacity_key"]][slot] = (
+                        first_available_slot(
+                            arc["capacity_key"],
+                            slot + 1,
+                        )
                     )
+            else:
+                planned_occupancy[arc["capacity_key"]].add(
+                    (slot, lane)
                 )
             arrival_slot = slot + link.latency_cycles
             arrival_by_node[edge["to"]] = arrival_slot
-            entries.append(
-                {
+            entry = {
                     "id": f"s{entry_index:06d}",
                     "demand": route["id"],
                     "net": route["net"],
@@ -209,7 +303,18 @@ def build_tdm_schedule(
                     "ready_slot": ready_slot,
                     "arrival_slot": arrival_slot,
                 }
-            )
+            if plan_hop is not None:
+                entry.update(
+                    {
+                        "ratio_plan_hop": plan_hop["index"],
+                        "continuous_ratio": plan_hop[
+                            "continuous_ratio"
+                        ],
+                        "tdm_ratio": plan_hop["discrete_ratio"],
+                        "ratio_wait_slots": slot - ready_slot,
+                    }
+                )
+            entries.append(entry)
             entry_index += 1
 
         missing = sorted(set(route["sinks"]) - set(arrival_by_node))
@@ -268,11 +373,42 @@ def build_tdm_schedule(
         "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
         "collisions": 0,
     }
+    if ratio_plan is not None:
+        metrics.update(
+            {
+                "ratio_constrained_hops": len(entries),
+                "max_tdm_ratio": max(
+                    entry["tdm_ratio"] for entry in entries
+                ),
+                "maximum_ratio_wait_slots": max(
+                    entry["ratio_wait_slots"] for entry in entries
+                ),
+            }
+        )
     return {
         "schema": TDM_SCHEDULE_SCHEMA,
         "design": routes.get("design"),
         "platform": platform.name,
-        "provider": "deterministic-round-barrier-earliest-slot-v2",
+        "provider": (
+            TDM_ACADEMIC_SCHEDULE_PROVIDER
+            if ratio_plan is not None
+            else TDM_BASELINE_PROVIDER
+        ),
+        **(
+            {
+                "ratio_assignment": {
+                    "schema": ratio_plan["schema"],
+                    "provider": ratio_plan["provider"],
+                    "configuration": ratio_plan["configuration"],
+                    "metrics": ratio_plan["metrics"],
+                    "round_barrier_legalization": ratio_plan[
+                        "round_barrier_legalization"
+                    ],
+                }
+            }
+            if ratio_plan is not None
+            else {}
+        ),
         "route_constraints": constraints,
         "routes": [
             {
@@ -344,6 +480,7 @@ def validate_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
+    ratio_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError(
@@ -364,10 +501,43 @@ def validate_tdm_schedule(
     _, arcs, _ = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
     expected = _expected_hops(routes)
-    extended_schedule = (
-        schedule.get("provider")
-        == "deterministic-round-barrier-earliest-slot-v2"
+    academic_schedule = (
+        schedule.get("provider") == TDM_ACADEMIC_SCHEDULE_PROVIDER
     )
+    extended_schedule = schedule.get("provider") in {
+        TDM_BASELINE_PROVIDER,
+        TDM_ACADEMIC_SCHEDULE_PROVIDER,
+    }
+    planned_hops = None
+    if academic_schedule:
+        if ratio_plan is None:
+            raise ValidationError(
+                "academic TDM schedule validation requires ratio_plan"
+            )
+        from .tdm_ratio import (
+            ratio_plan_by_hop,
+            validate_tdm_ratio_plan,
+        )
+
+        validate_tdm_ratio_plan(routes, platform, ratio_plan)
+        expected_ratio_assignment = {
+            "schema": ratio_plan["schema"],
+            "provider": ratio_plan["provider"],
+            "configuration": ratio_plan["configuration"],
+            "metrics": ratio_plan["metrics"],
+            "round_barrier_legalization": ratio_plan[
+                "round_barrier_legalization"
+            ],
+        }
+        if schedule.get("ratio_assignment") != expected_ratio_assignment:
+            raise ValidationError(
+                "schedule.ratio_assignment does not match ratio plan"
+            )
+        planned_hops = ratio_plan_by_hop(ratio_plan)
+    elif ratio_plan is not None:
+        raise ValidationError(
+            "ratio_plan was supplied for a non-academic TDM schedule"
+        )
     expected_route_metadata = []
     for route in sorted(routes["routes"], key=lambda item: item["id"]):
         record = {
@@ -444,6 +614,39 @@ def validate_tdm_schedule(
                 f"slot={slot}, lane={lane}"
             )
         occupancy[arc["capacity_key"]].add(collision)
+        if academic_schedule:
+            planned = planned_hops[key]
+            ready_value = entry.get("ready_slot")
+            if (
+                isinstance(ready_value, bool)
+                or not isinstance(ready_value, int)
+            ):
+                raise ValidationError(
+                    f"schedule.entries[{index}].ready_slot: "
+                    "expected an integer"
+                )
+            expected_ratio_fields = {
+                "ratio_plan_hop": planned["index"],
+                "continuous_ratio": planned["continuous_ratio"],
+                "tdm_ratio": planned["discrete_ratio"],
+                "ratio_wait_slots": slot - ready_value,
+            }
+            for field, value in expected_ratio_fields.items():
+                if entry.get(field) != value:
+                    raise ValidationError(
+                        f"schedule.entries[{index}].{field}: "
+                        "does not match ratio plan"
+                    )
+            if lane != planned["lane"]:
+                raise ValidationError(
+                    f"schedule.entries[{index}].lane: "
+                    "does not match ratio plan"
+                )
+            if entry["ratio_wait_slots"] >= entry["tdm_ratio"]:
+                raise ValidationError(
+                    f"schedule.entries[{index}]: "
+                    "wait exceeds TDM ratio window"
+                )
         expected_arrival = slot + link.latency_cycles
         if entry.get("arrival_slot") != expected_arrival:
             raise ValidationError(
@@ -562,6 +765,18 @@ def validate_tdm_schedule(
                 "round_barriers": max(0, len(active_rounds) - 1),
                 "max_transport_round": max(active_rounds, default=0),
                 "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
+            }
+        )
+    if academic_schedule:
+        expected_metrics.update(
+            {
+                "ratio_constrained_hops": len(expected),
+                "max_tdm_ratio": max(
+                    entry["tdm_ratio"] for entry in raw_entries
+                ),
+                "maximum_ratio_wait_slots": max(
+                    entry["ratio_wait_slots"] for entry in raw_entries
+                ),
             }
         )
     if schedule.get("metrics") != expected_metrics:
