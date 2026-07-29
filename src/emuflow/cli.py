@@ -89,7 +89,10 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(VALID_XILINX_FAMILIES),
         default="xcup",
     )
-    synthesis.add_argument("--yosys", help="path to the Yosys executable")
+    synthesis.add_argument(
+        "--yosys",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
     synthesis.add_argument("--log", type=Path)
     synthesis.add_argument(
         "--verilog-output",
@@ -108,7 +111,10 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("spec", type=Path)
     benchmark.add_argument("--source-root", type=Path, required=True)
     benchmark.add_argument("--out", type=Path, required=True)
-    benchmark.add_argument("--yosys", help="path to the Yosys executable")
+    benchmark.add_argument(
+        "--yosys",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
 
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -229,7 +235,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase3.add_argument(
         "--openroad",
-        help="OpenROAD executable containing TritonPart",
+        help=(
+            "explicit comparison override; defaults to the in-tree "
+            "OpenROAD/TritonPart build"
+        ),
     )
     phase3.add_argument(
         "--tritonpart-solution",
@@ -273,7 +282,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase3.add_argument(
         "--repart",
-        help="EmuFlow-patched RePart executable",
+        help=(
+            "explicit comparison override; defaults to the in-tree "
+            "RePart build"
+        ),
     )
     phase3.add_argument(
         "--repart-solution",

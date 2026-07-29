@@ -1,11 +1,11 @@
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Iterable, Optional
 
 from .errors import EmuFlowError
+from .native_tools import resolve_native_executable
 
 
 VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
@@ -121,11 +121,7 @@ def run_yosys(
         if not source.is_file():
             raise EmuFlowError(f"RTL source does not exist: {source}")
 
-    command = executable or shutil.which("yosys")
-    if not command:
-        raise EmuFlowError(
-            "Yosys executable was not found; install Yosys or pass --yosys PATH"
-        )
+    command = resolve_native_executable("yosys", executable)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     if verilog_output is not None:

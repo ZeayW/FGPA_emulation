@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
+from .native_tools import resolve_native_executable
 from .partition import (
     TRANSPORTED_CUT_CLASSES,
     build_partition_assignment,
@@ -831,12 +832,9 @@ def run_tritonpart(
     resolved_executable: Optional[str] = None
     mode = "execute"
     if solution_input is None:
-        resolved_executable = executable or shutil.which("openroad")
-        if not resolved_executable:
-            raise EmuFlowError(
-                "OpenROAD executable was not found; install OpenROAD with "
-                "TritonPart or pass --openroad PATH"
-            )
+        resolved_executable = resolve_native_executable(
+            "openroad", executable
+        )
 
     cluster_assignment: Optional[Dict[str, str]] = None
     selected_seed = seed

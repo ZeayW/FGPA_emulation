@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .errors import EmuFlowError, ValidationError
 from .io import write_json
 from .ir import EmuIR
+from .native_tools import resolve_native_executable
 from .partition import (
     TRANSPORTED_CUT_CLASSES,
     build_partition_assignment,
@@ -508,12 +509,7 @@ def run_repart(
             shutil.copyfile(solution_input, solution_path)
     else:
         mode = "execute"
-        resolved_executable = executable or shutil.which("repart")
-        if not resolved_executable:
-            raise EmuFlowError(
-                "RePart executable was not found; pass --repart PATH to the "
-                "EmuFlow-patched RePart binary"
-            )
+        resolved_executable = resolve_native_executable("repart", executable)
         command = [
             resolved_executable,
             "-t",

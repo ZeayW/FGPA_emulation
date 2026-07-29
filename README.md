@@ -119,8 +119,43 @@ emuflow synth-yosys examples/rtl/counter.v \
 ```
 
 Use `emuflow --help` and `emuflow <command> --help` for the complete CLI.
-OpenPARF, TritonPart, RePart, and Vivado are optional external providers and
-must be installed separately when their stages are selected.
+Vivado remains an optional proprietary validation backend; it is not an
+open-source EmuFlow component.
+
+## Source-complete monorepo
+
+EmuFlow does not publish opaque provider binaries or require source downloads
+after checkout. The implementation source used by the flow is present in this
+repository:
+
+- `third_party/yosys/`: Yosys synthesis, ABC mapping, and cxxopts source;
+- `third_party/repart/`: RePart C++ hypergraph partitioner;
+- `third_party/openroad/`: OpenROAD and TritonPart C++ source;
+- `third_party/openparf/`: OpenPARF C++/CUDA/Python source; and
+- `src/emuflow/`: EmuFlow control plane, artifact contracts, reference
+  implementations, and independent checkers.
+
+Each imported tree contains its upstream license, exact commit provenance, and
+EmuFlow modification list. No precompiled provider executable, object,
+library, or Python extension is checked in.
+
+Configure and build all open components from the repository root:
+
+```bash
+cmake --preset release
+cmake --build --preset release --parallel
+ctest --preset release
+```
+
+Build products are written below `build/` and are never the source of truth.
+Developers can edit any in-tree C++ implementation and rebuild through the
+same top-level command.
+
+The repository includes every direct flow-engine implementation. A compiler,
+CMake, Python, and general-purpose build libraries such as Boost, PyTorch, Tcl,
+SWIG, Protobuf, and OR-Tools remain declared build dependencies; they are not
+opaque replacements for an EmuFlow stage. The build never downloads a
+partitioner, placer, router, or synthesis executable.
 
 ## Repository layout
 
@@ -132,6 +167,7 @@ rtl/transport/     reusable TDM and barrier RTL
 benchmarks/        benchmark catalog and run configurations
 examples/          small reproducible RTL and artifact fixtures
 scripts/           provider integration and reusable flow utilities
+third_party/       in-tree Yosys/ABC, OpenPARF, OpenROAD, and RePart source
 tests/             unit, adversarial, and flow-level regression tests
 docs/              architecture, algorithm, and benchmark plans
 ```
