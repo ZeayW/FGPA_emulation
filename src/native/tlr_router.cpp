@@ -2,9 +2,9 @@
 //
 // Timing-aware load-balanced die-level routing for EmuFlow.
 //
-// This is an in-tree C++17 reimplementation of the routing ideas in:
-// Y. Chen et al., "Timing-Aware Optimization of Die-Level Routing and TDM
-// Assignment for Multi-FPGA Systems", ASP-DAC 2026.
+// This is an in-tree C++17 implementation of timing-aware die-level routing
+// plus the route/TDM coupling used in the DAC 2020 routing-topology/TDM and
+// ASP-DAC 2021 hybrid routing/TDM co-optimization formulations.
 //
 // The compact line-oriented interface is intentional: it keeps the optimizer
 // independent of a particular JSON library while Python remains only the
@@ -41,7 +41,9 @@ struct Arc {
   int direction_group = -1;
   int opposite_arc = -1;
   int capacity = 0;
+  int lanes = 0;
   double delay_ns = 0.0;
+  double beta_ns = 0.0;
   bool is_sll = false;
 };
 
@@ -66,6 +68,8 @@ struct Route {
 };
 
 struct Objective {
+  double worst_tdm_normalized_slack = -kInf;
+  double worst_tdm_slack_ns = -kInf;
   double worst_normalized_slack = -kInf;
   double worst_slack_ns = -kInf;
   double max_utilization = kInf;
@@ -79,6 +83,9 @@ struct Input {
   double lambda_load = 2.0;
   double lambda_timing = 4.0;
   double lambda_history = 1.0;
+  double lambda_tdm = 0.1;
+  int ratio_quantum = 8;
+  int frame_slots = 1;
   double slack_positive_scale = 1.0;
   double slack_negative_scale = 1.0;
   double max_clock_period_ns = 1.0;
@@ -109,7 +116,7 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
-  if (magic != "EMUFLOW_TLR_INPUT_V1") {
+  if (magic != "EMUFLOW_TLR_INPUT_V2") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
 
@@ -126,6 +133,7 @@ Input read_input(const std::string& path) {
       stream >> model.node_count >> model.max_iterations >>
           model.reroute_rounds >> model.lambda_load >>
           model.lambda_timing >> model.lambda_history >>
+          model.lambda_tdm >> model.ratio_quantum >> model.frame_slots >>
           model.slack_positive_scale >> model.slack_negative_scale >>
           model.max_clock_period_ns;
     } else if (kind == "ARC") {
@@ -134,7 +142,7 @@ Input read_input(const std::string& path) {
       int is_sll = 0;
       stream >> index >> arc.link >> arc.from >> arc.to >>
           arc.capacity_domain >> arc.direction_group >> arc.opposite_arc >>
-          arc.capacity >> arc.delay_ns >> is_sll;
+          arc.capacity >> arc.lanes >> arc.delay_ns >> arc.beta_ns >> is_sll;
       arc.is_sll = is_sll != 0;
       if (index != static_cast<int>(model.arcs.size())) {
         throw std::runtime_error("ARC indices must be contiguous");
@@ -189,7 +197,9 @@ class Router {
       const Arc& arc = model_.arcs[index];
       if (arc.from < 0 || arc.from >= model_.node_count ||
           arc.to < 0 || arc.to >= model_.node_count ||
-          arc.capacity <= 0 || arc.delay_ns < 0.0) {
+          arc.capacity <= 0 || arc.lanes <= 0 || arc.delay_ns < 0.0 ||
+          arc.beta_ns <= 0.0 || model_.ratio_quantum <= 0 ||
+          model_.frame_slots <= 0 || model_.lambda_tdm < 0.0) {
         throw std::runtime_error("invalid arc");
       }
       adjacency_[arc.from].push_back(index);
@@ -235,7 +245,10 @@ class Router {
 
     Objective best = objective();
     for (int round = 0; round < model_.reroute_rounds; ++round) {
-      const int critical_path = worst_path_index();
+      const int critical_path =
+          model_.lambda_tdm > kEps
+              ? worst_tdm_path_index()
+              : worst_path_index();
       if (critical_path < 0) {
         break;
       }
@@ -315,6 +328,12 @@ class Router {
     output << "METRIC worst_slack_ns " << final.worst_slack_ns << '\n';
     output << "METRIC worst_normalized_slack "
            << final.worst_normalized_slack << '\n';
+    output << "METRIC estimated_worst_tdm_slack_ns "
+           << final.worst_tdm_slack_ns << '\n';
+    output << "METRIC estimated_worst_tdm_normalized_slack "
+           << final.worst_tdm_normalized_slack << '\n';
+    output << "METRIC estimated_max_tdm_ratio "
+           << estimated_max_tdm_ratio() << '\n';
     output << "METRIC max_utilization " << final.max_utilization << '\n';
     output << "METRIC total_link_bit_hops " << final.bit_hops << '\n';
   }
@@ -353,6 +372,36 @@ class Router {
       }
     }
     throw std::runtime_error("unknown capacity domain");
+  }
+
+  int lanes_for_domain(int domain) const {
+    for (const Arc& arc : model_.arcs) {
+      if (arc.capacity_domain == domain) {
+        return arc.lanes;
+      }
+    }
+    throw std::runtime_error("unknown capacity domain");
+  }
+
+  int estimated_tdm_ratio(int domain, int additional_width = 0) const {
+    const int signals = usage_[domain] + additional_width;
+    if (signals <= lanes_for_domain(domain)) {
+      return 1;
+    }
+    const int raw =
+        (signals + lanes_for_domain(domain) - 1) / lanes_for_domain(domain);
+    const int quantized =
+        ((raw + model_.ratio_quantum - 1) / model_.ratio_quantum) *
+        model_.ratio_quantum;
+    return std::min(model_.frame_slots, quantized);
+  }
+
+  int estimated_max_tdm_ratio() const {
+    int result = 1;
+    for (int domain = 0; domain < static_cast<int>(usage_.size()); ++domain) {
+      result = std::max(result, estimated_tdm_ratio(domain));
+    }
+    return result;
   }
 
   double static_arc_cost(const Arc& arc) const {
@@ -500,6 +549,11 @@ class Router {
         double edge_cost = timing_weight * arc.delay_ns +
             model_.lambda_load * projected +
             model_.lambda_history * history_[arc.capacity_domain];
+        const int projected_ratio =
+            estimated_tdm_ratio(arc.capacity_domain, demand.width);
+        edge_cost += model_.lambda_tdm *
+            (1.0 + demand_criticality_[demand_index]) *
+            arc.beta_ns * (projected_ratio - 1);
         if (discouraged.count(arc_index)) {
           edge_cost += model_.lambda_timing *
               std::max(1.0, arc.delay_ns) *
@@ -591,6 +645,61 @@ class Router {
     return result;
   }
 
+  double demand_tdm_delay(int demand_index) const {
+    const Demand& demand = model_.demands[demand_index];
+    std::vector<std::vector<int>> tree(model_.node_count);
+    for (int arc_index : routes_[demand_index].arcs) {
+      tree[model_.arcs[arc_index].from].push_back(arc_index);
+    }
+    std::vector<double> delay(model_.node_count, -kInf);
+    delay[demand.source] = 0.0;
+    std::queue<int> queue;
+    queue.push(demand.source);
+    while (!queue.empty()) {
+      const int node = queue.front();
+      queue.pop();
+      for (int arc_index : tree[node]) {
+        const Arc& arc = model_.arcs[arc_index];
+        delay[arc.to] = delay[node] + arc.delay_ns +
+            arc.beta_ns *
+                (estimated_tdm_ratio(arc.capacity_domain) - 1);
+        queue.push(arc.to);
+      }
+    }
+    double result = 0.0;
+    for (int sink : demand.sinks) {
+      if (!std::isfinite(delay[sink])) {
+        throw std::runtime_error("TDM estimate encountered disconnected tree");
+      }
+      result = std::max(result, delay[sink]);
+    }
+    return result;
+  }
+
+  std::tuple<double, double, double> tdm_path_metrics(
+      int path_index) const {
+    const TimingPath& path = model_.paths[path_index];
+    double delay = path.fixed_delay_ns;
+    for (int demand : path.demands) {
+      delay += demand_tdm_delay(demand);
+    }
+    const double slack = path.clock_period_ns - delay;
+    return {delay, slack, normalized_slack(path, slack)};
+  }
+
+  int worst_tdm_path_index() const {
+    int result = -1;
+    double worst = kInf;
+    for (int index = 0; index < static_cast<int>(model_.paths.size()); ++index) {
+      const double normalized = std::get<2>(tdm_path_metrics(index));
+      if (normalized < worst) {
+        worst = normalized;
+        result = index;
+      }
+    }
+    return result;
+  }
+
   std::string path_signature(int path_index) const {
     std::ostringstream signature;
     bool first = true;
@@ -608,6 +717,8 @@ class Router {
 
   Objective objective() const {
     Objective result;
+    result.worst_tdm_normalized_slack = kInf;
+    result.worst_tdm_slack_ns = kInf;
     result.worst_normalized_slack = kInf;
     result.worst_slack_ns = kInf;
     for (int path_index = 0;
@@ -617,10 +728,19 @@ class Router {
       result.worst_slack_ns = std::min(result.worst_slack_ns, slack);
       result.worst_normalized_slack =
           std::min(result.worst_normalized_slack, normalized);
+      const auto [tdm_delay, tdm_slack, tdm_normalized] =
+          tdm_path_metrics(path_index);
+      (void)tdm_delay;
+      result.worst_tdm_slack_ns =
+          std::min(result.worst_tdm_slack_ns, tdm_slack);
+      result.worst_tdm_normalized_slack =
+          std::min(result.worst_tdm_normalized_slack, tdm_normalized);
     }
     if (model_.paths.empty()) {
       result.worst_slack_ns = 0.0;
       result.worst_normalized_slack = 0.0;
+      result.worst_tdm_slack_ns = 0.0;
+      result.worst_tdm_normalized_slack = 0.0;
     }
     result.max_utilization = 0.0;
     result.bit_hops = 0;
@@ -634,7 +754,17 @@ class Router {
     return result;
   }
 
-  static bool better(const Objective& candidate, const Objective& best) {
+  bool better(const Objective& candidate, const Objective& best) const {
+    if (model_.lambda_tdm > kEps) {
+      if (candidate.worst_tdm_normalized_slack >
+          best.worst_tdm_normalized_slack + kEps) {
+        return true;
+      }
+      if (std::abs(candidate.worst_tdm_normalized_slack -
+                   best.worst_tdm_normalized_slack) > kEps) {
+        return false;
+      }
+    }
     if (candidate.worst_normalized_slack >
         best.worst_normalized_slack + kEps) {
       return true;

@@ -109,6 +109,8 @@ def normalize_route_constraints(
         ("lambda_load", 2.0, False),
         ("lambda_timing", 4.0, False),
         ("lambda_history", 1.0, False),
+        ("lambda_tdm", 0.1, False),
+        ("tdm_ratio_quantum", 8, True),
     ):
         value = raw.get(key, default)
         valid = (
@@ -122,6 +124,10 @@ def normalize_route_constraints(
                 f"route constraints.{key}: expected a {kind}"
             )
         optimization_values[key] = int(value) if integer else float(value)
+    if optimization_values["tdm_ratio_quantum"] <= 0:
+        raise ValidationError(
+            "route constraints.tdm_ratio_quantum: expected a positive integer"
+        )
 
     return {
         "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,

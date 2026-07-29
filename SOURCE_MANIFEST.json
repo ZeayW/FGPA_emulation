@@ -53,7 +53,7 @@
     },
     {
       "id": "system-routing",
-      "stage": "Phase 4",
+      "stage": "Phase 4/5 route-TDM co-optimization",
       "source_paths": [
         "src/native/tlr_router.cpp",
         "src/emuflow/timing_routing.py"

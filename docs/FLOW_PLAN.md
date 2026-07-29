@@ -223,8 +223,7 @@ Vivado/OpenSTA-derived timing weights, topology-aware repartition feedback,
 and resource-specific heterogeneous FPGA capacity ratios remain QoR
 extensions.
 
-### Phase 4 — Board-level system routing (academic provider implemented and
-real-STA validated)
+### Phase 4 — Board-level route/TDM co-optimization
 
 Implement a negotiated-congestion router over BoardDB:
 
@@ -246,7 +245,7 @@ versioned constraint, route, and report artifacts. Four-FPGA diamond,
 multicast, unavailable-link, infeasible-capacity, and half-duplex tests cover
 non-trivial topology cases.
 
-The optional `timing-aware-load-balanced-v1` provider adds an in-tree C++17
+The comparison `timing-aware-load-balanced-v1` provider adds an in-tree C++17
 TLR/TRR kernel based on the routing portion of Chen et al., ASP-DAC 2026. Its
 versioned `emuflow.sta-paths/v1` input carries clock domain, period, slack,
 fixed delay, ordered cut signature, and cut-net sequence. The adapter:
@@ -268,6 +267,16 @@ checker reconstructs every tree, capacity domain, direction lock, route
 delay, compressed-path signature, slack, and normalized slack from the
 returned artifact.
 
+The default `timing-aware-route-tdm-cooptimized-v1` provider extends that
+kernel with the routing/TDM coupling used in the DAC 2020 and ASP-DAC 2021
+co-optimization formulations. During tree construction it estimates each
+capacity domain's quantized serialization ratio from signal load and physical
+lane count, charges the resulting wait to timing-critical paths, and uses the
+estimated TDM normalized slack as the first lexicographic rip-up/reroute
+objective. Phase 5 then solves the exact per-hop KKT ratios and concrete
+lane/slot schedule. The Phase 4 checker independently reconstructs the proxy;
+the Phase 5 checkers remain the exact acceptance gate.
+
 For real STA input, `emuflow sta emit-vivado-cut-map` produces a lossless
 UTF-8-hex map from stable EmuIR cut-net IDs to the deterministic
 `__emuflow_net_<index>` names in emitted mapped Verilog.
@@ -277,9 +286,8 @@ data-path delay, and exact cut-net membership. `emuflow sta
 import-vivado-tsv` converts that result to `emuflow.sta-paths/v1`; no
 human-readable timing-report scraping or heuristic name matching is used.
 
-The academic provider is selected automatically when a timing-path artifact
-is supplied. Its real-STA large-design route, determinism, and frozen Phase
-5/6 compatibility gates pass. With no STA artifact, the dependency-free
+The route/TDM provider is selected automatically when a timing-path artifact
+is supplied. With no STA artifact, the dependency-free
 `negotiated-shortest-path-tree-v1` remains the explicit feasibility fallback.
 
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)

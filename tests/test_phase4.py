@@ -214,6 +214,14 @@ class Phase4Test(unittest.TestCase):
             routes = json.loads(
                 (root / "phase4" / "routes.json").read_text(encoding="utf-8")
             )
+            self.assertEqual(
+                routes["provider"],
+                "timing-aware-route-tdm-cooptimized-v1",
+            )
+            self.assertEqual(
+                routes["joint_optimization"]["method"],
+                "tdm-contention-aware-rip-up-reroute-v1",
+            )
             route_by_net = {
                 route["net"]: route for route in routes["routes"]
             }
@@ -251,6 +259,14 @@ class Phase4Test(unittest.TestCase):
             corrupted["routes"][0]["predicted_max_delay_ns"] += 0.25
             with self.assertRaisesRegex(
                 ValidationError, "independent edge-delay recomputation"
+            ):
+                validate_timing_aware_system_routes(
+                    assignment, platform, corrupted, normalized
+                )
+            corrupted = copy.deepcopy(routes)
+            corrupted["metrics"]["estimated_max_tdm_ratio"] += 1
+            with self.assertRaisesRegex(
+                ValidationError, "route/TDM proxy recomputation"
             ):
                 validate_timing_aware_system_routes(
                     assignment, platform, corrupted, normalized
@@ -328,6 +344,11 @@ class Phase4Test(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            self.assertEqual(
+                lock_routes["provider"], "timing-aware-load-balanced-v1"
+            )
+            self.assertEqual(lock_routes["constraints"]["lambda_tdm"], 0.0)
+            self.assertNotIn("joint_optimization", lock_routes)
             self.assertEqual(
                 lock_routes["direction_locks"][0]["from"], "a"
             )

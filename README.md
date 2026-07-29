@@ -51,7 +51,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | --- | --- | --- |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
-| System routing | In-tree C++ TLR kernel plus independent checker | Default academic provider builds and runs repository source |
+| System routing | In-tree C++ route/TDM co-optimization kernel plus independent checker | Default academic provider builds and runs repository source |
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
@@ -146,11 +146,14 @@ compiled by the root CMake build. EmuFlow's small Python adapter emits the
 versioned hypergraph/replicability inputs and independently checks the C++
 result; it is not a replacement partitioning algorithm.
 
-The academic Phase 4 provider follows the same boundary: the TLR/TRR
-optimization kernel is editable C++17 source in `src/native/tlr_router.cpp`.
-Python imports versioned STA paths, invokes the root-build product, and
-independently reconstructs topology, capacity, direction-lock, delay, slack,
-and path-signature results.
+The default academic Phase 4 provider follows the same boundary: the editable
+C++17 kernel in `src/native/tlr_router.cpp` jointly accounts for route delay,
+timing criticality, negotiated congestion, and an analytically predicted TDM
+serialization ratio while constructing and refining multicast trees. Python
+imports versioned STA paths, invokes the root-build product, and independently
+reconstructs topology, capacity, direction locks, delay, the TDM proxy, slack,
+and path signatures. The earlier route-only provider remains available for
+controlled comparisons.
 
 The academic Phase 5 provider is likewise rooted in editable C++17 source at
 `src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the

@@ -106,18 +106,23 @@ reconstructed independently during validation. Phase 6 materializes those
 copies in per-FPGA netlists and compares replica outputs against the original
 mapped model over the transport simulation trace.
 
-## Phase 4 — Timing-aware load-balanced die-level router
+## Phase 4/5 — Timing-aware route/TDM co-optimization
 
 ### Target algorithm
 
-Reimplement the routing component of:
+Implement a source-complete formulation informed by:
 
 - Y. Chen et al., *Timing-Aware Optimization of Die-Level Routing and TDM
-  Assignment for Multi-FPGA Systems*, ASP-DAC 2026.
+  Assignment for Multi-FPGA Systems*, ASP-DAC 2026;
+- *Routing Topology and TDM Co-Optimization for Multi-FPGA Systems*,
+  DAC 2020; and
+- *Multi-FPGA Co-optimization: Hybrid Routing and TDM Assignment*,
+  ASP-DAC 2021.
 
-The Phase 4 provider will consume a fixed Phase 3 assignment and fixed
-predicted link-delay table. It will not call the Phase 5 optimizer during this
-campaign.
+The provider consumes a fixed Phase 3 assignment, a predicted link-delay
+table, physical lane counts, frame size, and normalized STA paths. Routing
+uses an analytical TDM estimate; Phase 5 remains the exact ratio and schedule
+realization.
 
 Required components are:
 
@@ -131,8 +136,9 @@ Required components are:
 - selective critical-path rip-up/reroute; and
 - accept/rollback refinement based on worst normalized slack.
 
-The source implementation is now present as the opt-in
-`timing-aware-load-balanced-v1` provider. Its optimization core is the
+The route-only comparison is available as
+`timing-aware-load-balanced-v1`. The default joint provider is
+`timing-aware-route-tdm-cooptimized-v1`. Their optimization core is the
 first-party C++17 target `emuflow_tlr_router`, built by the repository root
 CMake project. The Python layer only performs versioned STA/BoardDB artifact
 adaptation and independent result checking.
@@ -154,21 +160,16 @@ Implemented algorithm details:
 - dynamic delay, criticality, utilization, and historical-overflow weights;
 - multicast tree construction by shared predecessor backtrace;
 - selective rerouting of nets on the current worst normalized-slack path; and
-- lexicographic accept/rollback on worst normalized slack, then maximum
-  utilization and bit-hops.
+- quantized capacity-domain TDM-ratio prediction from routed signal count,
+  lane count, frame size, and fabric-clock serialization delay;
+- TDM-critical path selection and contention-aware Dijkstra costs; and
+- lexicographic accept/rollback on predicted TDM normalized slack, route
+  normalized slack, maximum utilization, and bit-hops.
 
-The fixture gate is complete: a multi-clock capacity-constrained diamond sends
-the critical net over the 2 ns path where the baseline assigns it the 10 ns
-path; ordered-signature compression, shared-direction locking, independent
-delay/slack recomputation, and corruption rejection all pass. The NVDLA
-large-design scale, determinism, and frozen Phase 5/6 compatibility gates also
-pass with a deterministic structural timing workload. The real-STA gate also
-passes on the same 731,313-cell NVDLA design: Vivado timing objects are joined
-to stable cut-net identities, repeated route artifacts are byte-identical,
-and the frozen-baseline worst normalized slack improves without capacity or
-downstream Phase 5/6 violations. The academic provider is therefore selected
-automatically whenever `--timing-paths` is present; the negotiated provider
-remains the no-STA feasibility fallback.
+The checker reconstructs the analytical ratio, serialization delay, and worst
+TDM slack independently from route trees and BoardDB. The joint provider is
+selected automatically whenever `--timing-paths` is present; the negotiated
+provider remains the no-STA feasibility fallback.
 
 The existing negotiated-congestion router remains
 `negotiated-shortest-path-tree-v1`.

@@ -35,6 +35,7 @@ from .synthesis import (
 from .sta import import_vivado_sta_tsv, write_vivado_cut_net_map
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
+from .timing_routing import ROUTE_TDM_PROVIDER, TLR_PROVIDER
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
 
@@ -376,12 +377,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         choices=[
             "negotiated-shortest-path-tree-v1",
-            "timing-aware-load-balanced-v1",
+            TLR_PROVIDER,
+            ROUTE_TDM_PROVIDER,
         ],
         default=None,
         help=(
-            "defaults to timing-aware-load-balanced-v1 when --timing-paths "
-            "is supplied, otherwise the negotiated baseline"
+            f"defaults to {ROUTE_TDM_PROVIDER} when --timing-paths is "
+            "supplied, otherwise the negotiated baseline"
         ),
     )
     phase4.add_argument(

@@ -25,6 +25,7 @@ from .routing import (
 
 STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"
 TLR_PROVIDER = "timing-aware-load-balanced-v1"
+ROUTE_TDM_PROVIDER = "timing-aware-route-tdm-cooptimized-v1"
 
 
 def _number(value: Any, context: str, *, positive: bool = False) -> float:
@@ -429,7 +430,9 @@ def _prepare_native_model(
                 "direction_group": direction_group_by_link.get(link.id, -1),
                 "opposite_arc": arc_index.get(opposite_key, -1),
                 "capacity": capacities[arc["capacity_key"]]["capacity_bits"],
+                "lanes": link.data_lanes_per_direction,
                 "delay_ns": _link_delay_ns(platform, link.id, constraints),
+                "beta_ns": 1000.0 / link.fabric_clock_mhz,
                 "is_sll": link.id in sll_links,
             }
         )
@@ -491,7 +494,7 @@ def _write_native_input(
     constraints: Mapping[str, Any],
 ) -> None:
     normalization = model["normalization"]
-    lines = ["EMUFLOW_TLR_INPUT_V1"]
+    lines = ["EMUFLOW_TLR_INPUT_V2"]
     lines.append(
         "PARAM "
         f"{node_count} {constraints['max_iterations']} "
@@ -499,6 +502,9 @@ def _write_native_input(
         f"{constraints.get('lambda_load', 2.0):.17g} "
         f"{constraints.get('lambda_timing', 4.0):.17g} "
         f"{constraints.get('lambda_history', 1.0):.17g} "
+        f"{constraints.get('lambda_tdm', 0.1):.17g} "
+        f"{constraints.get('tdm_ratio_quantum', 8)} "
+        f"{constraints['frame_slots']} "
         f"{normalization['positive_slack_scale_ns']:.17g} "
         f"{normalization['negative_slack_scale_ns']:.17g} "
         f"{normalization['max_clock_period_ns']:.17g}"
@@ -509,7 +515,8 @@ def _write_native_input(
             f"{arc['index']} {arc['link_index']} {arc['from']} {arc['to']} "
             f"{arc['capacity_domain']} {arc['direction_group']} "
             f"{arc['opposite_arc']} {arc['capacity']} "
-            f"{arc['delay_ns']:.17g} {int(arc['is_sll'])}"
+            f"{arc['lanes']} {arc['delay_ns']:.17g} "
+            f"{arc['beta_ns']:.17g} {int(arc['is_sll'])}"
         )
     for demand in model["native_demands"]:
         sinks = ",".join(str(sink) for sink in demand["sinks"])
@@ -568,6 +575,7 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                 "accepted_reroutes",
                 "rolled_back_reroutes",
                 "total_link_bit_hops",
+                "estimated_max_tdm_ratio",
             }:
                 value = int(value)
             metrics[fields[1]] = value
@@ -610,7 +618,10 @@ def route_system_timing_aware(
     constraints: Mapping[str, Any],
     timing_paths: Mapping[str, Any],
     executable: Optional[str] = None,
+    provider: str = ROUTE_TDM_PROVIDER,
 ) -> Dict[str, Any]:
+    if provider not in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
+        raise ValueError(f"unsupported timing-aware provider {provider!r}")
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
     )
@@ -697,7 +708,7 @@ def route_system_timing_aware(
         "schema": "emuflow.system-routes/v1",
         "design": assignment.get("design"),
         "platform": platform.name,
-        "provider": TLR_PROVIDER,
+        "provider": provider,
         "constraints": dict(constraints),
         "demands": model["demands"],
         "routes": routes,
@@ -726,7 +737,34 @@ def route_system_timing_aware(
                 (record["utilization"] for record in utilization), default=0.0
             ),
             "total_link_bit_hops": sum(usage.values()),
+            "estimated_worst_tdm_slack_ns": native["metrics"][
+                "estimated_worst_tdm_slack_ns"
+            ],
+            "estimated_worst_tdm_normalized_slack": native["metrics"][
+                "estimated_worst_tdm_normalized_slack"
+            ],
+            "estimated_max_tdm_ratio": native["metrics"][
+                "estimated_max_tdm_ratio"
+            ],
         },
+        **(
+            {
+                "joint_optimization": {
+                    "method": "tdm-contention-aware-rip-up-reroute-v1",
+                    "objective": (
+                        "lexicographic estimated TDM normalized slack, "
+                        "route normalized slack, utilization, bit-hops"
+                    ),
+                    "ratio_model": "quantized-domain-load-over-lanes",
+                    "reference": (
+                        "DAC 2020 routing-topology/TDM co-optimization and "
+                        "ASP-DAC 2021 hybrid routing/TDM assignment"
+                    ),
+                }
+            }
+            if provider == ROUTE_TDM_PROVIDER
+            else {}
+        ),
     }
 
 
@@ -737,10 +775,18 @@ def validate_timing_aware_system_routes(
     timing_paths: Mapping[str, Any],
 ) -> Dict[str, Any]:
     validation = validate_system_routes(assignment, platform, routes)
-    if routes.get("provider") != TLR_PROVIDER:
+    if routes.get("provider") not in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
         raise ValidationError(
-            f"routes.provider: expected {TLR_PROVIDER!r}"
+            "routes.provider: expected a supported timing-aware provider"
         )
+    if routes.get("provider") == ROUTE_TDM_PROVIDER:
+        joint = routes.get("joint_optimization")
+        if not isinstance(joint, dict) or joint.get("method") != (
+            "tdm-contention-aware-rip-up-reroute-v1"
+        ):
+            raise ValidationError(
+                "routes.joint_optimization: invalid co-optimization metadata"
+            )
     locks = routes.get("direction_locks")
     if not isinstance(locks, list):
         raise ValidationError("routes.direction_locks: expected an array")
@@ -785,6 +831,7 @@ def validate_timing_aware_system_routes(
         routes.get("constraints"), platform
     )
     route_delay_by_net = {}
+    route_by_net = {}
     ordered_arc_keys = sorted(
         build_directed_graph(platform, constraints)[1]
     )
@@ -822,7 +869,56 @@ def validate_timing_aware_system_routes(
                 "match independent edge-delay recomputation"
             )
         route_delay_by_net[route["net"]] = predicted_delay
+        route_by_net[route["net"]] = route
         route_signature_by_net[route["net"]] = sorted(signature)
+
+    # Independently reconstruct the route/TDM co-optimization proxy used by
+    # the native router.  This is deliberately separate from native output:
+    # a corrupt or incorrectly implemented optimizer cannot self-certify.
+    _, arcs, capacities = build_directed_graph(platform, constraints)
+    capacity_usage = {key: 0 for key in capacities}
+    for route in routes["routes"]:
+        width = int(route["width_bits"])
+        for edge in route["tree_edges"]:
+            key = _arc_key(edge["link"], edge["from"], edge["to"])
+            capacity_usage[arcs[key]["capacity_key"]] += width
+    link_by_id = {link.id: link for link in platform.links}
+    ratios = {}
+    quantum = constraints["tdm_ratio_quantum"]
+    for key, capacity in capacities.items():
+        lanes = link_by_id[capacity["link"]].data_lanes_per_direction
+        signals = capacity_usage[key]
+        if signals <= lanes:
+            ratio = 1
+        else:
+            raw = (signals + lanes - 1) // lanes
+            ratio = ((raw + quantum - 1) // quantum) * quantum
+            ratio = min(constraints["frame_slots"], ratio)
+        ratios[key] = ratio
+    route_tdm_delay_by_net = {}
+    for net, route in route_by_net.items():
+        graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
+        for edge in route["tree_edges"]:
+            key = _arc_key(edge["link"], edge["from"], edge["to"])
+            graph[edge["from"]].append(
+                (edge["to"], edge["link"], arcs[key]["capacity_key"])
+            )
+        delay_by_node = {route["source"]: 0.0}
+        queue = deque([route["source"]])
+        while queue:
+            node = queue.popleft()
+            for sink, link_id, capacity_key in graph[node]:
+                link = link_by_id[link_id]
+                delay_by_node[sink] = (
+                    delay_by_node[node]
+                    + _link_delay_ns(platform, link_id, constraints)
+                    + (1000.0 / link.fabric_clock_mhz)
+                    * (ratios[capacity_key] - 1)
+                )
+                queue.append(sink)
+        route_tdm_delay_by_net[net] = max(
+            delay_by_node[sink] for sink in route["sinks"]
+        )
 
     timing = routes.get("timing")
     if not isinstance(timing, dict) or timing.get("schema") != STA_PATHS_SCHEMA:
@@ -845,6 +941,8 @@ def validate_timing_aware_system_routes(
     max_period = timing_paths["normalization"]["max_clock_period_ns"]
     worst_slack = float("inf")
     worst_normalized = float("inf")
+    estimated_worst_tdm_slack = float("inf")
+    estimated_worst_tdm_normalized = float("inf")
     for expected, actual in zip(timing_paths["paths"], records):
         if actual.get("path") != expected["id"]:
             raise ValidationError("routes.timing.paths: order/identity mismatch")
@@ -900,6 +998,28 @@ def validate_timing_aware_system_routes(
             )
         worst_slack = min(worst_slack, slack)
         worst_normalized = min(worst_normalized, normalized)
+        tdm_delay = expected["fixed_delay_ns"] + sum(
+            route_tdm_delay_by_net[net]
+            for net in expected["cut_nets"]
+        )
+        tdm_slack = expected["clock_period_ns"] - tdm_delay
+        if tdm_slack >= 0.0:
+            tdm_normalized = (
+                tdm_slack
+                * expected["clock_period_ns"]
+                / (positive_scale * max_period)
+            )
+        else:
+            tdm_normalized = (
+                tdm_slack
+                / (negative_scale * expected["clock_period_ns"])
+            )
+        estimated_worst_tdm_slack = min(
+            estimated_worst_tdm_slack, tdm_slack
+        )
+        estimated_worst_tdm_normalized = min(
+            estimated_worst_tdm_normalized, tdm_normalized
+        )
     metrics = routes.get("metrics", {})
     if abs(metrics.get("worst_slack_ns", float("nan")) - worst_slack) > 1.0e-9:
         raise ValidationError(
@@ -915,9 +1035,22 @@ def validate_timing_aware_system_routes(
         raise ValidationError(
             "routes.metrics.worst_normalized_slack does not match timing paths"
         )
+    for key, expected in (
+        ("estimated_worst_tdm_slack_ns", estimated_worst_tdm_slack),
+        (
+            "estimated_worst_tdm_normalized_slack",
+            estimated_worst_tdm_normalized,
+        ),
+        ("estimated_max_tdm_ratio", max(ratios.values(), default=1)),
+    ):
+        if abs(float(metrics.get(key, float("nan"))) - expected) > 1.0e-9:
+            raise ValidationError(
+                f"routes.metrics.{key} does not match independent "
+                "route/TDM proxy recomputation"
+            )
     return {
         **validation,
-        "provider": TLR_PROVIDER,
+        "provider": routes["provider"],
         "timing_paths_original": timing_paths["compression"][
             "original_paths"
         ],
@@ -926,6 +1059,11 @@ def validate_timing_aware_system_routes(
         ],
         "worst_slack_ns": worst_slack,
         "worst_normalized_slack": worst_normalized,
+        "estimated_worst_tdm_slack_ns": estimated_worst_tdm_slack,
+        "estimated_worst_tdm_normalized_slack": (
+            estimated_worst_tdm_normalized
+        ),
+        "estimated_max_tdm_ratio": max(ratios.values(), default=1),
         "direction_locks": len(locks),
         "accepted_reroutes": metrics.get("accepted_reroutes"),
         "rolled_back_reroutes": metrics.get("rolled_back_reroutes"),

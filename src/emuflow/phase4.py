@@ -10,6 +10,7 @@ from .routing import (
     validate_system_routes,
 )
 from .timing_routing import (
+    ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
     load_sta_paths,
     route_system_timing_aware,
@@ -41,7 +42,7 @@ def run_phase4(
     )
     if provider is None:
         provider = (
-            TLR_PROVIDER
+            ROUTE_TDM_PROVIDER
             if timing_paths_path is not None
             else "negotiated-shortest-path-tree-v1"
         )
@@ -50,15 +51,17 @@ def run_phase4(
         if timing_paths_path is not None:
             raise ValueError(
                 "--timing-paths requires "
-                f"--provider {TLR_PROVIDER}"
+                f"--provider {ROUTE_TDM_PROVIDER}"
             )
         routes = route_system(assignment, platform, constraints)
         validation = validate_system_routes(assignment, platform, routes)
-    elif provider == TLR_PROVIDER:
+    elif provider in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
         if timing_paths_path is None:
             raise ValueError(
-                f"--provider {TLR_PROVIDER} requires --timing-paths"
+                f"--provider {provider} requires --timing-paths"
             )
+        if provider == TLR_PROVIDER:
+            constraints = {**constraints, "lambda_tdm": 0.0}
         timing_paths = load_sta_paths(
             timing_paths_path,
             demands_from_assignment(assignment, platform),
@@ -69,6 +72,7 @@ def run_phase4(
             constraints,
             timing_paths,
             executable=router,
+            provider=provider,
         )
         validation = validate_timing_aware_system_routes(
             assignment,
@@ -112,7 +116,7 @@ def validate_phase4(
     assignment = read_json(assignment_path)
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
-    if routes.get("provider") == TLR_PROVIDER:
+    if routes.get("provider") in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
         if timing_paths_path is None:
             raise ValueError(
                 f"validating {TLR_PROVIDER} requires --timing-paths"
