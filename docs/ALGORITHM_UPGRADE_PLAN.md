@@ -205,11 +205,13 @@ Each provider increment follows the same sequence:
 2. deterministic repeated run;
 3. small real RTL smoke test;
 4. medium connected RTL test;
-5. 731,313-cell NVDLA acceptance run on `proj169-2`;
+5. 731,313-cell NVDLA acceptance run on a configured large-design worker;
 6. frozen-baseline QoR table;
 7. independent downstream validation; and
-8. commit, push, and a phase validation record containing exact commands and
-   artifact hashes.
+8. commit and push only the reusable implementation, schemas, tests, and
+   project-level documentation.
 
+Exact commands, machine configuration, artifact hashes, raw measurements, and
+QoR tables are maintained as local experiment records and are not committed.
 The default provider changes only at step 8. Cross-stage feedback remains
 disabled until Phases 3-6 all have promoted academic providers.

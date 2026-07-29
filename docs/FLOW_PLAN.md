@@ -147,24 +147,6 @@ The first executable increment implements:
 - LOC/BEL XDC generation;
 - a real `xcvu3p` Vivado DCP/route validation harness.
 
-The executable increment has been validated on `proj169-2`:
-
-- Vivado 2025.2 exported an 8-by-8 window containing 64 real `xcvu3p`
-  SLICEL/SLICEM sites;
-- a CPU-only OpenPARF build parsed the generated Bookshelf library, nodes,
-  nets, sites, and configuration;
-- OpenPARF global placement plus UltraScale slot legalization produced a
-  legal placement for four LUT2 and four FDRE cells;
-- EmuFlow independently re-imported the result and checked completeness,
-  compatibility, and BEL collisions;
-- Vivado preserved all eight OpenPARF LOC/BEL constraints, routed the design
-  with zero unrouted nets, and wrote a routed DCP.
-
-For this deliberately tiny regression, OpenPARF's optional ISM detailed
-placement is disabled after legalization because the upstream pass raises a
-small-design allocation error. This does not replace the independent
-legality check or the final Vivado route validation.
-
 The initial compatibility policy exposes only `*6LUT` and primary `*FF` BELs.
 This is intentionally conservative: it avoids accepting a placement that
 requires LUT input sharing or control-set repair that the flow does not yet
@@ -218,15 +200,6 @@ partitioner, and imports the solution into the common assignment schema. The
 dependency-free greedy provider remains available explicitly as a fallback
 and A/B baseline.
 
-On `proj169-2`, TritonPart partitions the 121,984-cell PicoRV32 x32 design
-exactly 60,992/60,992 and partitions connected 3,812-cell PicoRV32 into 12
-atomic clusters with 140 legal register-output cut nets, 245 remote sink
-endpoints, and zero forbidden cuts. Independent checks recompute coverage,
-resources, capacities, constraints, and cut metrics. Repeated fixed-seed runs
-produce byte-identical assignments, and the connected result passes Phase
-4–6 routing, TDM, and cycle-equivalence validation. See
-`docs/PHASE3_VALIDATION.md`.
-
 Vivado/OpenSTA-derived timing weights, topology-aware repartition feedback,
 and resource-specific heterogeneous FPGA capacity ratios remain QoR
 extensions.
@@ -249,12 +222,9 @@ Acceptance:
 - the checker independently reconstructs link utilization.
 
 The dependency-free negotiated shortest-path baseline is implemented with
-versioned constraint, route, and report artifacts. On `proj169-2`, all 140
-connected-PicoRV32 cut nets route over the virtual full-duplex link with
-zero overload and independently verified reachability, direction, latency,
-acyclicity, and capacity. Four-FPGA diamond, multicast, unavailable-link,
-infeasible-capacity, and half-duplex tests cover non-trivial topology cases.
-See `docs/PHASE4_VALIDATION.md`.
+versioned constraint, route, and report artifacts. Four-FPGA diamond,
+multicast, unavailable-link, infeasible-capacity, and half-duplex tests cover
+non-trivial topology cases.
 
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 
@@ -276,9 +246,7 @@ Acceptance:
 The dependency-free lane/slot scheduler, independent collision/precedence
 checker, schedule ROM table, transport manifest, generic link/barrier RTL,
 Python event model, and generated SystemVerilog transport simulation are
-implemented. On `proj169-2`, all 140 connected-PicoRV32 bit-hops schedule
-without collision and complete by slot 6 of 32; 64 frames and 8,960 delivered
-sink values pass both transport models. See `docs/PHASE5_VALIDATION.md`.
+implemented.
 
 The joint G6 cycle-equivalence gate is now closed for the mapped PicoRV32
 LUT/FF primitive envelope by the Phase 6 split and shadow-endpoint model.
@@ -307,14 +275,6 @@ report artifacts. It generates schedule-specific transport mux/capture RTL,
 retains mapped primitive constant pins, and independently reconstructs the
 split to check exact instance coverage and both ends of every lane binding.
 
-On `proj169-2`, it split the connected 3,812-cell PicoRV32 design into
-3,463-cell and 349-cell logical netlists. All 140 scheduled bit-hops produced
-280 paired TX/RX endpoints and 140 matching lane-map records. A 64-cycle
-mapped LUT/FF equivalence run compared 102,208 FF state bits and 12,864
-top-output bits with zero mismatches. Both generated transport RTL modules
-compile cleanly. See `docs/PHASE6_VALIDATION.md`.
-
-The virtual platform produces 82 deliberately unbound IO-region anchors.
 Package-pin, bank, IOSTANDARD, reference-clock, and GT binding remains the
 hardware-BSP increment; it cannot be electrically validated until a real
 board support package is selected.
@@ -339,31 +299,17 @@ Acceptance:
 The Phase 7A placement increment is implemented. It synthesizes each generated
 transport module with real Yosys, stitches the mapped transport graph into its
 per-FPGA partition, and runs OpenPARF plus the independent Site/BEL checker on
-both results. Connected PicoRV32 produces legal 3,734-cell and 463-cell
-placements, including 385 real mapped transport cells. Two complete runs are
-byte-identical. See `docs/PHASE7A_VALIDATION.md`.
+both results.
 
 Physical IO-net preservation, routed DCP validation, timing, and bitstream
 generation remain separate gates and are not implied by the placement gate.
 
 Phase 7B now emits complete structural primitive Verilog for both merged
-partitions and applies the OpenPARF placements in Vivado 2025.2. The
-3,734-cell and 463-cell designs are fully routed with zero routing errors and
-zero DRC checks, producing two routed DCPs. See
-`docs/PHASE7B_VALIDATION.md`.
+partitions and applies the OpenPARF placements in Vivado.
 
 Phase 7C now integrates one lockstep frame controller per transport and
-formalizes the current pausible-clock runtime. Connected PicoRV32 completes
-its 140 scheduled bit-hops by slot 6 of 32, holds a 100 ns shadow-settle
-window, and advances at a nominal 7.8125 MHz virtual DUT rate. A 64-frame
-two-controller simulation with a three-cycle barrier stall passes.
-
-Both controller-augmented partitions are rerouted with a 4 ns fabric clock,
-128 ns nominal DUT clock, and schedule-derived fabric-to-DUT maximum delay.
-The 3,747-cell and 476-cell DCPs have zero unrouted nets, zero DRC violations,
-and worst fabric WNS of +2.642 ns; the worst fabric-to-DUT window slack is
-+98.017 ns. The final QoR report covers partitioning through routed timing.
-See `docs/PHASE7C_VALIDATION.md`.
+formalizes the current pausible-clock runtime. The final QoR artifact covers
+partitioning through routed timing.
 
 This closes the board-independent G0-G9 path for the current logic-only,
 single-virtual-clock envelope. Hardware BSP pin binding, source-synchronous
@@ -371,10 +317,8 @@ board timing, dedicated clock-buffer binding, bitstream generation, link
 training, and a golden hardware workload remain Phase 8/G10.
 
 Phase 7D seals that result with a versioned release manifest. It rehashes the
-pinned RTL and 18 critical artifacts, cross-checks every boundary from
-partition counts through routed timing, and records explicit G0-G9 evidence.
-Two audits of the real PicoRV32 run are byte-identical. See
-`docs/PHASE7D_VALIDATION.md`.
+pinned RTL and critical artifacts, cross-checks every boundary from partition
+counts through routed timing, and records explicit G0-G9 evidence.
 
 ### Phase 8 — Open synthesis/packing completion and hardware bring-up
 
@@ -394,8 +338,7 @@ seals a versioned hardware-BSP requirements artifact from the G0-G9 release,
 Phase 6 anchors, and virtual BoardDB. It expands physical lane endpoints,
 clock/link-channel bindings, per-FPGA bitstream slots, and pending G10 checks,
 then independently reconstructs and byte-reproduces the result. It explicitly
-reports `awaiting_hardware_bsp` and does not claim G10. See
-`docs/PHASE8A_VALIDATION.md`.
+reports `awaiting_hardware_bsp` and does not claim G10.
 
 Phase 8B begins after a board is selected: validate a hardware BoardDB/BSP,
 bind package pins/banks/IOSTANDARDs and clocking, apply board IO timing, and

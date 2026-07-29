@@ -60,7 +60,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Hardware BSP | Versioned requirements contract | Pending board selection |
 
 The board-independent flow has been exercised from small counter and CPU
-designs through a connected 731,313-cell NVDLA partition. Experiment records
+designs through a connected 731,313-cell NVDLA partition. Promotion gates
 include deterministic partitioning, independent legality checks, transport
 simulation, OpenPARF placement, and routed-checkpoint validation.
 
@@ -131,22 +131,18 @@ platforms/         board-independent virtual multi-FPGA platforms
 rtl/transport/     reusable TDM and barrier RTL
 benchmarks/        benchmark catalog and run configurations
 examples/          small reproducible RTL and artifact fixtures
-scripts/           provider integration and experiment utilities
+scripts/           provider integration and reusable flow utilities
 tests/             unit, adversarial, and flow-level regression tests
-docs/              architecture, algorithm plans, and validation records
+docs/              architecture, algorithm, and benchmark plans
 ```
 
 ## Documentation
 
 - [Flow architecture and phase contracts](docs/FLOW_PLAN.md)
 - [Academic algorithm upgrade plan](docs/ALGORITHM_UPGRADE_PLAN.md)
-- [Benchmark validation strategy](docs/BENCHMARK_VALIDATION_PLAN.md)
-- [Open-source RTL benchmark catalog](docs/RTL_BENCHMARKS.md)
-- [RePart Phase 3 validation](docs/PHASE3_REPART_VALIDATION.md)
-- [731k-cell NVDLA balanced-flow validation](docs/NVDLA_PARTITION_A_BALANCED_FLOW.md)
 
-Detailed phase and benchmark reports remain under `docs/`; the README is
-intentionally limited to the project-level overview.
+Machine-specific configurations, raw results, QoR tables, and experiment
+notes are intentionally kept outside the repository.
 
 ## Development status
 
