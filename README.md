@@ -1,239 +1,158 @@
 # EmuFlow
 
-EmuFlow is an open, board-abstracted multi-FPGA emulation flow targeting AMD
-UltraScale+ devices. The long-term flow covers logic synthesis, partitioning,
-board-level routing, TDM scheduling, lane/pin assignment, OpenPARF placement,
-FPGA routing, and vendor-assisted bitstream generation.
+EmuFlow is a research-oriented, open multi-FPGA emulation flow for AMD
+UltraScale+ devices. Its purpose is to compile one synchronous RTL design into
+multiple FPGA implementations and a deterministic communication fabric while
+keeping every stage inspectable, replaceable, and independently verifiable.
 
-The repository implements the board-independent path through Phase 7D plus
-the Phase 8A hardware-BSP readiness contract:
-frontend synthesis/import, multi-FPGA partitioning, system routing, TDM,
-per-FPGA transport generation, OpenPARF placement, Vivado routing, and the
-virtual runtime/timing contract:
+The project targets the complete path from logic synthesis to per-FPGA
+placement and routing:
 
-- versioned EmuIR and Virtual BoardDB formats;
-- strict validation without third-party Python dependencies;
-- Yosys JSON to EmuIR import;
-- UltraScale+ primitive resource classification;
-- a runnable Phase 1 pipeline and machine-readable report;
-- virtual two-FPGA and eight-FPGA-mesh `xcvu3p` reference platforms;
-- a four-FPGA `xcvu9p` mesh with 25% physical-implementation headroom;
-- ArchitectureDB and placement artifact validation;
-- Vivado Site/BEL inventory import for `xcvu3p-ffvc1517-2-e`;
-- EmuIR to OpenPARF Bookshelf export;
-- OpenPARF `x/y/z` to legal UltraScale+ Site/BEL conversion;
-- LOC/BEL XDC generation and a Vivado placement/route validation harness;
-- reproducible CPU-only OpenPARF build/run support for `proj169-2`;
-- a validated OpenPARF-to-Vivado routed-DCP smoke-test path.
-- combinationally safe sequential clustering and hard-macro/group closure;
-- OpenROAD/TritonPart multilevel hypergraph partitioning with cell/LUT/FF
-  weights, fixed constraints, and deterministic fixed-seed execution;
-- external RePart FPGA-aware multilevel partitioning with native topology and
-  multi-resource limits, fixed-seed determinism, and an independently checked
-  partition-only Phase 3A provider;
-- a dependency-free greedy partitioner retained only as a fallback/baseline;
-- independent G4 coverage, capacity, constraint, and cut-legality checking.
-- directed BoardDB routing with multicast trees and negotiated congestion;
-- independent G5 reachability, cycle, latency, direction, and capacity checks.
-- latency-aware lane/slot scheduling and independent collision/precedence checks;
-- generic TDM link/barrier RTL plus generated schedule-specific simulation.
-- exact per-FPGA logical netlists with cut-net shadow endpoints;
-- two-ended logical lane maps and virtual IO-region anchors;
-- generated per-FPGA transport mux/capture RTL;
-- mapped LUT/FF cycle-equivalence checking across the partition boundary.
-- real transport synthesis and per-FPGA placement-IR stitching;
-- independent OpenPARF placement and Site/BEL legality for both partitions.
-- structural primitive-netlist emission and routed-DCP validation;
-- integrated lockstep barrier controllers and pausible-clock semantics;
-- separate DUT, fabric, and fabric-to-DUT timing gates;
-- machine-readable end-to-end physical and emulation QoR.
-- a reproducible G0-G9 release manifest with source/artifact hashing.
-- a versioned hardware-BSP requirements artifact that keeps G10 explicitly
-  pending until a board is selected.
+```text
+RTL
+ └─ logic synthesis and EmuIR import
+     └─ sequential clustering and multi-resource partitioning
+         └─ board-level system routing
+             └─ TDM ratio, slot, and lane assignment
+                 └─ per-FPGA netlist and transport generation
+                     └─ logical/physical pin planning
+                         └─ OpenPARF placement
+                             └─ FPGA routing and implementation validation
+```
 
-See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
-phase boundaries, artifacts, and acceptance criteria. The exact remote
-toolchain and observed Phase 2 results are recorded in
-[docs/PHASE2_VALIDATION.md](docs/PHASE2_VALIDATION.md).
-The staged campaign that replaces the Phase 3-6 optimization cores with
-academic algorithms before enabling cross-stage co-optimization is defined in
-[docs/ALGORITHM_UPGRADE_PLAN.md](docs/ALGORITHM_UPGRADE_PLAN.md).
-Larger open-source RTL candidates and pinned fetch instructions are in
-[docs/RTL_BENCHMARKS.md](docs/RTL_BENCHMARKS.md). The ordered end-to-end
-campaign, from real RTL through forced multi-FPGA TDM and per-FPGA routing, is
-defined in
-[docs/BENCHMARK_VALIDATION_PLAN.md](docs/BENCHMARK_VALIDATION_PLAN.md).
+The flow is board-abstracted. Synthesis, partitioning, routing, TDM, logical
+pin assignment, and virtual-platform physical validation can run before a
+board is selected. Package-pin binding, board clocks, shell integration,
+bitstream generation, and hardware bring-up require a concrete board support
+package.
+
+## Why EmuFlow
+
+Commercial prototyping tools tightly couple their intermediate formats and
+optimization engines. EmuFlow instead uses versioned artifacts and independent
+checkers between stages. This makes it possible to:
+
+- study partitioning, system routing, TDM, pin assignment, and placement as
+  separate optimization problems;
+- compare academic algorithms without changing the rest of the flow;
+- reproduce quality-of-result experiments on real RTL designs;
+- validate feasibility and semantics independently of the optimizer that
+  produced a result; and
+- add a board later without rebuilding the board-independent frontend.
+
+## Current scope
+
+The current semantic model supports a single virtual DUT clock, synchronous
+reset, deterministic static communication schedules, and lockstep execution
+with a global frame barrier. Partition cuts are restricted to safe sequential
+boundaries; combinational loops and hard macros remain atomic.
+
+| Stage | Current implementation | Status |
+| --- | --- | --- |
+| Synthesis/import | Yosys JSON to versioned EmuIR | Implemented |
+| Partitioning | Greedy baseline, TritonPart, RePart Phase 3A | Implemented; algorithm upgrade in progress |
+| System routing | Directed multicast negotiated-congestion routing | Implemented; academic upgrade planned |
+| TDM | Legal lane/slot scheduling with precedence and collision checks | Implemented; academic upgrade planned |
+| Netlist/transport | Per-FPGA split, shadow endpoints, generated TDM RTL | Implemented |
+| Pin planning | Logical lanes and virtual I/O anchors | Implemented |
+| Placement | OpenPARF global placement plus UltraScale+ legalization | Implemented |
+| FPGA routing | Vivado validation backend | Implemented |
+| Hardware BSP | Versioned requirements contract | Pending board selection |
+
+The board-independent flow has been exercised from small counter and CPU
+designs through a connected 731,313-cell NVDLA partition. Experiment records
+include deterministic partitioning, independent legality checks, transport
+simulation, OpenPARF placement, and routed-checkpoint validation.
+
+EmuFlow is not yet a fully open UltraScale+ bitstream flow. Yosys, the
+partitioners, EmuFlow's system algorithms, and OpenPARF are open-source;
+Vivado currently remains the routing/bitstream validation backend.
+
+## Design principles
+
+- **Versioned boundaries:** EmuIR, BoardDB, ArchitectureDB, placement,
+  transport, lane-map, and BSP artifacts have explicit schemas.
+- **Independent correctness gates:** coverage, capacity, cut legality,
+  reachability, link capacity, scheduling, placement, routing, and cycle
+  behavior are checked separately from optimization.
+- **Provider-based algorithms:** optimization engines can be replaced while
+  preserving the surrounding artifact contracts and checkers.
+- **Deterministic experiments:** fixed inputs and seeds produce auditable
+  outputs with tool revisions, configurations, hashes, runtime, and memory.
+- **Board abstraction:** logical communication planning is separated from
+  package pins and hardware-specific shell constraints.
 
 ## Quick start
 
-The checked-in Yosys fixture lets Phase 1 run even when Yosys is not installed:
+EmuFlow requires Python 3.9 or newer and has no mandatory third-party Python
+dependencies for its core artifact and checker path.
 
 ```bash
-PYTHONPATH=src python3 -m emuflow phase1 \
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e .
+python3 -m unittest discover -s tests -v
+```
+
+Run the checked-in board-independent counter example:
+
+```bash
+emuflow phase1 \
   --yosys-json examples/yosys/counter.json \
   --top counter \
   --clock clk \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --out build/phase1-demo
+
+emuflow ir stats build/phase1-demo/design.emuir.json
 ```
 
-Inspect the generated design:
+The fixture avoids requiring Yosys for the first run. To synthesize RTL
+directly:
 
 ```bash
-PYTHONPATH=src python3 -m emuflow ir stats \
-  build/phase1-demo/design.emuir.json
-```
-
-Validate the virtual platform:
-
-```bash
-PYTHONPATH=src python3 -m emuflow platform validate \
-  platforms/virtual/xcvu3p_2fpga_p2p.json
-```
-
-Run the tests:
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
-
-## Phase 2 adapter smoke test
-
-The checked-in two-SLICE ArchitectureDB fixture exercises the physical
-artifact contracts without requiring Vivado or OpenPARF:
-
-```bash
-PYTHONPATH=src python3 -m emuflow phase2 \
-  --ir build/phase1-demo/design.emuir.json \
-  --arch examples/phase2/xcvu3p_slice_fixture.arch.json \
-  --out build/phase2-demo
-```
-
-Omitting `--openparf-result` intentionally uses the deterministic reference
-placer. It validates the adapter and checker, but is not reported as an
-OpenPARF run. To import a real OpenPARF result:
-
-```bash
-PYTHONPATH=src python3 -m emuflow phase2 \
-  --ir build/phase1-demo/design.emuir.json \
-  --arch build/xcvu3p.arch.json \
-  --openparf-result results/counter.pl \
-  --out build/phase2-openparf
-```
-
-## Using a real Yosys installation
-
-Phase 1 can invoke Yosys directly when it is installed:
-
-```bash
-PYTHONPATH=src python3 -m emuflow synth-yosys \
-  examples/rtl/counter.v \
+emuflow synth-yosys examples/rtl/counter.v \
   --top counter \
   --family xcup \
   --output build/counter.json \
   --log build/counter-yosys.log
 ```
 
-Then replace `examples/yosys/counter.json` in the Phase 1 command with
-`build/counter.json`.
+Use `emuflow --help` and `emuflow <command> --help` for the complete CLI.
+OpenPARF, TritonPart, RePart, and Vivado are optional external providers and
+must be installed separately when their stages are selected.
 
-## Running on `proj169-2`
+## Repository layout
 
-The remote wrapper handles the server's two-hop SSH configuration,
-uploads the current committed snapshot, bootstraps a project-local
-Yosys, and runs synthesis plus Phase 1:
-
-```bash
-scripts/remote/proj169-2.sh probe
-scripts/remote/proj169-2.sh tritonpart-bootstrap
-scripts/remote/proj169-2.sh repart-bootstrap
-scripts/remote/proj169-2.sh all
-scripts/remote/proj169-2.sh openparf-sync
-scripts/remote/proj169-2.sh openparf-build
-scripts/remote/proj169-2.sh phase2-all
-scripts/remote/proj169-2.sh serv-l1-all
-scripts/remote/proj169-2.sh picorv32-l2-all
+```text
+src/emuflow/       flow implementations, providers, and independent checkers
+schemas/           versioned artifact schemas
+platforms/         board-independent virtual multi-FPGA platforms
+rtl/transport/     reusable TDM and barrier RTL
+benchmarks/        benchmark catalog and run configurations
+examples/          small reproducible RTL and artifact fixtures
+scripts/           provider integration and experiment utilities
+tests/             unit, adversarial, and flow-level regression tests
+docs/              architecture, algorithm plans, and validation records
 ```
 
-See [docs/REMOTE_PROJ169_2.md](docs/REMOTE_PROJ169_2.md) for the command
-breakdown, remote paths, and environment overrides. The wrapper also
-discovers the Vivado 2025.2 installation under
-`/data2/vivado/2025.2/Vivado`.
+## Documentation
 
-The first real-RTL physical closure result, including SERV resource, routing,
-DRC, timing, and current semantic limitations, is recorded in
-[docs/SERV_L1_VALIDATION.md](docs/SERV_L1_VALIDATION.md).
-The larger 3812-cell PicoRV32 result and the control-set repair boundary are
-recorded in
-[docs/PICORV32_L2_VALIDATION.md](docs/PICORV32_L2_VALIDATION.md).
-The first 100k-scale result, a 121,984-cell PicoRV32 x32 run with a fully
-routed and DRC-clean checkpoint, is recorded in
-[docs/PICORV32_X32_100K_VALIDATION.md](docs/PICORV32_X32_100K_VALIDATION.md).
-The first genuine connected million-cell screen, the official NVDLA
-`NV_nvdla` top with 3,123,117 synthesized cells, and the measured 118 GB
-Yosys-JSON importer limit are recorded in
-[docs/NVDLA_NVDLAV1_VALIDATION.md](docs/NVDLA_NVDLAV1_VALIDATION.md).
-The connected NVDLA CACC partition experiment carries 731,313 EmuIR cells
-through TritonPart, system routing, TDM, virtual pin planning, netlist split,
-OpenPARF placement, and per-FPGA Vivado implementation. All four routed DCPs
-pass the independent Phase 7C gate with 731,387 mapped cells, one recorded
-Vivado-inserted BUFGCE, zero unrouted nets, zero DRC violations, and
-+1.435 ns worst WNS. Its Phase 7D audit rehashes 376 source dependencies and
-26 critical artifacts into a byte-reproducible G0-G9 manifest; exact results
-and the board-independent boundary are recorded in
-[docs/NVDLA_PARTITION_A_FULL_FLOW.md](docs/NVDLA_PARTITION_A_FULL_FLOW.md).
-The follow-on four-FPGA resource-bounded experiment adds register-input
-transport rounds, independently rejects infeasible TritonPart solutions,
-legalizes the low-cut solution against cell/LUT/FF upper bounds, and validates
-142,882 real cut nets through routing, TDM, splitting, four OpenPARF
-placements, and four Vivado routed checkpoints. Its final Phase 7C result
-covers 1,117,404 mapped cells plus 146 audited timing replicas and one BUFG,
-with zero unrouted nets, zero DRC violations, and +0.010 ns worst WNS. Its
-Phase 7D audit rehashes 376 source dependencies and 26 critical artifacts;
-two independent G0-G9 manifests are byte-identical at commit
-`63b05710466d35a64759ae51a1c51772e957c7ab`. Its algorithms, controls, and
-measured results are recorded in
-[docs/NVDLA_PARTITION_A_BALANCED_FLOW.md](docs/NVDLA_PARTITION_A_BALANCED_FLOW.md).
-Its Phase 8A readiness audit also checks 512 logical anchors against 512
-physical BoardDB lane endpoints and seals the remaining clock, channel,
-bitstream, and G10 requirements without claiming hardware closure.
-The intermediate connected VeeR EH1 CPU result is recorded in
-[docs/VEER_EH1_VALIDATION.md](docs/VEER_EH1_VALIDATION.md).
-The completed Phase 3 implementation and the real two-FPGA partition
-experiments are recorded in
-[docs/PHASE3_VALIDATION.md](docs/PHASE3_VALIDATION.md).
-The RePart Phase 3A algorithm integration, deterministic small-to-731k-cell
-campaign, frozen downstream comparison, and physical-backend checks are
-recorded in
-[docs/PHASE3_REPART_VALIDATION.md](docs/PHASE3_REPART_VALIDATION.md).
-The completed Phase 4 system router and the 140-net connected-PicoRV32
-experiment are recorded in
-[docs/PHASE4_VALIDATION.md](docs/PHASE4_VALIDATION.md).
-The Phase 5 schedule/transport implementation and 64-frame real-cut
-simulation are recorded in
-[docs/PHASE5_VALIDATION.md](docs/PHASE5_VALIDATION.md).
-The Phase 6 per-FPGA split, endpoint/lane agreement checks, generated
-transport RTL, and 64-cycle mapped PicoRV32 equivalence result are recorded in
-[docs/PHASE6_VALIDATION.md](docs/PHASE6_VALIDATION.md).
-The Phase 7A real transport overhead and two-partition OpenPARF placement
-results are recorded in
-[docs/PHASE7A_VALIDATION.md](docs/PHASE7A_VALIDATION.md).
-The Phase 7B structural-netlist export and two fully routed, DRC-clean Vivado
-checkpoints are recorded in
-[docs/PHASE7B_VALIDATION.md](docs/PHASE7B_VALIDATION.md).
-The Phase 7C integrated runtime controller, two-clock timing closure, and
-end-to-end PicoRV32 QoR are recorded in
-[docs/PHASE7C_VALIDATION.md](docs/PHASE7C_VALIDATION.md).
-The Phase 7D cross-phase G0-G9 audit and sealed release manifest are recorded
-in [docs/PHASE7D_VALIDATION.md](docs/PHASE7D_VALIDATION.md).
-The Phase 8A hardware-BSP requirements contract and real balanced-NVDLA
-validation are recorded in
-[docs/PHASE8A_VALIDATION.md](docs/PHASE8A_VALIDATION.md).
+- [Flow architecture and phase contracts](docs/FLOW_PLAN.md)
+- [Academic algorithm upgrade plan](docs/ALGORITHM_UPGRADE_PLAN.md)
+- [Benchmark validation strategy](docs/BENCHMARK_VALIDATION_PLAN.md)
+- [Open-source RTL benchmark catalog](docs/RTL_BENCHMARKS.md)
+- [RePart Phase 3 validation](docs/PHASE3_REPART_VALIDATION.md)
+- [731k-cell NVDLA balanced-flow validation](docs/NVDLA_PARTITION_A_BALANCED_FLOW.md)
 
-Phase 2 currently uses a conservative physical policy: only the eight `*6LUT`
-and eight primary `*FF` BELs in each SLICE are exposed. Paired `*5LUT`,
-secondary FF, carry/macro packing, FPGA Interchange physical-netlist patching,
-and RapidWright DCP conversion remain explicit follow-on work. The tiny
-eight-cell smoke test runs OpenPARF global placement and UltraScale
-legalization; its optional ISM detailed-placement pass is disabled because
-the upstream implementation assumes a production-scale design.
+Detailed phase and benchmark reports remain under `docs/`; the README is
+intentionally limited to the project-level overview.
+
+## Development status
+
+EmuFlow is an active research prototype. The current campaign is replacing
+the Phase 3–6 optimization cores with stronger academic algorithms one stage
+at a time. A provider is promoted only after deterministic real-design
+evaluation, independent correctness checks, downstream validation, and a
+recorded QoR comparison. Cross-stage co-optimization is intentionally deferred
+until those individual upgrades are complete.
