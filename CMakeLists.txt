@@ -242,6 +242,17 @@ if(EMUFLOW_BUILD_OPENPARF)
   )
 endif()
 
+# The native providers are individually parallel builds with high peak memory.
+# Preserve one-command behavior while avoiding three concurrent compiler farms.
+if(EMUFLOW_BUILD_YOSYS AND EMUFLOW_BUILD_OPENROAD)
+  add_dependencies(openroad_native yosys_native)
+endif()
+if(EMUFLOW_BUILD_OPENROAD AND EMUFLOW_BUILD_OPENPARF)
+  add_dependencies(openparf_native openroad_native)
+elseif(EMUFLOW_BUILD_YOSYS AND EMUFLOW_BUILD_OPENPARF)
+  add_dependencies(openparf_native yosys_native)
+endif()
+
 if(BUILD_TESTING)
   add_test(
     NAME emuflow_python_tests
