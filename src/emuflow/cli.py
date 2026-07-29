@@ -223,7 +223,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--balance-tolerance", type=float)
     phase3.add_argument(
         "--provider",
-        choices=("tritonpart", "greedy"),
+        choices=("repart", "tritonpart", "greedy"),
         default="tritonpart",
         help="partition provider (default: tritonpart)",
     )
@@ -270,6 +270,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "legalize a best-effort TritonPart solution against EmuFlow's "
             "independently checked multi-resource upper bounds"
         ),
+    )
+    phase3.add_argument(
+        "--repart",
+        help="EmuFlow-patched RePart executable",
+    )
+    phase3.add_argument(
+        "--repart-solution",
+        type=Path,
+        help="import a precomputed replication-disabled RePart solution",
+    )
+    phase3.add_argument(
+        "--repart-timeout-seconds",
+        type=int,
+        default=3600,
     )
 
     route_parser = subparsers.add_parser(
@@ -568,6 +582,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.tritonpart_repair_min_used_fpgas
             ),
             tritonpart_repair_balance=args.tritonpart_repair_balance,
+            repart=args.repart,
+            repart_solution=args.repart_solution,
+            repart_timeout_seconds=args.repart_timeout_seconds,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

@@ -17,6 +17,8 @@ OPENPARF_SOURCE="${EMUFLOW_OPENPARF_SOURCE:-$REPO_ROOT/../OpenPARF-src}"
 OPENPARF_REMOTE_ROOT="${EMUFLOW_OPENPARF_REMOTE_ROOT:-/home/ziyiwang21/work/tools}"
 OPENROAD_ROOT="${EMUFLOW_OPENROAD_ROOT:-/home/ziyiwang21/work/tools/openroad-2.0-17598-ga008522d8}"
 OPENROAD_PATH="${EMUFLOW_OPENROAD:-$OPENROAD_ROOT/bin/openroad}"
+REPART_ROOT="${EMUFLOW_REPART_ROOT:-/home/ziyiwang21/work/tools/repart-211a9d8}"
+REPART_PATH="${EMUFLOW_REPART:-$REPART_ROOT/bin/repart}"
 
 usage() {
   cat <<'EOF'
@@ -28,6 +30,8 @@ Commands:
   bootstrap  Select server Yosys or install a user-space fallback.
   tritonpart-bootstrap
              Install the pinned OpenROAD/TritonPart binary in user space.
+  repart-bootstrap
+             Build the pinned, replication-switchable RePart in user space.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -118,6 +122,8 @@ Environment overrides:
   EMUFLOW_OPENPARF_REMOTE_ROOT
   EMUFLOW_OPENROAD_ROOT
   EMUFLOW_OPENROAD
+  EMUFLOW_REPART_ROOT
+  EMUFLOW_REPART
 EOF
 }
 
@@ -171,13 +177,17 @@ remote_script() {
   local vivado_root_quoted
   local yosys_path_quoted
   local openroad_path_quoted
+  local repart_root_quoted
+  local repart_path_quoted
   local command
   remote_dir_quoted="$(shell_quote "$REMOTE_DIR")"
   vivado_root_quoted="$(shell_quote "$VIVADO_ROOT")"
   yosys_path_quoted="$(shell_quote "$YOSYS_PATH")"
   openroad_path_quoted="$(shell_quote "$OPENROAD_PATH")"
+  repart_root_quoted="$(shell_quote "$REPART_ROOT")"
+  repart_path_quoted="$(shell_quote "$REPART_PATH")"
   command="$(inner_ssh_command \
-    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted $vivado_root_quoted $yosys_path_quoted $openroad_path_quoted")"
+    "/bin/bash --noprofile --norc -s -- $remote_dir_quoted $vivado_root_quoted $yosys_path_quoted $openroad_path_quoted $repart_root_quoted $repart_path_quoted")"
   gateway_ssh "$command"
 }
 
@@ -188,6 +198,7 @@ remote_dir="$1"
 vivado_root="$2"
 yosys_path="$3"
 openroad_path="$4"
+repart_path="$6"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 printf 'host=%s\n' "$(hostname)"
@@ -205,6 +216,11 @@ if [ -x "$openroad_path" ]; then
   "$openroad_path" -version
 else
   printf 'openroad=MISSING\n'
+fi
+if [ -x "$repart_path" ]; then
+  printf 'repart=%s\n' "$repart_path"
+else
+  printf 'repart=MISSING\n'
 fi
 if command -v yosys >/dev/null 2>&1; then
   yosys_bin="$(command -v yosys)"
@@ -329,6 +345,61 @@ EOF
 "$openroad_path" -exit "$probe_tcl" > "$root/probe_tritonpart.log"
 grep -q triton_part_hypergraph "$root/probe_tritonpart.log"
 printf 'tritonpart=%s\n' "$openroad_path"
+REMOTE
+}
+
+repart_bootstrap() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+repart_root="$5"
+repart_path="$6"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+upstream="https://github.com/Welement-zyf/RePart.git"
+commit="211a9d8fd526576387cad7ac6dd3531354aeb31c"
+source="$repart_root/source"
+patch="$remote_dir/third_party/patches/repart-phase3a-disable-replication.patch"
+
+command -v git >/dev/null
+command -v g++ >/dev/null
+test -f "$patch"
+mkdir -p "$repart_root" "$(dirname "$repart_path")"
+
+if [ -d "$source/.git" ] &&
+   [ "$(git -C "$source" rev-parse HEAD)" != "$commit" ]; then
+  stale="$source.stale.$(date +%Y%m%d%H%M%S)"
+  mv "$source" "$stale"
+fi
+if [ ! -d "$source/.git" ]; then
+  git clone "$upstream" "$source"
+fi
+git -C "$source" fetch --depth 1 origin "$commit"
+git -C "$source" checkout --detach "$commit"
+if git -C "$source" apply --reverse --check "$patch" >/dev/null 2>&1; then
+  :
+else
+  git -C "$source" apply --check "$patch"
+  git -C "$source" apply "$patch"
+fi
+
+g++ -Ofast -DNDEBUG \
+  -o "$repart_path.build" "$source/RePart/partitioner.cpp" \
+  -I"$source/boost_1_86_0/include" \
+  -L"$source/boost_1_86_0/lib" \
+  -static -lboost_thread -lboost_system -pthread
+mv "$repart_path.build" "$repart_path"
+chmod +x "$repart_path"
+printf '%s\n' "$commit" > "$repart_root/upstream.commit"
+
+set +e
+usage="$("$repart_path" 2>&1)"
+status=$?
+set -e
+test "$status" -ne 0
+printf '%s\n' "$usage" | grep -q -- '\[-r 0|1\]'
+printf 'repart=%s\n' "$repart_path"
+printf 'upstream_commit=%s\n' "$(cat "$repart_root/upstream.commit")"
 REMOTE
 }
 
@@ -2533,6 +2604,9 @@ case "$command" in
     ;;
   tritonpart-bootstrap)
     tritonpart_bootstrap
+    ;;
+  repart-bootstrap)
+    repart_bootstrap
     ;;
   test)
     test_remote
