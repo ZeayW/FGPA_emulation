@@ -52,6 +52,9 @@ See [docs/FLOW_PLAN.md](docs/FLOW_PLAN.md) for the complete architecture,
 phase boundaries, artifacts, and acceptance criteria. The exact remote
 toolchain and observed Phase 2 results are recorded in
 [docs/PHASE2_VALIDATION.md](docs/PHASE2_VALIDATION.md).
+The staged campaign that replaces the Phase 3-6 optimization cores with
+academic algorithms before enabling cross-stage co-optimization is defined in
+[docs/ALGORITHM_UPGRADE_PLAN.md](docs/ALGORITHM_UPGRADE_PLAN.md).
 Larger open-source RTL candidates and pinned fetch instructions are in
 [docs/RTL_BENCHMARKS.md](docs/RTL_BENCHMARKS.md). The ordered end-to-end
 campaign, from real RTL through forced multi-FPGA TDM and per-FPGA routing, is
