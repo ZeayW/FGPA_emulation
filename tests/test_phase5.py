@@ -13,6 +13,7 @@ from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints, route_system
 from emuflow.tdm import (
     build_tdm_schedule,
+    reconstruct_tdm_schedule_timing,
     schedule_to_systemverilog_testbench,
     simulate_tdm_schedule,
     validate_tdm_schedule,
@@ -132,7 +133,7 @@ class Phase5Test(unittest.TestCase):
                     "clock_domain": "fast",
                     "clock_period_ns": 20.0,
                     "fixed_delay_ns": 12.0,
-                    "cut_nets": ["n00"],
+                    "cut_nets": ["n16"],
                 },
                 {
                     "path": "relaxed",
@@ -191,15 +192,22 @@ class Phase5Test(unittest.TestCase):
                 ]
             )
             by_net = {hop["net"]: hop for hop in plan["hops"]}
-            self.assertEqual(by_net["n00"]["discrete_ratio"], 1)
+            self.assertEqual(by_net["n16"]["discrete_ratio"], 1)
             self.assertEqual(by_net["n01"]["discrete_ratio"], 16)
             self.assertNotEqual(
-                by_net["n00"]["lane"], by_net["n01"]["lane"]
+                by_net["n16"]["lane"], by_net["n01"]["lane"]
             )
 
+            baseline_schedule = build_tdm_schedule(routes, platform)
+            baseline_timing = reconstruct_tdm_schedule_timing(
+                routes, platform, baseline_schedule
+            )
             schedule = build_tdm_schedule(routes, platform, plan)
             validation = validate_tdm_schedule(
                 routes, platform, schedule, plan
+            )
+            timing_validation = reconstruct_tdm_schedule_timing(
+                routes, platform, schedule
             )
             simulation = simulate_tdm_schedule(
                 routes, schedule, frames=7
@@ -207,16 +215,31 @@ class Phase5Test(unittest.TestCase):
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(validation["ratio_constrained_hops"], 17)
             self.assertEqual(validation["round_barriers"], 1)
+            self.assertEqual(timing_validation["status"], "pass")
+            self.assertEqual(timing_validation["timing_paths"], 2)
+            self.assertEqual(
+                timing_validation["worst_path"], "critical"
+            )
+            self.assertAlmostEqual(
+                timing_validation["worst_delay_ns"], 16.0
+            )
+            self.assertAlmostEqual(
+                timing_validation["worst_slack_ns"], 4.0
+            )
+            self.assertGreater(
+                timing_validation["worst_normalized_slack"],
+                baseline_timing["worst_normalized_slack"],
+            )
             self.assertEqual(simulation["delivered_sink_values"], 119)
             entry_by_net = {
                 entry["net"]: entry for entry in schedule["entries"]
             }
             self.assertEqual(
-                entry_by_net["n00"]["lane"], by_net["n00"]["lane"]
+                entry_by_net["n16"]["lane"], by_net["n16"]["lane"]
             )
             self.assertLess(
-                entry_by_net["n00"]["ratio_wait_slots"],
-                entry_by_net["n00"]["tdm_ratio"],
+                entry_by_net["n16"]["ratio_wait_slots"],
+                entry_by_net["n16"]["tdm_ratio"],
             )
 
             broken_plan = copy.deepcopy(plan)
@@ -262,6 +285,10 @@ class Phase5Test(unittest.TestCase):
             self.assertEqual(
                 report["optimization_provider"],
                 "lagrangian-kkt-timing-aware-v1",
+            )
+            self.assertEqual(
+                report["timing_validation"],
+                timing_validation,
             )
             self.assertTrue(
                 (root / "phase5" / "ratio_plan.json").is_file()

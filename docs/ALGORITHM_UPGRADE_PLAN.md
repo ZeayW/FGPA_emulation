@@ -207,6 +207,12 @@ The current successor-set earliest-slot scheduler and its independent
 collision, precedence, round-barrier, and value-transport checkers remain the
 exact schedule realization and validation layer.
 
+The exact schedule checker also reconstructs every imported STA path from the
+concrete `slot - ready_slot` wait on each routed hop. This gives the baseline
+and academic providers the same realized-delay metric; the analytical ratio
+slack remains a conservative service-window bound rather than being compared
+against a baseline that has no ratio plan.
+
 The implementation is now available as
 `lagrangian-kkt-timing-aware-v1`. Its optimization kernel is the first-party
 C++17 target `emuflow_tdm_ratio_optimizer`, compiled by the root CMake

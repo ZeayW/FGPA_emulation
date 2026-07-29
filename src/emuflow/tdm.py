@@ -792,6 +792,105 @@ def validate_tdm_schedule(
     }
 
 
+def reconstruct_tdm_schedule_timing(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    schedule: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Reconstruct scheduled transport delay on every imported STA path.
+
+    This deliberately uses the concrete slot assignment rather than a TDM
+    ratio bound, so baseline and academic schedules are evaluated with the
+    same timing model.
+    """
+    from .tdm_ratio import _normalized_slack, _prepare_model
+
+    model = _prepare_model(routes, platform)
+    entries = {}
+    for entry in schedule["entries"]:
+        key = _hop_key(
+            entry["demand"],
+            entry["link"],
+            entry["from"],
+            entry["to"],
+        )
+        if key in entries:
+            raise ValidationError(
+                f"schedule timing reconstruction found duplicate hop {key}"
+            )
+        entries[key] = entry
+
+    records = []
+    for timing_path in model["timing_paths"]:
+        delay_ns = timing_path["fixed_delay_ns"]
+        for hop_index in timing_path["hops"]:
+            hop = model["hops"][hop_index]
+            key = _hop_key(
+                hop["demand"],
+                hop["link"],
+                hop["from"],
+                hop["to"],
+            )
+            if key not in entries:
+                raise ValidationError(
+                    "schedule timing reconstruction is missing routed hop "
+                    f"{key}"
+                )
+            entry = entries[key]
+            wait_slots = entry["slot"] - entry["ready_slot"]
+            if wait_slots < 0:
+                raise ValidationError(
+                    "schedule timing reconstruction found a negative wait "
+                    f"for hop {key}"
+                )
+            delay_ns += (
+                hop["base_delay_ns"]
+                + hop["beta_ns"] * wait_slots
+            )
+        slack_ns = timing_path["clock_period_ns"] - delay_ns
+        normalized_slack = _normalized_slack(
+            timing_path["clock_period_ns"],
+            slack_ns,
+            model["normalization"],
+        )
+        records.append(
+            {
+                "path": timing_path["id"],
+                "delay_ns": delay_ns,
+                "slack_ns": slack_ns,
+                "normalized_slack": normalized_slack,
+            }
+        )
+
+    if not records:
+        raise ValidationError(
+            "schedule timing reconstruction has no timing paths"
+        )
+    records.sort(
+        key=lambda record: (
+            record["normalized_slack"],
+            record["path"],
+        )
+    )
+    worst = records[0]
+    normalized = sorted(
+        record["normalized_slack"] for record in records
+    )
+    return {
+        "status": "pass",
+        "timing_paths": len(records),
+        "worst_path": worst["path"],
+        "worst_delay_ns": worst["delay_ns"],
+        "worst_slack_ns": worst["slack_ns"],
+        "worst_normalized_slack": worst["normalized_slack"],
+        "negative_slack_paths": sum(
+            record["slack_ns"] < 0.0 for record in records
+        ),
+        "p01_normalized_slack": normalized[len(normalized) // 100],
+        "median_normalized_slack": normalized[len(normalized) // 2],
+    }
+
+
 def simulate_tdm_schedule(
     routes: Mapping[str, Any],
     schedule: Mapping[str, Any],

@@ -7,6 +7,7 @@ from .tdm import (
     TDM_BASELINE_PROVIDER,
     build_tdm_schedule,
     build_transport_manifest,
+    reconstruct_tdm_schedule_timing,
     schedule_to_systemverilog_testbench,
     schedule_to_tsv,
     simulate_tdm_schedule,
@@ -70,6 +71,11 @@ def run_phase5(
     validation = validate_tdm_schedule(
         routes, platform, schedule, ratio_plan
     )
+    timing_validation = (
+        reconstruct_tdm_schedule_timing(routes, platform, schedule)
+        if isinstance(routes.get("timing"), dict)
+        else None
+    )
     simulation = simulate_tdm_schedule(
         routes,
         schedule,
@@ -92,6 +98,11 @@ def run_phase5(
             else {}
         ),
         "validation": validation,
+        **(
+            {"timing_validation": timing_validation}
+            if timing_validation is not None
+            else {}
+        ),
         "simulation": simulation,
         "artifacts": {
             "schedule": "schedule.json",
@@ -130,13 +141,21 @@ def validate_phase5(
     schedule_path: Path,
     ratio_plan_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    return validate_tdm_schedule(
-        read_json(routes_path),
-        Platform.load(platform_path),
-        read_json(schedule_path),
+    routes = read_json(routes_path)
+    platform = Platform.load(platform_path)
+    schedule = read_json(schedule_path)
+    validation = validate_tdm_schedule(
+        routes,
+        platform,
+        schedule,
         (
             read_json(ratio_plan_path)
             if ratio_plan_path is not None
             else None
         ),
     )
+    if isinstance(routes.get("timing"), dict):
+        validation["timing"] = reconstruct_tdm_schedule_timing(
+            routes, platform, schedule
+        )
+    return validation

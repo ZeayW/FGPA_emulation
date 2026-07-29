@@ -161,6 +161,9 @@ The academic Phase 5 provider is likewise rooted in editable C++17 source at
 versioned timing model, realizes the optimized ratio/lane groups as an exact
 slot schedule, and independently checks capacity, ratio legality, timing,
 collisions, precedence, round barriers, and transported values.
+For an apples-to-apples QoR comparison, it additionally reconstructs path
+delay from each concrete scheduled wait for both the baseline and academic
+providers; ratio-based slack is reported separately as a conservative bound.
 
 Phase 6A uses the same source boundary. The C++17 planner at
 `src/native/placement_aware_pin_planner.cpp` forms the minimum feasible number
