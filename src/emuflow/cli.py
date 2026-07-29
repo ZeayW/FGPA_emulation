@@ -7,6 +7,12 @@ from typing import Any, Dict, Optional, Sequence
 from .architecture import ArchitectureDB
 from .benchmark import run_benchmark
 from .bsp import run_phase8a
+from .cross_stage import (
+    evaluate_cross_stage_candidate,
+    run_cross_stage_optimization,
+    validate_cross_stage_candidate,
+    validate_cross_stage_report,
+)
 from .errors import EmuFlowError
 from .io import read_json, write_json
 from .ir import EmuIR
@@ -492,6 +498,136 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pair-pressure-weight", type=float, default=1.0
     )
 
+    cross_stage = subparsers.add_parser(
+        "cross-stage",
+        help="checked Phase 3--5 feedback optimization operations",
+    )
+    cross_stage_subparsers = cross_stage.add_subparsers(
+        dest="cross_stage_command", required=True
+    )
+    cross_stage_evaluate = cross_stage_subparsers.add_parser(
+        "evaluate", help="score one partition/route/schedule candidate"
+    )
+    cross_stage_evaluate.add_argument(
+        "--database", type=Path, required=True
+    )
+    cross_stage_evaluate.add_argument(
+        "--assignment", type=Path, required=True
+    )
+    cross_stage_evaluate.add_argument("--routes", type=Path, required=True)
+    cross_stage_evaluate.add_argument("--schedule", type=Path, required=True)
+    cross_stage_evaluate.add_argument(
+        "--ratio-plan", type=Path, required=True
+    )
+    cross_stage_evaluate.add_argument(
+        "--platform", type=Path, required=True
+    )
+    cross_stage_evaluate.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    cross_stage_validate = cross_stage_subparsers.add_parser(
+        "validate-candidate",
+        help="independently reconstruct one candidate score",
+    )
+    cross_stage_validate.add_argument("candidate", type=Path)
+    cross_stage_validate.add_argument(
+        "--database", type=Path, required=True
+    )
+    cross_stage_validate.add_argument(
+        "--assignment", type=Path, required=True
+    )
+    cross_stage_validate.add_argument(
+        "--routes", type=Path, required=True
+    )
+    cross_stage_validate.add_argument(
+        "--schedule", type=Path, required=True
+    )
+    cross_stage_validate.add_argument(
+        "--ratio-plan", type=Path, required=True
+    )
+    cross_stage_validate.add_argument(
+        "--platform", type=Path, required=True
+    )
+    cross_stage_report_validate = cross_stage_subparsers.add_parser(
+        "validate-report",
+        help="independently reconstruct all successful candidates",
+    )
+    cross_stage_report_validate.add_argument("report", type=Path)
+    cross_stage_report_validate.add_argument(
+        "--ir", type=Path, required=True
+    )
+    cross_stage_report_validate.add_argument(
+        "--database", type=Path, required=True
+    )
+    cross_stage_report_validate.add_argument(
+        "--platform", type=Path, required=True
+    )
+    cross_stage_optimize = cross_stage_subparsers.add_parser(
+        "optimize",
+        help="iterate TDM feedback through partition, routing, and scheduling",
+    )
+    cross_stage_optimize.add_argument("--ir", type=Path, required=True)
+    cross_stage_optimize.add_argument(
+        "--platform", type=Path, required=True
+    )
+    cross_stage_optimize.add_argument(
+        "--database", type=Path, required=True
+    )
+    cross_stage_optimize.add_argument(
+        "--initial-assignment", type=Path, required=True
+    )
+    cross_stage_optimize.add_argument("--out", type=Path, required=True)
+    cross_stage_optimize.add_argument(
+        "--phase3-constraints", type=Path
+    )
+    cross_stage_optimize.add_argument(
+        "--route-constraints", type=Path
+    )
+    cross_stage_optimize.add_argument(
+        "--phase3-provider",
+        choices=("repart-replication", "repart", "tritonpart"),
+        default="repart-replication",
+    )
+    cross_stage_optimize.add_argument(
+        "--max-outer-iterations", type=int, default=1
+    )
+    cross_stage_optimize.add_argument("--seed", type=int, default=0)
+    cross_stage_optimize.add_argument("--min-used-fpgas", type=int)
+    cross_stage_optimize.add_argument(
+        "--balance-tolerance", type=float
+    )
+    cross_stage_optimize.add_argument("--openroad")
+    cross_stage_optimize.add_argument("--repart")
+    cross_stage_optimize.add_argument(
+        "--partition-timeout-seconds", type=int, default=3600
+    )
+    cross_stage_optimize.add_argument("--router")
+    cross_stage_optimize.add_argument("--frame-slots", type=int)
+    cross_stage_optimize.add_argument(
+        "--route-max-iterations", type=int
+    )
+    cross_stage_optimize.add_argument("--ratio-optimizer")
+    cross_stage_optimize.add_argument("--feedback-optimizer")
+    cross_stage_optimize.add_argument(
+        "--simulation-frames", type=int, default=4
+    )
+    cross_stage_optimize.add_argument(
+        "--ratio-max-iterations", type=int, default=500
+    )
+    cross_stage_optimize.add_argument("--max-ratio", type=int)
+    cross_stage_optimize.add_argument(
+        "--ratio-quantum", type=int, default=8
+    )
+    cross_stage_optimize.add_argument(
+        "--post-refinement-iterations", type=int, default=200
+    )
+    cross_stage_optimize.add_argument(
+        "--ratio-convergence", type=float, default=1.0e-9
+    )
+    cross_stage_optimize.add_argument(
+        "--pair-pressure-weight", type=float, default=1.0
+    )
+
     pin_plan_parser = subparsers.add_parser(
         "pin-plan",
         help="placement-aware TDM grouping and virtual pin planning",
@@ -919,6 +1055,71 @@ def _dispatch(args: argparse.Namespace) -> int:
             executable=args.optimizer,
             pair_pressure_weight=args.pair_pressure_weight,
         )
+        _print_json(report)
+        return 0
+
+    if args.command == "cross-stage":
+        if args.cross_stage_command == "evaluate":
+            report = evaluate_cross_stage_candidate(
+                args.database,
+                args.assignment,
+                args.routes,
+                args.schedule,
+                args.ratio_plan,
+                args.platform,
+                args.output,
+            )
+        elif args.cross_stage_command == "validate-candidate":
+            report = validate_cross_stage_candidate(
+                args.candidate,
+                args.database,
+                args.assignment,
+                args.routes,
+                args.schedule,
+                args.ratio_plan,
+                args.platform,
+            )
+        elif args.cross_stage_command == "validate-report":
+            report = validate_cross_stage_report(
+                args.report,
+                args.ir,
+                args.database,
+                args.platform,
+            )
+        else:
+            report = run_cross_stage_optimization(
+                ir_path=args.ir,
+                platform_path=args.platform,
+                database_path=args.database,
+                initial_assignment_path=args.initial_assignment,
+                output_dir=args.out,
+                phase3_constraints_path=args.phase3_constraints,
+                route_constraints_path=args.route_constraints,
+                phase3_provider=args.phase3_provider,
+                max_outer_iterations=args.max_outer_iterations,
+                seed=args.seed,
+                min_used_fpgas=args.min_used_fpgas,
+                balance_tolerance=args.balance_tolerance,
+                openroad=args.openroad,
+                repart=args.repart,
+                partition_timeout_seconds=(
+                    args.partition_timeout_seconds
+                ),
+                router=args.router,
+                frame_slots=args.frame_slots,
+                route_max_iterations=args.route_max_iterations,
+                ratio_optimizer=args.ratio_optimizer,
+                feedback_optimizer=args.feedback_optimizer,
+                simulation_frames=args.simulation_frames,
+                ratio_max_iterations=args.ratio_max_iterations,
+                max_ratio=args.max_ratio,
+                ratio_quantum=args.ratio_quantum,
+                post_refinement_iterations=(
+                    args.post_refinement_iterations
+                ),
+                ratio_convergence=args.ratio_convergence,
+                pair_pressure_weight=args.pair_pressure_weight,
+            )
         _print_json(report)
         return 0
 

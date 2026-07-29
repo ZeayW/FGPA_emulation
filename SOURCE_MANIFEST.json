@@ -89,7 +89,10 @@
       "source_paths": [
         "src/native/tdm_partition_feedback.cpp",
         "src/emuflow/partition_feedback.py",
+        "src/emuflow/cross_stage.py",
         "schemas/partition-net-weights-v1.schema.json",
+        "schemas/cross-stage-candidate-v1.schema.json",
+        "schemas/cross-stage-report-v1.schema.json",
         "third_party/repart/RePart"
       ],
       "build_targets": [

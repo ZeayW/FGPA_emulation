@@ -290,6 +290,22 @@ The route/TDM provider is selected automatically when a timing-path artifact
 is supplied. With no STA artifact, the dependency-free
 `negotiated-shortest-path-tree-v1` remains the explicit feasibility fallback.
 
+### Phase 3--5 checked feedback loop
+
+`emuflow cross-stage optimize` treats partitioning, route/TDM
+co-optimization, and exact TDM scheduling as one candidate transaction. The
+incumbent schedule is converted into checked channel-pressure net weights,
+the source-built partitioner generates a new assignment, and the frozen
+partition-independent STA database is projected onto that assignment before
+the Phase 4 and Phase 5 kernels run.
+
+Acceptance uses the concrete schedule rather than the analytical routing
+proxy. The candidate checker reconstructs transport delay for every path in
+the global database; paths with no candidate cut nets remain in the objective
+with their fixed delay. A lexicographically worse, tied, infeasible, or
+unchecked candidate is rolled back. The report checker reconstructs all
+successful candidates and replays the acceptance sequence.
+
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 
 Implement:

@@ -339,16 +339,25 @@ database onto its own cut-net set before Phase 4 and Phase 5. The projection
 reports both covered and uncovered cut nets, so candidate timing coverage
 cannot change silently.
 
-The first complete outer loop will:
+The first complete outer loop is exposed as `emuflow cross-stage optimize`:
 
 1. route and schedule the accepted partition;
 2. derive checked channel-usage/timing net weights;
 3. rerun RePart with those weights;
 4. project the frozen STA database onto the candidate cuts;
 5. rerun the accepted route and TDM providers; and
-6. accept or roll back using a lexicographic objective of realized worst
-   normalized slack, minimum legal frame length, maximum FPGA/link
-   utilization, cut endpoints, and replica cost.
+6. independently reconstruct all frozen database paths from the concrete
+   schedule, including paths that no longer cross an FPGA boundary; and
+7. accept or roll back using realized worst normalized slack, total negative
+   normalized slack, negative-path count, maximum TDM ratio, completion slot,
+   link bit-hops, cut bits, and replica LUT cost in lexicographic order.
+
+`emuflow.cross-stage-candidate/v1` hashes all candidate inputs and records the
+all-path objective. `emuflow.cross-stage-report/v1` records each accepted or
+rejected iteration and the selected incumbent. The report checker reloads the
+EmuIR, clusters, assignments, routes, ratio plans, and schedules; reconstructs
+each Phase 3 legality result and all-path score; and replays every acceptance
+decision.
 
 The loop becomes a default only after deterministic small, medium, and NVDLA
 comparisons against the frozen single-stage flow.

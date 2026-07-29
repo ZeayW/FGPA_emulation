@@ -161,8 +161,17 @@ absolute-slack and normalized-slack extrema separately across clock domains.
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The Vivado adapter records ordered stable EmuIR net identities for
 each global path; `emuflow sta project-path-database` projects the same
-database onto every candidate partition's cut nets. This prevents an outer
-optimization loop from comparing candidates with different timing samples.
+database onto every candidate partition's cut nets. Slack normalization is
+also frozen once at database import, so candidates cannot change either the
+timing sample or its scale.
+
+`emuflow cross-stage optimize` closes the checked Phase 3--5 feedback loop:
+it derives TDM/channel-pressure weights, reruns the selected source-built
+partitioner, projects the frozen timing database, reruns the accepted routing
+and scheduling kernels, and applies deterministic lexicographic
+accept/rollback. Its independent candidate scorer evaluates every database
+path, including paths made local by a candidate partition, from the concrete
+lane/slot schedule.
 
 The academic Phase 5 provider is likewise rooted in editable C++17 source at
 `src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the
@@ -263,9 +272,8 @@ notes are intentionally kept outside the repository.
 
 ## Development status
 
-EmuFlow is an active research prototype. The current campaign is replacing
-the Phase 3–6 optimization cores with stronger academic algorithms one stage
-at a time. A provider is promoted only after deterministic real-design
-evaluation, independent correctness checks, downstream validation, and a
-recorded QoR comparison. Cross-stage co-optimization is intentionally deferred
-until those individual upgrades are complete.
+EmuFlow is an active research prototype. The Phase 3–6 academic providers are
+kept behind independent artifact checkers and deterministic promotion gates.
+The current campaign evaluates their checked Phase 3--5 outer feedback loop;
+cross-stage behavior is promoted only after small, medium, and large
+real-design comparisons against the frozen single-stage flow.
