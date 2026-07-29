@@ -54,19 +54,36 @@ class StaAdapterTest(unittest.TestCase):
                 bytes.fromhex(map_lines[1].split("\t")[1]).decode(),
                 net_ids[0],
             )
+            rows = [
+                [
+                    "path db 0".encode().hex(),
+                    "clk".encode().hex(),
+                    "10.0",
+                    "-0.5",
+                    "9.5",
+                    net_ids[0].encode().hex(),
+                ],
+                [
+                    "path db 1".encode().hex(),
+                    "clk".encode().hex(),
+                    "5.0",
+                    "-2.0",
+                    "4.0",
+                    net_ids[1].encode().hex(),
+                ],
+                [
+                    "path db 2".encode().hex(),
+                    "clk".encode().hex(),
+                    "8.0",
+                    "1.0",
+                    "7.0",
+                    net_ids[2].encode().hex(),
+                ],
+            ]
             tsv_path.write_text(
                 VIVADO_PATH_DATABASE_TSV_HEADER
                 + "\n"
-                + "\t".join(
-                    [
-                        "path db 0".encode().hex(),
-                        "clk".encode().hex(),
-                        "10.0",
-                        "-0.5",
-                        "9.5",
-                        ",".join(net.encode().hex() for net in net_ids),
-                    ]
-                )
+                + "\n".join("\t".join(row) for row in rows)
                 + "\n",
                 encoding="utf-8",
             )
@@ -79,7 +96,17 @@ class StaAdapterTest(unittest.TestCase):
             self.assertEqual(
                 database["schema"], STA_PATH_DATABASE_SCHEMA
             )
-            self.assertEqual(database["paths"][0]["path_nets"], net_ids)
+            self.assertEqual(
+                database["paths"][0]["path_nets"], [net_ids[0]]
+            )
+            self.assertEqual(
+                database["normalization"],
+                {
+                    "positive_slack_scale_ns": 1.0,
+                    "negative_slack_scale_ns": 2.0,
+                    "max_clock_period_ns": 10.0,
+                },
+            )
             for path, cut_net in (
                 (assignment_a_path, net_ids[0]),
                 (assignment_b_path, net_ids[1]),
@@ -103,7 +130,7 @@ class StaAdapterTest(unittest.TestCase):
             projected_b = json.loads(
                 projected_b_path.read_text(encoding="utf-8")
             )
-        self.assertEqual(imported["paths"], 1)
+        self.assertEqual(imported["paths"], 3)
         self.assertEqual(report_a["projected_paths"], 1)
         self.assertEqual(report_b["projected_paths"], 1)
         self.assertEqual(
@@ -111,6 +138,18 @@ class StaAdapterTest(unittest.TestCase):
         )
         self.assertEqual(
             projected_b["paths"][0]["cut_nets"], [net_ids[1]]
+        )
+        self.assertEqual(
+            projected_a["normalization"], database["normalization"]
+        )
+        self.assertEqual(
+            projected_b["normalization"], database["normalization"]
+        )
+        self.assertEqual(
+            projected_a["paths"][0]["normalized_slack"], -0.025
+        )
+        self.assertEqual(
+            projected_b["paths"][0]["normalized_slack"], -0.2
         )
 
     def test_cut_map_and_vivado_tsv_import_preserve_names(self) -> None:

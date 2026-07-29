@@ -10,7 +10,7 @@ from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
-from .timing_routing import STA_PATHS_SCHEMA
+from .timing_routing import STA_PATHS_SCHEMA, compress_sta_paths
 
 
 VIVADO_STA_TSV_HEADER = (
@@ -35,6 +35,78 @@ def _hex_decode(value: str, context: str) -> str:
         return bytes.fromhex(value).decode("utf-8")
     except (ValueError, UnicodeDecodeError) as error:
         raise ValidationError(f"{context}: invalid UTF-8 hex") from error
+
+
+def _database_normalization(paths: list[Dict[str, Any]]) -> Dict[str, float]:
+    positive_scale = max(
+        (path["slack_ns"] for path in paths if path["slack_ns"] >= 0.0),
+        default=1.0,
+    )
+    if positive_scale == 0.0:
+        positive_scale = 1.0
+    negative_scale = abs(
+        min(
+            (path["slack_ns"] for path in paths if path["slack_ns"] < 0.0),
+            default=-1.0,
+        )
+    )
+    max_period = max(path["clock_period_ns"] for path in paths)
+    return {
+        "positive_slack_scale_ns": positive_scale,
+        "negative_slack_scale_ns": negative_scale,
+        "max_clock_period_ns": max_period,
+    }
+
+
+def _validate_database_normalization(
+    value: Any,
+) -> Dict[str, float]:
+    if not isinstance(value, dict):
+        raise ValidationError("STA path database normalization is invalid")
+    expected_keys = {
+        "positive_slack_scale_ns",
+        "negative_slack_scale_ns",
+        "max_clock_period_ns",
+    }
+    if set(value) != expected_keys:
+        raise ValidationError("STA path database normalization is invalid")
+    result = {}
+    for key in sorted(expected_keys):
+        item = value[key]
+        if (
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(float(item))
+            or float(item) <= 0.0
+        ):
+            raise ValidationError(
+                f"STA path database normalization.{key} is invalid"
+            )
+        result[key] = float(item)
+    return result
+
+
+def _normalized_slack(
+    period: float,
+    slack: float,
+    normalization: Mapping[str, float],
+) -> float:
+    if slack >= 0.0:
+        return (
+            slack
+            * period
+            / (
+                normalization["positive_slack_scale_ns"]
+                * normalization["max_clock_period_ns"]
+            )
+        )
+    return (
+        slack
+        / (
+            normalization["negative_slack_scale_ns"]
+            * period
+        )
+    )
 
 
 def write_vivado_cut_net_map(
@@ -188,6 +260,13 @@ def import_vivado_path_database_tsv(
         raise ValidationError(
             "Vivado path database TSV contains no mapped timing paths"
         )
+    normalization = _database_normalization(paths)
+    for path in paths:
+        path["normalized_slack"] = _normalized_slack(
+            path["clock_period_ns"],
+            path["slack_ns"],
+            normalization,
+        )
     artifact = {
         "schema": STA_PATH_DATABASE_SCHEMA,
         "design": ir.value["design"]["name"],
@@ -195,6 +274,7 @@ def import_vivado_path_database_tsv(
             "provider": "vivado-get-timing-path-database-v1",
             "input": str(input_path),
         },
+        "normalization": normalization,
         "paths": paths,
     }
     write_json(output_path, artifact)
@@ -235,7 +315,37 @@ def project_sta_path_database(
         raise ValidationError(
             "STA path projection requires partition cut nets"
         )
+    normalization = _validate_database_normalization(
+        database.get("normalization")
+    )
+    cut_by_net = {
+        cut["net"]: cut
+        for cut in assignment.get("cut_nets", [])
+        if isinstance(cut, dict)
+        and isinstance(cut.get("net"), str)
+        and cut["net"] in cut_nets
+    }
+    if set(cut_by_net) != cut_nets:
+        raise ValidationError("partition cut-net records are invalid")
+    cut_signature_by_net = {}
+    for net in sorted(cut_by_net):
+        cut = cut_by_net[net]
+        sources = cut.get("source_fpgas", [])
+        sinks = cut.get("sink_fpgas", [])
+        if (
+            not isinstance(sources, list)
+            or not all(isinstance(item, str) and item for item in sources)
+            or not isinstance(sinks, list)
+            or not all(isinstance(item, str) and item for item in sinks)
+        ):
+            raise ValidationError(
+                f"partition cut-net {net!r} endpoint lists are invalid"
+            )
+        cut_signature_by_net[net] = (
+            f"{','.join(sources)}->{','.join(sinks)}"
+        )
     paths = []
+    database_records = []
     covered_cut_nets = set()
     path_ids = set()
     raw_paths = database.get("paths")
@@ -289,6 +399,28 @@ def project_sta_path_database(
             raise ValidationError(
                 f"STA path database paths[{index}].path_nets is invalid"
             )
+        expected_normalized = _normalized_slack(
+            float(clock_period),
+            float(slack),
+            normalization,
+        )
+        normalized = path.get("normalized_slack")
+        if (
+            isinstance(normalized, bool)
+            or not isinstance(normalized, (int, float))
+            or not math.isfinite(float(normalized))
+            or abs(float(normalized) - expected_normalized) > 1.0e-12
+        ):
+            raise ValidationError(
+                f"STA path database paths[{index}].normalized_slack "
+                "is invalid"
+            )
+        database_records.append(
+            {
+                "clock_period_ns": float(clock_period),
+                "slack_ns": float(slack),
+            }
+        )
         projected = [net for net in path_nets if net in cut_nets]
         if not projected:
             continue
@@ -301,27 +433,43 @@ def project_sta_path_database(
                 "slack_ns": float(slack),
                 "fixed_delay_ns": float(fixed_delay),
                 "cut_nets": projected,
+                "cut_signature": [
+                    cut_signature_by_net[net]
+                    for net in projected
+                ],
+                "normalized_slack": expected_normalized,
+                "compressed_path_ids": [path_id],
             }
         )
     if not paths:
         raise ValidationError(
             "STA path database has no path crossing this partition"
         )
-    artifact = {
+    expected_normalization = _database_normalization(database_records)
+    if any(
+        abs(expected_normalization[key] - normalization[key]) > 1.0e-12
+        for key in expected_normalization
+    ):
+        raise ValidationError(
+            "STA path database normalization does not match its paths"
+        )
+    artifact = compress_sta_paths({
         "schema": STA_PATHS_SCHEMA,
         "design": assignment["design"],
         "source": {
             "provider": "partition-projected-sta-paths-v1",
-            "database": str(database_path),
+            "input": str(database_path),
         },
+        "normalization": normalization,
         "paths": paths,
-    }
+    })
     write_json(output_path, artifact)
     return {
         "status": "pass",
         "design": assignment["design"],
         "database_paths": len(raw_paths),
         "projected_paths": len(paths),
+        "compressed_paths": len(artifact["paths"]),
         "cut_nets": len(cut_nets),
         "covered_cut_nets": len(covered_cut_nets),
         "uncovered_cut_nets": len(cut_nets - covered_cut_nets),
