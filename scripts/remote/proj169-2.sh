@@ -32,6 +32,8 @@ Commands:
              Install the pinned OpenROAD/TritonPart binary in user space.
   repart-bootstrap
              Build the pinned, replication-switchable RePart in user space.
+  repart-phase3-smoke
+             Run RePart twice on real synthesized counter RTL and compare.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -454,6 +456,40 @@ test "\$status" -ne 0
 printf '%s\n' "\$usage" | grep -q -- '\[-r 0|1\]'
 printf 'repart=%s\n' "\$repart_path"
 printf 'upstream_commit=%s\n' "\$(cat "\$repart_root/upstream.commit")"
+REMOTE
+}
+
+repart_phase3_smoke_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+repart_path="$6"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+test -x "$repart_path"
+test -s build/remote/phase1/design.emuir.json
+for run in run1 run2; do
+  PYTHONPATH=src python3 -m emuflow phase3 \
+    --ir build/remote/phase1/design.emuir.json \
+    --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+    --out "build/remote/repart-phase3-smoke/$run" \
+    --provider repart \
+    --repart "$repart_path" \
+    --min-used-fpgas 2 \
+    --balance-tolerance 1.0
+  PYTHONPATH=src python3 -m emuflow partition validate \
+    "build/remote/repart-phase3-smoke/$run/assignment.json" \
+    --clusters "build/remote/repart-phase3-smoke/$run/clusters.json" \
+    --ir build/remote/phase1/design.emuir.json \
+    --platform platforms/virtual/xcvu3p_2fpga_p2p.json
+done
+cmp \
+  build/remote/repart-phase3-smoke/run1/assignment.json \
+  build/remote/repart-phase3-smoke/run2/assignment.json
+sha256sum \
+  build/remote/repart-phase3-smoke/run1/assignment.json \
+  build/remote/repart-phase3-smoke/run2/assignment.json
 REMOTE
 }
 
@@ -2661,6 +2697,9 @@ case "$command" in
     ;;
   repart-bootstrap)
     repart_bootstrap
+    ;;
+  repart-phase3-smoke)
+    repart_phase3_smoke_remote
     ;;
   test)
     test_remote

@@ -28,27 +28,21 @@ def _resource_dimensions(
     clusters: Sequence[Mapping[str, Any]],
     platform: Platform,
 ) -> List[str]:
-    active = [
+    dimensions = [
         field
         for field in RESOURCE_FIELDS
         if any(cluster["resources"].get(field, 0) for cluster in clusters)
-    ]
-    unsupported = [
-        field
-        for field in active
-        if not all(fpga.effective_capacity.get(field, 0) > 0 for fpga in platform.fpgas)
-    ]
-    if unsupported:
-        raise ValidationError(
-            "RePart cannot represent active resources without positive capacity "
-            f"on every FPGA: {unsupported}"
+        and all(
+            fpga.effective_capacity.get(field, 0) > 0
+            for fpga in platform.fpgas
         )
-    if len(active) > REPART_RESOURCE_DIMENSIONS:
+    ]
+    if len(dimensions) > REPART_RESOURCE_DIMENSIONS:
         raise ValidationError(
             f"RePart supports {REPART_RESOURCE_DIMENSIONS} resource dimensions, "
-            f"but this design needs {len(active)}: {active}"
+            f"but this design needs {len(dimensions)}: {dimensions}"
         )
-    return active
+    return dimensions
 
 
 def _cluster_by_instance(
@@ -169,6 +163,12 @@ def export_repart_inputs(
         raise ValidationError("RePart needs at least one atomic cluster per FPGA")
 
     dimensions = _resource_dimensions(clusters, platform)
+    omitted_dimensions = [
+        field
+        for field in RESOURCE_FIELDS
+        if any(cluster["resources"].get(field, 0) for cluster in clusters)
+        and field not in dimensions
+    ]
     padded_dimensions = [
         *dimensions,
         *[
@@ -276,6 +276,7 @@ def export_repart_inputs(
         "cluster_order": [cluster["id"] for cluster in clusters],
         "resource_dimensions": padded_dimensions,
         "active_resource_dimensions": dimensions,
+        "omitted_unconstrained_resource_dimensions": omitted_dimensions,
         "vertex_weights": vertex_weights,
         "hyperedges": hyperedges,
         "edge_weight_scale": weight_scale,
@@ -479,6 +480,9 @@ def run_repart(
             "replication_enabled": False,
             "active_resource_dimensions": repart_input[
                 "active_resource_dimensions"
+            ],
+            "omitted_unconstrained_resource_dimensions": repart_input[
+                "omitted_unconstrained_resource_dimensions"
             ],
             "hyperedges": len(repart_input["hyperedges"]),
             "max_hop_distance": repart_input["max_hop_distance"],
