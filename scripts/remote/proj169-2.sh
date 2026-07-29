@@ -36,6 +36,8 @@ Commands:
              Run RePart twice on real synthesized counter RTL and compare.
   repart-phase3-picorv32
              Validate RePart on connected PicoRV32 and the 121k-cell x32 RTL.
+  repart-phase3-nvdla
+             Validate RePart twice on the 731,313-cell connected NVDLA design.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -550,6 +552,117 @@ from pathlib import Path
 designs = {
     "connected": Path("build/remote/benchmarks/picorv32-l2"),
     "scale": Path("build/remote/benchmarks/picorv32-x32-l5"),
+}
+
+repart_phase3_nvdla_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+repart_path="$6"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+baseline_root=/data/zywang/emuflow/nvdla-balanced-phase3b/balanced-flow
+ir="$baseline_root/phase1/design.emuir.json"
+platform=platforms/virtual/xcvu9p_4fpga_mesh.json
+root=/data/zywang/emuflow/nvdla-repart-phase3a
+test -x "$repart_path"
+test -s "$ir"
+test -s "$baseline_root/phase3/assignment.json"
+mkdir -p "$root"
+
+for run in run1 run2; do
+  output="$root/$run"
+  /usr/bin/time -v -o "$root/$run-time.txt" \
+    env PYTHONPATH=src python3 -m emuflow phase3 \
+      --ir "$ir" \
+      --platform "$platform" \
+      --out "$output" \
+      --provider repart \
+      --repart "$repart_path" \
+      --repart-timeout-seconds 7200 \
+      --min-used-fpgas 4 \
+      --balance-tolerance 0.10 \
+      > "$root/$run-stdout.json"
+  PYTHONPATH=src python3 -m emuflow partition validate \
+    "$output/assignment.json" \
+    --clusters "$output/clusters.json" \
+    --ir "$ir" \
+    --platform "$platform" \
+    > "$root/$run-independent-check.json"
+done
+
+cmp "$root/run1/assignment.json" "$root/run2/assignment.json"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("/data/zywang/emuflow/nvdla-repart-phase3a")
+baseline_root = Path(
+    "/data/zywang/emuflow/nvdla-balanced-phase3b/balanced-flow"
+)
+report = json.loads((root / "run1/phase3_report.json").read_text())
+baseline = json.loads(
+    (baseline_root / "phase3/phase3_report.json").read_text()
+)
+validation = report["validation"]
+if report["status"] != "pass":
+    raise SystemExit("NVDLA RePart report did not pass")
+if validation["instances"] != 731_313:
+    raise SystemExit("NVDLA RePart instance coverage mismatch")
+if validation["clusters"] != 399_211:
+    raise SystemExit("NVDLA RePart cluster coverage mismatch")
+if validation["used_fpgas"] != 4:
+    raise SystemExit("NVDLA RePart did not use all four FPGAs")
+if validation["illegal_cuts"] != 0:
+    raise SystemExit("NVDLA RePart produced illegal cuts")
+summary = {
+    "schema": "emuflow.repart-phase3-comparison/v1",
+    "design": "NV_NVDLA_partition_a",
+    "repart": {
+        "provider": report["provider"],
+        "validation": validation,
+        "partition_cells": [
+            item["instance_count"] for item in report["partitions"]
+        ],
+    },
+    "tritonpart_baseline": {
+        "provider": baseline["provider"],
+        "validation": baseline["validation"],
+        "partition_cells": [
+            item["instance_count"] for item in baseline["partitions"]
+        ],
+    },
+}
+(root / "comparison.json").write_text(
+    json.dumps(summary, indent=2, sort_keys=True) + "\n"
+)
+print(
+    "EMUFLOW_REPART_NVDLA status=pass "
+    f"instances={validation['instances']} "
+    f"clusters={validation['clusters']} "
+    f"cut_nets={validation['cut_nets']} "
+    f"cut_sink_endpoints={validation['cut_sink_endpoints']} "
+    f"effective_balance_percent="
+    f"{validation['effective_balance_percent']} "
+    f"partition_cells="
+    f"{','.join(str(item['instance_count']) for item in report['partitions'])}"
+)
+print(
+    "EMUFLOW_REPART_NVDLA_BASELINE "
+    f"tritonpart_cut_nets={baseline['validation']['cut_nets']} "
+    f"repart_cut_nets={validation['cut_nets']}"
+)
+PY
+
+sha256sum "$root/run1/assignment.json" "$root/run2/assignment.json"
+for run in run1 run2; do
+  grep -E 'Elapsed \\(wall clock\\)|Maximum resident set size' \
+    "$root/$run-time.txt"
+done
+du -sh "$root/run1" "$root/run2"
+REMOTE
 }
 for name, root in designs.items():
     report = json.loads(
@@ -2795,6 +2908,9 @@ case "$command" in
     ;;
   repart-phase3-picorv32)
     repart_phase3_picorv32_remote
+    ;;
+  repart-phase3-nvdla)
+    repart_phase3_nvdla_remote
     ;;
   test)
     test_remote
