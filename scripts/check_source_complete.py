@@ -90,13 +90,19 @@ OPAQUE_SUFFIXES = {
     ".a",
     ".bin",
     ".bit",
+    ".dcp",
     ".dll",
     ".dylib",
     ".exe",
+    ".ncd",
+    ".ngc",
     ".o",
     ".obj",
+    ".pdi",
     ".pyd",
     ".so",
+    ".xpr",
+    ".xsa",
 }
 
 OPAQUE_MAGICS = (

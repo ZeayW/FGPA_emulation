@@ -60,10 +60,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
-Individual board-independent stages have been exercised from small counter
-and CPU designs through a connected 731,313-cell NVDLA partition. Those
-experiments validate stage contracts, but do **not** yet prove that a clean
-checkout can execute the entire open placement-and-routing path with one
+Passing individual board-independent stage checks does **not** prove that a
+clean checkout can execute the entire open placement-and-routing path with one
 command. That end-to-end source-build gate remains open.
 
 EmuFlow is not yet a fully open UltraScale+ physical implementation or
@@ -171,7 +169,10 @@ partitioner, projects the frozen timing database, reruns the accepted routing
 and scheduling kernels, and applies deterministic lexicographic
 accept/rollback. Its independent candidate scorer evaluates every database
 path, including paths made local by a candidate partition, from the concrete
-lane/slot schedule.
+lane/slot schedule. Feedback is applied by multiplicative log-space
+interpolation, with a deterministic decreasing-step line search; this limits
+the discontinuity of a new hypergraph partition and never promotes a
+regressing full-step candidate.
 
 The academic Phase 5 provider is likewise rooted in editable C++17 source at
 `src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the
@@ -228,6 +229,11 @@ ctest --preset release
 Build products are written below `build/` and are never the source of truth.
 Developers can edit any in-tree C++ implementation and rebuild through the
 same top-level command.
+
+The `source-complete` GitHub Actions gate rejects tracked executables,
+libraries, objects, bitstreams, Git LFS pointers, submodules, and incomplete
+provider source trees. It also compiles every first-party C++ provider and
+runs the independent artifact/checker test suite.
 
 The repository includes the source of every currently selected flow engine.
 A compiler, CMake, Python, and general-purpose libraries such as Boost,

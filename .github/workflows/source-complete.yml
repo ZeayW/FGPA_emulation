@@ -1,0 +1,42 @@
+name: source-complete
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the monorepo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Reject opaque providers and incomplete source trees
+        run: python3 scripts/check_source_complete.py .
+
+      - name: Configure the first-party source build
+        run: >-
+          cmake -S . -B build/ci
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DEMUFLOW_BUILD_YOSYS=OFF
+          -DEMUFLOW_BUILD_CUDD=OFF
+          -DEMUFLOW_BUILD_REPART=OFF
+          -DEMUFLOW_BUILD_OPENROAD=OFF
+          -DEMUFLOW_BUILD_OPENPARF=OFF
+
+      - name: Compile every first-party C++ provider
+        run: cmake --build build/ci --parallel 2
+
+      - name: Run source, artifact, checker, and native-provider tests
+        run: ctest --test-dir build/ci --output-on-failure
