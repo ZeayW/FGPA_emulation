@@ -34,6 +34,8 @@ Commands:
              Build the pinned, replication-switchable RePart in user space.
   repart-phase3-smoke
              Run RePart twice on real synthesized counter RTL and compare.
+  repart-phase3-picorv32
+             Validate RePart on connected PicoRV32 and the 121k-cell x32 RTL.
   test       Run the Python unit tests on the remote host.
   synth      Synthesize examples/rtl/counter.v with a real Yosys process.
   phase1     Run Phase 1 from the remotely synthesized Yosys JSON.
@@ -490,6 +492,96 @@ cmp \
 sha256sum \
   build/remote/repart-phase3-smoke/run1/assignment.json \
   build/remote/repart-phase3-smoke/run2/assignment.json
+REMOTE
+}
+
+repart_phase3_picorv32_remote() {
+  remote_script <<'REMOTE'
+set -eu
+remote_dir="$1"
+repart_path="$6"
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd "$remote_dir"
+
+platform=platforms/virtual/xcvu3p_2fpga_p2p.json
+connected_root=build/remote/benchmarks/picorv32-l2
+connected_ir="$connected_root/phase1/design.emuir.json"
+scale_root=build/remote/benchmarks/picorv32-x32-l5
+scale_ir="$scale_root/phase1/design.emuir.json"
+test -x "$repart_path"
+test -s "$connected_ir"
+test -s "$scale_ir"
+
+for design in connected scale; do
+  if [ "$design" = connected ]; then
+    root="$connected_root"
+    ir="$connected_ir"
+  else
+    root="$scale_root"
+    ir="$scale_ir"
+  fi
+  for run in run1 run2; do
+    output="$root/phase3-repart-$run"
+    /usr/bin/time -v -o "$root/phase3-repart-$run-time.txt" \
+      env PYTHONPATH=src python3 -m emuflow phase3 \
+        --ir "$ir" \
+        --platform "$platform" \
+        --out "$output" \
+        --provider repart \
+        --repart "$repart_path" \
+        --min-used-fpgas 2 \
+        > "$root/phase3-repart-$run-stdout.json"
+    PYTHONPATH=src python3 -m emuflow partition validate \
+      "$output/assignment.json" \
+      --clusters "$output/clusters.json" \
+      --ir "$ir" \
+      --platform "$platform" \
+      > "$root/phase3-repart-$run-independent-check.json"
+  done
+  cmp \
+    "$root/phase3-repart-run1/assignment.json" \
+    "$root/phase3-repart-run2/assignment.json"
+done
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+designs = {
+    "connected": Path("build/remote/benchmarks/picorv32-l2"),
+    "scale": Path("build/remote/benchmarks/picorv32-x32-l5"),
+}
+for name, root in designs.items():
+    report = json.loads(
+        (root / "phase3-repart-run1/phase3_report.json").read_text()
+    )
+    validation = report["validation"]
+    if report["status"] != "pass":
+        raise SystemExit(f"{name} RePart report did not pass")
+    if validation["used_fpgas"] != 2:
+        raise SystemExit(f"{name} RePart did not use both FPGAs")
+    if validation["illegal_cuts"] != 0:
+        raise SystemExit(f"{name} RePart produced illegal cuts")
+    if name == "connected" and validation["cut_nets"] <= 0:
+        raise SystemExit("connected RePart produced no cross-FPGA cuts")
+    if name == "scale" and validation["instances"] < 100_000:
+        raise SystemExit("scale RePart did not cover 100k cells")
+    print(
+        "EMUFLOW_REPART_PICORV32 "
+        f"design={name} status=pass "
+        f"instances={validation['instances']} "
+        f"clusters={validation['clusters']} "
+        f"cut_nets={validation['cut_nets']} "
+        f"partition_cells="
+        f"{','.join(str(item['instance_count']) for item in report['partitions'])}"
+    )
+PY
+
+sha256sum \
+  "$connected_root/phase3-repart-run1/assignment.json" \
+  "$connected_root/phase3-repart-run2/assignment.json" \
+  "$scale_root/phase3-repart-run1/assignment.json" \
+  "$scale_root/phase3-repart-run2/assignment.json"
 REMOTE
 }
 
@@ -2700,6 +2792,9 @@ case "$command" in
     ;;
   repart-phase3-smoke)
     repart_phase3_smoke_remote
+    ;;
+  repart-phase3-picorv32)
+    repart_phase3_picorv32_remote
     ;;
   test)
     test_remote
