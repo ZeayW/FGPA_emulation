@@ -635,10 +635,17 @@ importer is first-party C++ built against vendored Apache-2.0 FPGA Interchange
 and Cap'n Proto source; generated inputs retain an explicit generator
 provenance field.
 
+R0 now also has a versioned physical-region sidecar, exact-coverage merger,
+and independent checker. It represents SLR, clock-region, and package-specific
+I/O-bank membership without guessing information absent from DeviceResources
+v1. The present VU9P data producer is an explicitly optional mixed-license
+RapidWright adapter; this validates the contract and downstream integration
+but does not turn the dataset into an open source component.
+
 The remaining R0 work is:
 
-- add an open, qualified sidecar for SLR, clock-region, and I/O-bank
-  membership because DeviceResources v1 does not encode these relations;
+- identify or reproduce a wholly open qualified producer for SLR,
+  clock-region, and I/O-bank membership;
 - characterize device timing for CARRY, BRAM, DSP, and interconnect rather
   than assigning analytical placeholder delays;
 - calibrate the analytical timing model against reproducible reference data;

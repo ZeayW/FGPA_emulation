@@ -150,6 +150,8 @@ Acceptance:
 The first executable increment implements:
 
 - ArchitectureDB v1 and Placement v1;
+- a hash-bound physical-region sidecar with exact SLR/clock-region coverage,
+  package-specific I/O-bank inventory, and an independent checker;
 - Vivado Site/BEL inventory to ArchitectureDB;
 - EmuIR to OpenPARF Bookshelf;
 - automatic execution of root-built OpenPARF;

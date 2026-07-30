@@ -94,7 +94,10 @@ REQUIRED_SOURCE_FILES = {
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/fpga_interchange_arch_importer.cpp",
     "src/emuflow/fpga_interchange.py",
+    "src/emuflow/physical_regions.py",
     "schemas/archdb-v1.schema.json",
+    "schemas/physical-region-sidecar-v1.schema.json",
+    "scripts/rapidwright/export_physical_regions.py",
     "src/native/tlr_router.cpp",
     "src/native/tdm_ratio_optimizer.cpp",
     "src/native/tdm_partition_feedback.cpp",

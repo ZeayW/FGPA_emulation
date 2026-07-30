@@ -26,7 +26,16 @@
         "slr_encoded": {"type": "boolean"},
         "clock_region_encoded": {"type": "boolean"},
         "io_bank_encoded": {"type": "boolean"},
-        "qualification": {"type": "string"}
+        "qualification": {"type": "string"},
+        "overlay": {"type": "object"}
+      }
+    },
+    "physical_regions": {
+      "type": "object",
+      "properties": {
+        "slrs": {"type": "array"},
+        "clock_regions": {"type": "array"},
+        "io_banks": {"type": "array"}
       }
     },
     "packages": {"type": "array"},

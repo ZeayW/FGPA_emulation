@@ -133,7 +133,7 @@ boundaries; combinational loops and hard macros remain atomic.
 
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
-| Architecture database | In-tree FPGA Interchange schemas, Cap'n Proto, and C++ importer | Compact tile/site-template/BEL/package import works, including UltraScale+ macro-resource modes; DeviceResources v1 does not encode SLR/clock-region/I/O-bank membership |
+| Architecture database | In-tree FPGA Interchange schemas, Cap'n Proto, C++ importer, and region-sidecar checker | Compact tile/site-template/BEL/package import works; a source-qualified overlay adds exact SLR/clock-region/I/O-bank data, but the current VU9P producer is optional mixed-license RapidWright rather than an open device dataset |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
 | Static timing | In-tree standalone OpenSTA plus an open FPGA timing-model contract | Partition-independent path extraction works; the checked-in analytical model still requires device calibration |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
@@ -406,6 +406,13 @@ Repeated BEL inventories are stored once per site template, keeping real VU9P
 ArchitectureDB artifacts practical while preserving every physical site.
 DSP48E2 and RAM64X1S are recorded as macro resources over their canonical
 component BELs; RAMB18E2/RAMB36E2 modes retain their shared-site relationship.
+Because DeviceResources v1 does not encode SLR, clock-region, or I/O-bank
+membership, EmuFlow does not infer those relations from coordinates. The
+versioned physical-region sidecar binds to an exact ArchitectureDB hash; its
+in-tree merger requires one unambiguous region assignment for every placement
+site and independently checks the region hierarchy and package-pin inventory.
+The included RapidWright Jython exporter is an optional mixed-license data
+adapter, not an open engine, and generated device data is not committed.
 
 Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,

@@ -36,6 +36,10 @@ from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
 from .partition_feedback import run_partition_feedback
 from .physical_pins import run_phase6b, validate_package_pin_binding
+from .physical_regions import (
+    run_physical_region_merge,
+    validate_fpga_interchange_architecture_regions,
+)
 from .placement import Placement
 from .platform import Platform
 from .pin_planning import (
@@ -213,6 +217,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     arch_capacity_fpgaif.add_argument("--arch", type=Path, required=True)
     arch_capacity_fpgaif.add_argument("--ir", type=Path, required=True)
+    arch_merge_regions = arch_subparsers.add_parser(
+        "merge-physical-regions",
+        help="merge a source-qualified physical-region sidecar",
+    )
+    arch_merge_regions.add_argument("--arch", type=Path, required=True)
+    arch_merge_regions.add_argument("--sidecar", type=Path, required=True)
+    arch_merge_regions.add_argument("--output", "-o", type=Path, required=True)
+    arch_validate_regions = arch_subparsers.add_parser(
+        "validate-physical-regions",
+        help="validate merged SLR, clock-region, and I/O-bank metadata",
+    )
+    arch_validate_regions.add_argument("path", type=Path)
 
     placement_parser = subparsers.add_parser(
         "placement", help="physical placement operations"
@@ -999,6 +1015,16 @@ def _dispatch(args: argparse.Namespace) -> int:
             architecture = ArchitectureDB.load(args.arch)
             report = check_ir_architecture_capacity(
                 architecture, EmuIR.load(args.ir)
+            )
+        elif args.arch_command == "merge-physical-regions":
+            report = run_physical_region_merge(
+                architecture_path=args.arch,
+                sidecar_path=args.sidecar,
+                output_path=args.output,
+            )
+        elif args.arch_command == "validate-physical-regions":
+            report = validate_fpga_interchange_architecture_regions(
+                ArchitectureDB.load(args.path)
             )
         else:
             architecture = ArchitectureDB.load(args.path)

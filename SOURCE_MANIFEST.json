@@ -28,7 +28,10 @@
         "engines/fpga-interchange-schema",
         "src/native/fpga_interchange_arch_importer.cpp",
         "src/emuflow/fpga_interchange.py",
-        "schemas/archdb-v1.schema.json"
+        "src/emuflow/physical_regions.py",
+        "schemas/archdb-v1.schema.json",
+        "schemas/physical-region-sidecar-v1.schema.json",
+        "scripts/rapidwright/export_physical_regions.py"
       ],
       "build_targets": [
         "emuflow_fpgaif_arch_importer",
@@ -225,7 +228,7 @@
     {
       "id": "ultrascale-plus-device-database",
       "status": "partial",
-      "reason": "The source-built FPGA Interchange importer now covers the open tile/site/BEL/package schema and placement compatibility. DeviceResources v1 does not encode SLR, clock-region, or I/O-bank membership, and the checked-in analytical timing model is not device-characterized."
+      "reason": "The source-built FPGA Interchange importer covers the open tile/site/BEL/package schema and placement compatibility. A source-qualified sidecar contract, exact-coverage merger, and independent checker now add SLR, clock-region, and I/O-bank membership without inventing data absent from DeviceResources v1. The validated VU9P sidecar is currently produced by an optional mixed-license RapidWright adapter and is therefore not yet a wholly open device dataset; the checked-in analytical timing model is also not device-characterized."
     },
     {
       "id": "ultrascale-plus-open-routing",
@@ -239,6 +242,14 @@
     }
   ],
   "optional_external_validation": [
+    {
+      "tool": "RapidWright standalone distribution",
+      "uses": [
+        "physical-region sidecar generation",
+        "architecture comparison"
+      ],
+      "counts_as_open_flow_implementation": false
+    },
     {
       "tool": "Vivado",
       "uses": [

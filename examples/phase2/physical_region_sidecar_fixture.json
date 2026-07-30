@@ -1,0 +1,42 @@
+{
+  "schema": "emuflow.physical-region-sidecar/v1",
+  "part": "xcvu3p-ffvc1517-2-e",
+  "source": {
+    "producer": "unit-test-fixture",
+    "producer_version": "1",
+    "qualification": "test-fixture-only"
+  },
+  "slrs": [
+    {"name": "SLR0", "index": 0}
+  ],
+  "clock_regions": [
+    {"name": "X0Y0", "slr": "SLR0", "grid_x": 0, "grid_y": 0},
+    {"name": "X1Y0", "slr": "SLR0", "grid_x": 1, "grid_y": 0}
+  ],
+  "site_region_groups": [
+    {
+      "slr": "SLR0",
+      "clock_region": "X0Y0",
+      "sites": ["SLICE_X4Y7"]
+    },
+    {
+      "slr": "SLR0",
+      "clock_region": "X1Y0",
+      "sites": ["DSP48E2_X0Y2", "RAMB36_X0Y2"]
+    }
+  ],
+  "io_banks": [
+    {
+      "name": "40",
+      "bank_type": "HIGH_PERFORMANCE",
+      "package": "ffvc1517",
+      "pins": [
+        {
+          "package_pin": "A1",
+          "site": "IOB_X0Y0",
+          "bel": "PAD"
+        }
+      ]
+    }
+  ]
+}

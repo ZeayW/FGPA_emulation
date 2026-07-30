@@ -322,15 +322,16 @@ def validate_fpga_interchange_architecture(
     region_model = value.get("physical_region_model")
     if not isinstance(region_model, dict):
         raise ValidationError("ArchitectureDB physical-region model is missing")
-    for field in (
-        "slr_encoded",
-        "clock_region_encoded",
-        "io_bank_encoded",
-    ):
-        if region_model.get(field) is not False:
+    for field in ("slr_encoded", "clock_region_encoded", "io_bank_encoded"):
+        if not isinstance(region_model.get(field), bool):
             raise ValidationError(
-                f"arch.physical_region_model.{field}: expected false"
+                f"arch.physical_region_model.{field}: expected a boolean"
             )
+    if region_model["slr_encoded"] != region_model["clock_region_encoded"]:
+        raise ValidationError(
+            "ArchitectureDB must encode SLR and clock-region membership "
+            "together"
+        )
 
     for index, site in enumerate(value["sites"]):
         context = f"arch.sites[{index}]"
@@ -347,11 +348,21 @@ def validate_fpga_interchange_architecture(
             tile.get("site_index"), f"{context}.tile.site_index"
         )
         physical_region = site.get("physical_region")
-        if (
-            not isinstance(physical_region, dict)
-            or physical_region.get("slr") is not None
-            or physical_region.get("clock_region") is not None
+        if not isinstance(physical_region, dict):
+            raise ValidationError(f"{context}.physical_region: missing")
+        qualified = region_model["slr_encoded"]
+        slr = physical_region.get("slr")
+        clock_region = physical_region.get("clock_region")
+        if qualified and (
+            not isinstance(slr, str)
+            or not slr
+            or not isinstance(clock_region, str)
+            or not clock_region
         ):
+            raise ValidationError(
+                f"{context}.physical_region: expected qualified regions"
+            )
+        if not qualified and (slr is not None or clock_region is not None):
             raise ValidationError(
                 f"{context}.physical_region: expected unqualified regions"
             )
@@ -360,7 +371,7 @@ def validate_fpga_interchange_architecture(
     resource_sites = Counter(architecture.summary()["cell_slots"])
     if not resource_sites:
         raise ValidationError("ArchitectureDB contains no supported resources")
-    return {
+    report = {
         "status": "pass",
         "part": value["part"],
         "device": value["source"]["device"],
@@ -368,6 +379,15 @@ def validate_fpga_interchange_architecture(
         "cell_slots": dict(sorted(resource_sites.items())),
         "physical_region_qualification": region_model.get("qualification"),
     }
+    if region_model["slr_encoded"]:
+        from .physical_regions import (
+            validate_fpga_interchange_architecture_regions,
+        )
+
+        report["physical_regions"] = (
+            validate_fpga_interchange_architecture_regions(architecture)
+        )
+    return report
 
 
 def check_ir_architecture_capacity(
