@@ -48,8 +48,8 @@ class PackedNetlistTest(unittest.TestCase):
         self.assertEqual(
             value["nets"],
             [
-                {"id": "a", "driver": "io[0]", "sinks": ["clb[0]"]},
-                {"id": "y", "driver": "clb[0]", "sinks": ["io[1]"]},
+                {"id": "a", "driver": "io[1]", "sinks": ["clb[0]"]},
+                {"id": "y", "driver": "clb[0]", "sinks": ["io[2]"]},
             ],
         )
 

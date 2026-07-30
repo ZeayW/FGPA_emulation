@@ -37,6 +37,14 @@
     "description": "whether use internal legalization",
     "default": 1
   },
+  "generic_cluster_placement_flag": {
+    "description": "place architecture-defined packed clusters with the single-site-resource legalizer instead of the LUT/FF direct legalizer",
+    "default": 0
+  },
+  "logic_area_type_names": {
+    "description": "area types used for logic-overflow decisions; defaults to the native LUT/FF architecture",
+    "default": ["LUT", "FF"]
+  },
   "detailed_place_flag": {
     "description": "whether use internal detailed placement",
     "default": 1

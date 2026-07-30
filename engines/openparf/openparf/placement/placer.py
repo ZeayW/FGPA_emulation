@@ -198,6 +198,17 @@ class Placer(nn.Module):
             )
             self.num_gp_timing_adjustment = 0
 
+    def _max_logic_overflow(self, overflow):
+        """Return overflow for the architecture's configured logic resources."""
+        area_type_ids = [
+            self.placedb.getAreaTypeIndexFromName(name)
+            for name in self.params.logic_area_type_names
+        ]
+        if not area_type_ids:
+            raise ValueError("logic_area_type_names must not be empty")
+        return max(overflow[area_type_id].item()
+                   for area_type_id in area_type_ids)
+
     @staticmethod
     def get_utilization_map_overflow(utilization_map: torch.Tensor):
         overflow_map = utilization_map.sub(1.0).clamp_(min=0.0)
@@ -684,13 +695,9 @@ class Placer(nn.Module):
         if not self.confine_fence_region:
             return False
 
-        # Get area type index for LUT and FF
-        lut_area_type_id = self.placedb.getAreaTypeIndexFromName("LUT")
-        ff_area_type_id = self.placedb.getAreaTypeIndexFromName("FF")
-        # Check the instance area adjustment conditions
-        lut_overflow = current_metric.overflow[lut_area_type_id].item()
-        ff_overflow = current_metric.overflow[ff_area_type_id].item()
-        lut_ff_max_overflow = max(lut_overflow, ff_overflow)
+        lut_ff_max_overflow = self._max_logic_overflow(
+            current_metric.overflow
+        )
         if lut_ff_max_overflow > self.params.confine_fence_region_overflow_threshold:
             return False
         else:
@@ -1102,13 +1109,7 @@ class Placer(nn.Module):
             )
             return True
 
-        # Get area type index for LUT and FF
-        lut_area_type_id = self.placedb.getAreaTypeIndexFromName("LUT")
-        ff_area_type_id = self.placedb.getAreaTypeIndexFromName("FF")
-        # Check the instance area adjustment conditions
-        lut_overflow = cur_metric.overflow[lut_area_type_id].item()
-        ff_overflow = cur_metric.overflow[ff_area_type_id].item()
-        lut_ff_max_overflow = max(lut_overflow, ff_overflow)
+        lut_ff_max_overflow = self._max_logic_overflow(cur_metric.overflow)
 
         sliding_windows_len = 50
 
@@ -1157,13 +1158,7 @@ class Placer(nn.Module):
         if self._check_divergence(metrics):
             return False
 
-        # Get area type index for LUT and FF
-        lut_area_type_id = self.placedb.getAreaTypeIndexFromName("LUT")
-        ff_area_type_id = self.placedb.getAreaTypeIndexFromName("FF")
-        # Check the instance area adjustment conditions
-        lut_overflow = cur_metric.overflow[lut_area_type_id].item()
-        ff_overflow = cur_metric.overflow[ff_area_type_id].item()
-        lut_ff_max_overflow = max(lut_overflow, ff_overflow)
+        lut_ff_max_overflow = self._max_logic_overflow(cur_metric.overflow)
 
         if lut_ff_max_overflow > self.params.stop_overflow * 1.1:
             return False
@@ -1219,13 +1214,7 @@ class Placer(nn.Module):
 
         cur_metric = metrics[-1]
 
-        # Get area type index for LUT and FF
-        lut_area_type_id = self.placedb.getAreaTypeIndexFromName("LUT")
-        ff_area_type_id = self.placedb.getAreaTypeIndexFromName("FF")
-        # Check the instance area adjustment conditions
-        lut_overflow = cur_metric.overflow[lut_area_type_id].item()
-        ff_overflow = cur_metric.overflow[ff_area_type_id].item()
-        lut_ff_max_overflow = max(lut_overflow, ff_overflow)
+        lut_ff_max_overflow = self._max_logic_overflow(cur_metric.overflow)
 
         if self.timing_optimization_counter == 0 and lut_ff_max_overflow < 0.7:
             return True
@@ -1803,7 +1792,24 @@ class Placer(nn.Module):
             )
         if self.params.legalize_flag:
             tt = time.time()
-            if self.params.carry_chain_legalization_flag:
+            if self.params.generic_cluster_placement_flag:
+                logger.info(
+                    "Start architecture-defined packed-cluster legalization..."
+                )
+                self.op_cls.ssr_legalize_op.reset_honor_fence_region_constraints(
+                    self.params.confine_clock_region_flag
+                )
+                self.op_cls.ssr_legalize_op.reset_slr_aware_flag(
+                    self.params.slr_aware_flag
+                )
+                self.op_cls.ssr_legalize_op(pos)
+                pos_xyz = self.data_cls.inst_locs_xyz.clone()
+                movable_range = self.data_cls.movable_range
+                pos_xyz[movable_range[0] : movable_range[1], :2].copy_(
+                    pos[movable_range[0] : movable_range[1]]
+                )
+                pos_xyz[movable_range[0] : movable_range[1], 2].zero_()
+            elif self.params.carry_chain_legalization_flag:
                 assert self.data_cls.io_pos_xyz is not None
                 pos_xyz = self.data_cls.io_pos_xyz.to(self.device).to(self.dtype)
                 with torch.no_grad():
@@ -2092,12 +2098,7 @@ class Placer(nn.Module):
                 (gamma * self.data_cls.gamma.weights).sum()
                 / self.data_cls.gamma.weights.sum()
             )
-            lut_area_type_id = self.placedb.getAreaTypeIndexFromName("LUT")
-            ff_area_type_id = self.placedb.getAreaTypeIndexFromName("FF")
-            # Check the instance area adjustment conditions
-            lut_overflow = overflow[lut_area_type_id].item()
-            ff_overflow = overflow[ff_area_type_id].item()
-            lut_ff_max_overflow = max(lut_overflow, ff_overflow)
+            lut_ff_max_overflow = self._max_logic_overflow(overflow)
 
             if (
                 self.params.slr_aware_flag 

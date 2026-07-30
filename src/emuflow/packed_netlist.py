@@ -203,6 +203,8 @@ def validate_packed_netlist_contract(
     if not isinstance(raw_clusters, list) or not raw_clusters:
         raise ValidationError("packed-netlist clusters must be non-empty")
     cluster_ids = set()
+    cluster_names = set()
+    block_numbers = set()
     block_types: Counter[str] = Counter()
     atoms = 0
     pb_blocks = 0
@@ -220,6 +222,27 @@ def validate_packed_netlist_contract(
             raise ValidationError(
                 f"{context}.instance must equal its stable cluster id"
             )
+        cluster_name = cluster.get("name")
+        if not isinstance(cluster_name, str) or not cluster_name:
+            raise ValidationError(f"{context}.name is invalid")
+        if cluster_name in cluster_names:
+            raise ValidationError(
+                f"duplicate packed block name {cluster_name!r}"
+            )
+        cluster_names.add(cluster_name)
+        bracket = cluster_id.rfind("[")
+        if (
+            bracket <= 0
+            or not cluster_id.endswith("]")
+            or not cluster_id[bracket + 1 : -1].isdigit()
+        ):
+            raise ValidationError(f"{context}.id has no VPR block number")
+        block_number = int(cluster_id[bracket + 1 : -1])
+        if block_number in block_numbers:
+            raise ValidationError(
+                f"duplicate VPR block number {block_number}"
+            )
+        block_numbers.add(block_number)
         block_type = cluster.get("block_type")
         if not isinstance(block_type, str) or not block_type:
             raise ValidationError(f"{context}.block_type is invalid")

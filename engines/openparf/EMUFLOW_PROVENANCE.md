@@ -21,6 +21,12 @@ source-visible PyTorch API compatibility change: deterministic mode uses
 `torch.use_deterministic_algorithms` when available and retains the legacy
 fallback for older PyTorch releases.
 
+EmuFlow also adds a source-visible generic packed-cluster mode. It makes the
+logic area-type names architecture-configurable and uses OpenPARF's existing
+single-site min-cost-flow legalizer for VTR-defined clusters instead of
+requiring Xilinx-specific `LUT` and `FF` area types. The native LUT/FF path is
+unchanged when this mode is disabled.
+
 OpenPARF's upstream Git submodules are vendored as ordinary source
 directories so a clone of EmuFlow does not need recursive submodule checkout:
 

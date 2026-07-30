@@ -548,14 +548,21 @@ class OpCollections(object):
         self.ssr_abacus_legalize_op = build_ssr_abacus_legalize_op(
             params, data_cls, placedb
         )
-        # legalize LUTs and FFs
-        self.direct_lg_op = (
-            build_direct_lg_op(params, placedb, data_cls)
-            if not params.confine_clock_region_flag
-            else build_clock_region_aware_direct_lg_op(params, placedb, data_cls)
-        )
-        # detailed placement
-        self.ism_dp_op = build_ism_dp_op(params, placedb, data_cls)
+        # The native direct legalizer and ISM detailed placer implement
+        # LUT/FF packing rules.  Generic packed-cluster architectures use the
+        # architecture/resource-driven min-cost-flow legalizer above.
+        if params.generic_cluster_placement_flag:
+            self.direct_lg_op = None
+            self.ism_dp_op = None
+        else:
+            self.direct_lg_op = (
+                build_direct_lg_op(params, placedb, data_cls)
+                if not params.confine_clock_region_flag
+                else build_clock_region_aware_direct_lg_op(
+                    params, placedb, data_cls
+                )
+            )
+            self.ism_dp_op = build_ism_dp_op(params, placedb, data_cls)
         # legality check
         self.legality_check_op = build_legality_check_op(params, placedb, data_cls)
         # routing utilization map

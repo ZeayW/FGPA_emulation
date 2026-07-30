@@ -38,6 +38,7 @@ from .packed_netlist import (
     run_packed_netlist_import,
     validate_packed_netlist_file,
 )
+from .packed_placement import run_packed_openparf_placement
 from .partition_feedback import run_partition_feedback
 from .physical_pins import run_phase6b, validate_package_pin_binding
 from .physical_regions import (
@@ -80,7 +81,7 @@ from .vtr_architecture import (
     validate_vtr_architecture_db,
     validate_vtr_timing_db_file,
 )
-from .vpr import run_vpr, run_vtr_yosys
+from .vpr import run_vpr, run_vpr_route_packed, run_vtr_yosys
 
 
 def _print_json(value: Dict[str, Any]) -> None:
@@ -208,6 +209,33 @@ def _build_parser() -> argparse.ArgumentParser:
     vpr_validate_packed.add_argument("--input", type=Path, required=True)
     vpr_validate_packed.add_argument("--architecture", type=Path)
     vpr_validate_packed.add_argument("--circuit", type=Path)
+    vpr_place_openparf = vpr_subparsers.add_parser(
+        "place-openparf",
+        help="place VPR packed clusters with root-built OpenPARF",
+    )
+    vpr_place_openparf.add_argument("--packed", type=Path, required=True)
+    vpr_place_openparf.add_argument(
+        "--architecture-db", type=Path, required=True
+    )
+    vpr_place_openparf.add_argument("--out", type=Path, required=True)
+    vpr_place_openparf.add_argument("--openparf-install", type=Path)
+    vpr_place_openparf.add_argument("--openparf-python", type=Path)
+    vpr_route_packed = vpr_subparsers.add_parser(
+        "route-packed",
+        help="route a packed netlist and OpenPARF VPR placement",
+    )
+    vpr_route_packed.add_argument("--architecture", type=Path, required=True)
+    vpr_route_packed.add_argument("--circuit", type=Path, required=True)
+    vpr_route_packed.add_argument("--packed-netlist", type=Path, required=True)
+    vpr_route_packed.add_argument("--placement", type=Path, required=True)
+    vpr_route_packed.add_argument("--out", type=Path, required=True)
+    vpr_route_packed.add_argument(
+        "--vpr",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    vpr_route_packed.add_argument(
+        "--route-channel-width", type=int, default=300
+    )
 
     benchmark = subparsers.add_parser(
         "benchmark", help="run a pinned RTL benchmark through Phase 1"
@@ -1094,11 +1122,29 @@ def _dispatch(args: argparse.Namespace) -> int:
                 circuit_path=args.circuit,
                 executable=args.importer,
             )
-        else:
+        elif args.vpr_command == "validate-packed":
             report = validate_packed_netlist_file(
                 args.input,
                 architecture_path=args.architecture,
                 circuit_path=args.circuit,
+            )
+        elif args.vpr_command == "place-openparf":
+            report = run_packed_openparf_placement(
+                args.packed,
+                args.architecture_db,
+                args.out,
+                openparf_install=args.openparf_install,
+                openparf_python=args.openparf_python,
+            )
+        else:
+            report = run_vpr_route_packed(
+                architecture=args.architecture,
+                circuit=args.circuit,
+                packed_netlist=args.packed_netlist,
+                placement=args.placement,
+                output_dir=args.out,
+                executable=args.vpr,
+                route_channel_width=args.route_channel_width,
             )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

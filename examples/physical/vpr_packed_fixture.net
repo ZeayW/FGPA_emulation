@@ -3,7 +3,7 @@
   <inputs>a</inputs>
   <outputs>out:y</outputs>
   <clocks />
-  <block name="a" instance="io[0]" mode="inpad">
+  <block name="a" instance="io[1]" mode="inpad">
     <inputs><port name="outpad">open</port></inputs>
     <outputs><port name="inpad">inpad[0].inpad[0]-&gt;inpad</port></outputs>
     <clocks><port name="clock">open</port></clocks>
@@ -33,7 +33,7 @@
       </block>
     </block>
   </block>
-  <block name="out:y" instance="io[1]" mode="outpad">
+  <block name="out:y" instance="io[2]" mode="outpad">
     <inputs><port name="outpad">y</port></inputs>
     <outputs><port name="inpad">open</port></outputs>
     <clocks><port name="clock">open</port></clocks>

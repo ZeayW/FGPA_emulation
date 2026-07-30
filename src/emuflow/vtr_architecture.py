@@ -6,7 +6,7 @@ import hashlib
 import math
 import subprocess
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -367,6 +367,7 @@ def _tile_templates(extract: Mapping[str, Any]) -> Dict[str, Any]:
     templates = {}
     for tile_name, tile in sorted(extract["tiles"].items()):
         aggregate: Dict[str, int] = defaultdict(int)
+        cluster_capacity: Dict[str, int] = defaultdict(int)
         sub_tiles: Dict[str, Dict[str, Any]] = {}
         for record in tile["sub_tiles"]:
             sub_tile = sub_tiles.setdefault(
@@ -382,6 +383,7 @@ def _tile_templates(extract: Mapping[str, Any]) -> Dict[str, Any]:
         for sub_tile in sub_tiles.values():
             equivalent_capacity: Dict[str, int] = defaultdict(int)
             for pb_type in sub_tile["pb_types"]:
+                cluster_capacity[pb_type] += sub_tile["capacity"]
                 if pb_type not in extract["resources"]:
                     raise ValidationError(
                         f"VTR tile {tile_name!r} references unknown pb_type "
@@ -401,6 +403,9 @@ def _tile_templates(extract: Mapping[str, Any]) -> Dict[str, Any]:
                     "width": tile["width"],
                     "height": tile["height"],
                 },
+                "vtr_cluster_capacity": dict(
+                    sorted(cluster_capacity.items())
+                ),
             }
     return templates
 
@@ -708,7 +713,33 @@ def validate_vtr_architecture_db(
     summary = architecture.summary()
     if not summary["cell_slots"]:
         raise ValidationError("VTR ArchitectureDB contains no cell slots")
-    return {"status": "pass", **summary}
+    cluster_capacity: Counter[str] = Counter()
+    for template_name, template in architecture.value.get(
+        "site_templates", {}
+    ).items():
+        raw_capacity = template.get("vtr_cluster_capacity")
+        if not isinstance(raw_capacity, dict) or not raw_capacity:
+            raise ValidationError(
+                f"VTR site template {template_name!r} has no cluster capacity"
+            )
+        for block_type, capacity in raw_capacity.items():
+            if (
+                not isinstance(block_type, str)
+                or not block_type
+                or isinstance(capacity, bool)
+                or not isinstance(capacity, int)
+                or capacity <= 0
+            ):
+                raise ValidationError(
+                    f"VTR site template {template_name!r} cluster capacity "
+                    "is invalid"
+                )
+            cluster_capacity[block_type] += capacity
+    return {
+        "status": "pass",
+        **summary,
+        "cluster_types": dict(sorted(cluster_capacity.items())),
+    }
 
 
 def run_vtr_architecture_import(

@@ -1,10 +1,13 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.vpr import (
     build_vtr_yosys_script,
+    run_vpr_route_packed,
     validate_vpr_outputs,
 )
 
@@ -56,6 +59,9 @@ class VprTest(unittest.TestCase):
         self.assertEqual(report["metrics"]["clb_blocks"], 263)
         self.assertEqual(report["metrics"]["wirelength"], 29761)
         self.assertEqual(report["metrics"]["fmax_mhz"], 123.731)
+        self.assertEqual(
+            report["stages"], ["pack", "place", "route", "analysis"]
+        )
 
     def test_route_report_rejects_missing_success_marker(self) -> None:
         with self.assertRaisesRegex(ValidationError, "success marker"):
@@ -65,6 +71,47 @@ class VprTest(unittest.TestCase):
                 placement=Path("missing.place"),
                 route=Path("missing.route"),
             )
+
+    def test_route_packed_uses_existing_netlist_and_placement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            architecture = root / "arch.xml"
+            circuit = root / "cpu.eblif"
+            netlist = root / "cpu.net"
+            placement = root / "cpu.place"
+            for path in (architecture, circuit, netlist, placement):
+                path.write_text(path.name, encoding="utf-8")
+
+            def fake_run(arguments, **_kwargs):
+                route_index = arguments.index("--route_file") + 1
+                Path(arguments[route_index]).write_text(
+                    "route", encoding="utf-8"
+                )
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    """
+                    Netlist num_nets: 2
+                    Netlist num_blocks: 3
+                    Total wirelength: 12
+                    VPR succeeded
+                    """,
+                )
+
+            with patch("emuflow.vpr.subprocess.run", side_effect=fake_run):
+                report = run_vpr_route_packed(
+                    architecture,
+                    circuit,
+                    netlist,
+                    placement,
+                    root / "route",
+                    executable="/source-built/vpr",
+                )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["stages"], ["route", "analysis"])
+        self.assertIn("--net_file", report["command"])
+        self.assertIn("--place_file", report["command"])
 
 
 if __name__ == "__main__":

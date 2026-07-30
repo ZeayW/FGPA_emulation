@@ -647,12 +647,15 @@ The packed-netlist contract is now implemented by a C++ VPR `.net` importer
 plus an independent validator. It preserves selected modes, the complete used
 pb hierarchy, atom membership, cross-cluster nets, and source hashes.
 
+Packed clusters are now exported with exact VTR site capacities to the
+source-built OpenPARF analytical placer. Architecture-defined single-site
+resources use OpenPARF's min-cost-flow legalizer; the independently checked
+result is emitted as VPR `.place` and accepted by source-built VPR routing.
+
 The remaining R0/R1 work is:
 
 - extend the implemented LUT6/DFF eBLIF mapper with architecture-neutral
   memory, multiplier, and other hard-block mapping;
-- translate packed clusters into OpenPARF placement input and convert its
-  legal cluster coordinates into a VPR `.place` file;
 - translate Architecture TimingDB into OpenSTA cell/interconnect models; and
 - add an independent detailed-route artifact checker beyond VPR's internal
   legality check.

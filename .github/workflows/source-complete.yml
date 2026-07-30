@@ -41,6 +41,7 @@ jobs:
           -DEMUFLOW_BUILD_CUDD=OFF
           -DEMUFLOW_BUILD_REPART=OFF
           -DEMUFLOW_BUILD_OPENROAD=OFF
+          -DEMUFLOW_BUILD_OPENSTA=OFF
           -DEMUFLOW_BUILD_OPENPARF=OFF
 
       - name: Compile every first-party C++ provider

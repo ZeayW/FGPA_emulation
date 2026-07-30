@@ -147,6 +147,7 @@ def validate_vpr_outputs(
     packed_netlist: Path,
     placement: Path,
     route: Path,
+    stages: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     if "VPR succeeded" not in log_text:
         raise ValidationError("VPR log does not contain a success marker")
@@ -182,7 +183,7 @@ def validate_vpr_outputs(
     return {
         "status": "pass",
         "provider": VPR_PROVIDER,
-        "stages": ["pack", "place", "route", "analysis"],
+        "stages": list(stages or ("pack", "place", "route", "analysis")),
         "metrics": metrics,
         "artifacts": artifact_report,
     }
@@ -266,4 +267,88 @@ def run_vpr(
         }
     )
     write_json(output_dir / "vpr-report.json", report)
+    return report
+
+
+def run_vpr_route_packed(
+    architecture: Path,
+    circuit: Path,
+    packed_netlist: Path,
+    placement: Path,
+    output_dir: Path,
+    *,
+    executable: Optional[str] = None,
+    route_channel_width: int = 300,
+) -> Dict[str, Any]:
+    """Route an existing VPR packing and OpenPARF cluster placement."""
+
+    inputs = {
+        "architecture": architecture.resolve(),
+        "circuit": circuit.resolve(),
+        "packed_netlist": packed_netlist.resolve(),
+        "placement": placement.resolve(),
+    }
+    for name, path in inputs.items():
+        if not path.is_file():
+            raise EmuFlowError(f"VPR {name} does not exist: {path}")
+    if route_channel_width <= 0 or route_channel_width % 2:
+        raise EmuFlowError(
+            "VPR route channel width must be a positive even integer"
+        )
+
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    route = output_dir / f"{inputs['circuit'].stem}.route"
+    command = resolve_native_executable("vpr", executable)
+    arguments = [
+        command,
+        str(inputs["architecture"]),
+        str(inputs["circuit"]),
+        "--route",
+        "--analysis",
+        "--disp",
+        "off",
+        "--net_file",
+        str(inputs["packed_netlist"]),
+        "--place_file",
+        str(inputs["placement"]),
+        "--route_file",
+        str(route),
+        "--route_chan_width",
+        str(route_channel_width),
+    ]
+    completed = subprocess.run(
+        arguments,
+        cwd=output_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    log_path = output_dir / "vpr.console.log"
+    log_path.write_text(completed.stdout, encoding="utf-8")
+    if completed.returncode != 0:
+        tail = "\n".join(completed.stdout.splitlines()[-40:])
+        raise EmuFlowError(
+            f"VPR routing failed with exit code {completed.returncode}\n{tail}"
+        )
+    report = validate_vpr_outputs(
+        completed.stdout,
+        packed_netlist=inputs["packed_netlist"],
+        placement=inputs["placement"],
+        route=route,
+        stages=("route", "analysis"),
+    )
+    report.update(
+        {
+            name: {"path": str(path), "sha256": _sha256(path)}
+            for name, path in inputs.items()
+        }
+    )
+    report["configuration"] = {
+        "route_channel_width": route_channel_width
+    }
+    report["command"] = arguments
+    report["log"] = str(log_path)
+    write_json(output_dir / "vpr-route-report.json", report)
     return report

@@ -154,8 +154,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
-| Placement | Root-built OpenPARF plus EmuFlow adapters/checker; VPR baseline placement | VPR packing decisions now enter a checked cluster contract; OpenPARF cluster placement and VPR `.place` emission remain the next gate |
-| FPGA routing | Root-built VTR/VPR plus report/artifact checker | Exact packing, routing-resource-graph construction, detailed routing, and timing analysis run from repository source; placement handoff is pending |
+| Placement | Root-built OpenPARF plus EmuFlow adapters/checker | VPR packing decisions enter a checked cluster contract; OpenPARF performs analytical global placement and architecture-defined single-site min-cost-flow legalization, followed by independent site/capacity/collision checking and VPR `.place` emission |
+| FPGA routing | Root-built VTR/VPR plus report/artifact checker | The checked OpenPARF placement is accepted by VPR's placement consistency checker and drives timing-aware detailed routing and analysis |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -163,12 +163,12 @@ Passing individual board-independent stage checks does **not** prove that a
 clean checkout can execute the entire open placement-and-routing path with one
 command. That end-to-end source-build gate remains open.
 
-EmuFlow is not yet a complete OpenPARF-to-VPR placement-and-routing flow. The
-default VTR architecture import, logic-only mapping, exact VPR packing,
-the packed-cluster contract, baseline placement, and detailed routing are
-implemented. Architecture-aware hard-block mapping, OpenPARF cluster
-placement/VPR `.place` emission, and
-TimingDB-to-OpenSTA translation remain open gates.
+The open logic-only OpenPARF-to-VPR placement-and-routing path is implemented:
+VTR architecture import, LUT6/DFF mapping, exact VPR packing, the checked
+packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
+routing, and timing analysis. Architecture-aware hard-block mapping,
+TimingDB-to-OpenSTA translation, and an independent detailed-route artifact
+checker remain open gates.
 EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
 used to compare results or generate a bitstream, but success in Vivado cannot
 satisfy the default open-flow completion gate.
@@ -312,13 +312,26 @@ emuflow vpr import-packed \
   --architecture build/architectures/vtr-flagship.xml \
   --circuit build/picorv32.eblif \
   --output build/picorv32-vpr/packed-contract.json
+
+emuflow vpr place-openparf \
+  --packed build/picorv32-vpr/packed-contract.json \
+  --architecture-db build/architectures/vtr-64x64.archdb.json \
+  --out build/picorv32-openparf
+
+emuflow vpr route-packed \
+  --architecture build/architectures/vtr-flagship.xml \
+  --circuit build/picorv32.eblif \
+  --packed-netlist build/picorv32-vpr/picorv32.net \
+  --placement build/picorv32-openparf/picorv32.place \
+  --out build/picorv32-openparf-route
 ```
 
 The second command emits and verifies the packed `.net`, legal `.place`,
 detailed `.route`, console log, and `vpr-report.json`. The third command
 preserves VPR's exact cluster modes, pb hierarchy, atom membership, and
-cross-cluster nets in a hash-bound versioned contract. VPR's baseline placer
-is still used until OpenPARF cluster placement and `.place` emission land.
+cross-cluster nets in a hash-bound versioned contract. The fourth command
+places those exact clusters with OpenPARF and emits a checked VPR placement;
+the fifth routes that placement without invoking VPR's baseline placer.
 
 Run the checked-in board-independent counter example:
 
