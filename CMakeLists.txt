@@ -66,6 +66,11 @@ option(
   "Build the in-tree VTR academic architecture XML importer"
   ON
 )
+option(
+  EMUFLOW_BUILD_VPR
+  "Build the in-tree VTR/VPR exact pack, place, and route engine"
+  ON
+)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
   EMUFLOW_CMAKE_PREFIX_PATH
@@ -592,6 +597,59 @@ if(EMUFLOW_BUILD_OPENSTA)
   )
 endif()
 
+if(EMUFLOW_BUILD_VPR)
+  set(
+    EMUFLOW_VPR_CMAKE_ARGS
+    "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    "-DCMAKE_PREFIX_PATH=${EMUFLOW_CMAKE_PREFIX_PATH}"
+    "-DBUILD_TESTING=OFF"
+    "-DVTR_IPO_BUILD=off"
+    "-DVTR_VCS_REVISION_OVERRIDE=a3e60c31bb4384373d2d1a43c38c7569723733b6"
+    "-DWITH_ABC=OFF"
+    "-DWITH_ODIN=OFF"
+    "-DWITH_PARMYS=OFF"
+    "-DSLANG_SYSTEMVERILOG=OFF"
+    "-DVTR_ENABLE_CAPNPROTO=OFF"
+    "-DVPR_ENABLE_INTERCHANGE=OFF"
+    "-DVPR_ENABLE_NOC_SAT_ROUTING=OFF"
+    "-DVPR_USE_SERVER=OFF"
+    "-DVPR_USE_EZGL=off"
+    "-DVPR_EXECUTION_ENGINE=serial"
+    "-DVPR_ENABLE_OPEN_MP=off"
+  )
+  if(EMUFLOW_SWIG_EXECUTABLE)
+    list(
+      APPEND EMUFLOW_VPR_CMAKE_ARGS
+      "-DSWIG_EXECUTABLE=${EMUFLOW_SWIG_EXECUTABLE}"
+    )
+  endif()
+  if(EMUFLOW_SWIG_DIR)
+    list(
+      APPEND EMUFLOW_VPR_CMAKE_ARGS
+      "-DSWIG_DIR=${EMUFLOW_SWIG_DIR}"
+    )
+  endif()
+
+  ExternalProject_Add(
+    vpr_native
+    SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/vtr"
+    BINARY_DIR "${CMAKE_BINARY_DIR}/vtr"
+    DOWNLOAD_COMMAND ""
+    UPDATE_COMMAND ""
+    PATCH_COMMAND ""
+    CMAKE_ARGS ${EMUFLOW_VPR_CMAKE_ARGS}
+    BUILD_COMMAND
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --target vpr
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    INSTALL_COMMAND
+      "${CMAKE_COMMAND}" -E copy
+      "<BINARY_DIR>/vpr/vpr"
+      "${EMUFLOW_INSTALL_BINDIR}/vpr"
+    BUILD_BYPRODUCTS "${EMUFLOW_INSTALL_BINDIR}/vpr"
+  )
+endif()
+
 if(EMUFLOW_BUILD_OPENPARF)
   ExternalProject_Add(
     openparf_native
@@ -642,10 +700,21 @@ endif()
 if(EMUFLOW_BUILD_CUDD AND EMUFLOW_BUILD_OPENSTA)
   add_dependencies(opensta_native cudd_native)
 endif()
-if(EMUFLOW_BUILD_OPENROAD AND EMUFLOW_BUILD_OPENPARF)
-  add_dependencies(openparf_native openroad_native)
-elseif(EMUFLOW_BUILD_YOSYS AND EMUFLOW_BUILD_OPENPARF)
-  add_dependencies(openparf_native yosys_native)
+if(EMUFLOW_BUILD_VPR)
+  if(EMUFLOW_BUILD_OPENROAD)
+    add_dependencies(vpr_native openroad_native)
+  elseif(EMUFLOW_BUILD_YOSYS)
+    add_dependencies(vpr_native yosys_native)
+  endif()
+endif()
+if(EMUFLOW_BUILD_OPENPARF)
+  if(EMUFLOW_BUILD_VPR)
+    add_dependencies(openparf_native vpr_native)
+  elseif(EMUFLOW_BUILD_OPENROAD)
+    add_dependencies(openparf_native openroad_native)
+  elseif(EMUFLOW_BUILD_YOSYS)
+    add_dependencies(openparf_native yosys_native)
+  endif()
 endif()
 
 if(BUILD_TESTING)
@@ -767,6 +836,13 @@ if(BUILD_TESTING)
     add_test(
       NAME opensta_version
       COMMAND "${EMUFLOW_INSTALL_BINDIR}/sta" -version
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_VPR)
+    add_test(
+      NAME vpr_version
+      COMMAND "${EMUFLOW_INSTALL_BINDIR}/vpr" --version
     )
   endif()
 

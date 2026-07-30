@@ -266,6 +266,27 @@
       "version_or_revision": "OpenPARF 793cac2b router snapshot",
       "license": "Source notices",
       "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "vtr-vpr",
+      "path": "engines/vtr",
+      "upstream": "https://github.com/verilog-to-routing/vtr-verilog-to-routing",
+      "version_or_revision": "a3e60c31bb4384373d2d1a43c38c7569723733b6",
+      "license": "MIT"
+    },
+    {
+      "id": "vtr-libsdcparse",
+      "path": "engines/vtr/libs/EXTERNAL/libsdcparse",
+      "upstream": "https://github.com/verilog-to-routing/libsdcparse",
+      "version_or_revision": "7a49e2c9ad469d314aa7ec07d3e893ecabd7d9dc",
+      "license": "MIT"
+    },
+    {
+      "id": "vtr-yaml-cpp",
+      "path": "engines/vtr/libs/EXTERNAL/yaml-cpp",
+      "upstream": "https://github.com/jbeder/yaml-cpp",
+      "version_or_revision": "2decf96e915d2b0c26c68c1659665789dfef2633",
+      "license": "MIT"
     }
   ],
   "external_dependencies": [
@@ -312,12 +333,12 @@
     {
       "id": "tcl",
       "upstream": "https://github.com/tcltk/tcl",
-      "used_by": "OpenROAD"
+      "used_by": "OpenROAD and VPR SDC parsing"
     },
     {
       "id": "swig",
       "upstream": "https://github.com/swig/swig",
-      "used_by": "OpenROAD/OpenSTA bindings"
+      "used_by": "OpenROAD/OpenSTA bindings and VPR SDC parser generation"
     },
     {
       "id": "eigen",
@@ -327,7 +348,7 @@
     {
       "id": "zlib",
       "upstream": "https://github.com/madler/zlib",
-      "used_by": "Yosys and OpenROAD"
+      "used_by": "Yosys, OpenROAD, and VPR"
     },
     {
       "id": "spdlog",

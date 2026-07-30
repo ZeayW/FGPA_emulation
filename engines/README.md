@@ -7,6 +7,7 @@ participate directly in the EmuFlow root build:
 - `openroad`: OpenROAD, OpenSTA, and TritonPart;
 - `repart`: multilevel FPGA-aware hypergraph partitioning and replication;
 - `openparf`: FPGA placement operators and flow; and
+- `vtr`: VPR exact architecture packing, placement, and detailed routing; and
 - `cudd`: the decision-diagram dependency required by OpenSTA.
 
 Each engine retains its upstream license and an `EMUFLOW_PROVENANCE.md` record

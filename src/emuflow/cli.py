@@ -76,6 +76,7 @@ from .vtr_architecture import (
     validate_vtr_architecture_db,
     validate_vtr_timing_db_file,
 )
+from .vpr import run_vpr, run_vtr_yosys
 
 
 def _print_json(value: Dict[str, Any]) -> None:
@@ -152,6 +153,38 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(VALID_SYNTHESIS_POLICIES),
         default="native",
     )
+
+    vpr_parser = subparsers.add_parser(
+        "vpr", help="open VTR/VPR per-FPGA physical backend"
+    )
+    vpr_subparsers = vpr_parser.add_subparsers(
+        dest="vpr_command", required=True
+    )
+    vpr_synth = vpr_subparsers.add_parser(
+        "synth",
+        help="map RTL to logic-only LUT6/DFF eBLIF for VPR",
+    )
+    vpr_synth.add_argument("sources", nargs="+", type=Path)
+    vpr_synth.add_argument("--top", required=True)
+    vpr_synth.add_argument("--output", "-o", type=Path, required=True)
+    vpr_synth.add_argument(
+        "--yosys",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    vpr_synth.add_argument("--log", type=Path)
+    vpr_run = vpr_subparsers.add_parser(
+        "run",
+        help="run exact VPR pack, baseline place, route, and analysis",
+    )
+    vpr_run.add_argument("--architecture", type=Path, required=True)
+    vpr_run.add_argument("--circuit", type=Path, required=True)
+    vpr_run.add_argument("--out", type=Path, required=True)
+    vpr_run.add_argument(
+        "--vpr",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    vpr_run.add_argument("--seed", type=int, default=1)
+    vpr_run.add_argument("--route-channel-width", type=int, default=300)
 
     benchmark = subparsers.add_parser(
         "benchmark", help="run a pinned RTL benchmark through Phase 1"
@@ -1011,6 +1044,27 @@ def _dispatch(args: argparse.Namespace) -> int:
             }
         )
         return 0
+
+    if args.command == "vpr":
+        if args.vpr_command == "synth":
+            report = run_vtr_yosys(
+                sources=args.sources,
+                top=args.top,
+                output=args.output,
+                executable=args.yosys,
+                log_path=args.log,
+            )
+        else:
+            report = run_vpr(
+                architecture=args.architecture,
+                circuit=args.circuit,
+                output_dir=args.out,
+                executable=args.vpr,
+                seed=args.seed,
+                route_channel_width=args.route_channel_width,
+            )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
 
     if args.command == "benchmark":
         report = run_benchmark(

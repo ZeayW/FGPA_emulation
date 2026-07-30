@@ -89,11 +89,24 @@ REQUIRED_SOURCE_FILES = {
         "LICENSE",
         "EMUFLOW_PROVENANCE.md",
     ),
+    "vtr": (
+        "CMakeLists.txt",
+        "vpr/src/main.cpp",
+        "vpr/src/pack/pack.cpp",
+        "vpr/src/route/route.cpp",
+        "libs/libarchfpga/src/read_xml_arch_file.cpp",
+        "libs/librrgraph/src/base/rr_graph_builder.cpp",
+        "libs/EXTERNAL/libsdcparse/CMakeLists.txt",
+        "libs/EXTERNAL/yaml-cpp/CMakeLists.txt",
+        "LICENSE.md",
+        "EMUFLOW_PROVENANCE.md",
+    ),
 }
 
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/vtr_architecture_importer.cpp",
     "src/emuflow/vtr_architecture.py",
+    "src/emuflow/vpr.py",
     "schemas/architecture-timing-db-v1.schema.json",
     "resources/architectures/vtr/flagship-k6-n10-40nm.json",
     "examples/architecture/vtr_k6_heterogeneous_fixture.xml",

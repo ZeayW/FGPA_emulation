@@ -23,9 +23,12 @@
 >   [Munkres](https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/ppl/src/munkres),
 >   and [Material Design Icons](https://github.com/google/material-design-icons)
 > - Placement: [OpenPARF](https://github.com/PKU-IDEA/OpenPARF)
-> - Default open academic architecture:
->   [VTR](https://github.com/verilog-to-routing/vtr-verilog-to-routing)
->   flagship heterogeneous XML, pinned by commit and SHA-256
+> - Default open academic backend:
+>   [VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing)
+>   editable pack/place/route source plus the flagship heterogeneous XML,
+>   pinned by commit and SHA-256; materialized dependencies are
+>   [libsdcparse](https://github.com/verilog-to-routing/libsdcparse) and
+>   [yaml-cpp](https://github.com/jbeder/yaml-cpp)
 > - Architecture interchange:
 >   [FPGA Interchange Schema](https://github.com/chipsalliance/fpga-interchange-schema),
 >   [Cap'n Proto](https://github.com/capnproto/capnproto), and the required
@@ -142,7 +145,7 @@ boundaries; combinational loops and hard macros remain atomic.
 
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
-| Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; exact VTR mode-aware packing is the next increment |
+| Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; VPR consumes the original XML for exact mode-aware packing |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
 | Static timing | In-tree standalone OpenSTA plus provider-neutral Architecture TimingDB | VTR timing data is imported and source-qualified; conversion to the OpenSTA cell/interconnect model is pending |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
@@ -150,8 +153,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
-| Placement | Root-built OpenPARF plus EmuFlow adapters/checker | Default path builds, runs, and independently validates repository source |
-| FPGA routing | VTR/VPR source integration planned | The open architecture/routing model now has a pinned default; exact routing-resource-graph import and detailed routing are pending |
+| Placement | Root-built OpenPARF plus EmuFlow adapters/checker; VPR baseline placement | OpenPARF remains the selected placer; the current open VPR command uses VPR placement until the clustered-placement handoff is completed |
+| FPGA routing | Root-built VTR/VPR plus report/artifact checker | Exact packing, routing-resource-graph construction, detailed routing, and timing analysis run from repository source; OpenPARF-to-VPR placement handoff is pending |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -159,9 +162,11 @@ Passing individual board-independent stage checks does **not** prove that a
 clean checkout can execute the entire open placement-and-routing path with one
 command. That end-to-end source-build gate remains open.
 
-EmuFlow is not yet a complete open placement-and-routing flow. The default VTR
-architecture import is implemented, but architecture-aware mapping/packing,
-TimingDB-to-OpenSTA translation, and detailed routing are still open gates.
+EmuFlow is not yet a complete OpenPARF-to-VPR placement-and-routing flow. The
+default VTR architecture import, logic-only mapping, exact VPR packing,
+baseline placement, and detailed routing are implemented. Architecture-aware
+hard-block mapping, the OpenPARF clustered-placement handoff, and
+TimingDB-to-OpenSTA translation remain open gates.
 EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
 used to compare results or generate a bitstream, but success in Vivado cannot
 satisfy the default open-flow completion gate.
@@ -185,7 +190,7 @@ satisfy the default open-flow completion gate.
 The supported entry point is the root CMake project. The default `release`
 preset builds the first-party C++ kernels and all selected in-tree engines:
 Yosys/ABC, CUDD, standalone OpenSTA, RePart, OpenROAD/TritonPart, OpenPARF,
-the VTR and FPGA Interchange ArchitectureDB importers.
+VTR/VPR, and the VTR and FPGA Interchange ArchitectureDB importers.
 It does not download any flow engine or install a precompiled provider.
 
 All builds require:
@@ -216,6 +221,7 @@ build/native/install/bin/emuflow_vtr_arch_importer
 build/native/install/bin/emuflow_fpgaif_arch_importer
 build/native/install/bin/yosys
 build/native/install/bin/yosys-abc
+build/native/install/bin/vpr
 build/native/install/bin/repart
 build/native/install/bin/sta
 build/native/install/bin/openroad
@@ -252,6 +258,7 @@ cmake -S . -B build/core -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
   -DEMUFLOW_BUILD_REPART=OFF \
   -DEMUFLOW_BUILD_OPENROAD=OFF \
   -DEMUFLOW_BUILD_OPENSTA=OFF \
+  -DEMUFLOW_BUILD_VPR=OFF \
   -DEMUFLOW_BUILD_OPENPARF=OFF
 cmake --build build/core --parallel
 ctest --test-dir build/core --output-on-failure
@@ -283,6 +290,26 @@ emuflow arch import-vtr build/architectures/vtr-flagship.xml \
   --architecture-output build/architectures/vtr-64x64.archdb.json \
   --timing-output build/architectures/vtr-64x64.timing.json
 ```
+
+Map RTL to VPR-compatible LUT6/DFF eBLIF, then run the source-built open
+academic physical backend:
+
+```bash
+emuflow vpr synth third_party/rtl/picorv32/picorv32.v \
+  --top picorv32 \
+  --output build/picorv32.eblif \
+  --log build/picorv32-yosys.log
+
+emuflow vpr run \
+  --architecture build/architectures/vtr-flagship.xml \
+  --circuit build/picorv32.eblif \
+  --out build/picorv32-vpr
+```
+
+The second command emits and verifies the packed `.net`, legal `.place`,
+detailed `.route`, console log, and `vpr-report.json`. It currently uses VPR's
+baseline placer; OpenPARF will replace that placement step after the
+cluster-level handoff contract is implemented.
 
 Run the checked-in board-independent counter example:
 
@@ -345,7 +372,9 @@ after checkout. Implementations are editable source in this repository:
 - `engines/yosys/`: Yosys synthesis, ABC mapping, and cxxopts source;
 - `engines/repart/`: RePart C++ hypergraph partitioner;
 - `engines/openroad/`: OpenROAD and TritonPart C++ source;
-- `engines/openparf/`: OpenPARF C++/CUDA/Python source; and
+- `engines/openparf/`: OpenPARF C++/CUDA/Python source;
+- `engines/vtr/`: VPR packing, placement, routing-resource graph, detailed
+  routing, and materialized dependency source; and
 - `src/native/`: first-party C++ optimization kernels, including the
   timing-aware system router, Lagrangian/KKT TDM-ratio optimizer, and
   placement-aware logical-pin and physical package-pin planners;
@@ -497,7 +526,7 @@ rtl/transport/     reusable TDM and barrier RTL
 benchmarks/        benchmark catalog and run configurations
 examples/          small reproducible RTL and artifact fixtures
 scripts/           provider integration and reusable flow utilities
-engines/           root-built Yosys, OpenROAD, RePart, OpenPARF, and CUDD source
+engines/           root-built Yosys, OpenROAD, RePart, OpenPARF, VPR, and CUDD source
 third_party/       external RTL benchmarks and retained upstream patch records
 tests/             unit, adversarial, and flow-level regression tests
 docs/              architecture, algorithm, and benchmark plans

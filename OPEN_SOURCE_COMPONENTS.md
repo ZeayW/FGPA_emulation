@@ -50,6 +50,9 @@ their own licenses.
 | `engines/openparf/thirdparty/yaml-cpp/test/gtest-1.11.0` | [GoogleTest](https://github.com/google/googletest/tree/release-1.11.0) | 1.11.0 upstream test snapshot | BSD-3-Clause | yaml-cpp upstream tests; disabled |
 | `engines/openparf/thirdparty/lemon` | [LEMON graph library](https://github.com/The-OpenROAD-Project/lemon-graph) | 1.3.1 | BSL-1.0 | Graph algorithms |
 | `engines/openparf/thirdparty/rapidcsv` | [rapidcsv](https://github.com/d99kris/rapidcsv) | 8.65 | BSD-3-Clause | CSV parsing |
+| `engines/vtr` | [Verilog-to-Routing / VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing) | `a3e60c31bb4384373d2d1a43c38c7569723733b6` | MIT | Exact architecture packing, routing-resource graph construction, baseline placement, and detailed routing |
+| `engines/vtr/libs/EXTERNAL/libsdcparse` | [libsdcparse](https://github.com/verilog-to-routing/libsdcparse) | `7a49e2c9ad469d314aa7ec07d3e893ecabd7d9dc` | MIT | VPR SDC parsing |
+| `engines/vtr/libs/EXTERNAL/yaml-cpp` | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | `2decf96e915d2b0c26c68c1659665789dfef2633` | MIT | VPR YAML report/configuration parsing |
 
 Yosys ABC and OpenROAD ABC each carry additional SAT solver, compression, and
 BDD code. Those copies originate in their respective pinned ABC repositories;
@@ -89,8 +92,8 @@ an EmuFlow optimization engine.
 | Boost | [boostorg/boost](https://github.com/boostorg/boost) | RePart, OpenROAD, OpenPARF |
 | Bison | [GNU Bison](https://git.savannah.gnu.org/cgit/bison.git) | Yosys, OpenROAD, OpenPARF parsers |
 | Flex | [westes/flex](https://github.com/westes/flex) | Yosys, OpenROAD, OpenPARF parsers |
-| Tcl | [tcltk/tcl](https://github.com/tcltk/tcl) | OpenROAD command interface |
-| SWIG | [swig/swig](https://github.com/swig/swig) | OpenROAD/OpenSTA bindings |
+| Tcl | [tcltk/tcl](https://github.com/tcltk/tcl) | OpenROAD command interface and VPR SDC parsing |
+| SWIG | [swig/swig](https://github.com/swig/swig) | OpenROAD/OpenSTA bindings and VPR SDC parser generation |
 | Eigen | [libeigen/eigen](https://gitlab.com/libeigen/eigen) | OpenROAD/OpenSTA |
 | zlib | [madler/zlib](https://github.com/madler/zlib) | Yosys/OpenROAD |
 | spdlog | [gabime/spdlog](https://github.com/gabime/spdlog) | OpenROAD logging |

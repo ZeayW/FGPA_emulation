@@ -232,18 +232,37 @@
         "openparf/openparf"
       ],
       "integration": "default-in-tree-build"
+    },
+    {
+      "id": "open-fpga-pack-place-route",
+      "stage": "R1 / per-FPGA physical backend",
+      "source_paths": [
+        "src/emuflow/vpr.py",
+        "engines/vtr/vpr",
+        "engines/vtr/libs/libarchfpga",
+        "engines/vtr/libs/librrgraph",
+        "engines/vtr/libs/EXTERNAL/libsdcparse",
+        "engines/vtr/libs/EXTERNAL/yaml-cpp"
+      ],
+      "build_targets": [
+        "vpr_native"
+      ],
+      "runtime_products": [
+        "vpr"
+      ],
+      "integration": "default-in-tree-build"
     }
   ],
   "open_path_blockers": [
     {
       "id": "default-open-packing-and-timing",
       "status": "partial",
-      "reason": "The source-built VTR importer and pinned public flagship model now provide open heterogeneous layout, relaxed capacity, primitive/block timing arcs, and routing switch/segment/direct data. Exact mode-aware packing, architecture-neutral Yosys mapping, and Architecture TimingDB-to-OpenSTA translation are pending."
+      "reason": "The source-built VTR importer and pinned public flagship model provide open heterogeneous layout and timing data, and the exact VPR packer is now present in the root build. Architecture-neutral hard-block mapping, the checked packed-netlist contract, and Architecture TimingDB-to-OpenSTA translation remain pending."
     },
     {
       "id": "default-open-fpga-routing",
-      "status": "pending",
-      "reason": "The default VTR architecture carries open routing parameters, but EmuFlow does not yet construct the exact routing-resource graph or integrate source-built VPR after OpenPARF placement. OpenPARF's experimental router subtree remains disabled because it requires proprietary GUROBI."
+      "status": "partial",
+      "reason": "The root build now compiles editable VPR routing-resource-graph and detailed-routing source. The next gate is the versioned OpenPARF clustered-placement handoff followed by VPR route and independent route-artifact checking."
     },
     {
       "id": "open-ultrascale-plus-bitstream",

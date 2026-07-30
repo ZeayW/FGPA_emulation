@@ -630,24 +630,30 @@ real RTL validation, and frozen-baseline comparison pass.
 
 ## 14. Immediate next action
 
-R0 now has a source-built C++ VTR XML importer and provider-neutral
-ArchitectureDB/Architecture TimingDB contracts. The pinned public flagship
-model supplies heterogeneous layout, primitive and block timing arcs, and
-routing switch/segment/direct data without commercial device files. The
-importer currently exposes relaxed maximum capacity across VTR modes; it does
-not yet claim exact packing legality.
+R0 now has a source-built C++ VTR XML importer, provider-neutral
+ArchitectureDB/Architecture TimingDB contracts, and source-built VPR exact
+packing, baseline placement, routing-resource-graph construction, detailed
+routing, and analysis. The pinned public flagship model supplies heterogeneous
+layout and timing data without commercial device files. The ArchitectureDB
+view remains a relaxed planning view across mutually exclusive modes; exact
+packing legality comes from VPR consuming the original XML.
 
 R0 also has source-built standalone OpenSTA and optional FPGA Interchange
 importers. The older analytical UltraScale+ model and mixed-license
 RapidWright-produced region data remain optional compatibility inputs, not the
 definition of the open research flow.
 
-The remaining R0 work is:
+The remaining R0/R1 work is:
 
-- preserve VTR mode/equivalent-site constraints in an exact packing contract;
-- add architecture-neutral Yosys/ABC mapping;
+- publish VPR's exact mode/equivalent-site decisions in a versioned packed
+  netlist contract;
+- extend the implemented LUT6/DFF eBLIF mapper with architecture-neutral
+  memory, multiplier, and other hard-block mapping;
+- translate packed clusters into OpenPARF placement input and convert its
+  legal cluster coordinates into a VPR `.place` file;
 - translate Architecture TimingDB into OpenSTA cell/interconnect models; and
-- construct the routing-resource graph consumed by source-built VPR routing.
+- add an independent detailed-route artifact checker beyond VPR's internal
+  legality check.
 
 Until R0 is complete, existing timing-aware providers remain research
 prototypes and are not promoted as definitive paper reproductions.

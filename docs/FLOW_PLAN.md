@@ -54,10 +54,13 @@ Per-FPGA netlist + transport RTL generation
 Provider-selected technology mapping and mode-aware packing
         |
         v
-Root-built OpenPARF placement
+Root-built VPR exact architecture packing
         |
         v
-Open FPGA routing (VTR/VPR path planned)
+Root-built OpenPARF clustered placement (handoff pending)
+        |
+        v
+Root-built VPR routing-resource graph and detailed routing
         |
         v
 Open routed physical artifact
@@ -160,8 +163,10 @@ The default open increment now implements:
 
 The current capacity policy takes the maximum primitive count across mutually
 exclusive VTR modes. It is suitable for early global placement capacity, but
-not exact packing legality. The next increment must preserve modes explicitly
-and add a packer before placement is called physically legal.
+not exact packing legality by itself. The source-built VPR backend consumes
+the original XML and performs exact mode-aware packing. A checked packed
+netlist contract will expose those clusters to OpenPARF without flattening the
+mode decisions.
 
 The earlier UltraScale+ risk spike remains an optional backend and implements:
 
@@ -527,7 +532,9 @@ Until a board is selected:
 - modeled link latency: two fabric cycles;
 - physical mode: out-of-context, no package-pin binding;
 - placement provider: root-built in-tree OpenPARF;
-- routing provider: VTR/VPR integration pending;
+- routing provider: root-built in-tree VTR/VPR;
+- current placement/routing bridge: VPR baseline placement works; the
+  OpenPARF clustered-placement handoff is pending;
 - optional real-device backend: UltraScale+/Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will

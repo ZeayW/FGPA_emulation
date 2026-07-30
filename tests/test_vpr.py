@@ -1,0 +1,71 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.vpr import (
+    build_vtr_yosys_script,
+    validate_vpr_outputs,
+)
+
+
+class VprTest(unittest.TestCase):
+    def test_logic_only_script_lowers_ff_variants_to_latches(self) -> None:
+        script = build_vtr_yosys_script(
+            [Path("rtl/cpu.v")],
+            "cpu",
+            Path("build/cpu.eblif"),
+        )
+        self.assertIn("synth -top cpu -noabc", script)
+        self.assertEqual(script.count("dffunmap"), 2)
+        self.assertIn("abc -lut 6", script)
+        self.assertIn('write_blif -attr -cname "build/cpu.eblif"', script)
+
+    def test_empty_source_list_is_rejected(self) -> None:
+        with self.assertRaisesRegex(EmuFlowError, "at least one RTL source"):
+            build_vtr_yosys_script([], "cpu", Path("cpu.eblif"))
+
+    def test_route_report_requires_success_and_all_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            netlist = root / "cpu.net"
+            placement = root / "cpu.place"
+            route = root / "cpu.route"
+            for path in (netlist, placement, route):
+                path.write_text(path.name, encoding="utf-8")
+            report = validate_vpr_outputs(
+                """
+                Netlist num_nets: 2330
+                Netlist num_blocks: 605
+                Netlist io blocks: 342.
+                Netlist clb blocks: 263.
+                Netlist mult_36 blocks: 0.
+                Netlist memory blocks: 0.
+                Device Utilization: 0.69 (target 1.00)
+                Total wirelength: 29761, average net length: 12.7894
+                Final critical path delay (least slack): 8.08208 ns,
+                Fmax: 123.731 MHz
+                VPR succeeded
+                """,
+                packed_netlist=netlist,
+                placement=placement,
+                route=route,
+            )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["metrics"]["packed_blocks"], 605)
+        self.assertEqual(report["metrics"]["clb_blocks"], 263)
+        self.assertEqual(report["metrics"]["wirelength"], 29761)
+        self.assertEqual(report["metrics"]["fmax_mhz"], 123.731)
+
+    def test_route_report_rejects_missing_success_marker(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "success marker"):
+            validate_vpr_outputs(
+                "Netlist num_nets: 1",
+                packed_netlist=Path("missing.net"),
+                placement=Path("missing.place"),
+                route=Path("missing.route"),
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
