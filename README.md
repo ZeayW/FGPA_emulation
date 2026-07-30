@@ -84,16 +84,87 @@ bitstream, but success in Vivado cannot satisfy an open-flow completion gate.
 - **Board abstraction:** logical communication planning is separated from
   package pins and hardware-specific shell constraints.
 
-## Quick start
+## Build
 
-EmuFlow requires Python 3.9 or newer and has no mandatory third-party Python
-dependencies for its core artifact and checker path.
+The supported entry point is the root CMake project. The default `release`
+preset builds the first-party C++ kernels and all selected in-tree engines:
+Yosys/ABC, CUDD, RePart, OpenROAD/TritonPart, and OpenPARF. It does not download
+any flow engine or install a precompiled provider.
+
+All builds require:
+
+- CMake 3.20 or newer, GNU Make, and a C++17 compiler;
+- Python 3.9 or newer as the orchestration and checker runtime; and
+- Boost `system`, `thread`, and `serialization`.
+
+The complete default build additionally needs the development packages used by
+OpenROAD and OpenPARF: Bison, Flex, Tcl, SWIG 4, Eigen3, zlib, spdlog, LEMON,
+OR-Tools C++, OpenMP, PyTorch, NumPy, PyYAML, and Hummingbird. CUDA is optional
+and disabled by default. GUROBI is not required because OpenPARF's experimental
+router is disabled.
+
+Configure, compile, and test from the repository root:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -e .
-python3 -m unittest discover -s tests -v
+cmake --preset release
+cmake --build --preset release --parallel
+ctest --preset release
+```
+
+The build is self-contained below `build/native/`. Its main products are:
+
+```text
+build/native/install/bin/emuflow
+build/native/install/bin/yosys
+build/native/install/bin/yosys-abc
+build/native/install/bin/repart
+build/native/install/bin/openroad
+build/native/install/bin/emuflow_tlr_router
+build/native/install/bin/emuflow_tdm_ratio_optimizer
+build/native/install/bin/emuflow_tdm_partition_feedback
+build/native/install/bin/emuflow_pin_planner
+build/native/install/bin/emuflow_bsp_pin_solver
+build/native/install/openparf/
+```
+
+Dependencies installed in a non-system prefix can be exposed without changing
+the source tree:
+
+```bash
+cmake --preset release \
+  -DEMUFLOW_CMAKE_PREFIX_PATH=/absolute/path/to/dependency-prefix \
+  -DEMUFLOW_OPENPARF_PYTHON=/absolute/path/to/python
+```
+
+The selected Python must be the interpreter that can import PyTorch. Set
+`EMUFLOW_OPENPARF_ENABLE_CUDA=ON` only when that PyTorch installation and the
+CUDA toolkit are compatible. See the upstream links and license information in
+[Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md).
+
+For fast work on EmuFlow's first-party kernels and artifact contracts, a
+developer may explicitly disable the large imported engines. This is a partial
+developer build, not the source-complete release configuration:
+
+```bash
+cmake -S . -B build/core -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+  -DEMUFLOW_BUILD_YOSYS=OFF \
+  -DEMUFLOW_BUILD_CUDD=OFF \
+  -DEMUFLOW_BUILD_REPART=OFF \
+  -DEMUFLOW_BUILD_OPENROAD=OFF \
+  -DEMUFLOW_BUILD_OPENPARF=OFF
+cmake --build build/core --parallel
+ctest --test-dir build/core --output-on-failure
+```
+
+## Quick start
+
+Quick Start uses the CLI produced by the root build; it does not perform an
+editable package installation or bypass the installed launcher with a direct
+Python module invocation. Add the local build products to `PATH`:
+
+```bash
+export PATH="$PWD/build/native/install/bin:$PATH"
+emuflow --help
 ```
 
 Run the checked-in board-independent counter example:
@@ -120,9 +191,11 @@ emuflow synth-yosys examples/rtl/counter.v \
   --log build/counter-yosys.log
 ```
 
-Use `emuflow --help` and `emuflow <command> --help` for the complete CLI.
-Vivado remains an optional proprietary validation backend; it is not an
-open-source EmuFlow component.
+Use `emuflow --help` and `emuflow <command> --help` for the complete CLI. The
+installed `emuflow` launcher intentionally uses the in-tree Python control
+plane for orchestration and independent checking; optimization work remains in
+the compiled C/C++/CUDA providers listed above. Vivado remains an optional
+proprietary validation backend and is not an open-source EmuFlow component.
 
 ## Source-complete monorepo
 
@@ -211,18 +284,11 @@ Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,
 library, or Python extension is checked in.
 
-[`SOURCE_MANIFEST.json`](SOURCE_MANIFEST.json) is the machine-readable source
-inventory. It records each implementation path, root build target, local
-runtime product, integration state, and remaining open-path blocker.
-
-Configure and build all currently integrated open components from the
-repository root:
-
-```bash
-cmake --preset release
-cmake --build --preset release --parallel
-ctest --preset release
-```
+[`SOURCE_MANIFEST.json`](SOURCE_MANIFEST.json) records each flow implementation
+path, root build target, local runtime product, integration state, and
+remaining open-path blocker. [`OPEN_SOURCE_COMPONENTS.json`](OPEN_SOURCE_COMPONENTS.json)
+is the machine-readable provenance inventory; its human-readable companion is
+[Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md).
 
 Build products are written below `build/` and are never the source of truth.
 Developers can edit any in-tree C++ implementation and rebuild through the
@@ -271,6 +337,7 @@ docs/              architecture, algorithm, and benchmark plans
 
 - [Flow architecture and phase contracts](docs/FLOW_PLAN.md)
 - [Academic algorithm upgrade plan](docs/ALGORITHM_UPGRADE_PLAN.md)
+- [Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md)
 
 Machine-specific configurations, raw results, QoR tables, and experiment
 notes are intentionally kept outside the repository.

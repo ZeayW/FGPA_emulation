@@ -60,8 +60,16 @@ REQUIRED_SOURCE_FILES = {
         "thirdparty/pugixml/LICENSE.md",
         "thirdparty/pybind11/CMakeLists.txt",
         "thirdparty/pybind11/LICENSE",
+        "thirdparty/lemon/cmake/version.cmake",
+        "thirdparty/lemon/LICENSE",
+        "thirdparty/rapidcsv/rapidcsv.h",
         "thirdparty/yaml-cpp/CMakeLists.txt",
         "thirdparty/yaml-cpp/LICENSE",
+        "openparf/routing/fpga-router/3rdparty/clipp/clipp/clipp.h",
+        "openparf/routing/fpga-router/3rdparty/gdstk/gdstk.h",
+        "openparf/routing/fpga-router/3rdparty/lemon/LICENSE",
+        "openparf/routing/fpga-router/3rdparty/pugixml/pugixml/pugixml.hpp",
+        "openparf/routing/fpga-router/3rdparty/taskflow/taskflow/taskflow.hpp",
         "LICENSE",
         "EMUFLOW_PROVENANCE.md",
     ),
@@ -118,6 +126,9 @@ OPAQUE_MAGICS = (
 GIT_LFS_POINTER = b"version https://git-lfs.github.com/spec/v1\n"
 
 SOURCE_MANIFEST = "SOURCE_MANIFEST.json"
+OPEN_SOURCE_COMPONENTS = "OPEN_SOURCE_COMPONENTS.json"
+OPEN_SOURCE_COMPONENTS_DOCUMENT = "OPEN_SOURCE_COMPONENTS.md"
+RTL_CATALOG = "benchmarks/rtl_catalog.json"
 ALLOWED_INTEGRATIONS = {
     "default-in-tree-build",
     "in-tree-python",
@@ -125,6 +136,147 @@ ALLOWED_INTEGRATIONS = {
     "source-present-runner-pending",
     "source-present-ultrascale-plus-integration-pending",
 }
+
+
+def _load_json(
+    repo_root: Path, relative_path: str, errors: list[str]
+) -> dict:
+    path = repo_root / relative_path
+    if not path.is_file():
+        errors.append(f"required JSON inventory is missing: {relative_path}")
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"{relative_path} is not valid JSON: {error}")
+        return {}
+    if not isinstance(value, dict):
+        errors.append(f"{relative_path} must contain a JSON object")
+        return {}
+    return value
+
+
+def _audit_open_source_provenance(
+    repo_root: Path, errors: list[str]
+) -> None:
+    inventory = _load_json(repo_root, OPEN_SOURCE_COMPONENTS, errors)
+    if (
+        inventory.get("schema")
+        != "emuflow.open-source-components/v1"
+    ):
+        errors.append(
+            "open-source component inventory has an unsupported or missing "
+            "schema"
+        )
+    if not (repo_root / OPEN_SOURCE_COMPONENTS_DOCUMENT).is_file():
+        errors.append(
+            "human-readable open-source provenance is missing: "
+            f"{OPEN_SOURCE_COMPONENTS_DOCUMENT}"
+        )
+
+    vendored_ids: set[str] = set()
+    vendored_paths: set[str] = set()
+    for component in inventory.get("vendored_sources", []):
+        if not isinstance(component, dict):
+            errors.append("vendored provenance entry is not an object")
+            continue
+        component_id = component.get("id")
+        relative_path = component.get("path")
+        upstream = component.get("upstream")
+        revision = component.get("version_or_revision")
+        license_name = component.get("license")
+        if not isinstance(component_id, str) or not component_id:
+            errors.append("vendored provenance entry has no stable id")
+            continue
+        if component_id in vendored_ids:
+            errors.append(f"duplicate vendored provenance id: {component_id}")
+        vendored_ids.add(component_id)
+        if not isinstance(relative_path, str) or not relative_path:
+            errors.append(f"{component_id}: no vendored source path")
+        else:
+            if relative_path in vendored_paths:
+                errors.append(
+                    f"{component_id}: duplicate vendored source path: "
+                    f"{relative_path}"
+                )
+            vendored_paths.add(relative_path)
+            if not (repo_root / relative_path).exists():
+                errors.append(
+                    f"{component_id}: vendored source path is missing: "
+                    f"{relative_path}"
+                )
+        if not isinstance(upstream, str) or not upstream.startswith("https://"):
+            errors.append(f"{component_id}: no HTTPS upstream source link")
+        if not isinstance(revision, str) or not revision:
+            errors.append(f"{component_id}: no source version or revision")
+        if not isinstance(license_name, str) or not license_name:
+            errors.append(f"{component_id}: no license attribution")
+
+    engines_root = repo_root / "engines"
+    if engines_root.is_dir():
+        for engine in engines_root.iterdir():
+            if engine.is_dir():
+                relative_path = engine.relative_to(repo_root).as_posix()
+                if relative_path not in vendored_paths:
+                    errors.append(
+                        "engine has no central provenance entry: "
+                        f"{relative_path}"
+                    )
+
+    for category in ("external_dependencies", "ci_actions"):
+        ids: set[str] = set()
+        for component in inventory.get(category, []):
+            if not isinstance(component, dict):
+                errors.append(f"{category} provenance entry is not an object")
+                continue
+            component_id = component.get("id")
+            upstream = component.get("upstream")
+            if not isinstance(component_id, str) or not component_id:
+                errors.append(f"{category} provenance entry has no stable id")
+                continue
+            if component_id in ids:
+                errors.append(
+                    f"duplicate {category} provenance id: {component_id}"
+                )
+            ids.add(component_id)
+            if (
+                not isinstance(upstream, str)
+                or not upstream.startswith("https://")
+            ):
+                errors.append(
+                    f"{component_id}: no HTTPS upstream source link"
+                )
+
+    catalog_path = inventory.get("benchmark_catalog")
+    if catalog_path != RTL_CATALOG:
+        errors.append(
+            "open-source inventory must reference the canonical RTL catalog"
+        )
+    catalog = _load_json(repo_root, RTL_CATALOG, errors)
+    if catalog.get("schema") != "emuflow.rtl-catalog/v1":
+        errors.append("RTL benchmark catalog has an unsupported schema")
+    benchmark_ids: set[str] = set()
+    for design in catalog.get("designs", []):
+        if not isinstance(design, dict):
+            errors.append("RTL benchmark catalog entry is not an object")
+            continue
+        design_id = design.get("id")
+        if not isinstance(design_id, str) or not design_id:
+            errors.append("RTL benchmark catalog entry has no stable id")
+            continue
+        if design_id in benchmark_ids:
+            errors.append(f"duplicate RTL benchmark id: {design_id}")
+        benchmark_ids.add(design_id)
+        repository = design.get("repository")
+        if (
+            not isinstance(repository, str)
+            or not repository.startswith("https://")
+        ):
+            errors.append(f"{design_id}: no HTTPS benchmark source link")
+        if not design.get("revision"):
+            errors.append(f"{design_id}: no pinned benchmark revision")
+        if not design.get("license"):
+            errors.append(f"{design_id}: no benchmark license attribution")
 
 
 def _opaque_format(path: Path) -> Optional[str]:
@@ -154,6 +306,7 @@ def audit(repo_root: Path) -> list[str]:
         except (OSError, json.JSONDecodeError) as error:
             errors.append(f"source manifest is not valid JSON: {error}")
             manifest = {}
+    _audit_open_source_provenance(repo_root, errors)
     if manifest.get("schema") != "emuflow.source-manifest/v1":
         errors.append("source manifest has an unsupported or missing schema")
     component_ids: set[str] = set()
@@ -190,6 +343,31 @@ def audit(repo_root: Path) -> list[str]:
                 f"completed blocker must be moved into components: "
                 f"{blocker.get('id', '<unknown>')}"
             )
+
+    readme_path = repo_root / "README.md"
+    if readme_path.is_file():
+        readme = readme_path.read_text(encoding="utf-8")
+        try:
+            quick_start = readme.split("## Quick start", 1)[1].split(
+                "\n## ", 1
+            )[0]
+        except IndexError:
+            errors.append("README has no bounded Quick start section")
+        else:
+            for disallowed in (
+                "pip install",
+                "python -m emuflow",
+                "python3 -m emuflow",
+            ):
+                if disallowed in quick_start:
+                    errors.append(
+                        "README Quick start bypasses the root-build CLI with "
+                        f"{disallowed!r}"
+                    )
+            if "build/native/install/bin" not in quick_start:
+                errors.append(
+                    "README Quick start does not expose the root-build CLI"
+                )
 
     for relative_file in REQUIRED_FIRST_PARTY_NATIVE_FILES:
         if not (repo_root / relative_file).is_file():
@@ -272,7 +450,10 @@ def main() -> int:
         for error in errors:
             print(f"error: {error}", file=sys.stderr)
         return 1
-    print("source audit passed: all direct providers are present as source")
+    print(
+        "source audit passed: providers are editable source and provenance "
+        "is complete"
+    )
     return 0
 
 

@@ -26,16 +26,22 @@ directories so a clone of EmuFlow does not need recursive submodule checkout:
 
 | Path | Upstream | Revision |
 | --- | --- | --- |
-| `cmake/Ccache.cmake` | `TheLartians/Ccache.cmake` | `2f890b8d3bd810442c482797c24c7b3d97755215` |
-| `thirdparty/blend2d` | `blend2d/blend2d` | `405bcc3b57524b9a6b11cfeecf99c01fe34839dc` |
-| `thirdparty/googletest` | `google/googletest` | `bc860af08783b8113005ca7697da5f5d49a8056f` |
-| `thirdparty/pugixml` | `zeux/pugixml` | `80a531ee1dc13269d148fd0b1cedbcd7352f7c68` |
-| `thirdparty/pybind11` | `pybind/pybind11` | `f70165463328c218d118204efc13aac93783d17b` |
-| `thirdparty/yaml-cpp` | `jbeder/yaml-cpp` | `0e6e28d1a38224fc8172fae0109ea7f673c096db` |
+| `cmake/Ccache.cmake` | https://github.com/TheLartians/Ccache.cmake | `2f890b8d3bd810442c482797c24c7b3d97755215` |
+| `thirdparty/blend2d` | https://github.com/blend2d/blend2d | `405bcc3b57524b9a6b11cfeecf99c01fe34839dc` |
+| `thirdparty/googletest` | https://github.com/google/googletest | `bc860af08783b8113005ca7697da5f5d49a8056f` |
+| `thirdparty/pugixml` | https://github.com/zeux/pugixml | `80a531ee1dc13269d148fd0b1cedbcd7352f7c68` |
+| `thirdparty/pybind11` | https://github.com/pybind/pybind11 | `f70165463328c218d118204efc13aac93783d17b` |
+| `thirdparty/yaml-cpp` | https://github.com/jbeder/yaml-cpp | `0e6e28d1a38224fc8172fae0109ea7f673c096db` |
 
 Each vendored tree retains its upstream license. The root build defaults to
 CPU PyTorch operators for portability. CUDA remains a source build option
 when a PyTorch/CUDA toolkit pair is explicitly supplied.
+
+OpenPARF also contains directly vendored LEMON 1.3.1
+(https://github.com/The-OpenROAD-Project/lemon-graph) and rapidcsv 8.65
+(https://github.com/d99kris/rapidcsv). The disabled experimental router
+contains additional nested source; every path and upstream link is listed in
+`../../OPEN_SOURCE_COMPONENTS.md`.
 
 OpenPARF's optional `fpga-router` subtree is excluded from the default
 placement build because it currently requires the proprietary GUROBI solver.

@@ -11,9 +11,9 @@ monorepo. Precompiled objects and libraries are not included.
 The two upstream Git submodules are materialized as ordinary source
 directories:
 
-- `src/sta/`: The-OpenROAD-Project/OpenSTA commit
+- `src/sta/`: https://github.com/The-OpenROAD-Project/OpenSTA commit
   `aa598a2f14c5c142e90391a69988523505e7db3d`, GPL-3.0-or-later
-- `third-party/abc/`: The-OpenROAD-Project/abc commit
+- `third-party/abc/`: https://github.com/The-OpenROAD-Project/abc commit
   `ef5389d31526003c2ebd7e6d6d6fe3848a20f0a2`
 
 Large regression datasets, documentation images, and example design data were
@@ -24,6 +24,11 @@ OR-Tools-facing source dependencies are present in the same tree.
 The GUI's build-time `src/gui/resources/` files are retained because the Qt
 resource compiler consumes them during a normal OpenROAD build. They are
 source assets, not precompiled objects or documentation screenshots.
+
+OpenROAD's other embedded source and assets retain their own license files.
+The central EmuFlow inventory records direct links for FastRoute, Flute3, the
+Munkres assignment implementation, and Google Material Design Icons:
+`../../OPEN_SOURCE_COMPONENTS.md`.
 
 Because those regression directories are intentionally absent, their
 `add_subdirectory(test)` calls are guarded by source-existence checks. This is

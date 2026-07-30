@@ -1,0 +1,370 @@
+{
+  "schema": "emuflow.open-source-components/v1",
+  "policy": {
+    "scope": "Vendored source, direct external build/runtime dependencies, CI actions, and fetchable RTL inputs used by EmuFlow.",
+    "license_rule": "Third-party source retains its upstream license; this repository does not relicense imported code.",
+    "revision_rule": "Imported engines and materialized submodules are pinned. A parent-snapshot label is used only when upstream did not record a separate nested revision."
+  },
+  "vendored_sources": [
+    {
+      "id": "emuflow-first-party",
+      "path": "src",
+      "upstream": "https://github.com/ZeayW/FGPA_emulation",
+      "version_or_revision": "current repository revision",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "cudd",
+      "path": "engines/cudd",
+      "upstream": "https://github.com/ivmai/cudd",
+      "version_or_revision": "f54f533303640afd5dbe47a05ebeabb3066f2a25 (3.0.0)",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "yosys",
+      "path": "engines/yosys",
+      "upstream": "https://github.com/YosysHQ/yosys",
+      "version_or_revision": "3aca86049e79a165932e3e7660358376f45acaed (v0.57)",
+      "license": "ISC"
+    },
+    {
+      "id": "yosys-abc",
+      "path": "engines/yosys/abc",
+      "upstream": "https://github.com/YosysHQ/abc",
+      "version_or_revision": "8827bafb7f288de6749dc6e30fa452f2040949c0",
+      "license": "ABC upstream notices"
+    },
+    {
+      "id": "cxxopts",
+      "path": "engines/yosys/libs/cxxopts",
+      "upstream": "https://github.com/jarro2783/cxxopts",
+      "version_or_revision": "4bf61f08697b110d9e3991864650a405b3dd515d",
+      "license": "MIT"
+    },
+    {
+      "id": "minisat",
+      "path": "engines/yosys/libs/minisat",
+      "upstream": "https://github.com/niklasso/minisat",
+      "version_or_revision": "Yosys v0.57 vendored snapshot",
+      "license": "MIT"
+    },
+    {
+      "id": "repart",
+      "path": "engines/repart",
+      "upstream": "https://github.com/Welement-zyf/RePart",
+      "version_or_revision": "211a9d8fd526576387cad7ac6dd3531354aeb31c",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "id": "openroad",
+      "path": "engines/openroad",
+      "upstream": "https://github.com/The-OpenROAD-Project/OpenROAD",
+      "version_or_revision": "a008522d88b669ac4c985609533cf5a3d2649222",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "opensta",
+      "path": "engines/openroad/src/sta",
+      "upstream": "https://github.com/The-OpenROAD-Project/OpenSTA",
+      "version_or_revision": "aa598a2f14c5c142e90391a69988523505e7db3d",
+      "license": "GPL-3.0-or-later"
+    },
+    {
+      "id": "openroad-abc",
+      "path": "engines/openroad/third-party/abc",
+      "upstream": "https://github.com/The-OpenROAD-Project/abc",
+      "version_or_revision": "ef5389d31526003c2ebd7e6d6d6fe3848a20f0a2",
+      "license": "ABC upstream notices"
+    },
+    {
+      "id": "openroad-fastroute",
+      "path": "engines/openroad/src/grt/src/fastroute",
+      "upstream": "https://github.com/The-OpenROAD-Project/OpenROAD/tree/a008522d88b669ac4c985609533cf5a3d2649222/src/grt/src/fastroute",
+      "version_or_revision": "OpenROAD a008522d snapshot",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "openroad-flute3",
+      "path": "engines/openroad/src/stt/src/flt",
+      "upstream": "https://github.com/The-OpenROAD-Project/OpenROAD/tree/a008522d88b669ac4c985609533cf5a3d2649222/src/stt/src/flt",
+      "version_or_revision": "OpenROAD a008522d snapshot",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "openroad-munkres",
+      "path": "engines/openroad/src/ppl/src/munkres",
+      "upstream": "https://github.com/The-OpenROAD-Project/OpenROAD/tree/a008522d88b669ac4c985609533cf5a3d2649222/src/ppl/src/munkres",
+      "version_or_revision": "OpenROAD a008522d snapshot",
+      "license": "BSD-2-Clause"
+    },
+    {
+      "id": "google-material-icons",
+      "path": "engines/openroad/src/gui/resources/google_icons",
+      "upstream": "https://github.com/google/material-design-icons",
+      "version_or_revision": "OpenROAD a008522d asset snapshot",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "openparf",
+      "path": "engines/openparf",
+      "upstream": "https://github.com/PKU-IDEA/OpenPARF",
+      "version_or_revision": "793cac2bb109e5cc76046f87d39ed70fa093cf60",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "ccache-cmake",
+      "path": "engines/openparf/cmake/Ccache.cmake",
+      "upstream": "https://github.com/TheLartians/Ccache.cmake",
+      "version_or_revision": "2f890b8d3bd810442c482797c24c7b3d97755215",
+      "license": "MIT"
+    },
+    {
+      "id": "blend2d",
+      "path": "engines/openparf/thirdparty/blend2d",
+      "upstream": "https://github.com/blend2d/blend2d",
+      "version_or_revision": "405bcc3b57524b9a6b11cfeecf99c01fe34839dc",
+      "license": "Zlib"
+    },
+    {
+      "id": "openparf-googletest",
+      "path": "engines/openparf/thirdparty/googletest",
+      "upstream": "https://github.com/google/googletest",
+      "version_or_revision": "bc860af08783b8113005ca7697da5f5d49a8056f",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "openparf-pugixml",
+      "path": "engines/openparf/thirdparty/pugixml",
+      "upstream": "https://github.com/zeux/pugixml",
+      "version_or_revision": "80a531ee1dc13269d148fd0b1cedbcd7352f7c68",
+      "license": "MIT"
+    },
+    {
+      "id": "openparf-pybind11",
+      "path": "engines/openparf/thirdparty/pybind11",
+      "upstream": "https://github.com/pybind/pybind11",
+      "version_or_revision": "f70165463328c218d118204efc13aac93783d17b",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "openparf-yaml-cpp",
+      "path": "engines/openparf/thirdparty/yaml-cpp",
+      "upstream": "https://github.com/jbeder/yaml-cpp",
+      "version_or_revision": "0e6e28d1a38224fc8172fae0109ea7f673c096db",
+      "license": "MIT"
+    },
+    {
+      "id": "yaml-cpp-googletest",
+      "path": "engines/openparf/thirdparty/yaml-cpp/test/gtest-1.11.0",
+      "upstream": "https://github.com/google/googletest/tree/release-1.11.0",
+      "version_or_revision": "1.11.0",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "openparf-lemon",
+      "path": "engines/openparf/thirdparty/lemon",
+      "upstream": "https://github.com/The-OpenROAD-Project/lemon-graph",
+      "version_or_revision": "1.3.1",
+      "license": "BSL-1.0"
+    },
+    {
+      "id": "rapidcsv",
+      "path": "engines/openparf/thirdparty/rapidcsv",
+      "upstream": "https://github.com/d99kris/rapidcsv",
+      "version_or_revision": "8.65",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "openparf-experimental-router",
+      "path": "engines/openparf/openparf/routing/fpga-router",
+      "upstream": "https://github.com/PKU-IDEA/OpenPARF/tree/793cac2bb109e5cc76046f87d39ed70fa093cf60/openparf/routing/fpga-router",
+      "version_or_revision": "OpenPARF 793cac2b snapshot",
+      "license": "OpenPARF and retained third-party notices",
+      "build_status": "disabled-requires-proprietary-gurobi"
+    },
+    {
+      "id": "router-clipp",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/clipp",
+      "upstream": "https://github.com/muellan/clipp",
+      "version_or_revision": "OpenPARF 793cac2b router snapshot",
+      "license": "MIT",
+      "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "router-gdstk",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/gdstk",
+      "upstream": "https://github.com/heitzmann/gdstk",
+      "version_or_revision": "0.4.0",
+      "license": "BSL-1.0",
+      "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "router-qhull",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/gdstk/gdstk/libqhull_r",
+      "upstream": "https://github.com/qhull/qhull",
+      "version_or_revision": "gdstk 0.4.0 bundled snapshot",
+      "license": "Qhull license",
+      "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "router-clipper",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/gdstk/gdstk/clipperlib",
+      "upstream": "https://sourceforge.net/projects/polyclipping/",
+      "version_or_revision": "6.4.2",
+      "license": "BSL-1.0",
+      "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "router-lemon",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/lemon",
+      "upstream": "https://github.com/The-OpenROAD-Project/lemon-graph",
+      "version_or_revision": "1.3.1",
+      "license": "BSL-1.0",
+      "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "router-pugixml",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/pugixml",
+      "upstream": "https://github.com/zeux/pugixml",
+      "version_or_revision": "1.10 snapshot",
+      "license": "MIT",
+      "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "router-taskflow",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/taskflow",
+      "upstream": "https://github.com/taskflow/taskflow",
+      "version_or_revision": "3.1.0",
+      "license": "MIT",
+      "build_status": "disabled-with-experimental-router"
+    },
+    {
+      "id": "router-mcf-solver",
+      "path": "engines/openparf/openparf/routing/fpga-router/3rdparty/mcf_solver",
+      "upstream": "https://github.com/PKU-IDEA/OpenPARF/tree/793cac2bb109e5cc76046f87d39ed70fa093cf60/openparf/routing/fpga-router/3rdparty/mcf_solver",
+      "version_or_revision": "OpenPARF 793cac2b router snapshot",
+      "license": "Source notices",
+      "build_status": "disabled-with-experimental-router"
+    }
+  ],
+  "external_dependencies": [
+    {
+      "id": "cmake",
+      "upstream": "https://github.com/Kitware/CMake",
+      "used_by": "root and engine builds"
+    },
+    {
+      "id": "gnu-make",
+      "upstream": "https://git.savannah.gnu.org/cgit/make.git",
+      "used_by": "root, Yosys, and CUDD builds"
+    },
+    {
+      "id": "gcc",
+      "upstream": "https://github.com/gcc-mirror/gcc",
+      "used_by": "C/C++ compiler option"
+    },
+    {
+      "id": "llvm",
+      "upstream": "https://github.com/llvm/llvm-project",
+      "used_by": "C/C++ compiler and OpenMP option"
+    },
+    {
+      "id": "python",
+      "upstream": "https://github.com/python/cpython",
+      "used_by": "control plane, checkers, and OpenPARF"
+    },
+    {
+      "id": "boost",
+      "upstream": "https://github.com/boostorg/boost",
+      "used_by": "RePart, OpenROAD, and OpenPARF"
+    },
+    {
+      "id": "bison",
+      "upstream": "https://git.savannah.gnu.org/cgit/bison.git",
+      "used_by": "Yosys, OpenROAD, and OpenPARF parsers"
+    },
+    {
+      "id": "flex",
+      "upstream": "https://github.com/westes/flex",
+      "used_by": "Yosys, OpenROAD, and OpenPARF parsers"
+    },
+    {
+      "id": "tcl",
+      "upstream": "https://github.com/tcltk/tcl",
+      "used_by": "OpenROAD"
+    },
+    {
+      "id": "swig",
+      "upstream": "https://github.com/swig/swig",
+      "used_by": "OpenROAD/OpenSTA bindings"
+    },
+    {
+      "id": "eigen",
+      "upstream": "https://gitlab.com/libeigen/eigen",
+      "used_by": "OpenROAD/OpenSTA"
+    },
+    {
+      "id": "zlib",
+      "upstream": "https://github.com/madler/zlib",
+      "used_by": "Yosys and OpenROAD"
+    },
+    {
+      "id": "spdlog",
+      "upstream": "https://github.com/gabime/spdlog",
+      "used_by": "OpenROAD"
+    },
+    {
+      "id": "lemon",
+      "upstream": "https://github.com/The-OpenROAD-Project/lemon-graph",
+      "used_by": "OpenROAD"
+    },
+    {
+      "id": "or-tools",
+      "upstream": "https://github.com/google/or-tools",
+      "used_by": "TritonPart and OpenROAD"
+    },
+    {
+      "id": "pytorch",
+      "upstream": "https://github.com/pytorch/pytorch",
+      "used_by": "OpenPARF"
+    },
+    {
+      "id": "numpy",
+      "upstream": "https://github.com/numpy/numpy",
+      "used_by": "OpenPARF"
+    },
+    {
+      "id": "pyyaml",
+      "upstream": "https://github.com/yaml/pyyaml",
+      "used_by": "OpenPARF"
+    },
+    {
+      "id": "hummingbird",
+      "upstream": "https://github.com/microsoft/hummingbird",
+      "used_by": "OpenPARF learned models"
+    },
+    {
+      "id": "networkx",
+      "upstream": "https://github.com/networkx/networkx",
+      "used_by": "OpenPARF utilities"
+    },
+    {
+      "id": "tqdm",
+      "upstream": "https://github.com/tqdm/tqdm",
+      "used_by": "OpenPARF utilities"
+    }
+  ],
+  "benchmark_catalog": "benchmarks/rtl_catalog.json",
+  "ci_actions": [
+    {
+      "id": "actions-checkout",
+      "upstream": "https://github.com/actions/checkout",
+      "version": "v4"
+    },
+    {
+      "id": "actions-setup-python",
+      "upstream": "https://github.com/actions/setup-python",
+      "version": "v5"
+    }
+  ]
+}
