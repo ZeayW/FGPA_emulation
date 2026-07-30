@@ -1,5 +1,82 @@
 # EmuFlow
 
+> [!IMPORTANT]
+> ## Open-source source map
+>
+> Every selected flow engine is stored as editable source and built from this
+> repository. This is the compact upstream-source index:
+>
+> - First-party EmuFlow:
+>   [ZeayW/FGPA_emulation](https://github.com/ZeayW/FGPA_emulation)
+>   under Apache-2.0
+> - Synthesis: [Yosys](https://github.com/YosysHQ/yosys) and
+>   [ABC](https://github.com/YosysHQ/abc), including
+>   [cxxopts](https://github.com/jarro2783/cxxopts) and
+>   [MiniSat](https://github.com/niklasso/minisat)
+> - Timing and partitioning:
+>   [OpenROAD](https://github.com/The-OpenROAD-Project/OpenROAD),
+>   [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA), and
+>   [RePart](https://github.com/Welement-zyf/RePart), with OpenROAD's retained
+>   [ABC](https://github.com/The-OpenROAD-Project/abc),
+>   [FastRoute](https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/grt/src/fastroute),
+>   [Flute3](https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/stt/src/flt),
+>   [Munkres](https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/ppl/src/munkres),
+>   and [Material Design Icons](https://github.com/google/material-design-icons)
+> - Placement: [OpenPARF](https://github.com/PKU-IDEA/OpenPARF)
+> - Decision diagrams: [CUDD](https://github.com/ivmai/cudd)
+> - OpenPARF bundled source:
+>   [Ccache.cmake](https://github.com/TheLartians/Ccache.cmake),
+>   [Blend2D](https://github.com/blend2d/blend2d),
+>   [GoogleTest](https://github.com/google/googletest),
+>   [LEMON](https://github.com/The-OpenROAD-Project/lemon-graph),
+>   [pugixml](https://github.com/zeux/pugixml),
+>   [pybind11](https://github.com/pybind/pybind11),
+>   [rapidcsv](https://github.com/d99kris/rapidcsv), and
+>   [yaml-cpp](https://github.com/jbeder/yaml-cpp)
+> - Retained disabled OpenPARF router source:
+>   [clipp](https://github.com/muellan/clipp),
+>   [gdstk](https://github.com/heitzmann/gdstk),
+>   [Qhull](https://github.com/qhull/qhull),
+>   [Clipper](https://sourceforge.net/projects/polyclipping/), and
+>   [Taskflow](https://github.com/taskflow/taskflow)
+> - External build/runtime dependencies:
+>   [CMake](https://github.com/Kitware/CMake),
+>   [GNU Make](https://git.savannah.gnu.org/cgit/make.git),
+>   [GCC](https://github.com/gcc-mirror/gcc) or
+>   [LLVM/Clang](https://github.com/llvm/llvm-project),
+>   [Python](https://github.com/python/cpython),
+>   [Boost](https://github.com/boostorg/boost),
+>   [Bison](https://git.savannah.gnu.org/cgit/bison.git),
+>   [Flex](https://github.com/westes/flex),
+>   [Tcl](https://github.com/tcltk/tcl),
+>   [SWIG](https://github.com/swig/swig),
+>   [Eigen](https://gitlab.com/libeigen/eigen),
+>   [zlib](https://github.com/madler/zlib),
+>   [spdlog](https://github.com/gabime/spdlog),
+>   [LEMON](https://github.com/The-OpenROAD-Project/lemon-graph),
+>   [OR-Tools](https://github.com/google/or-tools),
+>   [PyTorch](https://github.com/pytorch/pytorch),
+>   [NumPy](https://github.com/numpy/numpy),
+>   [PyYAML](https://github.com/yaml/pyyaml),
+>   [Hummingbird](https://github.com/microsoft/hummingbird),
+>   [NetworkX](https://github.com/networkx/networkx), and
+>   [tqdm](https://github.com/tqdm/tqdm)
+> - RTL benchmarks:
+>   [SERV](https://github.com/olofk/serv),
+>   [PicoRV32](https://github.com/YosysHQ/picorv32),
+>   [secworks AES](https://github.com/secworks/aes),
+>   [Ibex](https://github.com/lowRISC/ibex),
+>   [VTR/Koios](https://github.com/verilog-to-routing/vtr-verilog-to-routing),
+>   [VeeR EH1](https://github.com/chipsalliance/Cores-VeeR-EH1), and
+>   [NVDLA](https://github.com/nvdla/hw)
+> - CI:
+>   [actions/checkout](https://github.com/actions/checkout) and
+>   [actions/setup-python](https://github.com/actions/setup-python)
+>
+> See the **[complete source, revision, and license inventory](OPEN_SOURCE_COMPONENTS.md)**
+> for every nested component and dependency. The corresponding
+> [machine-readable inventory](OPEN_SOURCE_COMPONENTS.json) is enforced by CI.
+
 EmuFlow is a research-oriented, open multi-FPGA emulation flow for AMD
 UltraScale+ devices. Its purpose is to compile one synchronous RTL design into
 multiple FPGA implementations and a deterministic communication fabric while
