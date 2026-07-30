@@ -76,6 +76,11 @@ option(
   "Build the VPR packed-netlist contract importer"
   ON
 )
+option(
+  EMUFLOW_BUILD_VPR_ROUTE_CHECKER
+  "Build the independent VPR route/RR-graph checker"
+  ON
+)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
   EMUFLOW_CMAKE_PREFIX_PATH
@@ -295,6 +300,20 @@ if(EMUFLOW_BUILD_VPR_PACKED_NETLIST)
   )
   set_target_properties(
     emuflow_vpr_packed_netlist_importer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
+  add_executable(
+    emuflow_vpr_route_checker
+    "${CMAKE_SOURCE_DIR}/src/native/vpr_route_checker.cpp"
+  )
+  target_compile_features(emuflow_vpr_route_checker PRIVATE cxx_std_17)
+  target_compile_options(emuflow_vpr_route_checker PRIVATE -O3)
+  set_target_properties(
+    emuflow_vpr_route_checker
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -859,6 +878,23 @@ if(BUILD_TESTING)
       PROPERTIES
         PASS_REGULAR_EXPRESSION
           "EMUFLOW_VPR_PACKED_NETLIST_EXTRACT_V1"
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
+    add_test(
+      NAME emuflow_vpr_route_checker_fixture
+      COMMAND
+        "$<TARGET_FILE:emuflow_vpr_route_checker>"
+        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_route_fixture.route"
+        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_rr_graph_fixture.xml"
+        "${CMAKE_BINARY_DIR}/vpr-route-fixture-report.json"
+    )
+    set_tests_properties(
+      emuflow_vpr_route_checker_fixture
+      PROPERTIES
+        PASS_REGULAR_EXPRESSION
+          "EMUFLOW_VPR_ROUTE_CORE_CHECK_V1"
     )
   endif()
 

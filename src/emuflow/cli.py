@@ -53,6 +53,7 @@ from .pin_planning import (
     validate_pin_plan,
 )
 from .release import run_phase7d
+from .route_artifact import validate_vpr_route_artifacts
 from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
     VALID_XILINX_FAMILIES,
@@ -227,6 +228,9 @@ def _build_parser() -> argparse.ArgumentParser:
     vpr_route_packed.add_argument("--architecture", type=Path, required=True)
     vpr_route_packed.add_argument("--circuit", type=Path, required=True)
     vpr_route_packed.add_argument("--packed-netlist", type=Path, required=True)
+    vpr_route_packed.add_argument(
+        "--packed-contract", type=Path, required=True
+    )
     vpr_route_packed.add_argument("--placement", type=Path, required=True)
     vpr_route_packed.add_argument("--out", type=Path, required=True)
     vpr_route_packed.add_argument(
@@ -236,6 +240,19 @@ def _build_parser() -> argparse.ArgumentParser:
     vpr_route_packed.add_argument(
         "--route-channel-width", type=int, default=300
     )
+    vpr_route_packed.add_argument("--route-checker")
+    vpr_validate_route = vpr_subparsers.add_parser(
+        "validate-route",
+        help="independently check VPR route and RR-graph artifacts",
+    )
+    vpr_validate_route.add_argument("--route", type=Path, required=True)
+    vpr_validate_route.add_argument("--rr-graph", type=Path, required=True)
+    vpr_validate_route.add_argument(
+        "--packed-contract", type=Path, required=True
+    )
+    vpr_validate_route.add_argument("--placement", type=Path, required=True)
+    vpr_validate_route.add_argument("--output", "-o", type=Path, required=True)
+    vpr_validate_route.add_argument("--checker")
 
     benchmark = subparsers.add_parser(
         "benchmark", help="run a pinned RTL benchmark through Phase 1"
@@ -1136,15 +1153,26 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
             )
-        else:
+        elif args.vpr_command == "route-packed":
             report = run_vpr_route_packed(
                 architecture=args.architecture,
                 circuit=args.circuit,
                 packed_netlist=args.packed_netlist,
+                packed_contract=args.packed_contract,
                 placement=args.placement,
                 output_dir=args.out,
                 executable=args.vpr,
+                route_checker=args.route_checker,
                 route_channel_width=args.route_channel_width,
+            )
+        else:
+            report = validate_vpr_route_artifacts(
+                args.route,
+                args.rr_graph,
+                args.packed_contract,
+                args.placement,
+                args.output,
+                executable=args.checker,
             )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

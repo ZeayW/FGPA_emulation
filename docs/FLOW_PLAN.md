@@ -427,6 +427,12 @@ OpenPARF's optional experimental router is not the selected detailed-routing
 provider because its upstream build requires proprietary GUROBI. Its source is
 retained for provenance, but it is excluded from the open default build.
 
+The VPR detailed-routing result is independently checked against VPR's
+exported RR graph. The in-tree C++ checker validates route-node identity,
+coordinates and PTC, exact edge/switch connectivity, tree-branch restarts,
+cross-net resource capacity, packed-net/sink coverage, and the placement
+artifact hash. This is separate from VPR's internal route consistency check.
+
 Physical IO-net preservation, routed DCP validation, timing, and bitstream
 generation remain separate gates and are not implied by the placement gate.
 

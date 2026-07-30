@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Optional
 from .errors import EmuFlowError, ValidationError
 from .io import write_json
 from .native_tools import resolve_native_executable
+from .route_artifact import validate_vpr_route_artifacts
 from .synthesis import _yosys_identifier, _yosys_quote
 
 
@@ -274,10 +275,12 @@ def run_vpr_route_packed(
     architecture: Path,
     circuit: Path,
     packed_netlist: Path,
+    packed_contract: Path,
     placement: Path,
     output_dir: Path,
     *,
     executable: Optional[str] = None,
+    route_checker: Optional[str] = None,
     route_channel_width: int = 300,
 ) -> Dict[str, Any]:
     """Route an existing VPR packing and OpenPARF cluster placement."""
@@ -286,6 +289,7 @@ def run_vpr_route_packed(
         "architecture": architecture.resolve(),
         "circuit": circuit.resolve(),
         "packed_netlist": packed_netlist.resolve(),
+        "packed_contract": packed_contract.resolve(),
         "placement": placement.resolve(),
     }
     for name, path in inputs.items():
@@ -299,6 +303,7 @@ def run_vpr_route_packed(
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     route = output_dir / f"{inputs['circuit'].stem}.route"
+    rr_graph = output_dir / "rr_graph.xml"
     command = resolve_native_executable("vpr", executable)
     arguments = [
         command,
@@ -314,6 +319,8 @@ def run_vpr_route_packed(
         str(inputs["placement"]),
         "--route_file",
         str(route),
+        "--write_rr_graph",
+        str(rr_graph),
         "--route_chan_width",
         str(route_channel_width),
     ]
@@ -339,6 +346,14 @@ def run_vpr_route_packed(
         route=route,
         stages=("route", "analysis"),
     )
+    route_check = validate_vpr_route_artifacts(
+        route,
+        rr_graph,
+        inputs["packed_contract"],
+        inputs["placement"],
+        output_dir / "vpr-route-check.json",
+        executable=route_checker,
+    )
     report.update(
         {
             name: {"path": str(path), "sha256": _sha256(path)}
@@ -350,5 +365,6 @@ def run_vpr_route_packed(
     }
     report["command"] = arguments
     report["log"] = str(log_path)
+    report["route_check"] = route_check
     write_json(output_dir / "vpr-route-report.json", report)
     return report

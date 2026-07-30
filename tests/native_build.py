@@ -93,3 +93,29 @@ def vpr_packed_netlist_importer() -> Path:
         check=True,
     )
     return executable
+
+
+@lru_cache(maxsize=1)
+def vpr_route_checker() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError(
+            "a C++17 compiler is required for VPR route-check tests"
+        )
+    executable = Path(_BUILD_ROOT.name) / "emuflow_vpr_route_checker"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            str(ROOT / "src/native/vpr_route_checker.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable

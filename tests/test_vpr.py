@@ -78,8 +78,15 @@ class VprTest(unittest.TestCase):
             architecture = root / "arch.xml"
             circuit = root / "cpu.eblif"
             netlist = root / "cpu.net"
+            packed_contract = root / "packed.json"
             placement = root / "cpu.place"
-            for path in (architecture, circuit, netlist, placement):
+            for path in (
+                architecture,
+                circuit,
+                netlist,
+                packed_contract,
+                placement,
+            ):
                 path.write_text(path.name, encoding="utf-8")
 
             def fake_run(arguments, **_kwargs):
@@ -98,11 +105,18 @@ class VprTest(unittest.TestCase):
                     """,
                 )
 
-            with patch("emuflow.vpr.subprocess.run", side_effect=fake_run):
+            with (
+                patch("emuflow.vpr.subprocess.run", side_effect=fake_run),
+                patch(
+                    "emuflow.vpr.validate_vpr_route_artifacts",
+                    return_value={"status": "pass"},
+                ),
+            ):
                 report = run_vpr_route_packed(
                     architecture,
                     circuit,
                     netlist,
+                    packed_contract,
                     placement,
                     root / "route",
                     executable="/source-built/vpr",
@@ -112,6 +126,8 @@ class VprTest(unittest.TestCase):
         self.assertEqual(report["stages"], ["route", "analysis"])
         self.assertIn("--net_file", report["command"])
         self.assertIn("--place_file", report["command"])
+        self.assertIn("--write_rr_graph", report["command"])
+        self.assertEqual(report["route_check"]["status"], "pass")
 
 
 if __name__ == "__main__":

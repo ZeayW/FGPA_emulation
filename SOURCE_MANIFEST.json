@@ -241,8 +241,11 @@
         "src/emuflow/vpr.py",
         "src/emuflow/packed_netlist.py",
         "src/emuflow/packed_placement.py",
+        "src/emuflow/route_artifact.py",
         "src/native/vpr_packed_netlist_importer.cpp",
+        "src/native/vpr_route_checker.cpp",
         "schemas/vpr-packed-netlist-v1.schema.json",
+        "schemas/vpr-route-check-v1.schema.json",
         "engines/vtr/vpr",
         "engines/vtr/libs/libarchfpga",
         "engines/vtr/libs/librrgraph",
@@ -251,11 +254,13 @@
       ],
       "build_targets": [
         "vpr_native",
-        "emuflow_vpr_packed_netlist_importer"
+        "emuflow_vpr_packed_netlist_importer",
+        "emuflow_vpr_route_checker"
       ],
       "runtime_products": [
         "vpr",
-        "emuflow_vpr_packed_netlist_importer"
+        "emuflow_vpr_packed_netlist_importer",
+        "emuflow_vpr_route_checker"
       ],
       "integration": "default-in-tree-build"
     }
@@ -265,11 +270,6 @@
       "id": "default-open-packing-and-timing",
       "status": "partial",
       "reason": "The source-built VTR importer and pinned public flagship model provide open heterogeneous layout and timing data; exact VPR packing and the checked packed-netlist contract are present in the root build. Architecture-neutral hard-block mapping and Architecture TimingDB-to-OpenSTA translation remain pending."
-    },
-    {
-      "id": "default-open-fpga-routing",
-      "status": "partial",
-      "reason": "The source-built VPR packing is transferred through a checked packed-cluster contract into source-built OpenPARF, converted into a checked VPR placement, and routed by the source-built VPR detailed router. An independent detailed-route artifact checker beyond VPR's internal full consistency check remains pending."
     },
     {
       "id": "open-ultrascale-plus-bitstream",

@@ -155,7 +155,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
 | Placement | Root-built OpenPARF plus EmuFlow adapters/checker | VPR packing decisions enter a checked cluster contract; OpenPARF performs analytical global placement and architecture-defined single-site min-cost-flow legalization, followed by independent site/capacity/collision checking and VPR `.place` emission |
-| FPGA routing | Root-built VTR/VPR plus report/artifact checker | The checked OpenPARF placement is accepted by VPR's placement consistency checker and drives timing-aware detailed routing and analysis |
+| FPGA routing | Root-built VTR/VPR plus independent in-tree C++ artifact checker | The checked OpenPARF placement drives timing-aware detailed routing; the checker independently validates every route node, RR edge/switch, tree branch, net/sink, placement hash, and shared-resource capacity against the exported RR graph |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -166,9 +166,9 @@ command. That end-to-end source-build gate remains open.
 The open logic-only OpenPARF-to-VPR placement-and-routing path is implemented:
 VTR architecture import, LUT6/DFF mapping, exact VPR packing, the checked
 packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
-routing, and timing analysis. Architecture-aware hard-block mapping,
-TimingDB-to-OpenSTA translation, and an independent detailed-route artifact
-checker remain open gates.
+routing, timing analysis, and independent route/RR-graph verification.
+Architecture-aware hard-block mapping and TimingDB-to-OpenSTA translation
+remain open gates.
 EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
 used to compare results or generate a bitstream, but success in Vivado cannot
 satisfy the default open-flow completion gate.
@@ -322,6 +322,7 @@ emuflow vpr route-packed \
   --architecture build/architectures/vtr-flagship.xml \
   --circuit build/picorv32.eblif \
   --packed-netlist build/picorv32-vpr/picorv32.net \
+  --packed-contract build/picorv32-vpr/packed-contract.json \
   --placement build/picorv32-openparf/picorv32.place \
   --out build/picorv32-openparf-route
 ```
@@ -331,7 +332,8 @@ detailed `.route`, console log, and `vpr-report.json`. The third command
 preserves VPR's exact cluster modes, pb hierarchy, atom membership, and
 cross-cluster nets in a hash-bound versioned contract. The fourth command
 places those exact clusters with OpenPARF and emits a checked VPR placement;
-the fifth routes that placement without invoking VPR's baseline placer.
+the fifth routes that placement without invoking VPR's baseline placer,
+exports the exact RR graph, and runs the independent C++ route checker.
 
 Run the checked-in board-independent counter example:
 

@@ -651,14 +651,17 @@ Packed clusters are now exported with exact VTR site capacities to the
 source-built OpenPARF analytical placer. Architecture-defined single-site
 resources use OpenPARF's min-cost-flow legalizer; the independently checked
 result is emitted as VPR `.place` and accepted by source-built VPR routing.
+The routed result is then checked independently of VPR: a streaming C++17
+checker matches every route node to the RR graph, verifies exact
+edge/switch connectivity and route-tree branch restarts, reconstructs
+per-resource occupancy/capacity, and binds net/sink coverage to the packed
+contract and placement hash.
 
 The remaining R0/R1 work is:
 
 - extend the implemented LUT6/DFF eBLIF mapper with architecture-neutral
   memory, multiplier, and other hard-block mapping;
-- translate Architecture TimingDB into OpenSTA cell/interconnect models; and
-- add an independent detailed-route artifact checker beyond VPR's internal
-  legality check.
+- translate Architecture TimingDB into OpenSTA cell/interconnect models.
 
 Until R0 is complete, existing timing-aware providers remain research
 prototypes and are not promoted as definitive paper reproductions.
