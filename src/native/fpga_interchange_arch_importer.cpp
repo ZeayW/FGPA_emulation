@@ -1,0 +1,527 @@
+// Copyright 2026 EmuFlow contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include <capnp/serialize.h>
+#include <zlib.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "interchange/DeviceResources.capnp.h"
+
+namespace {
+
+using CompatibilityMap =
+    std::map<std::pair<std::string, std::string>, std::set<std::string>>;
+
+struct BelRecord {
+  std::string name;
+  std::string type;
+  std::uint32_t z;
+  std::set<std::string> cells;
+};
+
+using SiteTemplates = std::map<std::string, std::vector<BelRecord>>;
+
+std::string json_escape(const std::string& value) {
+  std::string result;
+  result.reserve(value.size() + 8);
+  for (const unsigned char character : value) {
+    switch (character) {
+      case '"':
+        result += "\\\"";
+        break;
+      case '\\':
+        result += "\\\\";
+        break;
+      case '\b':
+        result += "\\b";
+        break;
+      case '\f':
+        result += "\\f";
+        break;
+      case '\n':
+        result += "\\n";
+        break;
+      case '\r':
+        result += "\\r";
+        break;
+      case '\t':
+        result += "\\t";
+        break;
+      default:
+        if (character < 0x20) {
+          static constexpr char kHex[] = "0123456789abcdef";
+          result += "\\u00";
+          result += kHex[(character >> 4) & 0xf];
+          result += kHex[character & 0xf];
+        } else {
+          result += static_cast<char>(character);
+        }
+    }
+  }
+  return result;
+}
+
+void write_json_string(std::ostream& output, const std::string& value) {
+  output << '"' << json_escape(value) << '"';
+}
+
+std::vector<unsigned char> read_input(const std::string& path) {
+  std::ifstream probe(path, std::ios::binary);
+  if (!probe) {
+    throw std::runtime_error("cannot open input file: " + path);
+  }
+  unsigned char magic[2] = {0, 0};
+  probe.read(reinterpret_cast<char*>(magic), sizeof(magic));
+  const bool gzip = probe.gcount() == 2 && magic[0] == 0x1f && magic[1] == 0x8b;
+  probe.close();
+
+  std::vector<unsigned char> bytes;
+  if (gzip) {
+    gzFile input = gzopen(path.c_str(), "rb");
+    if (input == nullptr) {
+      throw std::runtime_error("cannot open gzip input file: " + path);
+    }
+    std::vector<unsigned char> chunk(1U << 20);
+    while (true) {
+      const int count =
+          gzread(input, chunk.data(), static_cast<unsigned int>(chunk.size()));
+      if (count < 0) {
+        int code = Z_OK;
+        const char* message = gzerror(input, &code);
+        gzclose(input);
+        throw std::runtime_error(
+            "gzip read failed: " +
+            std::string(message == nullptr ? "unknown error" : message));
+      }
+      if (count == 0) {
+        break;
+      }
+      bytes.insert(bytes.end(), chunk.begin(), chunk.begin() + count);
+    }
+    if (gzclose(input) != Z_OK) {
+      throw std::runtime_error("gzip close failed");
+    }
+  } else {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    const auto size = input.tellg();
+    if (size <= 0) {
+      throw std::runtime_error("input file is empty");
+    }
+    bytes.resize(static_cast<std::size_t>(size));
+    input.seekg(0);
+    input.read(
+        reinterpret_cast<char*>(bytes.data()),
+        static_cast<std::streamsize>(bytes.size()));
+    if (!input) {
+      throw std::runtime_error("input file read failed");
+    }
+  }
+  if (bytes.empty() || bytes.size() % sizeof(capnp::word) != 0) {
+    throw std::runtime_error(
+        "DeviceResources payload is not an aligned Cap'n Proto message");
+  }
+  return bytes;
+}
+
+template <typename StringList>
+std::string string_at(const StringList& strings, std::uint32_t index) {
+  if (index >= strings.size()) {
+    throw std::runtime_error("DeviceResources string index is out of range");
+  }
+  const auto value = strings[index];
+  return std::string(value.cStr(), value.size());
+}
+
+bool supported_cell(const std::string& cell) {
+  static const std::set<std::string> kSupported = {
+      "CARRY8",   "DSP48E2", "FDCE",     "FDPE",    "FDRE",
+      "FDSE",     "LUT1",    "LUT2",     "LUT3",    "LUT4",
+      "LUT5",     "LUT6",    "RAM64X1S", "RAMB18E2",
+      "RAMB36E2", "URAM288", "MUXF7",    "MUXF8",
+  };
+  return kSupported.count(cell) != 0;
+}
+
+std::string resource_class(
+    const std::string& bel_name,
+    const std::set<std::string>& cells) {
+  if (bel_name.size() == 5 && bel_name[1] == '6' &&
+      bel_name.substr(2) == "LUT") {
+    return "lut";
+  }
+  if (cells.count("FDRE") != 0) {
+    return "ff";
+  }
+  if (cells.count("MUXF7") != 0) {
+    return "MUXF7";
+  }
+  if (cells.count("MUXF8") != 0) {
+    return "MUXF8";
+  }
+  if (cells.count("RAM64X1S") != 0) {
+    return "RAM64X1S";
+  }
+  for (const char* cell :
+       {"CARRY8", "DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}) {
+    if (cells.count(cell) != 0) {
+      return cell;
+    }
+  }
+  return bel_name;
+}
+
+bool excluded_shared_lut_bel(const std::string& bel_name) {
+  return bel_name.size() == 5 && bel_name[1] == '5' &&
+         bel_name.substr(2) == "LUT";
+}
+
+template <typename DeviceReader, typename StringList>
+CompatibilityMap build_compatibility(
+    const DeviceReader& device,
+    const StringList& strings) {
+  CompatibilityMap result;
+  for (const auto mapping : device.getCellBelMap()) {
+    const std::string cell = string_at(strings, mapping.getCell());
+    if (!supported_cell(cell)) {
+      continue;
+    }
+    for (const auto common : mapping.getCommonPins()) {
+      for (const auto entry : common.getSiteTypes()) {
+        const std::string site_type =
+            string_at(strings, entry.getSiteType());
+        for (const auto bel_index : entry.getBels()) {
+          result[{site_type, string_at(strings, bel_index)}].insert(cell);
+        }
+      }
+    }
+    for (const auto parameter : mapping.getParameterPins()) {
+      for (const auto entry : parameter.getParametersSiteTypes()) {
+        result[{string_at(strings, entry.getSiteType()),
+                string_at(strings, entry.getBel())}]
+            .insert(cell);
+      }
+    }
+  }
+  return result;
+}
+
+template <typename SiteTypeList, typename StringList>
+SiteTemplates build_site_templates(
+    const SiteTypeList& site_types,
+    const StringList& strings,
+    const CompatibilityMap& compatibility) {
+  SiteTemplates result;
+  for (const auto site_type : site_types) {
+    const std::string site_type_name =
+        string_at(strings, site_type.getName());
+    std::vector<
+        std::pair<std::string, DeviceResources::Device::BEL::Reader>>
+        ordered_bels;
+    for (const auto bel : site_type.getBels()) {
+      ordered_bels.emplace_back(string_at(strings, bel.getName()), bel);
+    }
+    std::sort(
+        ordered_bels.begin(), ordered_bels.end(),
+        [](const auto& left, const auto& right) {
+          return left.first < right.first;
+        });
+    std::map<std::string, std::uint32_t> next_z;
+    std::vector<BelRecord> records;
+    std::string dsp_representative_type;
+    for (const auto& item : ordered_bels) {
+      const std::string bel_type = string_at(strings, item.second.getType());
+      if (site_type_name == "DSP48E2" && item.first == "DSP_ALU") {
+        dsp_representative_type = bel_type;
+      }
+      if (excluded_shared_lut_bel(item.first)) {
+        continue;
+      }
+      const auto found =
+          compatibility.find({site_type_name, item.first});
+      if (found == compatibility.end() || found->second.empty()) {
+        continue;
+      }
+      std::set<std::string> cells = found->second;
+      if (site_type_name == "SLICEM" &&
+          item.first.size() == 5 && item.first[1] == '6' &&
+          item.first.substr(2) == "LUT") {
+        // RAM64X1S is a macro view of one SLICEM LUT storage element and is
+        // absent from RapidWright's monolithic cellBelMap.
+        cells.insert("RAM64X1S");
+      }
+      const std::string klass = resource_class(item.first, cells);
+      records.push_back(
+          {item.first, bel_type, next_z[klass]++, std::move(cells)});
+    }
+    // RapidWright represents DSP48E2 as a macro over component BELs, so the
+    // generated cellBelMap has no monolithic DSP48E2 entry. Use the schema's
+    // canonical DSP_ALU component as the site-level global-placement resource;
+    // physical lowering must expand the macro before detailed placement.
+    if (site_type_name == "DSP48E2" &&
+        !dsp_representative_type.empty()) {
+      records.push_back(
+          {"DSP_ALU", dsp_representative_type, 0, {"DSP48E2"}});
+    }
+    if (!records.empty()) {
+      result.emplace(site_type_name, std::move(records));
+    }
+  }
+  return result;
+}
+
+template <typename DeviceReader>
+void write_extract(const DeviceReader& device, std::ostream& output) {
+  const auto strings = device.getStrList();
+  const auto site_types = device.getSiteTypeList();
+  const auto tile_types = device.getTileTypeList();
+  const CompatibilityMap compatibility =
+      build_compatibility(device, strings);
+  const SiteTemplates site_templates =
+      build_site_templates(site_types, strings, compatibility);
+  std::map<std::string, std::vector<std::string>> alternative_templates;
+  for (const auto site_type : site_types) {
+    const std::string name = string_at(strings, site_type.getName());
+    if (site_templates.count(name) == 0) {
+      continue;
+    }
+    for (const auto alternative_index : site_type.getAltSiteTypes()) {
+      if (alternative_index >= site_types.size()) {
+        throw std::runtime_error(
+            "DeviceResources alternative site type is out of range");
+      }
+      const std::string alternative =
+          string_at(strings, site_types[alternative_index].getName());
+      if (alternative != name &&
+          site_templates.count(alternative) != 0) {
+        alternative_templates[name].push_back(alternative);
+      }
+    }
+    // UltraScale+ exposes each 36-Kb BRAM site through two RAMB18E2 modes
+    // (lower/upper) or one RAMB36E2 mode. RapidWright's DeviceResources uses
+    // RAMB181 as the instantiated primary site and leaves the sibling modes
+    // as otherwise-unreferenced templates, so make that packing relation
+    // explicit for global resource accounting.
+    if (name == "RAMB181" &&
+        site_templates.count("RAMB180") != 0 &&
+        site_templates.count("RAMB36") != 0) {
+      alternative_templates[name].push_back("RAMB180");
+      alternative_templates[name].push_back("RAMB36");
+    }
+    auto& alternatives = alternative_templates[name];
+    std::sort(alternatives.begin(), alternatives.end());
+    alternatives.erase(
+        std::unique(alternatives.begin(), alternatives.end()),
+        alternatives.end());
+  }
+
+  output << "{\"schema\":"
+         << "\"emuflow.fpga-interchange-architecture-extract/v1\","
+         << "\"device\":";
+  const auto device_name = device.getName();
+  write_json_string(
+      output, std::string(device_name.cStr(), device_name.size()));
+  output << ",\"site_templates\":{";
+  bool first_template = true;
+  for (const auto& item : site_templates) {
+    if (!first_template) {
+      output << ',';
+    }
+    first_template = false;
+    write_json_string(output, item.first);
+    output << ":{\"alternative_templates\":[";
+    bool first_alternative = true;
+    for (const auto& alternative : alternative_templates[item.first]) {
+      if (!first_alternative) {
+        output << ',';
+      }
+      first_alternative = false;
+      write_json_string(output, alternative);
+    }
+    output << "],\"bels\":[";
+    bool first_bel = true;
+    for (const auto& bel : item.second) {
+      if (!first_bel) {
+        output << ',';
+      }
+      first_bel = false;
+      output << "{\"name\":";
+      write_json_string(output, bel.name);
+      output << ",\"type\":";
+      write_json_string(output, bel.type);
+      output << ",\"z\":" << bel.z << ",\"compatible_cells\":[";
+      bool first_cell = true;
+      for (const auto& cell : bel.cells) {
+        if (!first_cell) {
+          output << ',';
+        }
+        first_cell = false;
+        write_json_string(output, cell);
+      }
+      output << "]}";
+    }
+    output << "]}";
+  }
+  output << "},\"tiles\":[";
+
+  bool first_tile = true;
+  std::uint64_t emitted_sites = 0;
+  std::uint64_t emitted_bels = 0;
+  for (const auto tile : device.getTileList()) {
+    if (tile.getType() >= tile_types.size()) {
+      throw std::runtime_error("DeviceResources tile type is out of range");
+    }
+    const auto tile_type = tile_types[tile.getType()];
+    std::vector<std::string> rendered_sites;
+    std::uint32_t site_index = 0;
+    for (const auto site : tile.getSites()) {
+      if (site.getType() >= tile_type.getSiteTypes().size()) {
+        throw std::runtime_error(
+            "DeviceResources site-in-tile type is out of range");
+      }
+      const auto site_in_tile = tile_type.getSiteTypes()[site.getType()];
+      if (site_in_tile.getPrimaryType() >= site_types.size()) {
+        throw std::runtime_error("DeviceResources site type is out of range");
+      }
+      const auto site_type = site_types[site_in_tile.getPrimaryType()];
+      const std::string site_type_name =
+          string_at(strings, site_type.getName());
+      const auto template_found = site_templates.find(site_type_name);
+      if (template_found == site_templates.end()) {
+        ++site_index;
+        continue;
+      }
+
+      std::ostringstream site_output;
+      site_output << "{\"name\":";
+      write_json_string(site_output, string_at(strings, site.getName()));
+      site_output << ",\"type\":";
+      write_json_string(site_output, site_type_name);
+      site_output << ",\"index_in_tile\":" << site_index << '}';
+      rendered_sites.push_back(site_output.str());
+      ++emitted_sites;
+      emitted_bels += template_found->second.size();
+      ++site_index;
+    }
+    if (rendered_sites.empty()) {
+      continue;
+    }
+    if (!first_tile) {
+      output << ',';
+    }
+    first_tile = false;
+    output << "{\"name\":";
+    write_json_string(output, string_at(strings, tile.getName()));
+    output << ",\"type\":";
+    write_json_string(output, string_at(strings, tile_type.getName()));
+    output << ",\"row\":" << tile.getRow() << ",\"col\":" << tile.getCol()
+           << ",\"sites\":[";
+    for (std::size_t index = 0; index < rendered_sites.size(); ++index) {
+      if (index != 0) {
+        output << ',';
+      }
+      output << rendered_sites[index];
+    }
+    output << "]}";
+  }
+
+  output << "],\"packages\":[";
+  bool first_package = true;
+  for (const auto package : device.getPackages()) {
+    if (!first_package) {
+      output << ',';
+    }
+    first_package = false;
+    output << "{\"name\":";
+    write_json_string(output, string_at(strings, package.getName()));
+    output << ",\"package_pin_count\":" << package.getPackagePins().size()
+           << ",\"grades\":[";
+    bool first_grade = true;
+    for (const auto grade : package.getGrades()) {
+      if (!first_grade) {
+        output << ',';
+      }
+      first_grade = false;
+      output << "{\"name\":";
+      write_json_string(output, string_at(strings, grade.getName()));
+      output << ",\"speed_grade\":";
+      write_json_string(output, string_at(strings, grade.getSpeedGrade()));
+      output << ",\"temperature_grade\":";
+      write_json_string(
+          output, string_at(strings, grade.getTemperatureGrade()));
+      output << '}';
+    }
+    output << "]}";
+  }
+  output << "],\"resource_counts\":{"
+         << "\"all_tiles\":" << device.getTileList().size() << ','
+         << "\"tile_types\":" << device.getTileTypeList().size() << ','
+         << "\"site_types\":" << device.getSiteTypeList().size() << ','
+         << "\"placement_sites\":" << emitted_sites << ','
+         << "\"placement_bels\":" << emitted_bels << ','
+         << "\"wires\":" << device.getWires().size() << ','
+         << "\"nodes\":" << device.getNodes().size() << ','
+         << "\"pip_timings\":" << device.getPipTimings().size() << ','
+         << "\"node_timings\":" << device.getNodeTimings().size()
+         << "}}\n";
+}
+
+void usage(std::ostream& output) {
+  output
+      << "usage: emuflow_fpgaif_arch_importer DEVICE_RESOURCES OUTPUT_JSON\n"
+      << "Reads gzip/raw unpacked FPGA Interchange DeviceResources and emits "
+         "the supported UltraScale+ placement inventory.\n";
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--help") {
+    usage(std::cout);
+    return 0;
+  }
+  if (argc != 3) {
+    usage(std::cerr);
+    return 2;
+  }
+  try {
+    const std::vector<unsigned char> bytes = read_input(argv[1]);
+    const std::size_t word_count = bytes.size() / sizeof(capnp::word);
+    auto words = kj::heapArray<capnp::word>(word_count);
+    std::memcpy(words.begin(), bytes.data(), bytes.size());
+    capnp::ReaderOptions options;
+    options.traversalLimitInWords =
+        std::numeric_limits<std::uint64_t>::max() / 8;
+    options.nestingLimit = 128;
+    capnp::FlatArrayMessageReader reader(words.asPtr(), options);
+    const auto device = reader.getRoot<DeviceResources::Device>();
+    std::ofstream output(argv[2], std::ios::binary);
+    if (!output) {
+      throw std::runtime_error(
+          "cannot open output file: " + std::string(argv[2]));
+    }
+    write_extract(device, output);
+    if (!output) {
+      throw std::runtime_error("failed to write output JSON");
+    }
+    return 0;
+  } catch (const kj::Exception& error) {
+    std::cerr << "emuflow_fpgaif_arch_importer: Cap'n Proto error: "
+              << error.getDescription().cStr() << '\n';
+  } catch (const std::exception& error) {
+    std::cerr << "emuflow_fpgaif_arch_importer: " << error.what() << '\n';
+  }
+  return 1;
+}

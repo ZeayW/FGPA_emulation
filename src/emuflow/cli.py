@@ -14,6 +14,11 @@ from .cross_stage import (
     validate_cross_stage_report,
 )
 from .errors import EmuFlowError
+from .fpga_interchange import (
+    check_ir_architecture_capacity,
+    run_fpga_interchange_architecture_import,
+    validate_fpga_interchange_architecture,
+)
 from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
@@ -178,6 +183,36 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     arch_import.add_argument("input", type=Path)
     arch_import.add_argument("--output", "-o", type=Path, required=True)
+    arch_import_fpgaif = arch_subparsers.add_parser(
+        "import-fpga-interchange",
+        help="import open FPGA Interchange DeviceResources",
+    )
+    arch_import_fpgaif.add_argument("input", type=Path)
+    arch_import_fpgaif.add_argument("--part", required=True)
+    arch_import_fpgaif.add_argument(
+        "--generator",
+        required=True,
+        help="declared producer and version of the DeviceResources input",
+    )
+    arch_import_fpgaif.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    arch_import_fpgaif.add_argument(
+        "--native",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    arch_import_fpgaif.add_argument("--log", type=Path)
+    arch_validate_fpgaif = arch_subparsers.add_parser(
+        "validate-fpga-interchange",
+        help="independently validate FPGA Interchange ArchitectureDB metadata",
+    )
+    arch_validate_fpgaif.add_argument("path", type=Path)
+    arch_capacity_fpgaif = arch_subparsers.add_parser(
+        "check-capacity",
+        help="check EmuIR primitive support and BEL capacity",
+    )
+    arch_capacity_fpgaif.add_argument("--arch", type=Path, required=True)
+    arch_capacity_fpgaif.add_argument("--ir", type=Path, required=True)
 
     placement_parser = subparsers.add_parser(
         "placement", help="physical placement operations"
@@ -947,10 +982,29 @@ def _dispatch(args: argparse.Namespace) -> int:
         if args.arch_command == "import-vivado-tsv":
             architecture = ArchitectureDB.from_vivado_tsv(args.input)
             write_json(args.output, architecture.to_dict())
+            report = architecture.summary()
+        elif args.arch_command == "import-fpga-interchange":
+            report = run_fpga_interchange_architecture_import(
+                input_path=args.input,
+                part=args.part,
+                generator=args.generator,
+                output_path=args.output,
+                executable=args.native,
+                log_path=args.log,
+            )
+        elif args.arch_command == "validate-fpga-interchange":
+            architecture = ArchitectureDB.load(args.path)
+            report = validate_fpga_interchange_architecture(architecture)
+        elif args.arch_command == "check-capacity":
+            architecture = ArchitectureDB.load(args.arch)
+            report = check_ir_architecture_capacity(
+                architecture, EmuIR.load(args.ir)
+            )
         else:
             architecture = ArchitectureDB.load(args.path)
-        _print_json(architecture.summary())
-        return 0
+            report = architecture.summary()
+        _print_json(report)
+        return 0 if report.get("status", "pass") == "pass" else 2
 
     if args.command == "placement":
         architecture = ArchitectureDB.load(args.arch)

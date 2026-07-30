@@ -56,6 +56,11 @@ option(
   "Build the in-tree standalone OpenSTA timing engine"
   ON
 )
+option(
+  EMUFLOW_BUILD_FPGA_INTERCHANGE
+  "Build the in-tree FPGA Interchange DeviceResources importer"
+  ON
+)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
   EMUFLOW_CMAKE_PREFIX_PATH
@@ -171,6 +176,60 @@ add_custom_target(
   emuflow_python ALL
   DEPENDS "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
 )
+
+if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
+  set(EMUFLOW_PARENT_BUILD_TESTING "${BUILD_TESTING}")
+  set(BUILD_TESTING OFF)
+  set(WITH_OPENSSL OFF CACHE STRING "" FORCE)
+  set(WITH_ZLIB ON CACHE STRING "" FORCE)
+  set(WITH_FIBERS OFF CACHE STRING "" FORCE)
+  add_subdirectory(
+    "${CMAKE_SOURCE_DIR}/engines/capnproto"
+    "${CMAKE_BINARY_DIR}/capnproto"
+    EXCLUDE_FROM_ALL
+  )
+  set(BUILD_TESTING "${EMUFLOW_PARENT_BUILD_TESTING}")
+
+  set(
+    EMUFLOW_FPGA_INTERCHANGE_SCHEMA_ROOT
+    "${CMAKE_SOURCE_DIR}/engines/fpga-interchange-schema"
+  )
+  set(CAPNPC_SRC_PREFIX "${EMUFLOW_FPGA_INTERCHANGE_SCHEMA_ROOT}")
+  set(
+    CAPNPC_IMPORT_DIRS
+    "${EMUFLOW_FPGA_INTERCHANGE_SCHEMA_ROOT}/interchange"
+    "${EMUFLOW_FPGA_INTERCHANGE_SCHEMA_ROOT}/third_party/capnproto-java"
+  )
+  capnp_generate_cpp(
+    EMUFLOW_DEVICE_RESOURCE_SOURCES
+    EMUFLOW_DEVICE_RESOURCE_HEADERS
+    "${EMUFLOW_FPGA_INTERCHANGE_SCHEMA_ROOT}/interchange/References.capnp"
+    "${EMUFLOW_FPGA_INTERCHANGE_SCHEMA_ROOT}/interchange/LogicalNetlist.capnp"
+    "${EMUFLOW_FPGA_INTERCHANGE_SCHEMA_ROOT}/interchange/DeviceResources.capnp"
+  )
+  find_package(ZLIB REQUIRED)
+  add_executable(
+    emuflow_fpgaif_arch_importer
+    "${CMAKE_SOURCE_DIR}/src/native/fpga_interchange_arch_importer.cpp"
+    ${EMUFLOW_DEVICE_RESOURCE_SOURCES}
+    ${EMUFLOW_DEVICE_RESOURCE_HEADERS}
+  )
+  target_compile_features(emuflow_fpgaif_arch_importer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_fpgaif_arch_importer PRIVATE -O3)
+  target_include_directories(
+    emuflow_fpgaif_arch_importer
+    PRIVATE "${CMAKE_BINARY_DIR}"
+  )
+  target_link_libraries(
+    emuflow_fpgaif_arch_importer
+    PRIVATE CapnProto::capnp ZLIB::ZLIB
+  )
+  set_target_properties(
+    emuflow_fpgaif_arch_importer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
 
 if(EMUFLOW_BUILD_TLR_ROUTER)
   add_executable(
@@ -622,6 +681,13 @@ if(BUILD_TESTING)
     set_tests_properties(
       emuflow_bsp_pin_solver_cli
       PROPERTIES WILL_FAIL TRUE
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
+    add_test(
+      NAME emuflow_fpgaif_arch_importer_cli
+      COMMAND "$<TARGET_FILE:emuflow_fpgaif_arch_importer>" --help
     )
   endif()
 

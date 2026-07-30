@@ -14,6 +14,27 @@
       "license": "Apache-2.0"
     },
     {
+      "id": "capnproto",
+      "path": "engines/capnproto",
+      "upstream": "https://github.com/capnproto/capnproto",
+      "version_or_revision": "373e61ec89e2359f1c362e9b2eadc552f4779306 (v1.5.0)",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "fpga-interchange-schema",
+      "path": "engines/fpga-interchange-schema",
+      "upstream": "https://github.com/chipsalliance/fpga-interchange-schema",
+      "version_or_revision": "c985b4648e66414b250261c1ba4cbe45a2971b1c",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "capnproto-java-schema",
+      "path": "engines/fpga-interchange-schema/third_party/capnproto-java",
+      "upstream": "https://github.com/capnproto/capnproto-java",
+      "version_or_revision": "1a0ac9d2e0e607ccae7ca83cb3aacce93b065dd7",
+      "license": "MIT"
+    },
+    {
       "id": "cudd",
       "path": "engines/cudd",
       "upstream": "https://github.com/ivmai/cudd",

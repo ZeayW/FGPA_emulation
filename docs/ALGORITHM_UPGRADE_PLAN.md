@@ -627,10 +627,20 @@ independent path-database checker. The checked-in soft-logic model is
 deliberately marked `analytical_uncharacterized`; it is infrastructure, not
 UltraScale+ timing sign-off.
 
+R0 also has a source-built FPGA Interchange DeviceResources importer. It
+extracts compact UltraScale+ tile/site-template/BEL/package data and
+cell-to-BEL compatibility. It also explicitly models the DSP48E2 and
+RAM64X1S macro views and the related RAMB18E2/RAMB36E2 packing modes. The
+importer is first-party C++ built against vendored Apache-2.0 FPGA Interchange
+and Cap'n Proto source; generated inputs retain an explicit generator
+provenance field.
+
 The remaining R0 work is:
 
-- connect an open ArchitectureDB source;
-- extend timing coverage to UltraScale+ carry, memory, and DSP resources;
+- add an open, qualified sidecar for SLR, clock-region, and I/O-bank
+  membership because DeviceResources v1 does not encode these relations;
+- characterize device timing for CARRY, BRAM, DSP, and interconnect rather
+  than assigning analytical placeholder delays;
 - calibrate the analytical timing model against reproducible reference data;
 - establish routing-resource and physical-delay models consumed by later
   academic algorithms.

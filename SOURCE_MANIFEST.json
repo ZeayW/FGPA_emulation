@@ -21,6 +21,26 @@
       "integration": "default-in-tree-build"
     },
     {
+      "id": "open-fpga-architecture-import",
+      "stage": "R0 / Phase 2 architecture database",
+      "source_paths": [
+        "engines/capnproto",
+        "engines/fpga-interchange-schema",
+        "src/native/fpga_interchange_arch_importer.cpp",
+        "src/emuflow/fpga_interchange.py",
+        "schemas/archdb-v1.schema.json"
+      ],
+      "build_targets": [
+        "emuflow_fpgaif_arch_importer",
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow_fpgaif_arch_importer",
+        "emuflow"
+      ],
+      "integration": "default-in-tree-build"
+    },
+    {
       "id": "logic-synthesis",
       "stage": "Phase 1",
       "source_paths": [
@@ -204,8 +224,8 @@
   "open_path_blockers": [
     {
       "id": "ultrascale-plus-device-database",
-      "status": "pending",
-      "reason": "The repository has virtual planning models, but not yet a complete openly reproducible UltraScale+ routing-resource and timing database."
+      "status": "partial",
+      "reason": "The source-built FPGA Interchange importer now covers the open tile/site/BEL/package schema and placement compatibility. DeviceResources v1 does not encode SLR, clock-region, or I/O-bank membership, and the checked-in analytical timing model is not device-characterized."
     },
     {
       "id": "ultrascale-plus-open-routing",

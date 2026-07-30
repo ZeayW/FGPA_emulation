@@ -1,0 +1,10 @@
+https://github.com/f4pga/sphinx_f4pga_theme/archive/f4pga.zip#sphinx-f4pga-theme
+
+docutils
+sphinx
+sphinx-autobuild
+
+breathe
+recommonmark
+sphinx-markdown-tables
+sphinxcontrib-napoleon

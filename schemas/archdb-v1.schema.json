@@ -7,19 +7,66 @@
   "properties": {
     "schema": {"const": "emuflow.archdb/v1"},
     "part": {"type": "string", "minLength": 1},
-    "source": {"type": "object"},
+    "source": {
+      "type": "object",
+      "required": ["format"],
+      "properties": {
+        "format": {"type": "string", "minLength": 1},
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "generator": {"type": "string"},
+        "generator_qualification": {"type": "string"}
+      }
+    },
     "policy": {"type": "object"},
+    "coordinate_transform": {"type": "object"},
+    "physical_region_model": {
+      "type": "object",
+      "properties": {
+        "slr_encoded": {"type": "boolean"},
+        "clock_region_encoded": {"type": "boolean"},
+        "io_bank_encoded": {"type": "boolean"},
+        "qualification": {"type": "string"}
+      }
+    },
+    "packages": {"type": "array"},
+    "routing_resource_counts": {"type": "object"},
+    "site_templates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["bels"],
+        "properties": {
+          "alternative_templates": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "bels": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    },
     "sites": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["name", "type", "x", "y", "bels"],
+        "required": ["name", "type", "x", "y"],
+        "oneOf": [
+          {"required": ["bels"]},
+          {"required": ["template"]}
+        ],
         "properties": {
           "name": {"type": "string", "minLength": 1},
           "type": {"type": "string", "minLength": 1},
           "x": {"type": "integer", "minimum": 0},
           "y": {"type": "integer", "minimum": 0},
+          "tile": {"type": "object"},
+          "physical_region": {"type": "object"},
+          "template": {"type": "string", "minLength": 1},
           "bels": {
             "type": "array",
             "minItems": 1,

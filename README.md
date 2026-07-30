@@ -23,6 +23,13 @@
 >   [Munkres](https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/ppl/src/munkres),
 >   and [Material Design Icons](https://github.com/google/material-design-icons)
 > - Placement: [OpenPARF](https://github.com/PKU-IDEA/OpenPARF)
+> - Architecture interchange:
+>   [FPGA Interchange Schema](https://github.com/chipsalliance/fpga-interchange-schema),
+>   [Cap'n Proto](https://github.com/capnproto/capnproto), and the required
+>   [capnproto-java schema](https://github.com/capnproto/capnproto-java)
+>   ([RapidWright](https://github.com/Xilinx/RapidWright) is an optional
+>   DeviceResources producer, not an open EmuFlow engine, because its current
+>   API-library dependency includes Xilinx-EULA-governed material)
 > - Decision diagrams: [CUDD](https://github.com/ivmai/cudd)
 > - OpenPARF bundled source:
 >   [Ccache.cmake](https://github.com/TheLartians/Ccache.cmake),
@@ -126,6 +133,7 @@ boundaries; combinational loops and hard macros remain atomic.
 
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
+| Architecture database | In-tree FPGA Interchange schemas, Cap'n Proto, and C++ importer | Compact tile/site-template/BEL/package import works, including UltraScale+ macro-resource modes; DeviceResources v1 does not encode SLR/clock-region/I/O-bank membership |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
 | Static timing | In-tree standalone OpenSTA plus an open FPGA timing-model contract | Partition-independent path extraction works; the checked-in analytical model still requires device calibration |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
@@ -166,7 +174,8 @@ bitstream, but success in Vivado cannot satisfy an open-flow completion gate.
 
 The supported entry point is the root CMake project. The default `release`
 preset builds the first-party C++ kernels and all selected in-tree engines:
-Yosys/ABC, CUDD, standalone OpenSTA, RePart, OpenROAD/TritonPart, and OpenPARF.
+Yosys/ABC, CUDD, standalone OpenSTA, RePart, OpenROAD/TritonPart, OpenPARF,
+and the FPGA Interchange ArchitectureDB importer.
 It does not download any flow engine or install a precompiled provider.
 
 All builds require:
@@ -193,6 +202,7 @@ The build is self-contained below `build/native/`. Its main products are:
 
 ```text
 build/native/install/bin/emuflow
+build/native/install/bin/emuflow_fpgaif_arch_importer
 build/native/install/bin/yosys
 build/native/install/bin/yosys-abc
 build/native/install/bin/repart
@@ -276,6 +286,21 @@ emuflow synth-yosys examples/rtl/counter.v \
   --log build/counter-yosys.log
 ```
 
+Import a generated FPGA Interchange DeviceResources file with an explicit
+producer declaration, then check a synthesized design against its primitive
+and BEL capacity:
+
+```bash
+emuflow arch import-fpga-interchange device.device \
+  --part xcvu9p-flga2104-2L-e \
+  --generator "producer name and exact version" \
+  --output build/xcvu9p.archdb.json
+
+emuflow arch check-capacity \
+  --arch build/xcvu9p.archdb.json \
+  --ir build/phase1-demo/design.emuir.json
+```
+
 Use `emuflow --help` and `emuflow <command> --help` for the complete CLI. The
 installed `emuflow` launcher intentionally uses the in-tree Python control
 plane for orchestration and independent checking; optimization work remains in
@@ -288,6 +313,8 @@ EmuFlow does not publish opaque provider binaries or download flow engines
 after checkout. Implementations are editable source in this repository:
 
 - `engines/cudd/`: CUDD decision-diagram source required by OpenSTA;
+- `engines/capnproto/` and `engines/fpga-interchange-schema/`: the open
+  serializer and schemas used to import FPGA device resources;
 - `engines/yosys/`: Yosys synthesis, ABC mapping, and cxxopts source;
 - `engines/repart/`: RePart C++ hypergraph partitioner;
 - `engines/openroad/`: OpenROAD and TritonPart C++ source;
@@ -367,6 +394,18 @@ build, then independently reloads and checks every Site/BEL assignment against
 the ArchitectureDB. Importing an externally generated `.pl` file remains
 available only as an explicitly labelled comparison path and cannot pass the
 source-complete release gate.
+
+The ArchitectureDB path is also source-complete. The root build compiles
+`src/native/fpga_interchange_arch_importer.cpp` against the vendored open FPGA
+Interchange schema and Cap'n Proto source. A DeviceResources input must declare
+its generator because the schema license does not determine the generator's
+license. RapidWright may generate or compare such input, but its current
+`rapidwright-api-lib` dependency includes Xilinx-EULA-governed material, so it
+is an optional input-generation tool and not an EmuFlow open engine.
+Repeated BEL inventories are stored once per site template, keeping real VU9P
+ArchitectureDB artifacts practical while preserving every physical site.
+DSP48E2 and RAM64X1S are recorded as macro resources over their canonical
+component BELs; RAMB18E2/RAMB36E2 modes retain their shared-site relationship.
 
 Each imported tree contains its upstream license, exact commit provenance, and
 EmuFlow modification list. No precompiled provider executable, object,

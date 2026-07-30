@@ -23,6 +23,9 @@ their own licenses.
 
 | Local path | Component and upstream source | Pinned revision/version | License | Use |
 | --- | --- | --- | --- | --- |
+| `engines/capnproto` | [Cap'n Proto](https://github.com/capnproto/capnproto) | `373e61ec89e2359f1c362e9b2eadc552f4779306` / v1.5.0 | Apache-2.0 | Build and parse FPGA Interchange messages |
+| `engines/fpga-interchange-schema` | [FPGA Interchange Schema](https://github.com/chipsalliance/fpga-interchange-schema) | `c985b4648e66414b250261c1ba4cbe45a2971b1c` | Apache-2.0 | Open logical-netlist and device-resource contracts |
+| `engines/fpga-interchange-schema/third_party/capnproto-java` | [capnproto-java schema](https://github.com/capnproto/capnproto-java) | `1a0ac9d2e0e607ccae7ca83cb3aacce93b065dd7` | MIT | Vendored `java.capnp` import required by the schema |
 | `engines/cudd` | [CUDD](https://github.com/ivmai/cudd) | `f54f533303640afd5dbe47a05ebeabb3066f2a25` / 3.0.0 | BSD-3-Clause | OpenSTA decision diagrams |
 | `engines/yosys` | [Yosys](https://github.com/YosysHQ/yosys) | `3aca86049e79a165932e3e7660358376f45acaed` / v0.57 | ISC | RTL synthesis |
 | `engines/yosys/abc` | [YosysHQ ABC](https://github.com/YosysHQ/abc) | `8827bafb7f288de6749dc6e30fa452f2040949c0` | ABC upstream notices | Logic optimization and mapping |

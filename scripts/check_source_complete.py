@@ -13,6 +13,22 @@ from typing import Optional
 
 
 REQUIRED_SOURCE_FILES = {
+    "capnproto": (
+        "CMakeLists.txt",
+        "c++/src/capnp/schema.capnp",
+        "c++/src/capnp/serialize.h",
+        "LICENSE",
+        "EMUFLOW_PROVENANCE.md",
+    ),
+    "fpga-interchange-schema": (
+        "interchange/DeviceResources.capnp",
+        "interchange/LogicalNetlist.capnp",
+        "interchange/References.capnp",
+        "third_party/capnproto-java/capnp/java.capnp",
+        "third_party/capnproto-java/LICENSE",
+        "LICENSE",
+        "EMUFLOW_PROVENANCE.md",
+    ),
     "cudd": (
         "configure",
         "cudd/cudd.h",
@@ -76,6 +92,9 @@ REQUIRED_SOURCE_FILES = {
 }
 
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
+    "src/native/fpga_interchange_arch_importer.cpp",
+    "src/emuflow/fpga_interchange.py",
+    "schemas/archdb-v1.schema.json",
     "src/native/tlr_router.cpp",
     "src/native/tdm_ratio_optimizer.cpp",
     "src/native/tdm_partition_feedback.cpp",

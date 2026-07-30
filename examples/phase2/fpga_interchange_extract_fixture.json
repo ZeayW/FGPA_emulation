@@ -1,0 +1,111 @@
+{
+  "device": "xcvu3p",
+  "packages": [
+    {
+      "grades": [
+        {
+          "name": "-2-e",
+          "speed_grade": "-2",
+          "temperature_grade": "E"
+        }
+      ],
+      "name": "ffvc1517",
+      "package_pin_count": 520
+    }
+  ],
+  "resource_counts": {
+    "all_tiles": 12,
+    "node_timings": 0,
+    "nodes": 0,
+    "pip_timings": 0,
+    "placement_bels": 6,
+    "placement_sites": 3,
+    "site_types": 3,
+    "tile_types": 3,
+    "wires": 0
+  },
+  "schema": "emuflow.fpga-interchange-architecture-extract/v1",
+  "tiles": [
+    {
+      "col": 10,
+      "name": "CLEL_R_X10Y20",
+      "row": 20,
+      "sites": [
+        {
+          "bels": [
+            {
+              "compatible_cells": ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5", "LUT6"],
+              "name": "A6LUT",
+              "type": "LUT6",
+              "z": 0
+            },
+            {
+              "compatible_cells": ["FDCE", "FDPE", "FDRE", "FDSE"],
+              "name": "AFF",
+              "type": "FF",
+              "z": 0
+            },
+            {
+              "compatible_cells": ["CARRY8"],
+              "name": "CARRY8",
+              "type": "CARRY8",
+              "z": 0
+            }
+          ],
+          "index_in_tile": 0,
+          "name": "SLICE_X4Y7",
+          "type": "SLICEL"
+        }
+      ],
+      "type": "CLEL_R"
+    },
+    {
+      "col": 14,
+      "name": "DSP_X14Y20",
+      "row": 20,
+      "sites": [
+        {
+          "bels": [
+            {
+              "compatible_cells": ["DSP48E2"],
+              "name": "DSP48E2",
+              "type": "DSP48E2",
+              "z": 0
+            }
+          ],
+          "index_in_tile": 0,
+          "name": "DSP48E2_X0Y2",
+          "type": "DSP48E2"
+        }
+      ],
+      "type": "DSP"
+    },
+    {
+      "col": 18,
+      "name": "BRAM_X18Y20",
+      "row": 20,
+      "sites": [
+        {
+          "bels": [
+            {
+              "compatible_cells": ["RAMB18E2"],
+              "name": "RAMB18E2_L",
+              "type": "RAMB18E2",
+              "z": 0
+            },
+            {
+              "compatible_cells": ["RAMB36E2"],
+              "name": "RAMB36E2",
+              "type": "RAMB36E2",
+              "z": 0
+            }
+          ],
+          "index_in_tile": 0,
+          "name": "RAMB36_X0Y2",
+          "type": "RAMB36"
+        }
+      ],
+      "type": "BRAM"
+    }
+  ]
+}
