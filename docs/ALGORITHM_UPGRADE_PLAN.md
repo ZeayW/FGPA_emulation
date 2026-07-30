@@ -664,6 +664,12 @@ legal 32-Kibit single/dual-port modes. VPR performs the final mode-aware
 packing. ArchitectureDB dimensions are taken from VPR's actual auto-layout
 placement rather than a design-specific constant.
 
+The same path is now exposed as one checked `vpr full-open` transaction. Its
+aggregate contract cross-binds the synthesized eBLIF, VPR packed netlist,
+ArchitectureDB dimensions, OpenPARF placement, routed RR graph, and independent
+route-check report. The explicit commands remain available for algorithm
+development, but are no longer the only way to assemble the open backend.
+
 The remaining R0/R1 work is:
 
 - generalize the implemented flagship multiplier/RAM mapper into

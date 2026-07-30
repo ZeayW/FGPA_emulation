@@ -159,9 +159,10 @@ boundaries; combinational loops and hard macros remain atomic.
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
-Passing individual board-independent stage checks does **not** prove that a
-clean checkout can execute the entire open placement-and-routing path with one
-command. That end-to-end source-build gate remains open.
+`emuflow vpr full-open` is the clean-checkout integration gate for the open
+per-FPGA physical backend. It binds synthesis, baseline VPR packing and
+auto-layout sizing, ArchitectureDB/TimingDB import, OpenPARF placement, final
+VPR routing, and the independent route checker in one versioned report.
 
 The open heterogeneous OpenPARF-to-VPR placement-and-routing path is
 implemented for the pinned VTR flagship profile: VTR architecture import,
@@ -284,6 +285,23 @@ Fetch the pinned, SHA-256-verified VTR flagship architecture:
 emuflow arch fetch-default-vtr \
   --output build/architectures/vtr-flagship.xml
 ```
+
+The shortest complete open physical-flow invocation fetches that pinned
+architecture automatically and enables its multiplier/RAM mapping profile:
+
+```bash
+emuflow vpr full-open examples/rtl/vtr_hard_blocks.v \
+  --top vtr_hard_blocks \
+  --out build/vtr-hard-block-flow
+```
+
+The command refuses a non-empty output directory and writes a
+hash-bound `open-physical-flow-report.json`. Use `--logic-only` for RTL that
+must deliberately avoid hard-block inference, or `--architecture` to provide
+another VTR XML explicitly.
+
+The equivalent explicit stage commands are shown below for development and
+debugging.
 
 Map RTL to VPR-compatible LUT6/DFF eBLIF, then let VPR pack the design and
 select the smallest legal auto-layout:

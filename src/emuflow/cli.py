@@ -27,6 +27,7 @@ from .opensta import (
     parse_clock_definitions,
     run_opensta_path_database,
 )
+from .open_physical_flow import run_open_physical_flow
 from .phase1 import run_phase1
 from .phase2 import run_phase2
 from .phase3 import run_phase3, validate_phase3
@@ -186,6 +187,37 @@ def _build_parser() -> argparse.ArgumentParser:
             "map multipliers and RAMs to the public VTR flagship "
             "architecture modes"
         ),
+    )
+    vpr_full_open = vpr_subparsers.add_parser(
+        "full-open",
+        help="run the checked RTL-to-routed open academic physical flow",
+    )
+    vpr_full_open.add_argument("sources", nargs="+", type=Path)
+    vpr_full_open.add_argument("--top", required=True)
+    vpr_full_open.add_argument("--out", type=Path, required=True)
+    vpr_full_open.add_argument(
+        "--architecture",
+        type=Path,
+        help="optional VTR XML; otherwise fetch the pinned flagship model",
+    )
+    vpr_full_open.add_argument(
+        "--architecture-id", default="vtr-flagship-k6-n10-40nm"
+    )
+    vpr_full_open.add_argument(
+        "--logic-only",
+        action="store_true",
+        help="disable the default flagship multiplier/RAM hard-block mapping",
+    )
+    vpr_full_open.add_argument("--yosys")
+    vpr_full_open.add_argument("--vpr")
+    vpr_full_open.add_argument("--architecture-importer")
+    vpr_full_open.add_argument("--packed-importer")
+    vpr_full_open.add_argument("--route-checker")
+    vpr_full_open.add_argument("--openparf-install", type=Path)
+    vpr_full_open.add_argument("--openparf-python", type=Path)
+    vpr_full_open.add_argument("--seed", type=int, default=1)
+    vpr_full_open.add_argument(
+        "--route-channel-width", type=int, default=300
     )
     vpr_run = vpr_subparsers.add_parser(
         "run",
@@ -1128,7 +1160,25 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "vpr":
-        if args.vpr_command == "synth":
+        if args.vpr_command == "full-open":
+            report = run_open_physical_flow(
+                sources=args.sources,
+                top=args.top,
+                output_dir=args.out,
+                architecture=args.architecture,
+                architecture_id=args.architecture_id,
+                hard_blocks=not args.logic_only,
+                yosys=args.yosys,
+                vpr=args.vpr,
+                architecture_importer=args.architecture_importer,
+                packed_importer=args.packed_importer,
+                route_checker=args.route_checker,
+                openparf_install=args.openparf_install,
+                openparf_python=args.openparf_python,
+                seed=args.seed,
+                route_channel_width=args.route_channel_width,
+            )
+        elif args.vpr_command == "synth":
             report = run_vtr_yosys(
                 sources=args.sources,
                 top=args.top,

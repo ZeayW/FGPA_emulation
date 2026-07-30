@@ -177,6 +177,9 @@ and synchronous RAM cells into the exact VTR model ports and legal modes.
 VTR's bit-sliced RAM atoms remain visible until VPR packs them into a physical
 memory block. ArchitectureDB dimensions are derived from VPR's auto-layout
 placement header so the OpenPARF and VPR device views cannot silently diverge.
+The `vpr full-open` orchestration command executes these contracts in order,
+rejects stale output directories, and writes one aggregate report only after
+all independent checks pass.
 
 The earlier UltraScale+ risk spike remains an optional backend and implements:
 
@@ -553,6 +556,8 @@ Until a board is selected:
 - current placement/routing bridge: the VPR packed-cluster contract,
   OpenPARF clustered placement, checked VPR `.place` emission, and VPR
   detailed routing work for the heterogeneous VTR flagship backend;
+- complete entry point: `emuflow vpr full-open`, with a hash-bound aggregate
+  report over every preceding stage;
 - optional real-device backend: UltraScale+/Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will
