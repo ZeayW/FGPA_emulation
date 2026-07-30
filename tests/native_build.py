@@ -47,7 +47,7 @@ def vtr_architecture_importer() -> Path:
             "a C++17 compiler is required for VTR architecture tests"
         )
     executable = Path(_BUILD_ROOT.name) / "emuflow_vtr_arch_importer"
-    pugixml = ROOT / "engines/openparf/thirdparty/pugixml/src"
+    pugixml = ROOT / "engines/vtr/libs/EXTERNAL/libpugixml/src"
     subprocess.run(
         [
             compiler,
@@ -55,6 +55,37 @@ def vtr_architecture_importer() -> Path:
             "-O2",
             f"-I{pugixml}",
             str(ROOT / "src/native/vtr_architecture_importer.cpp"),
+            str(pugixml / "pugixml.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
+def vpr_packed_netlist_importer() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError(
+            "a C++17 compiler is required for packed-netlist tests"
+        )
+    executable = Path(_BUILD_ROOT.name) / (
+        "emuflow_vpr_packed_netlist_importer"
+    )
+    pugixml = ROOT / "engines/vtr/libs/EXTERNAL/libpugixml/src"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            f"-I{pugixml}",
+            str(ROOT / "src/native/vpr_packed_netlist_importer.cpp"),
             str(pugixml / "pugixml.cpp"),
             "-o",
             str(executable),

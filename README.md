@@ -27,6 +27,7 @@
 >   [VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing)
 >   editable pack/place/route source plus the flagship heterogeneous XML,
 >   pinned by commit and SHA-256; materialized dependencies are
+>   [pugixml](https://github.com/zeux/pugixml),
 >   [libsdcparse](https://github.com/verilog-to-routing/libsdcparse) and
 >   [yaml-cpp](https://github.com/jbeder/yaml-cpp)
 > - Architecture interchange:
@@ -153,8 +154,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
-| Placement | Root-built OpenPARF plus EmuFlow adapters/checker; VPR baseline placement | OpenPARF remains the selected placer; the current open VPR command uses VPR placement until the clustered-placement handoff is completed |
-| FPGA routing | Root-built VTR/VPR plus report/artifact checker | Exact packing, routing-resource-graph construction, detailed routing, and timing analysis run from repository source; OpenPARF-to-VPR placement handoff is pending |
+| Placement | Root-built OpenPARF plus EmuFlow adapters/checker; VPR baseline placement | VPR packing decisions now enter a checked cluster contract; OpenPARF cluster placement and VPR `.place` emission remain the next gate |
+| FPGA routing | Root-built VTR/VPR plus report/artifact checker | Exact packing, routing-resource-graph construction, detailed routing, and timing analysis run from repository source; placement handoff is pending |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -164,8 +165,9 @@ command. That end-to-end source-build gate remains open.
 
 EmuFlow is not yet a complete OpenPARF-to-VPR placement-and-routing flow. The
 default VTR architecture import, logic-only mapping, exact VPR packing,
-baseline placement, and detailed routing are implemented. Architecture-aware
-hard-block mapping, the OpenPARF clustered-placement handoff, and
+the packed-cluster contract, baseline placement, and detailed routing are
+implemented. Architecture-aware hard-block mapping, OpenPARF cluster
+placement/VPR `.place` emission, and
 TimingDB-to-OpenSTA translation remain open gates.
 EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
 used to compare results or generate a bitstream, but success in Vivado cannot
@@ -304,12 +306,19 @@ emuflow vpr run \
   --architecture build/architectures/vtr-flagship.xml \
   --circuit build/picorv32.eblif \
   --out build/picorv32-vpr
+
+emuflow vpr import-packed \
+  --input build/picorv32-vpr/picorv32.net \
+  --architecture build/architectures/vtr-flagship.xml \
+  --circuit build/picorv32.eblif \
+  --output build/picorv32-vpr/packed-contract.json
 ```
 
 The second command emits and verifies the packed `.net`, legal `.place`,
-detailed `.route`, console log, and `vpr-report.json`. It currently uses VPR's
-baseline placer; OpenPARF will replace that placement step after the
-cluster-level handoff contract is implemented.
+detailed `.route`, console log, and `vpr-report.json`. The third command
+preserves VPR's exact cluster modes, pb hierarchy, atom membership, and
+cross-cluster nets in a hash-bound versioned contract. VPR's baseline placer
+is still used until OpenPARF cluster placement and `.place` emission land.
 
 Run the checked-in board-independent counter example:
 

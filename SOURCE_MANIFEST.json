@@ -238,6 +238,9 @@
       "stage": "R1 / per-FPGA physical backend",
       "source_paths": [
         "src/emuflow/vpr.py",
+        "src/emuflow/packed_netlist.py",
+        "src/native/vpr_packed_netlist_importer.cpp",
+        "schemas/vpr-packed-netlist-v1.schema.json",
         "engines/vtr/vpr",
         "engines/vtr/libs/libarchfpga",
         "engines/vtr/libs/librrgraph",
@@ -245,10 +248,12 @@
         "engines/vtr/libs/EXTERNAL/yaml-cpp"
       ],
       "build_targets": [
-        "vpr_native"
+        "vpr_native",
+        "emuflow_vpr_packed_netlist_importer"
       ],
       "runtime_products": [
-        "vpr"
+        "vpr",
+        "emuflow_vpr_packed_netlist_importer"
       ],
       "integration": "default-in-tree-build"
     }
@@ -257,12 +262,12 @@
     {
       "id": "default-open-packing-and-timing",
       "status": "partial",
-      "reason": "The source-built VTR importer and pinned public flagship model provide open heterogeneous layout and timing data, and the exact VPR packer is now present in the root build. Architecture-neutral hard-block mapping, the checked packed-netlist contract, and Architecture TimingDB-to-OpenSTA translation remain pending."
+      "reason": "The source-built VTR importer and pinned public flagship model provide open heterogeneous layout and timing data; exact VPR packing and the checked packed-netlist contract are present in the root build. Architecture-neutral hard-block mapping and Architecture TimingDB-to-OpenSTA translation remain pending."
     },
     {
       "id": "default-open-fpga-routing",
       "status": "partial",
-      "reason": "The root build now compiles editable VPR routing-resource-graph and detailed-routing source. The next gate is the versioned OpenPARF clustered-placement handoff followed by VPR route and independent route-artifact checking."
+      "reason": "The root build compiles editable VPR routing-resource-graph and detailed-routing source, and the versioned packed-cluster contract is implemented. The next gate is OpenPARF clustered placement, VPR placement import, and independent route-artifact checking."
     },
     {
       "id": "open-ultrascale-plus-bitstream",

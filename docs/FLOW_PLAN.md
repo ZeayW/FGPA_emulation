@@ -164,9 +164,10 @@ The default open increment now implements:
 The current capacity policy takes the maximum primitive count across mutually
 exclusive VTR modes. It is suitable for early global placement capacity, but
 not exact packing legality by itself. The source-built VPR backend consumes
-the original XML and performs exact mode-aware packing. A checked packed
-netlist contract will expose those clusters to OpenPARF without flattening the
-mode decisions.
+the original XML and performs exact mode-aware packing. A C++ importer now
+publishes those clusters in a hash-bound contract without flattening mode,
+pb-hierarchy, or atom-membership decisions. OpenPARF cluster placement and
+VPR `.place` emission remain pending.
 
 The earlier UltraScale+ risk spike remains an optional backend and implements:
 
@@ -533,8 +534,9 @@ Until a board is selected:
 - physical mode: out-of-context, no package-pin binding;
 - placement provider: root-built in-tree OpenPARF;
 - routing provider: root-built in-tree VTR/VPR;
-- current placement/routing bridge: VPR baseline placement works; the
-  OpenPARF clustered-placement handoff is pending;
+- current placement/routing bridge: the VPR packed-cluster contract and
+  baseline placement work; OpenPARF cluster placement and VPR `.place`
+  emission are pending;
 - optional real-device backend: UltraScale+/Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will

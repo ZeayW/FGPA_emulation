@@ -643,10 +643,12 @@ importers. The older analytical UltraScale+ model and mixed-license
 RapidWright-produced region data remain optional compatibility inputs, not the
 definition of the open research flow.
 
+The packed-netlist contract is now implemented by a C++ VPR `.net` importer
+plus an independent validator. It preserves selected modes, the complete used
+pb hierarchy, atom membership, cross-cluster nets, and source hashes.
+
 The remaining R0/R1 work is:
 
-- publish VPR's exact mode/equivalent-site decisions in a versioned packed
-  netlist contract;
 - extend the implemented LUT6/DFF eBLIF mapper with architecture-neutral
   memory, multiplier, and other hard-block mapping;
 - translate packed clusters into OpenPARF placement input and convert its

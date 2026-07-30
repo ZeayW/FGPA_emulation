@@ -10,8 +10,9 @@ benchmarks, documentation generators, GUI/server support, Odin, Parmys, and
 the duplicate ABC frontend are not part of this build-focused import.
 EmuFlow builds its separate pinned Yosys/ABC source for logic synthesis.
 
-The following VTR submodules are materialized as ordinary editable source so a
-fresh clone does not need recursive submodule downloads:
+VTR manually synchronizes pugixml 1.7 in
+`libs/EXTERNAL/libpugixml`. The following VTR submodules are materialized as
+ordinary editable source so a fresh clone does not need recursive downloads:
 
 - libsdcparse: `7a49e2c9ad469d314aa7ec07d3e893ecabd7d9dc`; and
 - yaml-cpp: `2decf96e915d2b0c26c68c1659665789dfef2633`.

@@ -34,6 +34,10 @@ from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
+from .packed_netlist import (
+    run_packed_netlist_import,
+    validate_packed_netlist_file,
+)
 from .partition_feedback import run_partition_feedback
 from .physical_pins import run_phase6b, validate_package_pin_binding
 from .physical_regions import (
@@ -185,6 +189,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     vpr_run.add_argument("--seed", type=int, default=1)
     vpr_run.add_argument("--route-channel-width", type=int, default=300)
+    vpr_import_packed = vpr_subparsers.add_parser(
+        "import-packed",
+        help="import VPR .net packing decisions into the versioned contract",
+    )
+    vpr_import_packed.add_argument("--input", type=Path, required=True)
+    vpr_import_packed.add_argument("--output", "-o", type=Path, required=True)
+    vpr_import_packed.add_argument("--architecture", type=Path)
+    vpr_import_packed.add_argument("--circuit", type=Path)
+    vpr_import_packed.add_argument(
+        "--importer",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    vpr_validate_packed = vpr_subparsers.add_parser(
+        "validate-packed",
+        help="independently validate a VPR packed-netlist contract",
+    )
+    vpr_validate_packed.add_argument("--input", type=Path, required=True)
+    vpr_validate_packed.add_argument("--architecture", type=Path)
+    vpr_validate_packed.add_argument("--circuit", type=Path)
 
     benchmark = subparsers.add_parser(
         "benchmark", help="run a pinned RTL benchmark through Phase 1"
@@ -1054,7 +1077,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 executable=args.yosys,
                 log_path=args.log,
             )
-        else:
+        elif args.vpr_command == "run":
             report = run_vpr(
                 architecture=args.architecture,
                 circuit=args.circuit,
@@ -1062,6 +1085,20 @@ def _dispatch(args: argparse.Namespace) -> int:
                 executable=args.vpr,
                 seed=args.seed,
                 route_channel_width=args.route_channel_width,
+            )
+        elif args.vpr_command == "import-packed":
+            report = run_packed_netlist_import(
+                packed_netlist_path=args.input,
+                output_path=args.output,
+                architecture_path=args.architecture,
+                circuit_path=args.circuit,
+                executable=args.importer,
+            )
+        else:
+            report = validate_packed_netlist_file(
+                args.input,
+                architecture_path=args.architecture,
+                circuit_path=args.circuit,
             )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

@@ -71,6 +71,11 @@ option(
   "Build the in-tree VTR/VPR exact pack, place, and route engine"
   ON
 )
+option(
+  EMUFLOW_BUILD_VPR_PACKED_NETLIST
+  "Build the VPR packed-netlist contract importer"
+  ON
+)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
   EMUFLOW_CMAKE_PREFIX_PATH
@@ -255,17 +260,41 @@ if(EMUFLOW_BUILD_VTR_ARCHITECTURE)
   add_executable(
     emuflow_vtr_arch_importer
     "${CMAKE_SOURCE_DIR}/src/native/vtr_architecture_importer.cpp"
-    "${CMAKE_SOURCE_DIR}/engines/openparf/thirdparty/pugixml/src/pugixml.cpp"
+    "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src/pugixml.cpp"
   )
   target_compile_features(emuflow_vtr_arch_importer PRIVATE cxx_std_17)
   target_compile_options(emuflow_vtr_arch_importer PRIVATE -O3)
   target_include_directories(
     emuflow_vtr_arch_importer
     PRIVATE
-      "${CMAKE_SOURCE_DIR}/engines/openparf/thirdparty/pugixml/src"
+      "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src"
   )
   set_target_properties(
     emuflow_vtr_arch_importer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_VPR_PACKED_NETLIST)
+  add_executable(
+    emuflow_vpr_packed_netlist_importer
+    "${CMAKE_SOURCE_DIR}/src/native/vpr_packed_netlist_importer.cpp"
+    "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src/pugixml.cpp"
+  )
+  target_compile_features(
+    emuflow_vpr_packed_netlist_importer PRIVATE cxx_std_17
+  )
+  target_compile_options(
+    emuflow_vpr_packed_netlist_importer PRIVATE -O3
+  )
+  target_include_directories(
+    emuflow_vpr_packed_netlist_importer
+    PRIVATE
+      "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src"
+  )
+  set_target_properties(
+    emuflow_vpr_packed_netlist_importer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -815,6 +844,21 @@ if(BUILD_TESTING)
       PROPERTIES
         PASS_REGULAR_EXPRESSION
           "EMUFLOW_VTR_ARCHITECTURE_EXTRACT_V1"
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_VPR_PACKED_NETLIST)
+    add_test(
+      NAME emuflow_vpr_packed_netlist_importer_fixture
+      COMMAND
+        "$<TARGET_FILE:emuflow_vpr_packed_netlist_importer>"
+        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_packed_fixture.net"
+    )
+    set_tests_properties(
+      emuflow_vpr_packed_netlist_importer_fixture
+      PROPERTIES
+        PASS_REGULAR_EXPRESSION
+          "EMUFLOW_VPR_PACKED_NETLIST_EXTRACT_V1"
     )
   endif()
 

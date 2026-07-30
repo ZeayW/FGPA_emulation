@@ -275,6 +275,13 @@
       "license": "MIT"
     },
     {
+      "id": "vtr-pugixml",
+      "path": "engines/vtr/libs/EXTERNAL/libpugixml",
+      "upstream": "https://github.com/zeux/pugixml",
+      "version_or_revision": "1.7",
+      "license": "MIT"
+    },
+    {
       "id": "vtr-libsdcparse",
       "path": "engines/vtr/libs/EXTERNAL/libsdcparse",
       "upstream": "https://github.com/verilog-to-routing/libsdcparse",

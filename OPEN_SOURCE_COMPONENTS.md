@@ -51,6 +51,7 @@ their own licenses.
 | `engines/openparf/thirdparty/lemon` | [LEMON graph library](https://github.com/The-OpenROAD-Project/lemon-graph) | 1.3.1 | BSL-1.0 | Graph algorithms |
 | `engines/openparf/thirdparty/rapidcsv` | [rapidcsv](https://github.com/d99kris/rapidcsv) | 8.65 | BSD-3-Clause | CSV parsing |
 | `engines/vtr` | [Verilog-to-Routing / VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing) | `a3e60c31bb4384373d2d1a43c38c7569723733b6` | MIT | Exact architecture packing, routing-resource graph construction, baseline placement, and detailed routing |
+| `engines/vtr/libs/EXTERNAL/libpugixml` | [pugixml](https://github.com/zeux/pugixml) | 1.7 | MIT | VPR and EmuFlow packed-netlist XML parsing |
 | `engines/vtr/libs/EXTERNAL/libsdcparse` | [libsdcparse](https://github.com/verilog-to-routing/libsdcparse) | `7a49e2c9ad469d314aa7ec07d3e893ecabd7d9dc` | MIT | VPR SDC parsing |
 | `engines/vtr/libs/EXTERNAL/yaml-cpp` | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | `2decf96e915d2b0c26c68c1659665789dfef2633` | MIT | VPR YAML report/configuration parsing |
 
