@@ -465,7 +465,7 @@ must not leak into EmuIR or BoardDB.
 
 Open providers are in-tree source components. Yosys/ABC, OpenPARF,
 OpenROAD/TritonPart, and RePart source, upstream licenses, exact revision
-provenance, and EmuFlow modifications live under `third_party/`. The root
+provenance, and EmuFlow modifications live under `engines/`. The root
 CMake build compiles them with the native EmuFlow engines. A compiled
 executable is only a local build artifact, never the published implementation.
 The default runtime resolver deliberately does not search `PATH`; it selects

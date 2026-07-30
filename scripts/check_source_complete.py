@@ -203,9 +203,9 @@ def audit(repo_root: Path) -> list[str]:
                 "first-party native tree contains a non-source artifact "
                 f"({reason}): {path.relative_to(repo_root)}"
             )
-    third_party = repo_root / "third_party"
+    engines = repo_root / "engines"
     for component, relative_files in REQUIRED_SOURCE_FILES.items():
-        component_root = third_party / component
+        component_root = engines / component
         for relative_file in relative_files:
             path = component_root / relative_file
             if not path.is_file():

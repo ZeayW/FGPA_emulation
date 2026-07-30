@@ -59,7 +59,7 @@ RePart contributes an FPGA-aware multilevel flow with enhanced coarsening,
 initial assignment, move/exchange refinement, topology constraints, and
 multi-resource capacity constraints. The upstream implementation is
 GPL-3.0-only. Its C++ source, exact revision, license, and EmuFlow changes are
-included under `third_party/repart/` and compiled by the root build. The
+included under `engines/repart/` and compiled by the root build. The
 runtime executes that local build product; no opaque or externally supplied
 partitioner binary is part of the provider contract.
 

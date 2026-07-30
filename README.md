@@ -129,11 +129,11 @@ open-source EmuFlow component.
 EmuFlow does not publish opaque provider binaries or download flow engines
 after checkout. Implementations are editable source in this repository:
 
-- `third_party/cudd/`: CUDD decision-diagram source required by OpenSTA;
-- `third_party/yosys/`: Yosys synthesis, ABC mapping, and cxxopts source;
-- `third_party/repart/`: RePart C++ hypergraph partitioner;
-- `third_party/openroad/`: OpenROAD and TritonPart C++ source;
-- `third_party/openparf/`: OpenPARF C++/CUDA/Python source; and
+- `engines/cudd/`: CUDD decision-diagram source required by OpenSTA;
+- `engines/yosys/`: Yosys synthesis, ABC mapping, and cxxopts source;
+- `engines/repart/`: RePart C++ hypergraph partitioner;
+- `engines/openroad/`: OpenROAD and TritonPart C++ source;
+- `engines/openparf/`: OpenPARF C++/CUDA/Python source; and
 - `src/native/`: first-party C++ optimization kernels, including the
   timing-aware system router, Lagrangian/KKT TDM-ratio optimizer, and
   placement-aware logical-pin and physical package-pin planners;
@@ -261,7 +261,8 @@ rtl/transport/     reusable TDM and barrier RTL
 benchmarks/        benchmark catalog and run configurations
 examples/          small reproducible RTL and artifact fixtures
 scripts/           provider integration and reusable flow utilities
-third_party/       in-tree Yosys/ABC, OpenPARF, OpenROAD, and RePart source
+engines/           root-built Yosys, OpenROAD, RePart, OpenPARF, and CUDD source
+third_party/       external RTL benchmarks and retained upstream patch records
 tests/             unit, adversarial, and flow-level regression tests
 docs/              architecture, algorithm, and benchmark plans
 ```

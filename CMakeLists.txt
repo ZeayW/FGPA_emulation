@@ -229,14 +229,14 @@ if(EMUFLOW_BUILD_REPART)
 
   add_executable(
     repart
-    "${CMAKE_SOURCE_DIR}/third_party/repart/RePart/partitioner.cpp"
+    "${CMAKE_SOURCE_DIR}/engines/repart/RePart/partitioner.cpp"
   )
   target_compile_features(repart PRIVATE cxx_std_17)
   target_compile_options(repart PRIVATE -O3)
   target_compile_definitions(repart PRIVATE NDEBUG)
   target_include_directories(
     repart
-    PRIVATE "${CMAKE_SOURCE_DIR}/third_party/repart/RePart"
+    PRIVATE "${CMAKE_SOURCE_DIR}/engines/repart/RePart"
   )
   target_link_libraries(
     repart
@@ -250,7 +250,7 @@ if(EMUFLOW_BUILD_REPART)
 endif()
 
 if(EMUFLOW_BUILD_YOSYS)
-  set(EMUFLOW_YOSYS_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/yosys")
+  set(EMUFLOW_YOSYS_SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/yosys")
   set(EMUFLOW_YOSYS_BINARY_DIR "${CMAKE_BINARY_DIR}/yosys")
   set(EMUFLOW_YOSYS_INSTALL_ROOT "${EMUFLOW_INSTALL_ROOT}")
 
@@ -329,7 +329,7 @@ endif()
 if(EMUFLOW_BUILD_CUDD)
   ExternalProject_Add(
     cudd_native
-    SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/cudd"
+    SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/cudd"
     BINARY_DIR "${CMAKE_BINARY_DIR}/cudd"
     DOWNLOAD_COMMAND ""
     UPDATE_COMMAND ""
@@ -399,7 +399,7 @@ if(EMUFLOW_BUILD_OPENROAD)
   endif()
   ExternalProject_Add(
     openroad_native
-    SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/openroad"
+    SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/openroad"
     BINARY_DIR "${CMAKE_BINARY_DIR}/openroad"
     INSTALL_DIR "${EMUFLOW_INSTALL_ROOT}"
     DOWNLOAD_COMMAND ""
@@ -417,7 +417,7 @@ endif()
 if(EMUFLOW_BUILD_OPENPARF)
   ExternalProject_Add(
     openparf_native
-    SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/openparf"
+    SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/openparf"
     BINARY_DIR "${CMAKE_BINARY_DIR}/openparf"
     INSTALL_DIR "${EMUFLOW_INSTALL_ROOT}/openparf"
     DOWNLOAD_COMMAND ""
