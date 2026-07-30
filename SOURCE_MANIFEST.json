@@ -24,6 +24,12 @@
       "id": "open-fpga-architecture-import",
       "stage": "R0 / Phase 2 architecture database",
       "source_paths": [
+        "src/native/vtr_architecture_importer.cpp",
+        "src/emuflow/vtr_architecture.py",
+        "schemas/architecture-timing-db-v1.schema.json",
+        "resources/architectures/vtr/flagship-k6-n10-40nm.json",
+        "examples/architecture/vtr_k6_heterogeneous_fixture.xml",
+        "engines/openparf/thirdparty/pugixml",
         "engines/capnproto",
         "engines/fpga-interchange-schema",
         "src/native/fpga_interchange_arch_importer.cpp",
@@ -34,10 +40,12 @@
         "scripts/rapidwright/export_physical_regions.py"
       ],
       "build_targets": [
+        "emuflow_vtr_arch_importer",
         "emuflow_fpgaif_arch_importer",
         "emuflow_python"
       ],
       "runtime_products": [
+        "emuflow_vtr_arch_importer",
         "emuflow_fpgaif_arch_importer",
         "emuflow"
       ],
@@ -48,7 +56,9 @@
       "stage": "Phase 1",
       "source_paths": [
         "engines/yosys",
-        "engines/yosys/abc"
+        "engines/yosys/abc",
+        "src/emuflow/synthesis.py",
+        "scripts/yosys/logic_only_map.v"
       ],
       "build_targets": [
         "yosys_native"
@@ -226,14 +236,14 @@
   ],
   "open_path_blockers": [
     {
-      "id": "ultrascale-plus-device-database",
+      "id": "default-open-packing-and-timing",
       "status": "partial",
-      "reason": "The source-built FPGA Interchange importer covers the open tile/site/BEL/package schema and placement compatibility. A source-qualified sidecar contract, exact-coverage merger, and independent checker now add SLR, clock-region, and I/O-bank membership without inventing data absent from DeviceResources v1. The validated VU9P sidecar is currently produced by an optional mixed-license RapidWright adapter and is therefore not yet a wholly open device dataset; the checked-in analytical timing model is also not device-characterized."
+      "reason": "The source-built VTR importer and pinned public flagship model now provide open heterogeneous layout, relaxed capacity, primitive/block timing arcs, and routing switch/segment/direct data. Exact mode-aware packing, architecture-neutral Yosys mapping, and Architecture TimingDB-to-OpenSTA translation are pending."
     },
     {
-      "id": "ultrascale-plus-open-routing",
+      "id": "default-open-fpga-routing",
       "status": "pending",
-      "reason": "No detailed UltraScale+ FPGA-routing provider is selected for the open completion path yet. OpenPARF's experimental router subtree is retained only for provenance because it requires proprietary GUROBI and therefore cannot qualify as an EmuFlow open-flow implementation."
+      "reason": "The default VTR architecture carries open routing parameters, but EmuFlow does not yet construct the exact routing-resource graph or integrate source-built VPR after OpenPARF placement. OpenPARF's experimental router subtree remains disabled because it requires proprietary GUROBI."
     },
     {
       "id": "open-ultrascale-plus-bitstream",

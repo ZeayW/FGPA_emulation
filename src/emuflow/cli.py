@@ -70,6 +70,12 @@ from .timing_routing import (
 )
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
+from .vtr_architecture import (
+    fetch_pinned_vtr_architecture,
+    run_vtr_architecture_import,
+    validate_vtr_architecture_db,
+    validate_vtr_timing_db_file,
+)
 
 
 def _print_json(value: Dict[str, Any]) -> None:
@@ -173,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     arch_parser = subparsers.add_parser(
-        "arch", help="UltraScale+ ArchitectureDB operations"
+        "arch", help="provider-neutral ArchitectureDB operations"
     )
     arch_subparsers = arch_parser.add_subparsers(
         dest="arch_command", required=True
@@ -206,6 +212,40 @@ def _build_parser() -> argparse.ArgumentParser:
         help="explicit comparison override; defaults to the in-tree build",
     )
     arch_import_fpgaif.add_argument("--log", type=Path)
+    arch_import_vtr = arch_subparsers.add_parser(
+        "import-vtr",
+        help="import an open VTR academic architecture XML",
+    )
+    arch_import_vtr.add_argument("input", type=Path)
+    arch_import_vtr.add_argument("--architecture-id", required=True)
+    arch_import_vtr.add_argument("--width", type=int, required=True)
+    arch_import_vtr.add_argument("--height", type=int, required=True)
+    arch_import_vtr.add_argument(
+        "--architecture-output", type=Path, required=True
+    )
+    arch_import_vtr.add_argument(
+        "--timing-output", type=Path, required=True
+    )
+    arch_import_vtr.add_argument("--source-url")
+    arch_import_vtr.add_argument(
+        "--native",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    arch_fetch_vtr = arch_subparsers.add_parser(
+        "fetch-default-vtr",
+        help="fetch and verify the pinned open VTR flagship architecture",
+    )
+    arch_fetch_vtr.add_argument("--output", "-o", type=Path, required=True)
+    arch_validate_vtr = arch_subparsers.add_parser(
+        "validate-vtr",
+        help="validate a VTR-sourced ArchitectureDB",
+    )
+    arch_validate_vtr.add_argument("path", type=Path)
+    arch_validate_vtr_timing = arch_subparsers.add_parser(
+        "validate-vtr-timing",
+        help="validate a VTR academic TimingDB",
+    )
+    arch_validate_vtr_timing.add_argument("path", type=Path)
     arch_validate_fpgaif = arch_subparsers.add_parser(
         "validate-fpga-interchange",
         help="independently validate FPGA Interchange ArchitectureDB metadata",
@@ -1008,6 +1048,25 @@ def _dispatch(args: argparse.Namespace) -> int:
                 executable=args.native,
                 log_path=args.log,
             )
+        elif args.arch_command == "import-vtr":
+            report = run_vtr_architecture_import(
+                input_path=args.input,
+                architecture_output_path=args.architecture_output,
+                timing_output_path=args.timing_output,
+                architecture_id=args.architecture_id,
+                width=args.width,
+                height=args.height,
+                source_url=args.source_url,
+                executable=args.native,
+            )
+        elif args.arch_command == "fetch-default-vtr":
+            report = fetch_pinned_vtr_architecture(args.output)
+        elif args.arch_command == "validate-vtr":
+            report = validate_vtr_architecture_db(
+                ArchitectureDB.load(args.path)
+            )
+        elif args.arch_command == "validate-vtr-timing":
+            report = validate_vtr_timing_db_file(args.path)
         elif args.arch_command == "validate-fpga-interchange":
             architecture = ArchitectureDB.load(args.path)
             report = validate_fpga_interchange_architecture(architecture)

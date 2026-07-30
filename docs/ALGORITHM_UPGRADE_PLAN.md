@@ -77,7 +77,7 @@ layer. Performance-critical optimization is implemented in C++ or CUDA.
 
 | Stage | Faithful primary route | Independent alternatives/oracle |
 | --- | --- | --- |
-| Architecture/timing | FPGA Interchange + OpenSTA | Vivado calibration |
+| Architecture/timing | VTR XML + provider-neutral TimingDB + OpenSTA | FPGA Interchange/ECP5 adapters; Vivado comparison |
 | Synthesis/mapping | Yosys/ABC9 | Mapping Fusion experiment; equivalence oracle |
 | Hypergraph model | ASP-DAC 2025 adaptive modeling | complete flattening |
 | Partitioning | MFSPart-Ensemble + RePart replication | TritonPart, SHyPar, exact ILP |
@@ -98,33 +98,42 @@ algorithms are promoted.
 
 ### Literature and source foundations
 
+- VTR/VPR architecture XML and timing infrastructure;
 - OpenSTA and OpenROAD timing infrastructure;
-- FPGA Interchange DeviceResources;
+- FPGA Interchange DeviceResources as an optional real-device adapter;
 - *Challenges in Large FPGA-Based Logic Emulation Systems*, ISPD 2018;
 - UltraScale+/multi-die placement literature describing SLR, SLL, clock
   region, and heterogeneous-resource constraints.
 
 ### Technical route
 
-1. Import public FPGA Interchange device resources into ArchitectureDB:
-   sites, BELs, SLRs, clock regions, I/O banks, resource columns, and
-   connectivity classes.
-2. Extend BoardDB from link-level capacity to direction groups, cable/SLL
+1. Import the public VTR flagship architecture into provider-neutral
+   ArchitectureDB and Architecture TimingDB artifacts. This increment is
+   implemented for layout, relaxed capacity, primitive/block arcs, switches,
+   segments, and directs.
+2. Preserve mutually exclusive VTR modes and equivalent sites in an exact
+   packing contract; connect generic Yosys/ABC mapping to those modes.
+3. Translate Architecture TimingDB cell and interconnect arcs into OpenSTA and
+   retain stable EmuIR path identities.
+4. Build the VTR routing-resource graph and integrate source-built VPR detailed
+   routing after OpenPARF placement.
+5. Extend BoardDB from link-level capacity to direction groups, cable/SLL
    delay, lane clock, bank location, and physical channel constraints.
-3. Connect mapped Yosys primitives to OpenSTA with explicit cell and
-   interconnect delay models.
-4. Produce one partition-independent timing-path database with stable EmuIR
+6. Produce one partition-independent timing-path database with stable EmuIR
    net identities.
-5. Calibrate, but do not define, the open delay model using Vivado results.
-6. Version every model and record its confidence/qualification level.
+7. Add ECP5 and FPGA Interchange/UltraScale+ adapters behind the same
+   contracts. Commercial results may compare or calibrate an optional backend,
+   but never define the default open model.
+8. Version every model and record its confidence/qualification level.
 
 ### Acceptance gate
 
 - OpenSTA path identity and clock domains agree with the mapped netlist.
 - Timing paths are independent of a candidate partition.
-- SLR, clock-region, bank, and link locations are present in the open model.
-- Vivado comparison error is reported by path class; it is not silently
-  absorbed into fitted weights.
+- The selected architecture's region, resource, and routing constraints are
+  present in the open model.
+- Optional real-device comparison error is reported by path class; it is not
+  silently absorbed into the academic model.
 
 ## 5. Stage 1 - Logic synthesis and FPGA technology mapping
 
@@ -621,36 +630,24 @@ real RTL validation, and frozen-baseline comparison pass.
 
 ## 14. Immediate next action
 
-R0 now has a source-built standalone OpenSTA provider, a versioned open FPGA
-timing-model contract, stable partition-independent path identities, and an
-independent path-database checker. The checked-in soft-logic model is
-deliberately marked `analytical_uncharacterized`; it is infrastructure, not
-UltraScale+ timing sign-off.
+R0 now has a source-built C++ VTR XML importer and provider-neutral
+ArchitectureDB/Architecture TimingDB contracts. The pinned public flagship
+model supplies heterogeneous layout, primitive and block timing arcs, and
+routing switch/segment/direct data without commercial device files. The
+importer currently exposes relaxed maximum capacity across VTR modes; it does
+not yet claim exact packing legality.
 
-R0 also has a source-built FPGA Interchange DeviceResources importer. It
-extracts compact UltraScale+ tile/site-template/BEL/package data and
-cell-to-BEL compatibility. It also explicitly models the DSP48E2 and
-RAM64X1S macro views and the related RAMB18E2/RAMB36E2 packing modes. The
-importer is first-party C++ built against vendored Apache-2.0 FPGA Interchange
-and Cap'n Proto source; generated inputs retain an explicit generator
-provenance field.
-
-R0 now also has a versioned physical-region sidecar, exact-coverage merger,
-and independent checker. It represents SLR, clock-region, and package-specific
-I/O-bank membership without guessing information absent from DeviceResources
-v1. The present VU9P data producer is an explicitly optional mixed-license
-RapidWright adapter; this validates the contract and downstream integration
-but does not turn the dataset into an open source component.
+R0 also has source-built standalone OpenSTA and optional FPGA Interchange
+importers. The older analytical UltraScale+ model and mixed-license
+RapidWright-produced region data remain optional compatibility inputs, not the
+definition of the open research flow.
 
 The remaining R0 work is:
 
-- identify or reproduce a wholly open qualified producer for SLR,
-  clock-region, and I/O-bank membership;
-- characterize device timing for CARRY, BRAM, DSP, and interconnect rather
-  than assigning analytical placeholder delays;
-- calibrate the analytical timing model against reproducible reference data;
-- establish routing-resource and physical-delay models consumed by later
-  academic algorithms.
+- preserve VTR mode/equivalent-site constraints in an exact packing contract;
+- add architecture-neutral Yosys/ABC mapping;
+- translate Architecture TimingDB into OpenSTA cell/interconnect models; and
+- construct the routing-resource graph consumed by source-built VPR routing.
 
 Until R0 is complete, existing timing-aware providers remain research
 prototypes and are not promoted as definitive paper reproductions.

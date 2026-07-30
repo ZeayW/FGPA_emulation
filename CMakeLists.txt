@@ -61,6 +61,11 @@ option(
   "Build the in-tree FPGA Interchange DeviceResources importer"
   ON
 )
+option(
+  EMUFLOW_BUILD_VTR_ARCHITECTURE
+  "Build the in-tree VTR academic architecture XML importer"
+  ON
+)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
   EMUFLOW_CMAKE_PREFIX_PATH
@@ -133,7 +138,9 @@ file(
   GLOB_RECURSE EMUFLOW_RUNTIME_DATA
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/timing/*"
+  "${CMAKE_SOURCE_DIR}/resources/architectures/*"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
+  "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
 )
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/emuflow.in"
@@ -163,8 +170,16 @@ add_custom_command(
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/resources/timing"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/resources/architectures"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/resources/architectures"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/opensta"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/opensta"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/yosys"
+    "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
   COMMAND
     "${CMAKE_COMMAND}" -E touch
     "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
@@ -226,6 +241,26 @@ if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
   )
   set_target_properties(
     emuflow_fpgaif_arch_importer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_VTR_ARCHITECTURE)
+  add_executable(
+    emuflow_vtr_arch_importer
+    "${CMAKE_SOURCE_DIR}/src/native/vtr_architecture_importer.cpp"
+    "${CMAKE_SOURCE_DIR}/engines/openparf/thirdparty/pugixml/src/pugixml.cpp"
+  )
+  target_compile_features(emuflow_vtr_arch_importer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_vtr_arch_importer PRIVATE -O3)
+  target_include_directories(
+    emuflow_vtr_arch_importer
+    PRIVATE
+      "${CMAKE_SOURCE_DIR}/engines/openparf/thirdparty/pugixml/src"
+  )
+  set_target_properties(
+    emuflow_vtr_arch_importer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -636,6 +671,14 @@ if(BUILD_TESTING)
       "${CMAKE_SOURCE_DIR}"
   )
 
+  add_test(
+    NAME emuflow_logic_only_map_installed
+    COMMAND
+      "${CMAKE_COMMAND}" -E compare_files
+      "${CMAKE_SOURCE_DIR}/scripts/yosys/logic_only_map.v"
+      "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/logic_only_map.v"
+  )
+
   if(EMUFLOW_BUILD_REPART)
     add_test(NAME repart_cli COMMAND "$<TARGET_FILE:repart>")
     set_tests_properties(repart_cli PROPERTIES WILL_FAIL TRUE)
@@ -688,6 +731,21 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_fpgaif_arch_importer_cli
       COMMAND "$<TARGET_FILE:emuflow_fpgaif_arch_importer>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_VTR_ARCHITECTURE)
+    add_test(
+      NAME emuflow_vtr_arch_importer_fixture
+      COMMAND
+        "$<TARGET_FILE:emuflow_vtr_arch_importer>"
+        "${CMAKE_SOURCE_DIR}/examples/architecture/vtr_k6_heterogeneous_fixture.xml"
+    )
+    set_tests_properties(
+      emuflow_vtr_arch_importer_fixture
+      PROPERTIES
+        PASS_REGULAR_EXPRESSION
+          "EMUFLOW_VTR_ARCHITECTURE_EXTRACT_V1"
     )
   endif()
 

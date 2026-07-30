@@ -1,7 +1,7 @@
 {
   "schema": "emuflow.open-source-components/v1",
   "policy": {
-    "scope": "Vendored source, direct external build/runtime dependencies, CI actions, and fetchable RTL inputs used by EmuFlow.",
+    "scope": "Vendored source, pinned open architecture data, direct external build/runtime dependencies, CI actions, and fetchable RTL inputs used by EmuFlow.",
     "license_rule": "Third-party source retains its upstream license; this repository does not relicense imported code.",
     "revision_rule": "Imported engines and materialized submodules are pinned. A parent-snapshot label is used only when upstream did not record a separate nested revision."
   },
@@ -374,6 +374,9 @@
       "upstream": "https://github.com/tqdm/tqdm",
       "used_by": "OpenPARF utilities"
     }
+  ],
+  "architecture_sources": [
+    "resources/architectures/vtr/flagship-k6-n10-40nm.json"
   ],
   "benchmark_catalog": "benchmarks/rtl_catalog.json",
   "ci_actions": [

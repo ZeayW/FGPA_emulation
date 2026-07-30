@@ -2,18 +2,19 @@
 
 ## 1. Goal and scope
 
-EmuFlow compiles a synchronous RTL design into multiple AMD UltraScale+ FPGA
-implementations connected by statically scheduled board links. The target is
-a source-complete implementation through synthesis, partitioning, system
-routing, TDM, pin planning, placement, and FPGA routing. Every default engine
-must be editable source in this repository and built from the repository root.
-Vivado is an optional comparison/sign-off and bitstream backend; it cannot
-satisfy an open-flow completion gate.
+EmuFlow compiles a synchronous RTL design into multiple FPGA implementations
+connected by statically scheduled board links. The target is a source-complete
+implementation through synthesis, partitioning, system routing, TDM, pin
+planning, placement, and FPGA routing. Every default engine must be editable
+source in this repository and built from the repository root.
 
-The current implementation has not yet reached that target. Root-built
-OpenPARF placement is integrated; open UltraScale+ routing remains blocked on
-an openly reproducible device-resource/timing database and detailed router.
-The authoritative, machine-checked inventory is `SOURCE_MANIFEST.json`.
+The default research target is a public VTR academic architecture. The same
+provider-neutral artifacts support later ECP5 and UltraScale+ adapters.
+Vivado is an optional UltraScale+ comparison/sign-off and bitstream backend;
+it cannot satisfy the default open-flow completion gate. The current open
+gates are architecture-aware mapping/packing, TimingDB-to-OpenSTA translation,
+and detailed routing. The authoritative machine-checked inventory is
+`SOURCE_MANIFEST.json`.
 
 The initial semantic envelope is intentionally narrow:
 
@@ -50,18 +51,18 @@ TDM scheduling and logical lane assignment
 Per-FPGA netlist + transport RTL generation
         |
         v
-UltraScale+ packing and FPGA Interchange
+Provider-selected technology mapping and mode-aware packing
         |
         v
 Root-built OpenPARF placement
         |
         v
-Open FPGA routing (provider/device model pending)
+Open FPGA routing (VTR/VPR path planned)
         |
         v
 Open routed physical artifact
         |
-        +---- optional Vivado comparison / DRC / bitstream
+        +---- optional real-device backend / Vivado comparison and bitstream
 ```
 
 The layers communicate through explicit, versioned artifacts rather than
@@ -145,9 +146,24 @@ Acceptance:
 - the design is compared with effective per-FPGA capacities;
 - all tests run with Python 3.9 and no external packages.
 
-### Phase 2 — UltraScale+ physical-backend risk spike (executable increment implemented)
+### Phase 2 — Provider-neutral physical architecture and placement
 
-The first executable increment implements:
+The default open increment now implements:
+
+- a C++17 VTR architecture XML importer;
+- deterministic auto-layout expansion into ArchitectureDB;
+- heterogeneous LUT, FF, carry, multiplier, memory, and I/O capacities;
+- a provider-neutral Architecture TimingDB containing primitive and block
+  arcs plus routing switches, segments, and directs;
+- a pinned and SHA-256-verified public VTR flagship model; and
+- independent architecture/timing validators.
+
+The current capacity policy takes the maximum primitive count across mutually
+exclusive VTR modes. It is suitable for early global placement capacity, but
+not exact packing legality. The next increment must preserve modes explicitly
+and add a packer before placement is called physically legal.
+
+The earlier UltraScale+ risk spike remains an optional backend and implements:
 
 - ArchitectureDB v1 and Placement v1;
 - a hash-bound physical-region sidecar with exact SLR/clock-region coverage,
@@ -165,7 +181,7 @@ This is intentionally conservative: it avoids accepting a placement that
 requires LUT input sharing or control-set repair that the flow does not yet
 implement.
 
-The full Phase 2 acceptance target remains in progress. It uses public
+The optional UltraScale+ acceptance target remains in progress. It uses public
 `xcvu3p` FPGA Interchange collateral to implement:
 
 - DeviceResources to cached ArchitectureDB;
@@ -503,15 +519,16 @@ visible and buildable in the same repository.
 
 Until a board is selected:
 
-- part: `xcvu3p-ffvc1517-2-e`;
+- architecture: pinned VTR flagship heterogeneous 40 nm academic model;
+- virtual device: scalable auto layout, initially 64 by 64;
 - virtual platform: two-FPGA point-to-point;
 - per-FPGA utilization limit: 75%;
 - logical link: 32 lanes per direction at 250 MHz;
 - modeled link latency: two fabric cycles;
 - physical mode: out-of-context, no package-pin binding;
 - placement provider: root-built in-tree OpenPARF;
-- routing provider: not selected; open UltraScale+ integration pending;
-- optional proprietary comparison: Vivado.
+- routing provider: VTR/VPR integration pending;
+- optional real-device backend: UltraScale+/Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will
 replace them with values derived from the selected FPGA Interchange

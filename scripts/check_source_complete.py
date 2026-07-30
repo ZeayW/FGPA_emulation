@@ -92,6 +92,11 @@ REQUIRED_SOURCE_FILES = {
 }
 
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
+    "src/native/vtr_architecture_importer.cpp",
+    "src/emuflow/vtr_architecture.py",
+    "schemas/architecture-timing-db-v1.schema.json",
+    "resources/architectures/vtr/flagship-k6-n10-40nm.json",
+    "examples/architecture/vtr_k6_heterogeneous_fixture.xml",
     "src/native/fpga_interchange_arch_importer.cpp",
     "src/emuflow/fpga_interchange.py",
     "src/emuflow/physical_regions.py",
@@ -116,6 +121,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "scripts/vivado/export_cut_timing_paths.tcl",
     "scripts/vivado/export_timing_path_database.tcl",
     "scripts/opensta/export_timing_path_database.tcl",
+    "scripts/yosys/logic_only_map.v",
     "resources/timing/ultrascaleplus-softlogic-v1.json",
 )
 
@@ -153,6 +159,9 @@ GIT_LFS_POINTER = b"version https://git-lfs.github.com/spec/v1\n"
 SOURCE_MANIFEST = "SOURCE_MANIFEST.json"
 OPEN_SOURCE_COMPONENTS = "OPEN_SOURCE_COMPONENTS.json"
 OPEN_SOURCE_COMPONENTS_DOCUMENT = "OPEN_SOURCE_COMPONENTS.md"
+PINNED_ARCHITECTURE_SOURCES = (
+    "resources/architectures/vtr/flagship-k6-n10-40nm.json",
+)
 RTL_CATALOG = "benchmarks/rtl_catalog.json"
 ALLOWED_INTEGRATIONS = {
     "default-in-tree-build",
@@ -280,6 +289,26 @@ def _audit_open_source_provenance(
     catalog = _load_json(repo_root, RTL_CATALOG, errors)
     if catalog.get("schema") != "emuflow.rtl-catalog/v1":
         errors.append("RTL benchmark catalog has an unsupported schema")
+    architecture_sources = inventory.get("architecture_sources")
+    if architecture_sources != list(PINNED_ARCHITECTURE_SOURCES):
+        errors.append(
+            "open-source inventory must list the pinned architecture sources"
+        )
+    for relative_path in PINNED_ARCHITECTURE_SOURCES:
+        source = _load_json(repo_root, relative_path, errors)
+        if (
+            source.get("schema")
+            != "emuflow.pinned-architecture-source/v1"
+        ):
+            errors.append(f"{relative_path}: unsupported source schema")
+        if not str(source.get("upstream", "")).startswith("https://"):
+            errors.append(f"{relative_path}: no HTTPS upstream source link")
+        if not source.get("commit"):
+            errors.append(f"{relative_path}: no pinned source revision")
+        if not source.get("sha256"):
+            errors.append(f"{relative_path}: no pinned source SHA-256")
+        if not source.get("license"):
+            errors.append(f"{relative_path}: no source license attribution")
     benchmark_ids: set[str] = set()
     for design in catalog.get("designs", []):
         if not isinstance(design, dict):

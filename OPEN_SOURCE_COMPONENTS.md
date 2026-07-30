@@ -1,8 +1,9 @@
 # Open-source components and provenance
 
 This file is the central human-readable source map for EmuFlow. It covers
-source copied into this repository, source-built flow engines, direct external
-build/runtime dependencies, CI actions, and fetchable RTL benchmarks. Exact
+source copied into this repository, source-built flow engines, pinned open
+architecture data, direct external build/runtime dependencies, CI actions,
+and fetchable RTL benchmarks. Exact
 machine-readable records are in
 [`OPEN_SOURCE_COMPONENTS.json`](OPEN_SOURCE_COMPONENTS.json), while
 [`SOURCE_MANIFEST.json`](SOURCE_MANIFEST.json) maps implementations to flow
@@ -107,6 +108,15 @@ Qt, Doxygen, GoogleTest, CPLEX, VTune, and CUDA are optional upstream build
 features. The default EmuFlow build does not require Qt, Doxygen, CPLEX,
 VTune, GUROBI, or CUDA. Vivado and GUROBI are proprietary optional tools and
 are deliberately outside the open-source inventory.
+
+## Fetchable architecture sources
+
+The default academic device model is not an opaque binary or commercial
+database. `resources/architectures/vtr/flagship-k6-n10-40nm.json` pins VTR's
+[flagship heterogeneous architecture XML](https://github.com/verilog-to-routing/vtr-verilog-to-routing/blob/a3e60c31bb4384373d2d1a43c38c7569723733b6/vtr_flow/arch/timing/k6_frac_N10_frac_chain_mem32K_40nm.xml)
+at commit `a3e60c31bb4384373d2d1a43c38c7569723733b6`, records its MIT
+license and SHA-256, and is verified before use. The C++ importer and its XML
+regression fixture are first-party source in this repository.
 
 ## RTL benchmark sources
 

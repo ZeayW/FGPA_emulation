@@ -23,6 +23,9 @@
 >   [Munkres](https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/ppl/src/munkres),
 >   and [Material Design Icons](https://github.com/google/material-design-icons)
 > - Placement: [OpenPARF](https://github.com/PKU-IDEA/OpenPARF)
+> - Default open academic architecture:
+>   [VTR](https://github.com/verilog-to-routing/vtr-verilog-to-routing)
+>   flagship heterogeneous XML, pinned by commit and SHA-256
 > - Architecture interchange:
 >   [FPGA Interchange Schema](https://github.com/chipsalliance/fpga-interchange-schema),
 >   [Cap'n Proto](https://github.com/capnproto/capnproto), and the required
@@ -84,10 +87,16 @@
 > for every nested component and dependency. The corresponding
 > [machine-readable inventory](OPEN_SOURCE_COMPONENTS.json) is enforced by CI.
 
-EmuFlow is a research-oriented, open multi-FPGA emulation flow for AMD
-UltraScale+ devices. Its purpose is to compile one synchronous RTL design into
-multiple FPGA implementations and a deterministic communication fabric while
-keeping every stage inspectable, replaceable, and independently verifiable.
+EmuFlow is a research-oriented, open multi-FPGA emulation flow. Its purpose is
+to compile one synchronous RTL design into multiple FPGA implementations and a
+deterministic communication fabric while keeping every stage inspectable,
+replaceable, and independently verifiable.
+
+The default research backend uses a fully public VTR academic architecture
+model; no commercial board, FPGA database, or Vivado installation is required.
+Real-device backends are adapters behind the same artifacts: ECP5 is the
+planned open hardware smoke backend, while UltraScale+/Vivado remains an
+optional implementation and sign-off path.
 
 The project targets a source-complete path from logic synthesis to per-FPGA
 placement and routing:
@@ -133,16 +142,16 @@ boundaries; combinational loops and hard macros remain atomic.
 
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
-| Architecture database | In-tree FPGA Interchange schemas, Cap'n Proto, C++ importer, and region-sidecar checker | Compact tile/site-template/BEL/package import works; a source-qualified overlay adds exact SLR/clock-region/I/O-bank data, but the current VU9P producer is optional mixed-license RapidWright rather than an open device dataset |
+| Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; exact VTR mode-aware packing is the next increment |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
-| Static timing | In-tree standalone OpenSTA plus an open FPGA timing-model contract | Partition-independent path extraction works; the checked-in analytical model still requires device calibration |
+| Static timing | In-tree standalone OpenSTA plus provider-neutral Architecture TimingDB | VTR timing data is imported and source-qualified; conversion to the OpenSTA cell/interconnect model is pending |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++ route/TDM co-optimization kernel plus independent checker | Default academic provider builds and runs repository source |
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
 | Placement | Root-built OpenPARF plus EmuFlow adapters/checker | Default path builds, runs, and independently validates repository source |
-| FPGA routing | Provider not yet selected | Open device/timing database and detailed router remain blockers |
+| FPGA routing | VTR/VPR source integration planned | The open architecture/routing model now has a pinned default; exact routing-resource-graph import and detailed routing are pending |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -150,11 +159,12 @@ Passing individual board-independent stage checks does **not** prove that a
 clean checkout can execute the entire open placement-and-routing path with one
 command. That end-to-end source-build gate remains open.
 
-EmuFlow is not yet a fully open UltraScale+ physical implementation or
-bitstream flow. The complete public UltraScale+ routing-resource/timing
-database and open bitstream generator needed for that claim are not currently
-part of this repository. Vivado may be used to compare results or generate a
-bitstream, but success in Vivado cannot satisfy an open-flow completion gate.
+EmuFlow is not yet a complete open placement-and-routing flow. The default VTR
+architecture import is implemented, but architecture-aware mapping/packing,
+TimingDB-to-OpenSTA translation, and detailed routing are still open gates.
+EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
+used to compare results or generate a bitstream, but success in Vivado cannot
+satisfy the default open-flow completion gate.
 
 ## Design principles
 
@@ -175,7 +185,7 @@ bitstream, but success in Vivado cannot satisfy an open-flow completion gate.
 The supported entry point is the root CMake project. The default `release`
 preset builds the first-party C++ kernels and all selected in-tree engines:
 Yosys/ABC, CUDD, standalone OpenSTA, RePart, OpenROAD/TritonPart, OpenPARF,
-and the FPGA Interchange ArchitectureDB importer.
+the VTR and FPGA Interchange ArchitectureDB importers.
 It does not download any flow engine or install a precompiled provider.
 
 All builds require:
@@ -202,6 +212,7 @@ The build is self-contained below `build/native/`. Its main products are:
 
 ```text
 build/native/install/bin/emuflow
+build/native/install/bin/emuflow_vtr_arch_importer
 build/native/install/bin/emuflow_fpgaif_arch_importer
 build/native/install/bin/yosys
 build/native/install/bin/yosys-abc
@@ -257,6 +268,22 @@ export PATH="$PWD/build/native/install/bin:$PATH"
 emuflow --help
 ```
 
+Fetch the pinned, SHA-256-verified VTR flagship architecture and import a
+64-by-64 academic device. The TimingDB retains primitive, interconnect, switch,
+segment, and direct-delay data from the same XML:
+
+```bash
+emuflow arch fetch-default-vtr \
+  --output build/architectures/vtr-flagship.xml
+
+emuflow arch import-vtr build/architectures/vtr-flagship.xml \
+  --architecture-id vtr-k6-n10-40nm \
+  --width 64 \
+  --height 64 \
+  --architecture-output build/architectures/vtr-64x64.archdb.json \
+  --timing-output build/architectures/vtr-64x64.timing.json
+```
+
 Run the checked-in board-independent counter example:
 
 ```bash
@@ -275,8 +302,8 @@ emuflow sta run-opensta \
   --output build/phase1-demo/timing-paths.json
 ```
 
-The fixture avoids requiring Yosys for the first run. To synthesize RTL
-directly:
+The counter fixture avoids requiring synthesis for the first run. The current
+RTL synthesis command is the UltraScale+ compatibility frontend:
 
 ```bash
 emuflow synth-yosys examples/rtl/counter.v \
@@ -395,8 +422,17 @@ the ArchitectureDB. Importing an externally generated `.pl` file remains
 available only as an explicitly labelled comparison path and cannot pass the
 source-complete release gate.
 
-The ArchitectureDB path is also source-complete. The root build compiles
-`src/native/fpga_interchange_arch_importer.cpp` against the vendored open FPGA
+The default ArchitectureDB path is source-complete. The root build compiles
+`src/native/vtr_architecture_importer.cpp` against the vendored pugixml source.
+It reads public VTR architecture XML and emits provider-neutral physical and
+timing artifacts. The checked-in source manifest pins the VTR flagship XML by
+upstream commit and SHA-256; the small checked-in XML is only a deterministic
+parser regression fixture. Current placement capacity is deliberately a
+relaxed maximum over mutually exclusive VTR modes. It must not be confused
+with a completed packer.
+
+The optional real-device path compiles
+`src/native/fpga_interchange_arch_importer.cpp` against the vendored FPGA
 Interchange schema and Cap'n Proto source. A DeviceResources input must declare
 its generator because the schema license does not determine the generator's
 license. RapidWright may generate or compare such input, but its current
@@ -441,9 +477,9 @@ partitioner, placer, router, or synthesis executable.
 
 OpenPARF's optional experimental `fpga-router` is not a selected flow engine:
 its upstream build currently requires proprietary GUROBI, so the root build
-excludes it and the release gate cannot count it. Selecting or reproducing an
-open detailed UltraScale+ router, together with an open device/timing database,
-remains an explicit project blocker rather than a hidden binary dependency.
+excludes it and the release gate cannot count it. Integrating an open detailed
+router for the default VTR architecture remains an explicit project blocker
+rather than a hidden binary dependency.
 
 This distinction is deliberate: a C++ provider runs as a compiled executable,
 but that executable is disposable output below `build/`. The editable
