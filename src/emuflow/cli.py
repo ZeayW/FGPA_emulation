@@ -17,6 +17,11 @@ from .errors import EmuFlowError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
+from .opensta import (
+    DEFAULT_TIMING_MODEL,
+    parse_clock_definitions,
+    run_opensta_path_database,
+)
 from .phase1 import run_phase1
 from .phase2 import run_phase2
 from .phase3 import run_phase3, validate_phase3
@@ -43,6 +48,7 @@ from .sta import (
     import_vivado_path_database_tsv,
     import_vivado_sta_tsv,
     project_sta_path_database,
+    validate_sta_path_database,
     write_vivado_cut_net_map,
     write_vivado_net_map,
 )
@@ -394,6 +400,39 @@ def _build_parser() -> argparse.ArgumentParser:
     sta_database_project.add_argument(
         "--output", "-o", type=Path, required=True
     )
+    sta_database_validate = sta_subparsers.add_parser(
+        "validate-path-database",
+        help="independently validate a partition-independent path database",
+    )
+    sta_database_validate.add_argument(
+        "--database", type=Path, required=True
+    )
+    sta_database_validate.add_argument("--ir", type=Path, required=True)
+    sta_opensta = sta_subparsers.add_parser(
+        "run-opensta",
+        help="build a partition-independent path database with in-tree OpenSTA",
+    )
+    sta_opensta.add_argument("--ir", type=Path, required=True)
+    sta_opensta.add_argument("--output", "-o", type=Path, required=True)
+    sta_opensta.add_argument(
+        "--clock-period",
+        action="append",
+        default=[],
+        metavar="CLOCK=PERIOD_NS",
+    )
+    sta_opensta.add_argument(
+        "--timing-model",
+        type=Path,
+        default=DEFAULT_TIMING_MODEL,
+    )
+    sta_opensta.add_argument(
+        "--opensta",
+        "--openroad",
+        dest="opensta",
+        help="explicit comparison override; defaults to the in-tree build",
+    )
+    sta_opensta.add_argument("--max-paths", type=int, default=10000)
+    sta_opensta.add_argument("--log", type=Path)
 
     route_parser = subparsers.add_parser(
         "route", help="board-level system route artifact operations"
@@ -1001,9 +1040,24 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = import_vivado_path_database_tsv(
                 args.input, args.ir, args.output
             )
-        else:
+        elif args.sta_command == "project-path-database":
             report = project_sta_path_database(
                 args.database, args.assignment, args.output
+            )
+        elif args.sta_command == "validate-path-database":
+            report = validate_sta_path_database(args.database, args.ir)
+        else:
+            clock_definitions = parse_clock_definitions(
+                args.clock_period
+            )
+            report = run_opensta_path_database(
+                ir_path=args.ir,
+                output_path=args.output,
+                clocks=clock_definitions or None,
+                timing_model_path=args.timing_model,
+                executable=args.opensta,
+                max_paths=args.max_paths,
+                log_path=args.log,
             )
         _print_json(report)
         return 0

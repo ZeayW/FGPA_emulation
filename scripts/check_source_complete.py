@@ -83,6 +83,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/bsp_pin_solver.cpp",
     "schemas/tdm-ratio-plan-v1.schema.json",
     "schemas/sta-path-database-v1.schema.json",
+    "schemas/fpga-timing-model-v1.schema.json",
     "schemas/partition-net-weights-v1.schema.json",
     "schemas/signal-position-hints-v1.schema.json",
     "schemas/placement-aware-pin-plan-v1.schema.json",
@@ -92,6 +93,8 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "platforms/synthetic/xcvu9p_4fpga_mesh_bsp.json",
     "scripts/vivado/export_cut_timing_paths.tcl",
     "scripts/vivado/export_timing_path_database.tcl",
+    "scripts/opensta/export_timing_path_database.tcl",
+    "resources/timing/ultrascaleplus-softlogic-v1.json",
 )
 
 OPAQUE_SUFFIXES = {

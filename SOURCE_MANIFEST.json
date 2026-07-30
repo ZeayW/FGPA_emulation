@@ -69,19 +69,28 @@
     },
     {
       "id": "partition-independent-sta",
-      "stage": "Phase 3/4/5 cross-stage timing projection",
+      "stage": "R0 / Phase 3/4/5 cross-stage timing projection",
       "source_paths": [
         "src/emuflow/sta.py",
+        "src/emuflow/opensta.py",
+        "engines/openroad/src/sta",
+        "engines/cudd",
+        "scripts/opensta/export_timing_path_database.tcl",
         "scripts/vivado/export_timing_path_database.tcl",
-        "schemas/sta-path-database-v1.schema.json"
+        "schemas/sta-path-database-v1.schema.json",
+        "schemas/fpga-timing-model-v1.schema.json",
+        "resources/timing/ultrascaleplus-softlogic-v1.json"
       ],
       "build_targets": [
+        "cudd_native",
+        "opensta_native",
         "emuflow_python"
       ],
       "runtime_products": [
+        "sta",
         "emuflow"
       ],
-      "integration": "in-tree-python"
+      "integration": "default-in-tree-build"
     },
     {
       "id": "partition-tdm-feedback",

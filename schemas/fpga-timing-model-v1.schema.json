@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/fpga-timing-model-v1.schema.json",
+  "title": "EmuFlow FPGA timing model v1",
+  "type": "object",
+  "required": ["schema", "name", "family", "source", "cells"],
+  "properties": {
+    "schema": {"const": "emuflow.fpga-timing-model/v1"},
+    "name": {"type": "string", "minLength": 1},
+    "family": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "required": ["provider", "qualification"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "qualification": {
+          "enum": ["analytical_uncharacterized", "calibrated", "characterized"]
+        },
+        "description": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "cells": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind", "inputs", "output", "delay_ns"],
+            "properties": {
+              "kind": {"const": "combinational"},
+              "inputs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+                "uniqueItems": true
+              },
+              "output": {"type": "string", "minLength": 1},
+              "delay_ns": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "clock",
+              "data",
+              "output",
+              "controls",
+              "setup_ns",
+              "clock_to_q_ns"
+            ],
+            "properties": {
+              "kind": {"const": "rising_edge_ff"},
+              "clock": {"type": "string", "minLength": 1},
+              "data": {"type": "string", "minLength": 1},
+              "output": {"type": "string", "minLength": 1},
+              "controls": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "uniqueItems": true
+              },
+              "setup_ns": {"type": "number", "minimum": 0},
+              "clock_to_q_ns": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["kind", "output"],
+            "properties": {
+              "kind": {"const": "constant"},
+              "output": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

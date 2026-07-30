@@ -17,7 +17,10 @@
       "required": ["provider"],
       "properties": {
         "provider": {
-          "const": "vivado-get-timing-path-database-v1"
+          "enum": [
+            "vivado-get-timing-path-database-v1",
+            "opensta-fpga-path-database-v1"
+          ]
         },
         "input": {
           "type": "string"

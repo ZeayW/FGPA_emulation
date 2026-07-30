@@ -127,6 +127,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
+| Static timing | In-tree standalone OpenSTA plus an open FPGA timing-model contract | Partition-independent path extraction works; the checked-in analytical model still requires device calibration |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++ route/TDM co-optimization kernel plus independent checker | Default academic provider builds and runs repository source |
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
@@ -165,8 +166,8 @@ bitstream, but success in Vivado cannot satisfy an open-flow completion gate.
 
 The supported entry point is the root CMake project. The default `release`
 preset builds the first-party C++ kernels and all selected in-tree engines:
-Yosys/ABC, CUDD, RePart, OpenROAD/TritonPart, and OpenPARF. It does not download
-any flow engine or install a precompiled provider.
+Yosys/ABC, CUDD, standalone OpenSTA, RePart, OpenROAD/TritonPart, and OpenPARF.
+It does not download any flow engine or install a precompiled provider.
 
 All builds require:
 
@@ -195,6 +196,7 @@ build/native/install/bin/emuflow
 build/native/install/bin/yosys
 build/native/install/bin/yosys-abc
 build/native/install/bin/repart
+build/native/install/bin/sta
 build/native/install/bin/openroad
 build/native/install/bin/emuflow_tlr_router
 build/native/install/bin/emuflow_tdm_ratio_optimizer
@@ -228,6 +230,7 @@ cmake -S . -B build/core -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
   -DEMUFLOW_BUILD_CUDD=OFF \
   -DEMUFLOW_BUILD_REPART=OFF \
   -DEMUFLOW_BUILD_OPENROAD=OFF \
+  -DEMUFLOW_BUILD_OPENSTA=OFF \
   -DEMUFLOW_BUILD_OPENPARF=OFF
 cmake --build build/core --parallel
 ctest --test-dir build/core --output-on-failure
@@ -255,6 +258,11 @@ emuflow phase1 \
   --out build/phase1-demo
 
 emuflow ir stats build/phase1-demo/design.emuir.json
+
+emuflow sta run-opensta \
+  --ir build/phase1-demo/design.emuir.json \
+  --clock-period clk=10 \
+  --output build/phase1-demo/timing-paths.json
 ```
 
 The fixture avoids requiring Yosys for the first run. To synthesize RTL
@@ -305,11 +313,14 @@ proxy, slack, and path signatures. The original Python negotiated router is no
 longer a runtime provider.
 
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
-database. The Vivado adapter records ordered stable EmuIR net identities for
-each global path; `emuflow sta project-path-database` projects the same
-database onto every candidate partition's cut nets. Slack normalization is
-also frozen once at database import, so candidates cannot change either the
-timing sample or its scale.
+database. The default provider builds standalone OpenSTA from
+`engines/openroad/src/sta`, renders the versioned open FPGA timing model, and
+records ordered stable EmuIR net identities for each global path. The Vivado
+adapter remains an optional calibration/comparison provider.
+`emuflow sta project-path-database` projects the same database onto every
+candidate partition's cut nets. Slack normalization is frozen once at
+database import, so candidates cannot change either the timing sample or its
+scale.
 
 `emuflow cross-stage optimize` closes the checked Phase 3--5 feedback loop:
 it derives TDM/channel-pressure weights, reruns the selected source-built

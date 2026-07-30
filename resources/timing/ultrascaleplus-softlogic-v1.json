@@ -1,0 +1,104 @@
+{
+  "schema": "emuflow.fpga-timing-model/v1",
+  "name": "ultrascaleplus-softlogic-analytical-v1",
+  "family": "xcup",
+  "source": {
+    "provider": "emuflow-analytical-model",
+    "qualification": "analytical_uncharacterized",
+    "description": "Open, deterministic bring-up model for OpenSTA integration. Values are not device characterization and must be calibrated before timing sign-off."
+  },
+  "cells": {
+    "FDCE": {
+      "kind": "rising_edge_ff",
+      "clock": "C",
+      "data": "D",
+      "output": "Q",
+      "controls": ["CE", "CLR"],
+      "setup_ns": 0.08,
+      "clock_to_q_ns": 0.12
+    },
+    "FDPE": {
+      "kind": "rising_edge_ff",
+      "clock": "C",
+      "data": "D",
+      "output": "Q",
+      "controls": ["CE", "PRE"],
+      "setup_ns": 0.08,
+      "clock_to_q_ns": 0.12
+    },
+    "FDRE": {
+      "kind": "rising_edge_ff",
+      "clock": "C",
+      "data": "D",
+      "output": "Q",
+      "controls": ["CE", "R"],
+      "setup_ns": 0.08,
+      "clock_to_q_ns": 0.12
+    },
+    "FDSE": {
+      "kind": "rising_edge_ff",
+      "clock": "C",
+      "data": "D",
+      "output": "Q",
+      "controls": ["CE", "S"],
+      "setup_ns": 0.08,
+      "clock_to_q_ns": 0.12
+    },
+    "GND": {
+      "kind": "constant",
+      "output": "G"
+    },
+    "LUT1": {
+      "kind": "combinational",
+      "inputs": ["I0"],
+      "output": "O",
+      "delay_ns": 0.10
+    },
+    "LUT2": {
+      "kind": "combinational",
+      "inputs": ["I0", "I1"],
+      "output": "O",
+      "delay_ns": 0.12
+    },
+    "LUT3": {
+      "kind": "combinational",
+      "inputs": ["I0", "I1", "I2"],
+      "output": "O",
+      "delay_ns": 0.14
+    },
+    "LUT4": {
+      "kind": "combinational",
+      "inputs": ["I0", "I1", "I2", "I3"],
+      "output": "O",
+      "delay_ns": 0.16
+    },
+    "LUT5": {
+      "kind": "combinational",
+      "inputs": ["I0", "I1", "I2", "I3", "I4"],
+      "output": "O",
+      "delay_ns": 0.18
+    },
+    "LUT6": {
+      "kind": "combinational",
+      "inputs": ["I0", "I1", "I2", "I3", "I4", "I5"],
+      "output": "O",
+      "delay_ns": 0.20
+    },
+    "MUXF7": {
+      "kind": "combinational",
+      "inputs": ["I0", "I1", "S"],
+      "output": "O",
+      "delay_ns": 0.10
+    },
+    "MUXF8": {
+      "kind": "combinational",
+      "inputs": ["I0", "I1", "S"],
+      "output": "O",
+      "delay_ns": 0.12
+    },
+    "VCC": {
+      "kind": "constant",
+      "output": "P"
+    }
+  }
+}

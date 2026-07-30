@@ -51,6 +51,11 @@ option(
   ON
 )
 option(EMUFLOW_BUILD_OPENROAD "Build the in-tree OpenROAD/TritonPart source" ON)
+option(
+  EMUFLOW_BUILD_OPENSTA
+  "Build the in-tree standalone OpenSTA timing engine"
+  ON
+)
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
 set(
   EMUFLOW_CMAKE_PREFIX_PATH
@@ -119,6 +124,12 @@ file(
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/emuflow/*.py"
 )
+file(
+  GLOB_RECURSE EMUFLOW_RUNTIME_DATA
+  CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/resources/timing/*"
+  "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
+)
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/emuflow.in"
   "${CMAKE_BINARY_DIR}/emuflow"
@@ -142,9 +153,17 @@ add_custom_command(
     "${CMAKE_BINARY_DIR}/emuflow"
     "${EMUFLOW_INSTALL_BINDIR}/emuflow"
   COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/resources/timing"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/resources/timing"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/opensta"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/opensta"
+  COMMAND
     "${CMAKE_COMMAND}" -E touch
     "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
-  DEPENDS ${EMUFLOW_PYTHON_SOURCES}
+  DEPENDS ${EMUFLOW_PYTHON_SOURCES} ${EMUFLOW_RUNTIME_DATA}
   COMMENT "Installing the in-tree EmuFlow Python control plane"
   VERBATIM
 )
@@ -414,6 +433,71 @@ if(EMUFLOW_BUILD_OPENROAD)
   )
 endif()
 
+if(EMUFLOW_BUILD_OPENSTA)
+  set(
+    EMUFLOW_OPENSTA_CMAKE_ARGS
+    "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    "-DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>"
+    "-DCMAKE_PREFIX_PATH=${EMUFLOW_CMAKE_PREFIX_PATH}"
+    "-DCUDD_DIR=${EMUFLOW_INSTALL_ROOT}"
+    "-DUSE_TCL_READLINE=OFF"
+  )
+  if(EMUFLOW_SWIG_EXECUTABLE)
+    list(
+      APPEND EMUFLOW_OPENSTA_CMAKE_ARGS
+      "-DSWIG_EXECUTABLE=${EMUFLOW_SWIG_EXECUTABLE}"
+    )
+  endif()
+  if(EMUFLOW_SWIG_DIR)
+    list(
+      APPEND EMUFLOW_OPENSTA_CMAKE_ARGS
+      "-DSWIG_DIR=${EMUFLOW_SWIG_DIR}"
+    )
+    set(
+      EMUFLOW_OPENSTA_BUILD_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+    set(
+      EMUFLOW_OPENSTA_INSTALL_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --target install
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+  else()
+    set(
+      EMUFLOW_OPENSTA_BUILD_COMMAND
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+    set(
+      EMUFLOW_OPENSTA_INSTALL_COMMAND
+      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+      --target install
+      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+    )
+  endif()
+  ExternalProject_Add(
+    opensta_native
+    SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/openroad/src/sta"
+    BINARY_DIR "${CMAKE_BINARY_DIR}/opensta"
+    INSTALL_DIR "${EMUFLOW_INSTALL_ROOT}"
+    DOWNLOAD_COMMAND ""
+    UPDATE_COMMAND ""
+    PATCH_COMMAND ""
+    LIST_SEPARATOR "|"
+    CMAKE_ARGS ${EMUFLOW_OPENSTA_CMAKE_ARGS}
+      "-DCMAKE_INSTALL_RPATH=${EMUFLOW_RUNTIME_RPATH_ARG}"
+    BUILD_COMMAND ${EMUFLOW_OPENSTA_BUILD_COMMAND}
+    INSTALL_COMMAND ${EMUFLOW_OPENSTA_INSTALL_COMMAND}
+    BUILD_BYPRODUCTS "${EMUFLOW_INSTALL_BINDIR}/sta"
+  )
+endif()
+
 if(EMUFLOW_BUILD_OPENPARF)
   ExternalProject_Add(
     openparf_native
@@ -460,6 +544,9 @@ if(EMUFLOW_BUILD_YOSYS AND EMUFLOW_BUILD_OPENROAD)
 endif()
 if(EMUFLOW_BUILD_CUDD AND EMUFLOW_BUILD_OPENROAD)
   add_dependencies(openroad_native cudd_native)
+endif()
+if(EMUFLOW_BUILD_CUDD AND EMUFLOW_BUILD_OPENSTA)
+  add_dependencies(opensta_native cudd_native)
 endif()
 if(EMUFLOW_BUILD_OPENROAD AND EMUFLOW_BUILD_OPENPARF)
   add_dependencies(openparf_native openroad_native)
@@ -549,6 +636,13 @@ if(BUILD_TESTING)
     add_test(
       NAME openroad_version
       COMMAND "${EMUFLOW_INSTALL_BINDIR}/openroad" -version
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_OPENSTA)
+    add_test(
+      NAME opensta_version
+      COMMAND "${EMUFLOW_INSTALL_BINDIR}/sta" -version
     )
   endif()
 

@@ -40,7 +40,7 @@ def _emittable_parameters(instance: Mapping[str, Any]) -> Dict[str, Any]:
     return parameters
 
 
-def mapped_verilog(ir: EmuIR) -> str:
+def mapped_verilog(ir: EmuIR, *, timing_only: bool = False) -> str:
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
         for index, net in enumerate(ir.value["nets"])
@@ -80,8 +80,9 @@ def mapped_verilog(ir: EmuIR) -> str:
             raise ValidationError(
                 f"cannot emit unknown-direction port {port['id']!r}"
             )
+        wire_keyword = "" if timing_only else "wire "
         lines.append(
-            f"  {direction} wire {width}{_identifier(port['id'])};"
+            f"  {direction} {wire_keyword}{width}{_identifier(port['id'])};"
         )
     lines.append("")
     for wire in net_wire.values():
@@ -123,7 +124,7 @@ def mapped_verilog(ir: EmuIR) -> str:
     for instance in ir.value["instances"]:
         parameters = _emittable_parameters(instance)
         parameter_text = ""
-        if parameters:
+        if parameters and not timing_only:
             parameter_text = " #(" + ", ".join(
                 f".{_identifier(name)}({_parameter(value)})"
                 for name, value in sorted(parameters.items())
@@ -142,9 +143,10 @@ def mapped_verilog(ir: EmuIR) -> str:
             connections.append(
                 f".{_identifier(port)}({expression})"
             )
+        if not timing_only:
+            lines.append('  (* KEEP = "yes", DONT_TOUCH = "yes" *)')
         lines.extend(
             [
-                '  (* KEEP = "yes", DONT_TOUCH = "yes" *)',
                 f"  {_identifier(instance['type'])}{parameter_text} "
                 f"{_identifier(instance['id'])}(",
                 "    " + ",\n    ".join(connections),

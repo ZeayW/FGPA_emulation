@@ -1,367 +1,669 @@
-# Academic algorithm upgrade plan
+# Academic algorithm research and implementation roadmap
 
-## Objective
+## 1. Objective
 
-EmuFlow has validated the board-independent logical contracts through G0-G9.
-The root-built OpenPARF placement runner is integrated. The source-complete
-physical path is not yet closed because an open UltraScale+
-routing/device-model implementation is still required. The next algorithm
-campaign improves each optimization stage independently before introducing
-cross-stage co-optimization, without weakening those source-completeness
-gates.
+EmuFlow will pause further heuristic-provider development until each major
+optimization stage has a literature-backed technical specification. The
+target is not to attach paper names to familiar primitives such as Dijkstra,
+FM, Hungarian matching, or min-cost flow. A paper-backed provider must
+reproduce the paper's:
 
-The existing algorithms remain available as named baselines. A new provider
-becomes the default only after it:
+- problem definition and assumptions;
+- decision variables and hard constraints;
+- objective function and normalization;
+- principal optimization procedure;
+- continuous-to-discrete legalization;
+- post-refinement procedure; and
+- evaluation metrics and ablations.
 
-1. preserves the existing versioned artifact contract;
-2. passes the independent checker for its phase and every affected downstream
-   checker;
-3. is deterministic for a fixed seed and configuration;
-4. is evaluated on a real connected RTL design, ending with the 731,313-cell
-   NVDLA CACC acceptance design;
-5. reports quality, runtime, peak memory, tool revision, source revision, and
-   all configuration values; and
-6. improves the phase-specific primary objective without violating resource,
-   topology, timing, or transport correctness.
+The implementation may extend a paper to support EmuFlow-specific semantics,
+such as multicast transport, two communication rounds, a global frame barrier,
+or heterogeneous boards. Every extension must be isolated from the faithful
+paper model and independently checked.
 
-This campaign deliberately freezes upstream and downstream solutions while
-one provider is evaluated. Route/TDM, partition/TDM, and
-pin/placement co-optimization are a later campaign.
+This document is a technical roadmap, not an experiment log. Machine
+configuration, commands, raw results, artifact hashes, and benchmark tables
+remain local.
 
-## Scope and order
+## 2. Literature review protocol
 
-The first campaign replaces the optimization cores in Phases 3-6:
+Implementation of a stage starts only after its literature gate is complete.
+For each stage, the review must contain:
 
-1. multi-FPGA partitioning;
-2. board/die-level system routing;
-3. TDM ratio and concrete lane/slot assignment; and
-4. logical signal grouping and physical package-pin assignment.
+1. at least one classical formulation;
+2. at least three modern directly relevant methods where the literature
+   exists;
+3. the best available open-source implementation;
+4. a comparison of variables, constraints, objectives, complexity, and
+   scalability;
+5. a list of assumptions that do not hold in EmuFlow;
+6. a selected primary algorithm and at least one independent baseline; and
+7. a mathematical test oracle for small instances.
 
-Yosys/ABC remains the Phase 1 synthesis backend and OpenPARF is the Phase 7A
-placement provider. Their implementation source is in-tree and must be
-launched from the root build. Vivado is retained only for optional
-UltraScale+ comparison, DRC, timing, and bitstream sign-off; it is not an
-implementation of the open path. Selecting an open device-resource/timing
-database and FPGA router is a separate hard gate alongside the Phase 3-6
-algorithm campaign.
+Each selected paper is classified as:
 
-## Phase 3A — RePart partition-only provider
+- **direct integration**: upstream source is imported and built in-tree;
+- **faithful reproduction**: EmuFlow implements the published formulation;
+- **paper-informed extension**: the paper is a starting point, but the model
+  is materially changed; or
+- **background only**: the paper informs design choices but is not claimed as
+  an implemented algorithm.
 
-### Target algorithm
+No provider is described as a reproduction until its equation-level
+specification and small-instance oracle agree.
 
-Integrate the open-source RePart implementation from:
+## 3. Common implementation standard
 
-- Z. Fu et al., *RePart: Efficient Hypergraph Partitioning with Logic
-  Replication Optimization for Multi-FPGA System*, 2026;
-- upstream implementation: <https://github.com/Welement-zyf/RePart>.
+Every optimization stage follows the same implementation sequence:
 
-RePart contributes an FPGA-aware multilevel flow with enhanced coarsening,
-initial assignment, move/exchange refinement, topology constraints, and
-multi-resource capacity constraints. The upstream implementation is
-GPL-3.0-only. Its C++ source, exact revision, license, and EmuFlow changes are
-included under `engines/repart/` and compiled by the root build. The
-runtime executes that local build product; no opaque or externally supplied
-partitioner binary is part of the provider contract.
+1. write a provider-neutral mathematical model;
+2. implement an exact small-instance oracle using ILP, CP-SAT, dynamic
+   programming, or exhaustive enumeration as appropriate;
+3. reproduce the selected paper algorithm without EmuFlow-specific
+   enhancements;
+4. compare the reproduction against the oracle on small adversarial cases;
+5. implement a scalable C++ provider;
+6. add EmuFlow extensions behind separate options;
+7. reload the artifact with an independent checker;
+8. validate on small, medium, 100K-cell, and NVDLA-scale connected RTL;
+9. compare against the frozen baseline and paper ablations; and
+10. promote the provider only if it improves the declared primary objective
+    without weakening correctness.
 
-Phase 3A first uses RePart's unique-owner partition result. EmuFlow atomic
-clusters preserve sequential, hard-macro, and user group constraints. Fixed
-assignments and exact EmuFlow capacity limits remain independently enforced
-by the existing legality layer and G4 checker.
+Python remains the artifact, orchestration, reference-model, and checker
+layer. Performance-critical optimization is implemented in C++ or CUDA.
 
-### Acceptance
+### Stage selection summary
 
-- PicoRV32 and NVDLA assignments pass exact coverage, nonempty-partition,
-  capacity, fixed/group constraint, and cut-legality checks.
-- Two fixed-seed executions produce byte-identical assignment artifacts.
-- Report weighted connectivity, cut nets, maximum hop, per-resource balance,
-  runtime, and peak RSS against TritonPart.
-- RePart must not be promoted merely because it is newer; it must improve the
-  declared partition objective or downstream frozen-routing demand.
+| Stage | Faithful primary route | Independent alternatives/oracle |
+| --- | --- | --- |
+| Architecture/timing | FPGA Interchange + OpenSTA | Vivado calibration |
+| Synthesis/mapping | Yosys/ABC9 | Mapping Fusion experiment; equivalence oracle |
+| Hypergraph model | ASP-DAC 2025 adaptive modeling | complete flattening |
+| Partitioning | MFSPart-Ensemble + RePart replication | TritonPart, SHyPar, exact ILP |
+| System routing | DAC 2025 die-level router + ASP-DAC 2026 timing refinement | candidate-tree MIP |
+| TDM | TODAES 2020 LR + exact schedule realization | SLIP 2019, CP-SAT |
+| Pin planning | Chimew | exact matching/min-cost-flow oracle |
+| Placement | OpenPARF + LEAPS/TD-Placer mechanisms | Vivado comparison |
 
-## Phase 3B — Logic-replication-aware partitioning
+## 4. Stage 0 - Architecture, timing, and board models
 
-RePart's principal contribution includes source-logic replication. Supporting
-it faithfully requires a versioned replication artifact rather than silently
-discarding `*` output records.
+### Why this stage comes first
 
-The increment will:
+Timing-driven partitioning, routing, TDM, pin planning, and placement cannot
+be academically meaningful when they optimize unrelated delay proxies. The
+current Vivado timing-path adapter is useful for comparison, but an open,
+provider-neutral timing and architecture model is required before timing
+algorithms are promoted.
 
-- distinguish an original instance from one or more replicas;
-- restrict replication to combinational logic with a formally checked fanin
-  cone and clock/reset policy;
-- account for every replica in LUT/cell capacity;
-- remove only those cut-net demands made local by a legal replica;
-- extend Phase 6 netlist generation and cycle-equivalence checking; and
-- report communication reduction versus replica area.
+### Literature and source foundations
 
-This remains a Phase 3 algorithm upgrade: routing and TDM solutions are frozen
-and do not feed costs back into partitioning.
+- OpenSTA and OpenROAD timing infrastructure;
+- FPGA Interchange DeviceResources;
+- *Challenges in Large FPGA-Based Logic Emulation Systems*, ISPD 2018;
+- UltraScale+/multi-die placement literature describing SLR, SLL, clock
+  region, and heterogeneous-resource constraints.
 
-The v1 implementation exposes a per-vertex replicability mask to the in-tree
-RePart C++ kernel. Only mapped LUT clusters that pass an independent acyclic,
-fanin-closed combinational proof may be copied. The resulting
-`emuflow.partition-replication/v1` artifact names every physical copy, charges
-its resources to the target FPGA, records effective cut-demand deltas, and is
-reconstructed independently during validation. Phase 6 materializes those
-copies in per-FPGA netlists and compares replica outputs against the original
-mapped model over the transport simulation trace.
+### Technical route
 
-## Phase 4/5 — Timing-aware route/TDM co-optimization
+1. Import public FPGA Interchange device resources into ArchitectureDB:
+   sites, BELs, SLRs, clock regions, I/O banks, resource columns, and
+   connectivity classes.
+2. Extend BoardDB from link-level capacity to direction groups, cable/SLL
+   delay, lane clock, bank location, and physical channel constraints.
+3. Connect mapped Yosys primitives to OpenSTA with explicit cell and
+   interconnect delay models.
+4. Produce one partition-independent timing-path database with stable EmuIR
+   net identities.
+5. Calibrate, but do not define, the open delay model using Vivado results.
+6. Version every model and record its confidence/qualification level.
 
-### Target algorithm
+### Acceptance gate
 
-Implement a source-complete formulation informed by:
+- OpenSTA path identity and clock domains agree with the mapped netlist.
+- Timing paths are independent of a candidate partition.
+- SLR, clock-region, bank, and link locations are present in the open model.
+- Vivado comparison error is reported by path class; it is not silently
+  absorbed into fitted weights.
 
-- Y. Chen et al., *Timing-Aware Optimization of Die-Level Routing and TDM
-  Assignment for Multi-FPGA Systems*, ASP-DAC 2026;
+## 5. Stage 1 - Logic synthesis and FPGA technology mapping
+
+### Reviewed directions
+
+- Yosys and ABC;
+- ABC9 timing-aware FPGA mapping;
+- *Narrowing the Synthesis Gap: Academic FPGA Tools vs. Industry*, DATE 2023;
+- *Mapping Fusion: Improving FPGA Technology Mapping with ASIC Mapper*,
+  2025;
+- classical cut-based LUT mapping and FlowMap;
+- Lakeroad sketch-guided mapping for heterogeneous hard primitives.
+
+### Decision
+
+Do not reproduce a general logic synthesizer. Continue direct integration of
+Yosys/ABC, but evaluate ABC9 and Mapping Fusion as timing/area mapping
+experiments before choosing the default mapping path. Hard-block mapping
+research is optional and follows stable LUT/FF mapping.
+
+### Technical route
+
+1. Freeze the current `synth_xilinx` result as the compatibility baseline.
+2. Add an ABC9 provider with architecture and multi-clock delay information.
+3. Preserve stable sequential-boundary identity through synthesis.
+4. Add formal/sequential equivalence between provider outputs.
+5. Compare LUT count, depth, critical delay, hard-block inference, and
+   downstream partition cut quality.
+6. Reproduce the Mapping Fusion experiment as an optional provider:
+   interleave ASIC-cell mapping and LUT mapping, first with a deterministic
+   search policy and only then with its learned design-selection policy.
+7. Investigate Lakeroad only for DSP/BRAM/complex primitive coverage that
+   Yosys mapping demonstrably misses.
+
+### Acceptance gate
+
+- Formal equivalence passes.
+- No unsupported primitive enters EmuIR.
+- ABC9 improves timing or area on real RTL without degrading partition
+  legality.
+
+## 6. Stage 2 - Hypergraph construction and safe clustering
+
+### Core literature
+
+- Karypis et al., multilevel hypergraph partitioning, DAC 1997/1999;
+- *Efficient Hypergraph Modeling of VLSI Circuits for the MFS-Based
+  Emulation and Simulation Acceleration*, ASP-DAC 2025;
+- timing-driven circuit-partitioning work using path-based objectives;
+- TritonPart and RePart input models.
+
+### Current gap
+
+The current union-find clustering is a correctness-preserving flat-netlist
+transformation. It does not provide adaptive hierarchical flattening, clock
+modeling, path-aware net construction, or a controlled tradeoff between
+hypergraph size and lost partition freedom.
+
+### Technical route
+
+1. Separate semantic atomicity from scalability clustering.
+   Semantic clusters preserve state, combinational-cut policy, macros, and
+   user groups; scalability clusters remain reversible.
+2. Reproduce the ASP-DAC 2025 adaptive hierarchical flattening and parallel
+   clock-modeling methods for large hierarchical RTL.
+3. Represent:
+   - multi-dimensional FPGA resources;
+   - ordered timing paths;
+   - clock domains;
+   - replication eligibility;
+   - fixed and grouped cells;
+   - topology candidate sets; and
+   - transportable versus forbidden cuts.
+4. Preserve a lossless map from every hypergraph vertex and hyperedge back to
+   EmuIR.
+
+### Acceptance gate
+
+- Hypergraph construction scales to multi-million-cell hierarchical designs.
+- Every semantic cluster is preserved.
+- Flattening choice is reproducible and resource aware.
+- Partition QoR is compared with complete flattening at equal constraints.
+
+## 7. Stage 3 - Multi-FPGA partitioning
+
+### Core literature
+
+- TritonPart, *An Open-Source Constraints-Driven General Partitioning
+  Multi-Tool for VLSI Physical Design*, ICCAD 2023;
+- RePart, *Efficient Hypergraph Partitioning with Logic Replication
+  Optimization for Multi-FPGA System*, 2026;
+- MFSPart and MFSPart-Ensemble, generalized multi-FPGA partitioning with
+  decoupled coarsening/propagation and cut-overlay ensembling, TCAD 2026;
+- TopoPart, topology-driven partitioning, ICCAD 2021;
+- *Timing Driven Partition for Multi-FPGA Systems with TDM Awareness*,
+  ISPD 2020;
+- MaPart, multi-FPGA-system-aware partitioning, TCAD 2024;
+- EasyPart, FPGA-emulation hypergraph partitioning, ICCAD 2024;
+- SpecPart/K-SpecPart spectral and cut-overlay improvement;
+- SPARK partitioning/routing, GLSVLSI 2023;
+- BlasPart deterministic parallel partitioning, DAC 2025;
+- SHyPar, effective-resistance spectral coarsening plus flow-based community
+  refinement, TCAD 2025/2026;
+- HySpecPro, GPU spectral-embedding projection optimization, 2026 preprint;
+- preference-guided parameter tuning, ASP-DAC 2026.
+
+### Baselines
+
+- in-tree TritonPart multilevel hypergraph mode;
+- in-tree RePart unique-owner mode;
+- exact ILP/CP-SAT oracle for small hypergraphs.
+
+### Selected primary route
+
+Reproduce MFSPart's generalized multilevel framework as the primary
+multi-FPGA engine, and integrate RePart's logic-replication mechanism as a
+separate refinement operator. This replaces the earlier assumption that
+RePart alone should be the primary algorithm:
+
+1. **Decoupled coarsening, propagation, and initialization**
+   - MFSPart affinity coarsening before candidate-FPGA propagation;
+   - margin coarsening around fixed nodes;
+   - driver-sink decomposition while retaining the original hyperedge view;
+   - delayed candidate-FPGA propagation from the coarsest hypergraph;
+   - two-phase probabilistic feasible assignment and deterministic violation
+     repair;
+   - fixed/group/multi-resource constraints.
+2. **Multi-objective refinement**
+   - MFSPart driver-sink cut, connectivity, mean-hop, and low-hop constraints;
+   - distance-aware FM gains and restricted-neighborhood moves;
+   - maximum pairwise cut and predicted TDM pressure;
+   - path-based timing penalty, not only per-net criticality;
+   - direct K-way FM, pairwise FM, and hyperedge refinement;
+   - MFSPart-Ensemble cut-overlay recombination across selected uncoarsening
+     levels.
+3. **Logic replication**
+   - RePart replication restricted by EmuFlow's semantic proof;
+   - exact replica capacity charge;
+   - timing/cut benefit evaluated after materialization.
+4. **Quality escape**
+   - compare SHyPar spectral coarsening, SpecPart/K-SpecPart, and MFSPart
+     cut-overlay refinement under identical multi-FPGA constraints;
+   - keep HySpecPro experimental until it supports nonuniform node weights
+     and multi-resource legality; use it initially only to generate candidate
+     solutions for constrained repair;
+   - deterministic parallelism investigated after the serial reference is
+     correct.
+
+TritonPart's native OpenSTA timing-aware netlist mode must be evaluated
+separately from EmuFlow's weighted-hypergraph adapter. They are not treated as
+the same algorithm.
+
+### Primary objective
+
+Lexicographic feasibility first:
+
+1. semantic cut legality;
+2. multi-resource capacity;
+3. topology and maximum-hop feasibility;
+4. worst predicted path slack;
+5. maximum pairwise cut/TDM pressure;
+6. weighted connectivity and replica area.
+
+### Acceptance gate
+
+- Exact oracle agreement on small cases.
+- Zero semantic, capacity, fixed/group, and topology violations.
+- Paper-level ablations for coarsening, initialization, refinement, and
+  replication.
+- Better frozen downstream routing/TDM result, not only lower raw cutsize.
+
+## 8. Stage 4 - System-level and die-level routing
+
+### Core literature
+
+- 2019 ICCAD CAD Contest system-level FPGA routing problem;
+- *Time-Division Multiplexing Based System-Level FPGA Routing for Logic
+  Verification*, DAC 2020;
 - *Routing Topology and TDM Co-Optimization for Multi-FPGA Systems*,
-  DAC 2020; and
-- *Multi-FPGA Co-optimization: Hybrid Routing and TDM Assignment*,
-  ASP-DAC 2021.
+  DAC 2020;
+- *Multi-FPGA Co-Optimization: Hybrid Routing and TDM Assignment*,
+  ASP-DAC 2021;
+- ALIFRouter, DATE 2021;
+- SPARK, GLSVLSI 2023;
+- MaPart's layered-graph router, TCAD 2024;
+- *Synergistic Die-Level Router for Multi-FPGA System with Time-Division
+  Multiplexing Optimization*, DAC 2025;
+- *Timing-Aware Optimization of Die-Level Routing and TDM Assignment for
+  Multi-FPGA Systems*, ASP-DAC 2026;
+- Steiner-tree and shallow-light-tree methods including KMB/Mehlhorn and
+  SALT.
 
-The provider consumes a fixed Phase 3 assignment, a predicted link-delay
-table, physical lane counts, frame size, and normalized STA paths. Routing
-uses an analytical TDM estimate; Phase 5 remains the exact ratio and schedule
-realization.
+### Current gap
 
-Required components are:
+The current C++ router is a useful negotiated-congestion baseline, but its
+candidate topology is generated mainly by weighted shortest paths. This is
+weaker than the routing-topology, Steiner-tree, min-max channel-load, and
+path-slack formulations in the literature.
 
-- STA path import with clock-domain and normalized-slack metadata;
-- lossless compression of paths sharing an ordered inter-FPGA/die cut
-  signature;
-- UltraScale+ FPGA/SLR graph modeling with SLL and cable edge classes;
-- direction locking for shared physical channel groups;
-- criticality- and utilization-aware dynamic edge weights;
-- timing-aware net ordering;
-- selective critical-path rip-up/reroute; and
-- accept/rollback refinement based on worst normalized slack.
+### Selected primary route
 
-The route-only comparison is available as
-`timing-aware-load-balanced-v1`. The default joint provider is
-`timing-aware-route-tdm-cooptimized-v1`. Their optimization core is the
-first-party C++17 target `emuflow_tlr_router`, built by the repository root
-CMake project. The Python layer only performs versioned STA/BoardDB artifact
-adaptation and independent result checking.
+1. **Candidate topology generation**
+   - shortest-path tree baseline;
+   - KMB/Mehlhorn Steiner approximation;
+   - shallow-light-tree candidates for bounded source-to-sink delay;
+   - DAC 2025 delay-demand-balanced negotiated path search with distinct SLL
+     and TDM edge timing models;
+   - congestion-perturbed and direction-feasible alternatives;
+   - multicast sharing retained explicitly.
+2. **Global tree selection**
+   - restricted master formulation over candidate trees;
+   - capacity, direction group, SLL, cable, and hop constraints;
+   - Lagrangian/column-generation-style pricing or deterministic
+     large-neighborhood refinement;
+   - exact MIP oracle for small instances.
+3. **Timing-aware refinement**
+   - DAC 2025 connection ordering plus multithreaded Lagrangian TDM-ratio
+     estimation and margin-aware legalization as a reproducible baseline;
+   - ASP-DAC 2026 lossless timing-path compression;
+   - majority-flow direction initialization;
+   - adaptive timing/load edge weights;
+   - selective rerouting of trees on the worst normalized-slack paths;
+   - accept/rollback using independently reconstructed path slack.
+4. **Routing/TDM interface**
+   - pass multiple route candidates or marginal congestion prices to Stage 5;
+   - do not collapse the problem to a single scalar predicted ratio too early.
 
-The real-STA adapter uses Vivado timing objects rather than parsing formatted
-reports. A repository Tcl exporter enumerates nets on each returned path and
-joins them through an emitted EmuIR-to-mapped-net identity map. All names are
-UTF-8 hex encoded in the interchange TSV before the Python importer creates
-the versioned STA artifact.
+### Primary objective
 
-Implemented algorithm details:
+Maximize worst normalized path slack subject to exact reachability, direction,
+hop, and channel-capacity legality. Maximum channel utilization, maximum TDM
+pressure, total bit-hops, and runtime are secondary objectives.
 
-- Eq. (2) multi-clock normalized slack and a lossless compression proof that
-  additionally requires equal clock normalization and cut-net sequence;
-- fixed link-delay lookup with explicit SLL/cable classification;
-- Floyd/Dijkstra-equivalent all-pairs shortest-delay preprocessing for
-  majority-flow direction locking;
-- ascending normalized-slack and descending predicted-delay demand ordering;
-- dynamic delay, criticality, utilization, and historical-overflow weights;
-- multicast tree construction by shared predecessor backtrace;
-- selective rerouting of nets on the current worst normalized-slack path; and
-- quantized capacity-domain TDM-ratio prediction from routed signal count,
-  lane count, frame size, and fabric-clock serialization delay;
-- TDM-critical path selection and contention-aware Dijkstra costs; and
-- lexicographic accept/rollback on predicted TDM normalized slack, route
-  normalized slack, maximum utilization, and bit-hops.
+### Acceptance gate
 
-The checker reconstructs the analytical ratio, serialization delay, and worst
-TDM slack independently from route trees and BoardDB. The joint provider is
-selected automatically whenever `--timing-paths` is present. Without STA
-input, the same source-built C++ kernel runs as
-`native-load-balanced-v1`, with no Python routing-algorithm fallback.
+- Exact tree-selection oracle agreement on small graphs.
+- Reproduction of DAC 2020/ASP-DAC 2021/ASP-DAC 2026 ablations.
+- Multicast, half-duplex, unavailable-link, SLL/cable, and asymmetric
+  direction tests.
+- Improvement survives exact Stage 5 scheduling.
 
-For provider-neutral evaluation, the checker tracks the path with minimum
-absolute slack separately from the path with minimum normalized slack across
-clock domains; these extrema are not assumed to be the same path.
+## 9. Stage 5 - TDM ratio, grouping, lane, and slot assignment
 
-### Acceptance
+### Core literature
 
-- Preserve G5 reachability, tree, direction, latency, and capacity legality.
-- With the partition and predicted ratios frozen, improve worst normalized
-  slack; use maximum utilization, total bit-hops, maximum hop, runtime, and
-  memory as secondary metrics.
-- Validate first on a multi-path/multi-clock fixture, then PicoRV32, then the
-  NVDLA acceptance design.
-
-## Phase 5 — Lagrangian TDM ratio optimization plus exact scheduling
-
-### Target algorithm
-
-Implement the fixed-route TDM portion of the ASP-DAC 2026 method, informed by
-the scalable continuous/discrete formulations in:
-
+- virtual wires and phase assignment;
+- ICCAD 2018 simultaneous partitioning and signal grouping;
 - *An Analytical Approach for Time-Division Multiplexing Optimization in
-  Multi-FPGA-based Systems*, SLIP 2019; and
+  Multi-FPGA-Based Systems*, SLIP 2019;
 - *Lagrangian Relaxation-Based Time-Division Multiplexing Optimization for
-  Multi-FPGA Systems*, TODAES 2020.
+  Multi-FPGA Systems*, TODAES 2020;
+- DAC 2020 routing/TDM co-optimization;
+- ASP-DAC 2021 hybrid routing/TDM;
+- *An Integrated Circuit Partitioning and TDM Assignment Optimization
+  Framework*, ASP-DAC 2023;
+- ASP-DAC 2026 timing-graph-based TDM assignment.
 
-The new provider has two levels:
+### Important separation
 
-1. optimize continuous ratios on the fixed-route timing graph, then legalize
-   them to the platform's discrete ratio set with direction-group capacity
-   constraints and timing-aware post-refinement; and
-2. expand the optimized channel groups and ratios into a concrete
-   lane/slot schedule.
+The literature usually optimizes TDM ratios or signal groups. EmuFlow also
+requires a concrete, collision-free, multi-hop lane/slot schedule. Ratio
+optimization and schedule realization are separate optimization problems and
+must have separate oracles.
 
-The current successor-set earliest-slot scheduler and its independent
-collision, precedence, round-barrier, and value-transport checkers remain the
-exact schedule realization and validation layer.
+### Selected primary route
 
-The exact schedule checker also reconstructs every imported STA path from the
-concrete `slot - ready_slot` wait on each routed hop. This gives the baseline
-and academic providers the same realized-delay metric; the analytical ratio
-slack remains a conservative service-window bound rather than being compared
-against a baseline that has no ratio plan.
+1. **Continuous ratio optimization**
+   - faithfully reproduce the TODAES 2020 Lagrangian-relaxation solver;
+   - independently reproduce the SLIP 2019 nonlinear-CG formulation as a
+     comparison provider;
+   - use path-level timing and per-direction capacity constraints.
+2. **Discrete ratio legalization**
+   - reproduce binary-search/DP discretization and displacement objective;
+   - support legal ratio sets, clock groups, direction groups, and channel
+     capacity;
+   - reproduce swap/post-refinement on critical paths.
+3. **Exact schedule oracle**
+   - formulate lane/slot assignment as CP-SAT on a time-expanded graph;
+   - include lane collision, precedence, latency, multicast, two transport
+     rounds, and the global barrier;
+   - use it as an oracle for small and medium cases.
+4. **Scalable schedule construction**
+   - decompose by capacity domain and timing component;
+   - use list scheduling only for initialization;
+   - apply large-neighborhood repair guided by the CP-SAT model;
+   - allow controlled frame-length search.
+5. **Timing reconstruction**
+   - compute realized wait from concrete slots for every global STA path;
+   - use analytical ratio slack only as a bound, never as final QoR.
 
-The implementation is now available as
-`lagrangian-kkt-timing-aware-v1`. Its optimization kernel is the first-party
-C++17 target `emuflow_tdm_ratio_optimizer`, compiled by the root CMake
-project. It solves the bounded continuous channel-capacity problem with path
-dual multipliers and per-domain KKT updates, legalizes to ratio 1 or
-quantized multiples of 8, forms direction-homogeneous lane groups, and applies
-timing-aware ratio/lane swaps.
+### Primary objective
 
-EmuFlow's two transport rounds add a global barrier constraint that is not
-explicit in the cited fixed-route formulations. A deterministic legalization
-layer therefore searches a common round boundary, promotes only the ratio
-groups needed to remove lane fragmentation, and rebalances signals within
-homogeneous groups before exact list scheduling. The independent checker
-reconstructs continuous capacity, discrete group legality, barrier capacity,
-path delay/slack, lane/slot occupancy, multi-hop precedence, and value
-transport without trusting optimizer summary fields.
+Maximize realized worst normalized slack. Secondary objectives are minimum
+legal frame length, completion slot, maximum ratio, and lane usage.
 
-Timing-annotated Phase 4 routes select this provider automatically. Routes
-without STA metadata retain
-`deterministic-round-barrier-earliest-slot-v2` as the feasibility baseline.
+### Acceptance gate
 
-### Acceptance
+- Continuous and discrete paper formulations match their reference equations.
+- Exact-oracle agreement on small schedules.
+- Zero collision, precedence, round-barrier, or transport-value mismatch.
+- Academic provider improves realized schedule timing, not only continuous
+  ratio estimates.
 
-- Preserve G6 collision, precedence, round-barrier, and transport simulation.
-- Improve worst normalized slack or the minimum legal frame length on frozen
-  Phase 4 routes.
-- Report ratio distribution, maximum ratio, frame slots, completion slot,
-  nominal virtual DUT frequency, runtime, and memory.
-- The fixed 4,096-slot NVDLA baseline must be compared against the smallest
-  independently legal frame found by the new provider.
+## 10. Stage 6 - TDM signal grouping and package-pin assignment
 
-## Phase 6A — Placement-aware TDM grouping and virtual-pin assignment
+### Core literature
 
-The implemented provider follows the formulation used by Chimew
-([Wang et al., FPGA 2026](https://magic3007.github.io/data/publications/FPGA_FPGA2026_Wang/FPGA_FPGA2026_Wang.pdf)).
-OpenPARF lookahead placements are reduced to source/sink endpoint centroids
-and I/O-region crossing signatures. The in-tree C++17 engine then:
+- classical multi-FPGA pin assignment;
+- *Pin Assignment Optimization for Multi-2.5D FPGA-Based Systems*,
+  ISPD 2018;
+- the 2021 TCAD extension for time-multiplexed I/Os;
+- *TDM Signal Grouping and Package Pin Assignment for 2.5D Multi-FPGA
+  Systems with Lookahead Placement* (Chimew), FPGA 2026.
 
-1. separates signals by directed physical link and serialization ratio;
-2. computes the minimum feasible group count from capacity and equal-slot
-   conflict lower bounds;
-3. constructs a balanced legal coloring with no repeated slot per group;
-4. minimizes region-crossing union cost and endpoint dispersion with
-   deterministic pairwise swaps; and
-5. assigns groups to virtual physical lanes by exact rectangular Hungarian
-   matching.
+### Current gap
 
-The plan is reloaded by an independent checker that reconstructs exact signal
-coverage, homogeneous ratios, group capacity, slot uniqueness, lane bounds,
-lane/slot collisions, placement objective, and pin-distance cost. Phase 6
-then regenerates both endpoints and the lane map from the checked plan and
-retains the existing mapped cycle-equivalence gate.
+The current balanced coloring, pairwise swaps, and Hungarian assignment are a
+baseline. They do not faithfully reproduce Chimew's die-crossing encoding,
+RUDY congestion gate, two-stage bank/pin assignment, or published edge-cost
+model.
 
-The same checker independently reconstructs the frozen logical-lane baseline
-and reports objective improvement, crossing-bit reduction, and pin-distance
-improvement. These QoR values therefore do not rely on metrics emitted by the
-native planner.
+### Selected primary route: faithful Chimew reproduction
 
-## Phase 6B — Physical package-pin assignment
+1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA
+   endpoints, cross-die nets, and bypass signals.
+2. Run accelerated OpenPARF global placement and compute RUDY congestion.
+3. Reject or feed back partitions whose lookahead congestion exceeds a
+   qualified threshold.
+4. Encode each signal's source/sink SLL-crossing signature.
+5. Reproduce encoding-based greedy grouping:
+   - same direction and ratio;
+   - descending crossing count;
+   - nearest compatible encoding;
+   - exact group capacity.
+6. Reproduce placement-based grouping refinement without increasing the
+   crossing objective.
+7. Reproduce two-stage package assignment:
+   - bank-pair assignment;
+   - channel/package-pin assignment;
+   - min-cost-flow or equivalent exact weighted bipartite matching;
+   - source-fanout and sink-fanin distance costs from lookahead placement.
+8. Extend the faithful model separately with:
+   - slot conflict;
+   - differential pairs;
+   - clock-capable pins;
+   - forwarded clocks;
+   - bank voltage/IOSTANDARD;
+   - skew and frequency;
+   - GT channels.
 
-Phase 6B is implemented as an exact sparse min-cost-flow solver over a
-versioned hardware BSP. Python independently filters and checks the following
-hard constraints before and after the root-built C++17 optimization:
+### Acceptance gate
 
-- package pin, connector, and peer-pin connectivity;
-- I/O bank voltage and IOSTANDARD;
-- direction;
-- per-bank capacity; and
-- reserved and unavailable pins; and
-- per-channel fabric-frequency limits.
+- Exact matching oracle agreement.
+- Published grouping and edge-cost equations are reconstructed independently.
+- Zero electrical, direction, bank, connector, and pin-collision violations.
+- Lookahead congestion/SLL metrics correlate with final Vivado results.
+- Synthetic BSP results are labelled algorithm validation; hardware closure
+  requires a real revision-controlled BSP.
 
-Each homogeneous Phase 6A group becomes one demand, and every fixed
-source/sink package-pin pair becomes a capacity-one physical channel.
-Compatible demand/channel edges are weighted by timing criticality,
-OpenPARF-to-I/O-region distance, and channel skew. Successive shortest
-augmenting paths produce the exact global minimum; deterministic traversal
-provides stable tie breaking. The independent checker reconstructs every
-electrical rule, package-pin collision, port name, and objective value without
-trusting the solver summary.
+## 11. Stage 7 - OpenPARF placement and Vivado handoff
 
-Until a board is selected, the solver is validated on the checked-in explicit
-512-pin/256-channel synthetic UltraScale+ mesh BSP and is not described as
-hardware closure. Its generated package identifiers and XDC carry a synthetic
-hardware warning. Differential-pair, clock-capable/forwarded-clock, and GT
-channel models remain Phase 6B extensions that require the selected board's
-actual electrical topology.
+### Core literature
 
-## Promotion and experiment protocol
+- OpenPARF, ASICON 2023;
+- multi-electrostatic heterogeneous FPGA placement, DAC 2022;
+- LEAPS multi-die/SLL-aware placement, TCAS-I 2023;
+- OpenPARF 3.0 macro placement, ISEDA 2024;
+- AMF-Placer 2.0 timing-driven mixed-size placement;
+- DREAMPlaceFPGA-MP macro/fence placement;
+- TD-Placer critical-path-aware timing-driven global placement, 2025;
+- Chimew's accelerated lookahead placement, FPGA 2026.
 
-Each provider increment follows the same sequence:
+### Two distinct placement products
 
-1. unit tests and adversarial legality fixtures;
-2. deterministic repeated run;
-3. small real RTL smoke test;
-4. medium connected RTL test;
-5. 731,313-cell NVDLA acceptance run on a configured large-design worker;
-6. frozen-baseline QoR table;
-7. independent downstream validation; and
-8. commit and push only the reusable implementation, schemas, tests, and
-   project-level documentation.
+1. **Lookahead placement** serves partition, routing, TDM, and pin planning.
+   It must be fast and predict congestion, SLL crossing, and endpoint
+   location.
+2. **Handoff placement** provides a legal and useful starting point for
+   Vivado. It must model enough packing and device constraints that Vivado
+   does not discard the result.
 
-Exact commands, machine configuration, artifact hashes, raw measurements, and
-QoR tables are maintained as local experiment records and are not committed.
-The default provider changes only at step 8.
+They must not be evaluated by the same acceptance criteria.
 
-## Cross-stage campaign
+### Selected technical route
 
-The accepted single-stage providers remain frozen baselines. Partition/TDM
-feedback is enabled only through an outer loop with candidate-level
-accept/rollback; generating a weight file alone is not considered joint
-optimization.
+1. Keep direct in-tree OpenPARF integration as the global-placement engine.
+2. Enable and validate the complete heterogeneous-resource model.
+3. Add LEAPS-style SLR/SLL objectives and continuous multi-die optimization.
+4. Add timing weights using OpenSTA paths; evaluate AMF-Placer/TD-Placer
+   timing models before selecting one.
+5. Add RUDY or a stronger routability estimator and correlate it with Vivado
+   congestion.
+6. Support macro cascades, fences, clock regions, and fixed I/O resources.
+7. Replace the bucket greedy legalizer with a pack/control-set-aware
+   legalization model for handoff:
+   - LUT/FF compatibility;
+   - FF control sets;
+   - carry/macro chains;
+   - site capacity and pin sharing;
+   - SLR and clock-region legality.
+8. Treat Vivado constraints as a graduated handoff:
+   soft regions, movable locations, and sparse hard anchors. Do not assume
+   that more fixed LOCs imply better placement.
 
-The first prerequisite is `emuflow.sta-path-database/v1`. A global mapped
-design exports ordered stable EmuIR net identities for each STA path without
-using a partition assignment. Each candidate partition projects that same
-database onto its own cut-net set before Phase 4 and Phase 5. The projection
-reports both covered and uncovered cut nets, so candidate timing coverage
-cannot change silently.
+### Acceptance gate
 
-The first complete outer loop is exposed as `emuflow cross-stage optimize`:
+Lookahead:
 
-1. route and schedule the accepted partition;
-2. derive checked channel-usage/timing net weights;
-3. rerun RePart with those weights;
-4. project the frozen STA database onto the candidate cuts;
-5. rerun the accepted route and TDM providers; and
-6. independently reconstruct all frozen database paths from the concrete
-   schedule, including paths that no longer cross an FPGA boundary; and
-7. accept or roll back using realized worst normalized slack, total negative
-   normalized slack, negative-path count, maximum TDM ratio, completion slot,
-   link bit-hops, cut bits, and replica LUT cost in lexicographic order.
+- congestion and SLL rank correlation against Vivado;
+- endpoint-location stability;
+- runtime suitable for iterative use.
 
-Raw feedback can span more than an order of magnitude and a discrete
-partitioner can replace many previously unweighted internal edges with new
-cuts. The outer loop therefore uses the mirror-descent update
-`w_eta = exp(eta * log(w_raw))` and deterministic descending backtracking.
-The unit step exactly recovers the raw feedback, while smaller steps converge
-to the unweighted hypergraph. Every legal trial is routed and concretely
-scheduled; the first lexicographically improving step is accepted, and an
-exhausted line search rolls back.
+Handoff:
 
-`emuflow.cross-stage-candidate/v1` hashes all candidate inputs and records the
-all-path objective. `emuflow.cross-stage-report/v1` records each accepted or
-rejected iteration and the selected incumbent. The report checker reloads the
-EmuIR, clusters, assignments, routes, ratio plans, and schedules; reconstructs
-each Phase 3 legality result and all-path score; and replays every acceptance
-decision.
+- complete compatible placement artifact;
+- bounded Vivado displacement and repair count;
+- no regression in placement/routing success;
+- measured Vivado runtime, congestion, WNS/TNS, SLL usage, and anchor
+  retention against a no-OpenPARF baseline.
 
-The loop becomes a default only after deterministic small, medium, and NVDLA
-comparisons against the frozen single-stage flow.
+Vivado remains the final placement/routing/sign-off backend for the current
+project scope.
+
+## 12. Cross-stage optimization campaign
+
+Cross-stage work begins only after the corresponding single-stage providers
+pass their literature and acceptance gates.
+
+### Loop A - Partitioning, routing, and TDM
+
+Foundations:
+
+- ICCAD 2018 simultaneous partitioning/grouping;
+- ISPD 2020 TDM-aware timing partitioning;
+- ASP-DAC 2023 integrated partitioning/TDM;
+- MaPart, EasyPart, and SPARK;
+- DAC 2020, ASP-DAC 2021, and ASP-DAC 2026 routing/TDM methods.
+
+Technical route:
+
+1. freeze one partition-independent STA database;
+2. solve exact routing and scheduling for the incumbent;
+3. derive path-, channel-, hop-, and ratio-specific marginal costs;
+4. update partition objectives through a trust-region/proximal step;
+5. rerun partitioning, routing, and exact scheduling;
+6. accept only an independently reconstructed all-path improvement;
+7. roll back infeasible, tied, or regressing candidates.
+
+### Loop B - Pin planning and placement
+
+Foundation: Chimew.
+
+Technical route:
+
+1. generate lookahead placement;
+2. group signals and assign banks/pins;
+3. insert transport logic and rerun lookahead placement;
+4. recompute RUDY, SLL crossing, and endpoint distance;
+5. refine grouping/pins or request repartitioning;
+6. stop on objective convergence or a strict iteration budget.
+
+### Loop C - Full flow
+
+Only after Loops A and B are independently stable:
+
+1. partition;
+2. route and assign TDM;
+3. construct transport logic;
+4. run lookahead placement;
+5. assign pins;
+6. evaluate congestion and timing;
+7. update the highest-impact upstream decision;
+8. accept/rollback with a multi-stage trust region.
+
+A monolithic all-stage optimizer is explicitly deferred until these nested
+loops establish reliable objective sensitivities.
+
+## 13. Implementation order
+
+The planned order is:
+
+1. **R0 - Open architecture and timing foundation**
+2. **R1 - Hypergraph construction and faithful advanced partitioning**
+3. **R2 - Candidate-tree and timing-aware system routing**
+4. **R3 - Faithful TDM ratio optimization and exact scheduling**
+5. **R4 - Faithful Chimew grouping and package-pin assignment**
+6. **R5 - SLR/timing/routability-aware OpenPARF placement**
+7. **R6 - Partition/routing/TDM closed loop**
+8. **R7 - Pin/placement closed loop**
+9. **R8 - Full pre-Vivado outer loop**
+
+Each increment is merged only after its exact oracle, independent checker,
+real RTL validation, and frozen-baseline comparison pass.
+
+## 14. Immediate next action
+
+R0 now has a source-built standalone OpenSTA provider, a versioned open FPGA
+timing-model contract, stable partition-independent path identities, and an
+independent path-database checker. The checked-in soft-logic model is
+deliberately marked `analytical_uncharacterized`; it is infrastructure, not
+UltraScale+ timing sign-off.
+
+The remaining R0 work is:
+
+- connect an open ArchitectureDB source;
+- extend timing coverage to UltraScale+ carry, memory, and DSP resources;
+- calibrate the analytical timing model against reproducible reference data;
+- establish routing-resource and physical-delay models consumed by later
+  academic algorithms.
+
+Until R0 is complete, existing timing-aware providers remain research
+prototypes and are not promoted as definitive paper reproductions.
+
+## 15. Recent online literature additions
+
+The local paper collection remains the main review corpus. The following
+newer primary sources were added through online search and have already
+changed the route above:
+
+- [MFSPart and MFSPart-Ensemble, TCAD
+  2026](https://zhiyaoxie.com/files/TCAD26_MFSPart.pdf): primary generalized
+  multi-FPGA partitioning framework.
+- [RePart, 2026](https://arxiv.org/abs/2604.00780): logic-replication
+  refinement.
+- [SHyPar, TCAD 2025/2026](https://arxiv.org/abs/2410.10875): spectral
+  coarsening alternative.
+- [HySpecPro, 2026](https://arxiv.org/abs/2607.00055): recent GPU spectral
+  optimizer; candidate generation only until weighted multi-resource
+  legality is supported.
+- [Synergistic Die-Level Router, DAC
+  2025](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf):
+  delay-demand-balanced routing and Lagrangian TDM-ratio baseline.
+- [Mapping Fusion, 2025](https://arxiv.org/abs/2507.10912): experimental
+  synthesis/mapping provider.
+- [TD-Placer, 2025](https://arxiv.org/abs/2512.00038): critical-path-aware
+  placement candidate.
+- [Chimew, FPGA
+  2026](https://magic3007.github.io/data/publications/FPGA_FPGA2026_Wang/FPGA_FPGA2026_Wang.pdf):
+  primary signal-grouping and pin-assignment route.
+
+Preprints are marked as such and are not treated as established baselines
+without equation-level reproduction and independent validation.
