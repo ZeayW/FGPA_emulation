@@ -21,6 +21,7 @@ from emuflow.repart import (
     parse_repart_solution,
 )
 from emuflow.yosys import import_yosys_json
+from tests.native_build import tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -293,6 +294,7 @@ class RePartTest(unittest.TestCase):
                 assignment_path=output / "phase3" / "assignment.json",
                 platform_path=PLATFORM_PATH,
                 output_dir=output / "phase4",
+                router=str(tlr_router()),
             )
             phase5 = run_phase5(
                 routes_path=output / "phase4" / "routes.json",

@@ -1,7 +1,6 @@
-import heapq
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
 from .io import read_json
@@ -304,79 +303,6 @@ def demands_from_assignment(
     return sorted(demands, key=lambda demand: demand["net"])
 
 
-def _shortest_path_tree(
-    source: str,
-    sinks: Sequence[str],
-    width_bits: int,
-    adjacency: Mapping[str, Sequence[Mapping[str, Any]]],
-    usage: Mapping[str, int],
-    history: Mapping[str, float],
-    capacities: Mapping[str, Mapping[str, Any]],
-) -> Tuple[List[Dict[str, Any]], int]:
-    distance: Dict[str, float] = {source: 0.0}
-    predecessor: Dict[str, Mapping[str, Any]] = {}
-    queue: List[Tuple[float, str]] = [(0.0, source)]
-
-    while queue:
-        current_distance, node = heapq.heappop(queue)
-        if current_distance != distance.get(node):
-            continue
-        for arc in adjacency.get(node, []):
-            capacity_key = arc["capacity_key"]
-            capacity = capacities[capacity_key]["capacity_bits"]
-            projected = usage.get(capacity_key, 0) + width_bits
-            present_cost = projected / capacity
-            edge_cost = (
-                1.0
-                + float(arc["latency_cycles"])
-                + present_cost
-                + history.get(capacity_key, 0.0)
-            )
-            sink = arc["to"]
-            candidate = current_distance + edge_cost
-            if candidate < distance.get(sink, float("inf")):
-                distance[sink] = candidate
-                predecessor[sink] = arc
-                heapq.heappush(queue, (candidate, sink))
-
-    missing = sorted(set(sinks) - set(distance))
-    if missing:
-        raise ValidationError(
-            f"system routing: source {source!r} cannot reach sinks {missing}"
-        )
-
-    tree_edges: Dict[ArcKey, Dict[str, Any]] = {}
-    max_latency = 0
-    for sink in sinks:
-        node = sink
-        latency = 0
-        seen: Set[str] = set()
-        while node != source:
-            if node in seen:
-                raise ValidationError(
-                    f"system routing: predecessor cycle while routing {source}->{sink}"
-                )
-            seen.add(node)
-            arc = predecessor[node]
-            key = _arc_key(arc["link"], arc["from"], arc["to"])
-            tree_edges[key] = {
-                "link": arc["link"],
-                "from": arc["from"],
-                "to": arc["to"],
-            }
-            latency += arc["latency_cycles"]
-            node = arc["from"]
-        max_latency = max(max_latency, latency)
-
-    return (
-        sorted(
-            tree_edges.values(),
-            key=lambda edge: (edge["link"], edge["from"], edge["to"]),
-        ),
-        max_latency,
-    )
-
-
 def _link_utilization_records(
     capacity_records: Mapping[str, Mapping[str, Any]],
     usage: Mapping[str, int],
@@ -393,95 +319,6 @@ def _link_utilization_records(
             }
         )
     return records
-
-
-def route_system(
-    assignment: Mapping[str, Any],
-    platform: Platform,
-    constraints: Mapping[str, Any],
-) -> Dict[str, Any]:
-    demands = demands_from_assignment(assignment, platform)
-    adjacency, arcs, capacities = build_directed_graph(platform, constraints)
-    history = {key: 0.0 for key in capacities}
-    final_routes: List[Dict[str, Any]] = []
-    final_usage: Dict[str, int] = {}
-    completed_iteration = 0
-
-    for iteration in range(1, constraints["max_iterations"] + 1):
-        usage = {key: 0 for key in capacities}
-        routes: List[Dict[str, Any]] = []
-        for demand in demands:
-            tree_edges, max_latency = _shortest_path_tree(
-                demand["source"],
-                demand["sinks"],
-                demand["width_bits"],
-                adjacency,
-                usage,
-                history,
-                capacities,
-            )
-            for edge in tree_edges:
-                arc = arcs[_arc_key(edge["link"], edge["from"], edge["to"])]
-                usage[arc["capacity_key"]] += demand["width_bits"]
-            routes.append(
-                {
-                    **demand,
-                    "tree_edges": tree_edges,
-                    "max_latency_cycles": max_latency,
-                }
-            )
-
-        overflow = {
-            key: max(0, usage[key] - capacities[key]["capacity_bits"])
-            for key in capacities
-        }
-        final_routes = routes
-        final_usage = usage
-        completed_iteration = iteration
-        if not any(overflow.values()):
-            break
-        for key, excess in overflow.items():
-            if excess:
-                history[key] += 1.0 + excess / capacities[key]["capacity_bits"]
-    else:
-        overloaded = [
-            {
-                "key": key,
-                "used_bits": final_usage[key],
-                "capacity_bits": capacities[key]["capacity_bits"],
-            }
-            for key in sorted(capacities)
-            if final_usage[key] > capacities[key]["capacity_bits"]
-        ]
-        raise ValidationError(
-            f"system routing is infeasible after "
-            f"{constraints['max_iterations']} iterations: {overloaded}"
-        )
-
-    utilization = _link_utilization_records(capacities, final_usage)
-    routed_sinks = sum(len(route["sinks"]) for route in final_routes)
-    tree_edges = sum(len(route["tree_edges"]) for route in final_routes)
-    return {
-        "schema": SYSTEM_ROUTES_SCHEMA,
-        "design": assignment.get("design"),
-        "platform": platform.name,
-        "provider": "negotiated-shortest-path-tree-v1",
-        "constraints": dict(constraints),
-        "demands": demands,
-        "routes": final_routes,
-        "link_utilization": utilization,
-        "metrics": {
-            "demands": len(demands),
-            "routed_sinks": routed_sinks,
-            "tree_edges": tree_edges,
-            "iterations": completed_iteration,
-            "max_link_utilization": max(
-                (record["utilization"] for record in utilization),
-                default=0.0,
-            ),
-            "total_link_bit_hops": sum(final_usage.values()),
-        },
-    }
 
 
 def _validate_route_tree(

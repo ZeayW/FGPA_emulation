@@ -1,12 +1,10 @@
 import copy
 import json
-import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
+from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.partition import (
     PARTITION_ASSIGNMENT_SCHEMA,
     assign_clusters,
@@ -17,17 +15,19 @@ from emuflow.phase4 import run_phase4
 from emuflow.platform import Platform
 from emuflow.routing import (
     normalize_route_constraints,
-    route_system,
     validate_system_routes,
 )
 from emuflow.timing_routing import (
+    NATIVE_ROUTER_PROVIDER,
     compress_sta_paths,
     load_sta_paths,
     normalize_sta_paths,
     reconstruct_system_route_timing,
-    validate_timing_aware_system_routes,
+    route_system_native,
+    validate_native_system_routes,
 )
 from emuflow.yosys import import_yosys_json
+from tests.native_build import tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,7 +107,7 @@ class Phase4Test(unittest.TestCase):
             platform,
             [("long_period", "a", ["b"]), ("short_period", "a", ["b"])],
         )
-        routes = route_system(
+        routes = route_system_native(
             assignment,
             platform,
             normalize_route_constraints(
@@ -117,6 +117,7 @@ class Phase4Test(unittest.TestCase):
                 },
                 platform,
             ),
+            executable=str(tlr_router()),
         )
         timing = compress_sta_paths(
             normalize_sta_paths(
@@ -166,9 +167,6 @@ class Phase4Test(unittest.TestCase):
     def test_timing_aware_cpp_router_prioritizes_critical_clock_domain(
         self,
     ) -> None:
-        compiler = shutil.which("g++") or shutil.which("clang++")
-        if compiler is None:
-            self.skipTest("a C++17 compiler is required")
         platform = Platform.from_dict(
             _platform_value(
                 "timing_diamond",
@@ -233,30 +231,9 @@ class Phase4Test(unittest.TestCase):
                 "cd": 5.0,
             },
         }
-        baseline_constraints = normalize_route_constraints(
-            constraints_value, platform
-        )
-        baseline = route_system(assignment, platform, baseline_constraints)
-        baseline_by_net = {
-            route["net"]: route for route in baseline["routes"]
-        }
-        self.assertEqual(
-            baseline_by_net["z_critical"]["max_latency_cycles"], 10
-        )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            executable = root / "emuflow_tlr_router"
-            subprocess.run(
-                [
-                    compiler,
-                    "-std=c++17",
-                    "-O2",
-                    str(ROOT / "src" / "native" / "tlr_router.cpp"),
-                    "-o",
-                    str(executable),
-                ],
-                check=True,
-            )
+            executable = tlr_router()
             assignment_path = root / "assignment.json"
             platform_path = root / "platform.json"
             timing_path = root / "timing.json"
@@ -319,33 +296,10 @@ class Phase4Test(unittest.TestCase):
                 timing_path,
                 routes["demands"],
             )
-            baseline_timing = reconstruct_system_route_timing(
-                assignment, platform, baseline, normalized
-            )
-            checked = validate_timing_aware_system_routes(
+            checked = validate_native_system_routes(
                 assignment, platform, routes, normalized
             )
             self.assertEqual(checked["status"], "pass")
-            self.assertGreater(
-                checked["worst_normalized_slack"],
-                baseline_timing["worst_normalized_slack"],
-            )
-            baseline_report = run_phase4(
-                assignment_path=assignment_path,
-                platform_path=platform_path,
-                output_dir=root / "phase4-baseline",
-                constraints_path=constraints_path,
-                provider="negotiated-shortest-path-tree-v1",
-                timing_paths_path=timing_path,
-            )
-            self.assertEqual(
-                baseline_report["validation"],
-                baseline_timing,
-            )
-            self.assertEqual(
-                baseline_report["artifacts"]["timing_paths"],
-                "timing_paths.normalized.json",
-            )
             normalized_reload = load_sta_paths(
                 root / "phase4" / "timing_paths.normalized.json",
                 routes["demands"],
@@ -356,7 +310,7 @@ class Phase4Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "independent edge-delay recomputation"
             ):
-                validate_timing_aware_system_routes(
+                validate_native_system_routes(
                     assignment, platform, corrupted, normalized
                 )
             corrupted = copy.deepcopy(routes)
@@ -364,7 +318,7 @@ class Phase4Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "route/TDM proxy recomputation"
             ):
-                validate_timing_aware_system_routes(
+                validate_native_system_routes(
                     assignment, platform, corrupted, normalized
                 )
 
@@ -484,8 +438,10 @@ class Phase4Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4",
                 frame_slots=1,
+                router=str(tlr_router()),
             )
             self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["provider"], NATIVE_ROUTER_PROVIDER)
             self.assertGreater(report["validation"]["demands"], 0)
             self.assertGreater(report["validation"]["routed_sinks"], 0)
             self.assertEqual(report["validation"]["overloaded_links"], 0)
@@ -496,7 +452,7 @@ class Phase4Test(unittest.TestCase):
             ):
                 self.assertTrue((root / "phase4" / filename).is_file())
 
-    def test_negotiated_router_uses_both_diamond_paths(self) -> None:
+    def test_native_router_uses_both_diamond_paths(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
                 "diamond",
@@ -517,8 +473,15 @@ class Phase4Test(unittest.TestCase):
             {"schema": "emuflow.system-route-constraints/v1", "frame_slots": 1},
             platform,
         )
-        routes = route_system(assignment, platform, constraints)
-        validation = validate_system_routes(assignment, platform, routes)
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        validation = validate_native_system_routes(
+            assignment, platform, routes
+        )
         self.assertEqual(validation["status"], "pass")
         used_links = {
             edge["link"]
@@ -546,8 +509,15 @@ class Phase4Test(unittest.TestCase):
             [("multicast_net", "a", ["b", "c", "d"])],
         )
         constraints = normalize_route_constraints(None, platform, frame_slots=1)
-        routes = route_system(assignment, platform, constraints)
-        validation = validate_system_routes(assignment, platform, routes)
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        validation = validate_native_system_routes(
+            assignment, platform, routes
+        )
         self.assertEqual(validation["routed_sinks"], 3)
         self.assertEqual(validation["demands"], 1)
         self.assertLessEqual(validation["tree_edges"], 3)
@@ -568,8 +538,15 @@ class Phase4Test(unittest.TestCase):
             },
             platform,
         )
-        with self.assertRaisesRegex(ValidationError, "cannot reach"):
-            route_system(assignment, platform, constraints)
+        with self.assertRaisesRegex(
+            (EmuFlowError, ValidationError), "unreachable|cannot reach"
+        ):
+            route_system_native(
+                assignment,
+                platform,
+                constraints,
+                executable=str(tlr_router()),
+            )
 
     def test_infeasible_link_capacity_is_rejected(self) -> None:
         platform = Platform.from_dict(
@@ -591,8 +568,13 @@ class Phase4Test(unittest.TestCase):
             },
             platform,
         )
-        with self.assertRaisesRegex(ValidationError, "infeasible"):
-            route_system(assignment, platform, constraints)
+        with self.assertRaisesRegex(EmuFlowError, "infeasible"):
+            route_system_native(
+                assignment,
+                platform,
+                constraints,
+                executable=str(tlr_router()),
+            )
 
     def test_half_duplex_capacity_is_shared(self) -> None:
         platform = Platform.from_dict(
@@ -614,8 +596,13 @@ class Phase4Test(unittest.TestCase):
             },
             platform,
         )
-        with self.assertRaisesRegex(ValidationError, "infeasible"):
-            route_system(assignment, platform, constraints)
+        with self.assertRaisesRegex(EmuFlowError, "unreachable|infeasible"):
+            route_system_native(
+                assignment,
+                platform,
+                constraints,
+                executable=str(tlr_router()),
+            )
 
     def test_cycle_in_route_artifact_is_rejected(self) -> None:
         platform = Platform.from_dict(
@@ -627,7 +614,12 @@ class Phase4Test(unittest.TestCase):
         )
         assignment = _assignment(platform, [("n0", "a", ["b"])])
         constraints = normalize_route_constraints(None, platform, frame_slots=1)
-        routes = route_system(assignment, platform, constraints)
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
         broken = copy.deepcopy(routes)
         broken["routes"][0]["tree_edges"].append(
             {"link": "ab", "from": "b", "to": "a"}

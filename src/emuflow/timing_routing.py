@@ -24,6 +24,7 @@ from .routing import (
 
 
 STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"
+NATIVE_ROUTER_PROVIDER = "native-load-balanced-v1"
 TLR_PROVIDER = "timing-aware-load-balanced-v1"
 ROUTE_TDM_PROVIDER = "timing-aware-route-tdm-cooptimized-v1"
 
@@ -391,7 +392,7 @@ def _prepare_native_model(
     assignment: Mapping[str, Any],
     platform: Platform,
     constraints: Mapping[str, Any],
-    timing_paths: Mapping[str, Any],
+    timing_paths: Optional[Mapping[str, Any]],
 ) -> Tuple[List[str], Dict[str, Any]]:
     demands = demands_from_assignment(assignment, platform)
     adjacency, arcs_by_key, capacities = build_directed_graph(
@@ -437,8 +438,16 @@ def _prepare_native_model(
             }
         )
 
+    normalized_timing = timing_paths or {
+        "normalization": {
+            "positive_slack_scale_ns": 1.0,
+            "negative_slack_scale_ns": 1.0,
+            "max_clock_period_ns": 1.0,
+        },
+        "paths": [],
+    }
     path_by_net: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
-    for path in timing_paths["paths"]:
+    for path in normalized_timing["paths"]:
         for net in path["cut_nets"]:
             path_by_net[net].append(path)
     native_demands = []
@@ -466,7 +475,7 @@ def _prepare_native_model(
         )
 
     native_paths = []
-    for index, path in enumerate(timing_paths["paths"]):
+    for index, path in enumerate(normalized_timing["paths"]):
         native_paths.append(
             {
                 "index": index,
@@ -483,7 +492,7 @@ def _prepare_native_model(
         "paths": native_paths,
         "native_demands": native_demands,
         "capacity_keys": capacity_keys,
-        "normalization": timing_paths["normalization"],
+        "normalization": normalized_timing["normalization"],
     }
 
 
@@ -612,16 +621,27 @@ def _tree_latency_cycles(
     return max(latency[sink] for sink in sinks)
 
 
-def route_system_timing_aware(
+def route_system_native(
     assignment: Mapping[str, Any],
     platform: Platform,
     constraints: Mapping[str, Any],
-    timing_paths: Mapping[str, Any],
+    timing_paths: Optional[Mapping[str, Any]] = None,
     executable: Optional[str] = None,
-    provider: str = ROUTE_TDM_PROVIDER,
+    provider: str = NATIVE_ROUTER_PROVIDER,
 ) -> Dict[str, Any]:
-    if provider not in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
-        raise ValueError(f"unsupported timing-aware provider {provider!r}")
+    if provider not in {
+        NATIVE_ROUTER_PROVIDER,
+        TLR_PROVIDER,
+        ROUTE_TDM_PROVIDER,
+    }:
+        raise ValueError(f"unsupported native routing provider {provider!r}")
+    if provider == NATIVE_ROUTER_PROVIDER and timing_paths is not None:
+        raise ValueError(
+            f"{NATIVE_ROUTER_PROVIDER} does not accept timing paths; "
+            f"use {ROUTE_TDM_PROVIDER}"
+        )
+    if provider != NATIVE_ROUTER_PROVIDER and timing_paths is None:
+        raise ValueError(f"{provider} requires normalized timing paths")
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
     )
@@ -690,9 +710,8 @@ def route_system_timing_aware(
                 "to": key[2],
             }
         )
-    timing_records = []
-    for index, path in enumerate(timing_paths["paths"]):
-        timing_records.append(
+    timing_records = (
+        [
             {
                 "path": path["id"],
                 "clock_domain": path["clock_domain"],
@@ -703,8 +722,12 @@ def route_system_timing_aware(
                 "compressed_path_ids": path["compressed_path_ids"],
                 **native["timing"][index],
             }
-        )
-    return {
+            for index, path in enumerate(timing_paths["paths"])
+        ]
+        if timing_paths is not None
+        else []
+    )
+    result = {
         "schema": "emuflow.system-routes/v1",
         "design": assignment.get("design"),
         "platform": platform.name,
@@ -714,12 +737,6 @@ def route_system_timing_aware(
         "routes": routes,
         "link_utilization": utilization,
         "direction_locks": direction_locks,
-        "timing": {
-            "schema": STA_PATHS_SCHEMA,
-            "normalization": timing_paths["normalization"],
-            "compression": timing_paths["compression"],
-            "paths": timing_records,
-        },
         "metrics": {
             "demands": len(model["demands"]),
             "routed_sinks": sum(len(route["sinks"]) for route in routes),
@@ -729,20 +746,10 @@ def route_system_timing_aware(
             "rolled_back_reroutes": native["metrics"][
                 "rolled_back_reroutes"
             ],
-            "worst_slack_ns": native["metrics"]["worst_slack_ns"],
-            "worst_normalized_slack": native["metrics"][
-                "worst_normalized_slack"
-            ],
             "max_link_utilization": max(
                 (record["utilization"] for record in utilization), default=0.0
             ),
             "total_link_bit_hops": sum(usage.values()),
-            "estimated_worst_tdm_slack_ns": native["metrics"][
-                "estimated_worst_tdm_slack_ns"
-            ],
-            "estimated_worst_tdm_normalized_slack": native["metrics"][
-                "estimated_worst_tdm_normalized_slack"
-            ],
             "estimated_max_tdm_ratio": native["metrics"][
                 "estimated_max_tdm_ratio"
             ],
@@ -766,6 +773,28 @@ def route_system_timing_aware(
             else {}
         ),
     }
+    if timing_paths is not None:
+        result["timing"] = {
+            "schema": STA_PATHS_SCHEMA,
+            "normalization": timing_paths["normalization"],
+            "compression": timing_paths["compression"],
+            "paths": timing_records,
+        }
+        result["metrics"].update(
+            {
+                "worst_slack_ns": native["metrics"]["worst_slack_ns"],
+                "worst_normalized_slack": native["metrics"][
+                    "worst_normalized_slack"
+                ],
+                "estimated_worst_tdm_slack_ns": native["metrics"][
+                    "estimated_worst_tdm_slack_ns"
+                ],
+                "estimated_worst_tdm_normalized_slack": native["metrics"][
+                    "estimated_worst_tdm_normalized_slack"
+                ],
+            }
+        )
+    return result
 
 
 def reconstruct_system_route_timing(
@@ -959,17 +988,28 @@ def reconstruct_system_route_timing(
     }
 
 
-def validate_timing_aware_system_routes(
+def validate_native_system_routes(
     assignment: Mapping[str, Any],
     platform: Platform,
     routes: Mapping[str, Any],
-    timing_paths: Mapping[str, Any],
+    timing_paths: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     validation = validate_system_routes(assignment, platform, routes)
-    if routes.get("provider") not in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
+    provider = routes.get("provider")
+    if provider not in {
+        NATIVE_ROUTER_PROVIDER,
+        TLR_PROVIDER,
+        ROUTE_TDM_PROVIDER,
+    }:
         raise ValidationError(
-            "routes.provider: expected a supported timing-aware provider"
+            "routes.provider: expected a supported native routing provider"
         )
+    if provider == NATIVE_ROUTER_PROVIDER and timing_paths is not None:
+        raise ValidationError(
+            "native load-balanced routes must not use STA timing input"
+        )
+    if provider != NATIVE_ROUTER_PROVIDER and timing_paths is None:
+        raise ValidationError("timing-aware routes require normalized STA input")
     if routes.get("provider") == ROUTE_TDM_PROVIDER:
         joint = routes.get("joint_optimization")
         if not isinstance(joint, dict) or joint.get("method") != (
@@ -1062,6 +1102,18 @@ def validate_timing_aware_system_routes(
         route_delay_by_net[route["net"]] = predicted_delay
         route_by_net[route["net"]] = route
         route_signature_by_net[route["net"]] = sorted(signature)
+
+    if provider == NATIVE_ROUTER_PROVIDER:
+        if "timing" in routes:
+            raise ValidationError(
+                "native load-balanced routes must not contain timing records"
+            )
+        return {
+            **validation,
+            "provider": provider,
+            "direction_locks": len(lock_by_link),
+            "predicted_delay_check": "pass",
+        }
 
     # Independently reconstruct the route/TDM co-optimization proxy used by
     # the native router.  This is deliberately separate from native output:

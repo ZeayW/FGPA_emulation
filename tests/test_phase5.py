@@ -10,7 +10,7 @@ from emuflow.errors import ValidationError
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase5 import run_phase5
 from emuflow.platform import Platform
-from emuflow.routing import normalize_route_constraints, route_system
+from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import (
     build_tdm_schedule,
     reconstruct_tdm_schedule_timing,
@@ -22,6 +22,8 @@ from emuflow.tdm_ratio import (
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
+from emuflow.timing_routing import route_system_native
+from tests.native_build import tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,7 +89,12 @@ def _routes(platform, cuts, frame_slots):
         },
         platform,
     )
-    return route_system(assignment, platform, constraints)
+    return route_system_native(
+        assignment,
+        platform,
+        constraints,
+        executable=str(tlr_router()),
+    )
 
 
 class Phase5Test(unittest.TestCase):
@@ -495,7 +502,12 @@ class Phase5Test(unittest.TestCase):
         constraints = normalize_route_constraints(
             None, platform, frame_slots=8
         )
-        routes = route_system(assignment, platform, constraints)
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
         schedule = build_tdm_schedule(routes, platform)
         validation = validate_tdm_schedule(routes, platform, schedule)
         entries = {entry["net"]: entry for entry in schedule["entries"]}
@@ -545,11 +557,63 @@ class Phase5Test(unittest.TestCase):
                 ],
             )
         )
-        routes = _routes(
+        assignment = _assignment(
             platform,
             [("n0", "a", ["b"]), ("n1", "b", ["a"])],
-            frame_slots=4,
         )
+        constraints = normalize_route_constraints(
+            None, platform, frame_slots=4
+        )
+        demands = [
+            {
+                "id": f"d{index:06d}",
+                "net": cut["net"],
+                "source": cut["source_fpgas"][0],
+                "sinks": cut["sink_fpgas"],
+                "width_bits": 1,
+            }
+            for index, cut in enumerate(assignment["cut_nets"])
+        ]
+        routes = {
+            "schema": "emuflow.system-routes/v1",
+            "design": assignment["design"],
+            "platform": platform.name,
+            "provider": "half-duplex-scheduler-fixture",
+            "constraints": constraints,
+            "demands": demands,
+            "routes": [
+                {
+                    **demand,
+                    "tree_edges": [
+                        {
+                            "link": "ab",
+                            "from": demand["source"],
+                            "to": demand["sinks"][0],
+                        }
+                    ],
+                    "max_latency_cycles": 1,
+                }
+                for demand in demands
+            ],
+            "link_utilization": [
+                {
+                    "key": "ab:shared",
+                    "link": "ab",
+                    "direction": "shared",
+                    "capacity_bits": 4,
+                    "used_bits": 2,
+                    "utilization": 0.5,
+                }
+            ],
+            "metrics": {
+                "demands": 2,
+                "routed_sinks": 2,
+                "tree_edges": 2,
+                "iterations": 0,
+                "max_link_utilization": 0.5,
+                "total_link_bit_hops": 2,
+            },
+        }
         schedule = build_tdm_schedule(routes, platform)
         validation = validate_tdm_schedule(routes, platform, schedule)
         self.assertEqual(validation["collisions"], 0)

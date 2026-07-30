@@ -137,24 +137,22 @@ after checkout. Implementations are editable source in this repository:
 - `src/native/`: first-party C++ optimization kernels, including the
   timing-aware system router, Lagrangian/KKT TDM-ratio optimizer, and
   placement-aware logical-pin and physical package-pin planners;
-- `src/emuflow/`: EmuFlow control plane, artifact contracts, baseline
-  implementations, adapters, and independent checkers.
+- `src/emuflow/`: EmuFlow control plane, artifact contracts, native-provider
+  adapters, and independent checkers.
 
 RePart is not consumed as a published binary. Its C++ optimization source is
 compiled by the root CMake build. EmuFlow's small Python adapter emits the
 versioned hypergraph/replicability inputs and independently checks the C++
 result; it is not a replacement partitioning algorithm.
 
-The default academic Phase 4 provider follows the same boundary: the editable
-C++17 kernel in `src/native/tlr_router.cpp` jointly accounts for route delay,
-timing criticality, negotiated congestion, and an analytically predicted TDM
-serialization ratio while constructing and refining multicast trees. Python
-imports versioned STA paths, invokes the root-build product, and independently
-reconstructs topology, capacity, direction locks, delay, the TDM proxy, slack,
-and path signatures. The earlier route-only provider remains available for
-controlled comparisons. A provider-neutral checker evaluates negotiated and
-timing-aware routes against the same normalized STA artifact and reports
-absolute-slack and normalized-slack extrema separately across clock domains.
+The default Phase 4 provider follows the same boundary: the editable C++17
+kernel in `src/native/tlr_router.cpp` constructs and refines multicast trees.
+Without STA input it runs the native load-balanced mode; with versioned STA
+paths it additionally accounts for timing criticality and an analytically
+predicted TDM serialization ratio. Python invokes the root-build product and
+independently reconstructs topology, capacity, direction locks, delay, the TDM
+proxy, slack, and path signatures. The original Python negotiated router is no
+longer a runtime provider.
 
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The Vivado adapter records ordered stable EmuIR net identities for

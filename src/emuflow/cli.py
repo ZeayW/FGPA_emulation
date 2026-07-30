@@ -48,7 +48,11 @@ from .sta import (
 )
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
-from .timing_routing import ROUTE_TDM_PROVIDER, TLR_PROVIDER
+from .timing_routing import (
+    NATIVE_ROUTER_PROVIDER,
+    ROUTE_TDM_PROVIDER,
+    TLR_PROVIDER,
+)
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
 
@@ -417,14 +421,14 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument(
         "--provider",
         choices=[
-            "negotiated-shortest-path-tree-v1",
+            NATIVE_ROUTER_PROVIDER,
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
         ],
         default=None,
         help=(
             f"defaults to {ROUTE_TDM_PROVIDER} when --timing-paths is "
-            "supplied, otherwise the negotiated baseline"
+            f"supplied, otherwise {NATIVE_ROUTER_PROVIDER}"
         ),
     )
     phase4.add_argument(

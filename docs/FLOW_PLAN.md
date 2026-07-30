@@ -225,7 +225,7 @@ extensions.
 
 ### Phase 4 — Board-level route/TDM co-optimization
 
-Implement a negotiated-congestion router over BoardDB:
+The source-built C++ router operates over BoardDB with:
 
 - unicast paths and multicast trees;
 - per-direction link capacity;
@@ -240,10 +240,9 @@ Acceptance:
 - route trees contain no cycles;
 - the checker independently reconstructs link utilization.
 
-The dependency-free negotiated shortest-path baseline is implemented with
-versioned constraint, route, and report artifacts. Four-FPGA diamond,
-multicast, unavailable-link, infeasible-capacity, and half-duplex tests cover
-non-trivial topology cases.
+The `native-load-balanced-v1` mode uses the same C++ kernel without requiring
+STA input. Four-FPGA diamond, multicast, unavailable-link,
+infeasible-capacity, and half-duplex tests cover non-trivial topology cases.
 
 The comparison `timing-aware-load-balanced-v1` provider adds an in-tree C++17
 TLR/TRR kernel based on the routing portion of Chen et al., ASP-DAC 2026. Its
@@ -287,8 +286,8 @@ import-vivado-tsv` converts that result to `emuflow.sta-paths/v1`; no
 human-readable timing-report scraping or heuristic name matching is used.
 
 The route/TDM provider is selected automatically when a timing-path artifact
-is supplied. With no STA artifact, the dependency-free
-`negotiated-shortest-path-tree-v1` remains the explicit feasibility fallback.
+is supplied. With no STA artifact, `native-load-balanced-v1` runs the same
+source-built C++ kernel without timing criticalities.
 
 ### Phase 3--5 checked feedback loop
 

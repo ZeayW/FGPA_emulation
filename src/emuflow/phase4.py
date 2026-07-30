@@ -6,16 +6,15 @@ from .platform import Platform
 from .routing import (
     demands_from_assignment,
     load_route_constraints,
-    route_system,
     validate_system_routes,
 )
 from .timing_routing import (
+    NATIVE_ROUTER_PROVIDER,
     ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
     load_sta_paths,
-    reconstruct_system_route_timing,
-    route_system_timing_aware,
-    validate_timing_aware_system_routes,
+    route_system_native,
+    validate_native_system_routes,
 )
 
 
@@ -45,23 +44,27 @@ def run_phase4(
         provider = (
             ROUTE_TDM_PROVIDER
             if timing_paths_path is not None
-            else "negotiated-shortest-path-tree-v1"
+            else NATIVE_ROUTER_PROVIDER
         )
     timing_paths = None
-    if provider == "negotiated-shortest-path-tree-v1":
-        routes = route_system(assignment, platform, constraints)
-        if timing_paths_path is None:
-            validation = validate_system_routes(
-                assignment, platform, routes
+    if provider == NATIVE_ROUTER_PROVIDER:
+        if timing_paths_path is not None:
+            raise ValueError(
+                f"--provider {NATIVE_ROUTER_PROVIDER} does not accept "
+                f"--timing-paths; use {ROUTE_TDM_PROVIDER}"
             )
-        else:
-            timing_paths = load_sta_paths(
-                timing_paths_path,
-                demands_from_assignment(assignment, platform),
-            )
-            validation = reconstruct_system_route_timing(
-                assignment, platform, routes, timing_paths
-            )
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=router,
+            provider=provider,
+        )
+        validation = validate_native_system_routes(
+            assignment,
+            platform,
+            routes,
+        )
     elif provider in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
         if timing_paths_path is None:
             raise ValueError(
@@ -73,7 +76,7 @@ def run_phase4(
             timing_paths_path,
             demands_from_assignment(assignment, platform),
         )
-        routes = route_system_timing_aware(
+        routes = route_system_native(
             assignment,
             platform,
             constraints,
@@ -81,7 +84,7 @@ def run_phase4(
             executable=router,
             provider=provider,
         )
-        validation = validate_timing_aware_system_routes(
+        validation = validate_native_system_routes(
             assignment,
             platform,
             routes,
@@ -123,7 +126,19 @@ def validate_phase4(
     assignment = read_json(assignment_path)
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
-    if routes.get("provider") in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
+    provider = routes.get("provider")
+    if provider == NATIVE_ROUTER_PROVIDER:
+        if timing_paths_path is not None:
+            raise ValueError(
+                "native load-balanced route validation does not accept "
+                "--timing-paths"
+            )
+        return validate_native_system_routes(
+            assignment,
+            platform,
+            routes,
+        )
+    if provider in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
         if timing_paths_path is None:
             raise ValueError(
                 f"validating {TLR_PROVIDER} requires --timing-paths"
@@ -132,7 +147,7 @@ def validate_phase4(
             timing_paths_path,
             demands_from_assignment(assignment, platform),
         )
-        return validate_timing_aware_system_routes(
+        return validate_native_system_routes(
             assignment, platform, routes, timing_paths
         )
     validation = validate_system_routes(assignment, platform, routes)

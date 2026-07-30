@@ -240,7 +240,7 @@ class Router {
       }
     }
     if (!feasible) {
-      throw std::runtime_error("routing infeasible after negotiated iterations");
+      throw std::runtime_error("routing infeasible after capacity iterations");
     }
 
     Objective best = objective();

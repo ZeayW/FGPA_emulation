@@ -24,9 +24,11 @@ from emuflow.pin_planning import (
     build_pin_plan,
 )
 from emuflow.platform import Platform
-from emuflow.routing import normalize_route_constraints, route_system
+from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import build_tdm_schedule
+from emuflow.timing_routing import route_system_native
 from emuflow.yosys import import_yosys_json
+from tests.native_build import tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,8 +57,11 @@ class Phase6Test(unittest.TestCase):
         route_constraints = normalize_route_constraints(
             None, self.platform, frame_slots=32
         )
-        self.routes = route_system(
-            self.assignment, self.platform, route_constraints
+        self.routes = route_system_native(
+            self.assignment,
+            self.platform,
+            route_constraints,
+            executable=str(tlr_router()),
         )
         self.schedule = build_tdm_schedule(self.routes, self.platform)
 
@@ -275,8 +280,11 @@ class Phase6Test(unittest.TestCase):
         route_constraints = normalize_route_constraints(
             None, self.platform, frame_slots=32
         )
-        routes = route_system(
-            assignment, self.platform, route_constraints
+        routes = route_system_native(
+            assignment,
+            self.platform,
+            route_constraints,
+            executable=str(tlr_router()),
         )
         schedule = build_tdm_schedule(routes, self.platform)
         artifacts = build_split_artifacts(
