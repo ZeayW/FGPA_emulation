@@ -796,6 +796,23 @@ if(BUILD_TESTING)
       "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/logic_only_map.v"
   )
 
+  foreach(
+    EMUFLOW_VTR_MAP_FILE
+    IN ITEMS
+      vtr_models.v
+      vtr_multiply_map.v
+      vtr_memories.txt
+      vtr_memory_map.v
+  )
+    add_test(
+      NAME "emuflow_${EMUFLOW_VTR_MAP_FILE}_installed"
+      COMMAND
+        "${CMAKE_COMMAND}" -E compare_files
+        "${CMAKE_SOURCE_DIR}/scripts/yosys/${EMUFLOW_VTR_MAP_FILE}"
+        "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/${EMUFLOW_VTR_MAP_FILE}"
+    )
+  endforeach()
+
   if(EMUFLOW_BUILD_REPART)
     add_test(NAME repart_cli COMMAND "$<TARGET_FILE:repart>")
     set_tests_properties(repart_cli PROPERTIES WILL_FAIL TRUE)
@@ -902,6 +919,17 @@ if(BUILD_TESTING)
     add_test(
       NAME yosys_version
       COMMAND "${EMUFLOW_INSTALL_BINDIR}/yosys" -V
+    )
+    add_test(
+      NAME emuflow_vtr_hard_block_synthesis
+      COMMAND
+        "${CMAKE_COMMAND}" -E env
+        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src"
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/tests/check_vtr_hard_block_synthesis.py"
+        --yosys "${EMUFLOW_INSTALL_BINDIR}/yosys"
+        --rtl "${CMAKE_SOURCE_DIR}/examples/rtl/vtr_hard_blocks.v"
+        --output "${CMAKE_BINARY_DIR}/vtr_hard_blocks.eblif"
     )
   endif()
 

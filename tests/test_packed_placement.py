@@ -6,6 +6,7 @@ from emuflow.architecture import ArchitectureDB
 from emuflow.io import read_json
 from emuflow.packed_netlist import run_packed_netlist_import
 from emuflow.packed_placement import (
+    _fixed_multi_instance_placements,
     emit_vpr_place,
     export_packed_bookshelf,
 )
@@ -24,6 +25,16 @@ PACKED_FIXTURE = ROOT / "examples/physical/vpr_packed_fixture.net"
 
 
 class PackedPlacementTest(unittest.TestCase):
+    def test_saturated_single_site_resource_is_fixed(self) -> None:
+        initial, fixed_types = _fixed_multi_instance_placements(
+            {"clusters": [{"id": "memory[0]", "block_type": "memory"}]},
+            {"memory[0]": "VPR_memory_0"},
+            {"memory": [(3, 4, 0)]},
+            {"memory": 1},
+        )
+        self.assertEqual(fixed_types, ["memory"])
+        self.assertEqual(initial, "VPR_memory_0 3 4 0 FIXED\n")
+
     def _inputs(self, root: Path):
         architecture_path = root / "architecture.json"
         run_vtr_architecture_import(

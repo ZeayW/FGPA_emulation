@@ -236,7 +236,11 @@ def _fixed_multi_instance_placements(
     fixed_types = sorted(
         block_type
         for block_type, capacity in max_site_capacity.items()
-        if capacity > 1 and clusters_by_type[block_type]
+        if clusters_by_type[block_type]
+        and (
+            capacity > 1
+            or len(clusters_by_type[block_type]) == len(slots[block_type])
+        )
     )
     lines = []
     for block_type in fixed_types:

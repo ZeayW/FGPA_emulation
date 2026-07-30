@@ -147,7 +147,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
 | Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; VPR consumes the original XML for exact mode-aware packing |
-| Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | Default path builds and runs repository source |
+| Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
 | Static timing | In-tree standalone OpenSTA plus provider-neutral Architecture TimingDB | VTR timing data is imported and source-qualified; conversion to the OpenSTA cell/interconnect model is pending |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++ route/TDM co-optimization kernel plus independent checker | Default academic provider builds and runs repository source |
@@ -163,11 +163,12 @@ Passing individual board-independent stage checks does **not** prove that a
 clean checkout can execute the entire open placement-and-routing path with one
 command. That end-to-end source-build gate remains open.
 
-The open logic-only OpenPARF-to-VPR placement-and-routing path is implemented:
-VTR architecture import, LUT6/DFF mapping, exact VPR packing, the checked
+The open heterogeneous OpenPARF-to-VPR placement-and-routing path is
+implemented for the pinned VTR flagship profile: VTR architecture import,
+LUT6/DFF plus multiplier/RAM mapping, exact VPR packing, the checked
 packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
 routing, timing analysis, and independent route/RR-graph verification.
-Architecture-aware hard-block mapping and TimingDB-to-OpenSTA translation
+TimingDB-to-OpenSTA translation and additional architecture mapping profiles
 remain open gates.
 EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
 used to compare results or generate a bitstream, but success in Vivado cannot
@@ -277,24 +278,15 @@ export PATH="$PWD/build/native/install/bin:$PATH"
 emuflow --help
 ```
 
-Fetch the pinned, SHA-256-verified VTR flagship architecture and import a
-64-by-64 academic device. The TimingDB retains primitive, interconnect, switch,
-segment, and direct-delay data from the same XML:
+Fetch the pinned, SHA-256-verified VTR flagship architecture:
 
 ```bash
 emuflow arch fetch-default-vtr \
   --output build/architectures/vtr-flagship.xml
-
-emuflow arch import-vtr build/architectures/vtr-flagship.xml \
-  --architecture-id vtr-k6-n10-40nm \
-  --width 64 \
-  --height 64 \
-  --architecture-output build/architectures/vtr-64x64.archdb.json \
-  --timing-output build/architectures/vtr-64x64.timing.json
 ```
 
-Map RTL to VPR-compatible LUT6/DFF eBLIF, then run the source-built open
-academic physical backend:
+Map RTL to VPR-compatible LUT6/DFF eBLIF, then let VPR pack the design and
+select the smallest legal auto-layout:
 
 ```bash
 emuflow vpr synth third_party/rtl/picorv32/picorv32.v \
@@ -306,6 +298,18 @@ emuflow vpr run \
   --architecture build/architectures/vtr-flagship.xml \
   --circuit build/picorv32.eblif \
   --out build/picorv32-vpr
+```
+
+Import an ArchitectureDB with exactly the dimensions recorded by VPR. The
+TimingDB retains primitive, interconnect, switch, segment, and direct-delay
+data from the same XML:
+
+```bash
+emuflow arch import-vtr build/architectures/vtr-flagship.xml \
+  --architecture-id vtr-k6-n10-40nm \
+  --reference-placement build/picorv32-vpr/picorv32.place \
+  --architecture-output build/architectures/picorv32.archdb.json \
+  --timing-output build/architectures/picorv32.timing.json
 
 emuflow vpr import-packed \
   --input build/picorv32-vpr/picorv32.net \
@@ -315,7 +319,7 @@ emuflow vpr import-packed \
 
 emuflow vpr place-openparf \
   --packed build/picorv32-vpr/packed-contract.json \
-  --architecture-db build/architectures/vtr-64x64.archdb.json \
+  --architecture-db build/architectures/picorv32.archdb.json \
   --out build/picorv32-openparf
 
 emuflow vpr route-packed \
@@ -327,13 +331,24 @@ emuflow vpr route-packed \
   --out build/picorv32-openparf-route
 ```
 
-The second command emits and verifies the packed `.net`, legal `.place`,
-detailed `.route`, console log, and `vpr-report.json`. The third command
-preserves VPR's exact cluster modes, pb hierarchy, atom membership, and
-cross-cluster nets in a hash-bound versioned contract. The fourth command
-places those exact clusters with OpenPARF and emits a checked VPR placement;
-the fifth routes that placement without invoking VPR's baseline placer,
-exports the exact RR graph, and runs the independent C++ route checker.
+`vpr run` emits and verifies the packed `.net`, baseline `.place`, detailed
+`.route`, console log, and `vpr-report.json`. `import-packed` preserves VPR's
+exact cluster modes, pb hierarchy, atom membership, and cross-cluster nets in
+a hash-bound versioned contract. `place-openparf` places those exact clusters
+and emits a checked VPR placement. `route-packed` routes that placement
+without invoking VPR's baseline placer, exports the exact RR graph, and runs
+the independent C++ route checker.
+
+To exercise heterogeneous synthesis instead of the logic-only PicoRV32
+example, use the checked-in multiplier/RAM fixture and the pinned mapping
+profile:
+
+```bash
+emuflow vpr synth examples/rtl/vtr_hard_blocks.v \
+  --top vtr_hard_blocks \
+  --hard-blocks \
+  --output build/vtr_hard_blocks.eblif
+```
 
 Run the checked-in board-independent counter example:
 

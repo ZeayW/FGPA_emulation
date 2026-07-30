@@ -17,6 +17,16 @@ from .synthesis import _yosys_identifier, _yosys_quote
 
 VPR_REPORT_SCHEMA = "emuflow.vpr-report/v1"
 VPR_PROVIDER = "vpr-root-build"
+VTR_HARD_BLOCK_PROFILE = "vtr-flagship-k6-n10-40nm"
+_RUNTIME_ROOT = Path(__file__).resolve().parents[2]
+_YOSYS_SCRIPT_ROOT = _RUNTIME_ROOT / "scripts" / "yosys"
+_VTR_MODEL_LIBRARY = _YOSYS_SCRIPT_ROOT / "vtr_models.v"
+_VTR_MULTIPLY_MAP = _YOSYS_SCRIPT_ROOT / "vtr_multiply_map.v"
+_VTR_MEMORY_LIBRARY = _YOSYS_SCRIPT_ROOT / "vtr_memories.txt"
+_VTR_MEMORY_MAP = _YOSYS_SCRIPT_ROOT / "vtr_memory_map.v"
+_VTR_HARD_BLOCK_MODELS = frozenset(
+    {"multiply", "single_port_ram", "dual_port_ram"}
+)
 
 
 def _sha256(path: Path) -> str:
@@ -31,8 +41,10 @@ def build_vtr_yosys_script(
     sources: Iterable[Path],
     top: str,
     output: Path,
+    *,
+    hard_blocks: bool = False,
 ) -> str:
-    """Build a logic-only LUT6/DFF eBLIF script accepted by VPR.
+    """Build a VTR-compatible LUT6/DFF and optional hard-block eBLIF script.
 
     ``dffunmap`` is deliberately applied before and after ABC. It lowers
     enable/reset FF variants into muxes plus the generic DFF form emitted by
@@ -44,19 +56,49 @@ def build_vtr_yosys_script(
         raise EmuFlowError("VTR synthesis requires at least one RTL source")
     top_identifier = _yosys_identifier(top)
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
-    return "; ".join(
-        (
-            f"read_verilog -sv {read_sources}",
-            f"hierarchy -check -top {top_identifier}",
-            f"synth -top {top_identifier} -noabc",
-            "dffunmap",
-            "abc -lut 6",
-            "dffunmap",
-            "clean",
-            "check",
-            f"write_blif -attr -cname {_yosys_quote(str(output))}",
+    commands = [
+        f"read_verilog -sv {read_sources}",
+        f"hierarchy -check -top {top_identifier}",
+    ]
+    if hard_blocks:
+        for path in (
+            _VTR_MODEL_LIBRARY,
+            _VTR_MULTIPLY_MAP,
+            _VTR_MEMORY_LIBRARY,
+            _VTR_MEMORY_MAP,
+        ):
+            if not path.is_file():
+                raise EmuFlowError(
+                    f"VTR hard-block mapping file is missing: {path}"
+                )
+        commands.extend(
+            (
+                f"synth -top {top_identifier} -run begin:fine -noalumacc",
+                f"read_verilog -lib {_yosys_quote(str(_VTR_MODEL_LIBRARY))}",
+                "wreduce t:$mul",
+                f"techmap -map {_yosys_quote(str(_VTR_MULTIPLY_MAP))}",
+                f"memory_libmap -lib {_yosys_quote(str(_VTR_MEMORY_LIBRARY))}",
+                f"techmap -map {_yosys_quote(str(_VTR_MEMORY_MAP))}",
+                "memory_map",
+                "opt -full",
+                "techmap",
+            )
         )
+    else:
+        commands.append(f"synth -top {top_identifier} -noabc")
+    commands.extend(("dffunmap", "abc -lut 6", "dffunmap", "clean", "check"))
+    if hard_blocks:
+        commands.extend(
+            (
+                "chtype -set multiply t:VTR_MULTIPLY_*",
+                "chtype -set single_port_ram t:VTR_SP_BIT_*",
+                "chtype -set dual_port_ram t:VTR_DP_BIT_*",
+            )
+        )
+    commands.append(
+        f"write_blif -attr -cname {_yosys_quote(str(output))}"
     )
+    return "; ".join(commands)
 
 
 def run_vtr_yosys(
@@ -66,6 +108,7 @@ def run_vtr_yosys(
     *,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
+    hard_blocks: bool = False,
 ) -> Dict[str, Any]:
     source_list = [path.resolve() for path in sources]
     for source in source_list:
@@ -74,7 +117,12 @@ def run_vtr_yosys(
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     command = resolve_native_executable("yosys", executable)
-    script = build_vtr_yosys_script(source_list, top, output)
+    script = build_vtr_yosys_script(
+        source_list,
+        top,
+        output,
+        hard_blocks=hard_blocks,
+    )
     completed = subprocess.run(
         [command, "-p", script],
         stdout=subprocess.PIPE,
@@ -96,21 +144,29 @@ def run_vtr_yosys(
             f"Yosys did not create the expected eBLIF: {output}"
         )
     text = output.read_text(encoding="utf-8", errors="replace")
-    unsupported = sorted(
-        {
-            line.split()[1]
-            for line in text.splitlines()
-            if line.startswith(".subckt ") and len(line.split()) >= 2
-        }
-    )
+    subcircuits = [
+        line.split()[1]
+        for line in text.splitlines()
+        if line.startswith(".subckt ") and len(line.split()) >= 2
+    ]
+    unsupported = sorted(set(subcircuits) - _VTR_HARD_BLOCK_MODELS)
     if unsupported:
         raise ValidationError(
-            "logic-only VTR eBLIF contains architecture-specific subckts: "
+            "VTR eBLIF contains unsupported architecture subckts: "
             + ", ".join(unsupported)
+        )
+    if not hard_blocks and subcircuits:
+        raise ValidationError(
+            "logic-only VTR eBLIF contains architecture-specific subckts: "
+            + ", ".join(sorted(set(subcircuits)))
         )
     report = {
         "status": "pass",
         "provider": "yosys-root-build",
+        "mapping": (
+            "vtr-flagship-heterogeneous" if hard_blocks else "logic-only"
+        ),
+        "mapping_profile": VTR_HARD_BLOCK_PROFILE if hard_blocks else None,
         "top": top,
         "output": str(output),
         "sha256": _sha256(output),
@@ -120,7 +176,23 @@ def run_vtr_yosys(
         "latches": sum(
             line.startswith(".latch") for line in text.splitlines()
         ),
+        # VTR's public memory model exposes one bit-slice atom per data bit;
+        # VPR subsequently packs those atoms into one physical memory block.
+        "hard_block_atoms": {
+            model: subcircuits.count(model)
+            for model in sorted(_VTR_HARD_BLOCK_MODELS)
+        },
     }
+    if hard_blocks:
+        report["mapping_inputs"] = {
+            path.name: _sha256(path)
+            for path in (
+                _VTR_MODEL_LIBRARY,
+                _VTR_MULTIPLY_MAP,
+                _VTR_MEMORY_LIBRARY,
+                _VTR_MEMORY_MAP,
+            )
+        }
     return report
 
 

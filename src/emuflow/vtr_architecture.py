@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import subprocess
 import urllib.request
 from collections import Counter, defaultdict
@@ -19,6 +20,9 @@ from .native_tools import resolve_native_executable
 ARCHITECTURE_TIMING_DB_SCHEMA = "emuflow.architecture-timing-db/v1"
 VTR_SOURCE_FORMAT = "vtr-architecture-xml/v1"
 _EXTRACT_HEADER = "EMUFLOW_VTR_ARCHITECTURE_EXTRACT_V1"
+_VPR_ARRAY_SIZE = re.compile(
+    r"^Array size:\s+(\d+)\s+x\s+(\d+)\s+logic blocks\s*$"
+)
 
 
 def _runtime_data_path(relative: Path) -> Path:
@@ -44,6 +48,25 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def read_vpr_placement_dimensions(path: Path) -> tuple[int, int]:
+    """Read the exact auto-layout dimensions recorded by a VPR placement."""
+
+    if not path.is_file():
+        raise ValidationError(f"VPR placement does not exist: {path}")
+    for line in path.read_text(
+        encoding="utf-8", errors="replace"
+    ).splitlines():
+        match = _VPR_ARRAY_SIZE.match(line.strip())
+        if match:
+            width, height = (int(value) for value in match.groups())
+            if width > 0 and height > 0:
+                return width, height
+            break
+    raise ValidationError(
+        f"VPR placement has no valid Array size header: {path}"
+    )
 
 
 def fetch_pinned_vtr_architecture(

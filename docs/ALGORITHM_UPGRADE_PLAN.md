@@ -657,10 +657,17 @@ edge/switch connectivity and route-tree branch restarts, reconstructs
 per-resource occupancy/capacity, and binds net/sink coverage to the packed
 contract and placement hash.
 
+The pinned flagship mapping profile now preserves Yosys multiplier and
+synchronous RAM inference through eBLIF. Fixed-width mapping cells implement
+the architecture's legal multiplier modes, while `memory_libmap` selects its
+legal 32-Kibit single/dual-port modes. VPR performs the final mode-aware
+packing. ArchitectureDB dimensions are taken from VPR's actual auto-layout
+placement rather than a design-specific constant.
+
 The remaining R0/R1 work is:
 
-- extend the implemented LUT6/DFF eBLIF mapper with architecture-neutral
-  memory, multiplier, and other hard-block mapping;
+- generalize the implemented flagship multiplier/RAM mapper into
+  architecture-specific mapping profiles and add remaining hard-block types;
 - translate Architecture TimingDB into OpenSTA cell/interconnect models.
 
 Until R0 is complete, existing timing-aware providers remain research

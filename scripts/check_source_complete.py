@@ -139,6 +139,12 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "scripts/vivado/export_timing_path_database.tcl",
     "scripts/opensta/export_timing_path_database.tcl",
     "scripts/yosys/logic_only_map.v",
+    "scripts/yosys/vtr_models.v",
+    "scripts/yosys/vtr_multiply_map.v",
+    "scripts/yosys/vtr_memories.txt",
+    "scripts/yosys/vtr_memory_map.v",
+    "examples/rtl/vtr_hard_blocks.v",
+    "tests/check_vtr_hard_block_synthesis.py",
     "resources/timing/ultrascaleplus-softlogic-v1.json",
 )
 

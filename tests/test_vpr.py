@@ -24,6 +24,22 @@ class VprTest(unittest.TestCase):
         self.assertIn("abc -lut 6", script)
         self.assertIn('write_blif -attr -cname "build/cpu.eblif"', script)
 
+    def test_hard_block_script_uses_the_pinned_vtr_profile(self) -> None:
+        script = build_vtr_yosys_script(
+            [Path("examples/rtl/vtr_hard_blocks.v")],
+            "vtr_hard_blocks",
+            Path("build/vtr_hard_blocks.eblif"),
+            hard_blocks=True,
+        )
+        self.assertIn("synth -top vtr_hard_blocks -run begin:fine", script)
+        self.assertIn("vtr_multiply_map.v", script)
+        self.assertIn("memory_libmap -lib", script)
+        self.assertIn("vtr_memories.txt", script)
+        self.assertIn("vtr_memory_map.v", script)
+        self.assertIn("chtype -set multiply", script)
+        self.assertIn("chtype -set single_port_ram", script)
+        self.assertEqual(script.count("dffunmap"), 2)
+
     def test_empty_source_list_is_rejected(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "at least one RTL source"):
             build_vtr_yosys_script([], "cpu", Path("cpu.eblif"))

@@ -36,7 +36,17 @@ class MinCostFlowLegalizer:
                 continue
             # As one model may correspond to different resources,
             # use the average area of different resources.
-            inst_ids = placedb.collectInstIds(resource_id).tolist()
+            inst_ids = [
+                inst_id
+                for inst_id in placedb.collectInstIds(resource_id).tolist()
+                if (
+                    data_cls.movable_range[0]
+                    <= inst_id
+                    < data_cls.movable_range[1]
+                )
+            ]
+            if not inst_ids:
+                continue
             site_boxes = placedb.collectSiteBoxes(resource_id).tolist()
             site_boxes = torch.tensor(
                 site_boxes, dtype=data_cls.wl_precond.dtype)
@@ -44,7 +54,9 @@ class MinCostFlowLegalizer:
                 inst_ids, dtype=torch.int32),
                 data_cls.wl_precond.cpu(),
                 site_boxes)
-            # Add fixed and movable instances for instances local masks.
+            # Fixed instances already occupy architecture slots and must not
+            # become additional MCF demands.  Track only movable instances
+            # and their fillers in the masks updated after legalization.
             self.inst_ids_groups.append(inst_ids)
 
             area_types = placedb.resourceAreaTypes(

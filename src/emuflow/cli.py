@@ -78,6 +78,7 @@ from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
 from .vtr_architecture import (
     fetch_pinned_vtr_architecture,
+    read_vpr_placement_dimensions,
     run_vtr_architecture_import,
     validate_vtr_architecture_db,
     validate_vtr_timing_db_file,
@@ -168,7 +169,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     vpr_synth = vpr_subparsers.add_parser(
         "synth",
-        help="map RTL to logic-only LUT6/DFF eBLIF for VPR",
+        help="map RTL to VTR-compatible eBLIF for VPR",
     )
     vpr_synth.add_argument("sources", nargs="+", type=Path)
     vpr_synth.add_argument("--top", required=True)
@@ -178,6 +179,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="explicit comparison override; defaults to the in-tree build",
     )
     vpr_synth.add_argument("--log", type=Path)
+    vpr_synth.add_argument(
+        "--hard-blocks",
+        action="store_true",
+        help=(
+            "map multipliers and RAMs to the public VTR flagship "
+            "architecture modes"
+        ),
+    )
     vpr_run = vpr_subparsers.add_parser(
         "run",
         help="run exact VPR pack, baseline place, route, and analysis",
@@ -319,8 +328,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     arch_import_vtr.add_argument("input", type=Path)
     arch_import_vtr.add_argument("--architecture-id", required=True)
-    arch_import_vtr.add_argument("--width", type=int, required=True)
-    arch_import_vtr.add_argument("--height", type=int, required=True)
+    arch_import_vtr.add_argument("--width", type=int)
+    arch_import_vtr.add_argument("--height", type=int)
+    arch_import_vtr.add_argument(
+        "--reference-placement",
+        type=Path,
+        help="derive exact auto-layout dimensions from a VPR .place file",
+    )
     arch_import_vtr.add_argument(
         "--architecture-output", type=Path, required=True
     )
@@ -1121,6 +1135,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 output=args.output,
                 executable=args.yosys,
                 log_path=args.log,
+                hard_blocks=args.hard_blocks,
             )
         elif args.vpr_command == "run":
             report = run_vpr(
@@ -1214,13 +1229,29 @@ def _dispatch(args: argparse.Namespace) -> int:
                 log_path=args.log,
             )
         elif args.arch_command == "import-vtr":
+            if args.reference_placement is not None:
+                if args.width is not None or args.height is not None:
+                    raise EmuFlowError(
+                        "--reference-placement cannot be combined with "
+                        "--width or --height"
+                    )
+                width, height = read_vpr_placement_dimensions(
+                    args.reference_placement
+                )
+            elif args.width is None or args.height is None:
+                raise EmuFlowError(
+                    "import-vtr requires either --reference-placement or "
+                    "both --width and --height"
+                )
+            else:
+                width, height = args.width, args.height
             report = run_vtr_architecture_import(
                 input_path=args.input,
                 architecture_output_path=args.architecture_output,
                 timing_output_path=args.timing_output,
                 architecture_id=args.architecture_id,
-                width=args.width,
-                height=args.height,
+                width=width,
+                height=height,
                 source_url=args.source_url,
                 executable=args.native,
             )

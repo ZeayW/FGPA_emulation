@@ -4,10 +4,12 @@ import unittest
 from pathlib import Path
 
 from emuflow.architecture import ArchitectureDB
+from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.vtr_architecture import (
     _tile_templates,
     fetch_pinned_vtr_architecture,
+    read_vpr_placement_dimensions,
     run_vtr_architecture_import,
     validate_vtr_architecture_db,
     validate_vtr_timing_db,
@@ -23,6 +25,25 @@ FIXTURE = (
 
 
 class VtrArchitectureTest(unittest.TestCase):
+    def test_reads_exact_vpr_auto_layout_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            placement = Path(temporary) / "design.place"
+            placement.write_text(
+                "Netlist_File: design.net\n"
+                "Array size: 8 x 11 logic blocks\n\n"
+                "#block name\tx\ty\tsubblk\tblock number\n",
+                encoding="utf-8",
+            )
+            dimensions = read_vpr_placement_dimensions(placement)
+        self.assertEqual(dimensions, (8, 11))
+
+    def test_rejects_placement_without_array_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            placement = Path(temporary) / "design.place"
+            placement.write_text("invalid\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "Array size"):
+                read_vpr_placement_dimensions(placement)
+
     def test_equivalent_sites_are_alternatives_not_additive(self) -> None:
         templates = _tile_templates(
             {

@@ -172,6 +172,12 @@ performs analytical placement and single-site min-cost-flow legalization; an
 independent checker verifies completeness, compatibility, capacity, and
 collisions before emitting VPR `.place`.
 
+For the pinned public flagship profile, Yosys techmaps inferred multiplier
+and synchronous RAM cells into the exact VTR model ports and legal modes.
+VTR's bit-sliced RAM atoms remain visible until VPR packs them into a physical
+memory block. ArchitectureDB dimensions are derived from VPR's auto-layout
+placement header so the OpenPARF and VPR device views cannot silently diverge.
+
 The earlier UltraScale+ risk spike remains an optional backend and implements:
 
 - ArchitectureDB v1 and Placement v1;
@@ -445,7 +451,7 @@ the current pausible-clock runtime. Existing routed timing measurements are
 proprietary cross-validation results until the open router path is connected.
 
 This validates the board-independent logical/runtime contracts for the current
-logic-only, single-virtual-clock envelope. It does not close the open physical
+single-virtual-clock envelope. It does not close the open physical
 placement/routing gate. Hardware BSP pin binding, source-synchronous board
 timing, dedicated clock-buffer binding, bitstream generation, link training,
 and a golden hardware workload remain later gates.
@@ -546,7 +552,7 @@ Until a board is selected:
 - routing provider: root-built in-tree VTR/VPR;
 - current placement/routing bridge: the VPR packed-cluster contract,
   OpenPARF clustered placement, checked VPR `.place` emission, and VPR
-  detailed routing work for the logic-only VTR backend;
+  detailed routing work for the heterogeneous VTR flagship backend;
 - optional real-device backend: UltraScale+/Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will
