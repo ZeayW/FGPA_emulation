@@ -132,9 +132,11 @@
         "src/native/tdm_partition_feedback.cpp",
         "src/emuflow/partition_feedback.py",
         "src/emuflow/cross_stage.py",
+        "src/emuflow/frame_search.py",
         "schemas/partition-net-weights-v1.schema.json",
-        "schemas/cross-stage-candidate-v1.schema.json",
-        "schemas/cross-stage-report-v1.schema.json",
+        "schemas/frame-search-v2.schema.json",
+        "schemas/cross-stage-candidate-v2.schema.json",
+        "schemas/cross-stage-report-v2.schema.json",
         "engines/repart/RePart"
       ],
       "build_targets": [

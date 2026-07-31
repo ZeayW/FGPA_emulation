@@ -346,6 +346,15 @@ feedback is not applied as an uncontrolled jump: log-space proximal damping
 and deterministic descending backtracking generate positive, reproducible
 trial weights between the unweighted and full-feedback objectives.
 
+The throughput-first mode additionally performs an exact checked frame search
+for every candidate partition. Its primary objective is the minimum feasible
+frame length, which directly determines the nominal pausible-clock emulation
+frequency. The next objective is scheduled-path margin against that virtual
+clock period. Original RTL clock-domain slack is retained for criticality and
+diagnostics, but cannot reject an otherwise closed virtual-runtime candidate
+or justify a slower frame. The checker requires both a feasible upper bound
+and an explicitly infeasible frame immediately below the selected minimum.
+
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 
 Implement:

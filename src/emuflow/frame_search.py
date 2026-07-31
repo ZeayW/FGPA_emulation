@@ -18,7 +18,7 @@ from .runtime import (
 )
 
 
-FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v1"
+FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v2"
 
 
 def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -54,16 +54,49 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
             or status not in {"feasible", "infeasible"}
         ):
             raise ValidationError("frame-search attempt is invalid")
+        if status == "feasible":
+            expected_root = f"frame-{slots:08d}"
+            if (
+                attempt.get("route_dir")
+                != f"{expected_root}/system-route"
+                or attempt.get("tdm_dir") != f"{expected_root}/tdm"
+                or isinstance(attempt.get("completion_slot"), bool)
+                or not isinstance(attempt.get("completion_slot"), int)
+                or attempt["completion_slot"] < 0
+            ):
+                raise ValidationError(
+                    "frame-search feasible attempt metadata is invalid"
+                )
+        elif (
+            not isinstance(attempt.get("error_type"), str)
+            or not attempt["error_type"]
+            or not isinstance(attempt.get("reason"), str)
+            or not attempt["reason"]
+        ):
+            raise ValidationError(
+                "frame-search infeasible attempt evidence is invalid"
+            )
         by_slots[slots] = attempt
     if report.get("evaluated_candidates") != len(attempts):
         raise ValidationError("frame-search candidate count is inconsistent")
     if selected not in by_slots or by_slots[selected]["status"] != "feasible":
         raise ValidationError("selected frame-search candidate is not feasible")
+    if maximum not in by_slots or by_slots[maximum]["status"] != "feasible":
+        raise ValidationError("frame-search maximum was not proven feasible")
+    if selected > 2 and (
+        selected - 1 not in by_slots
+        or by_slots[selected - 1]["status"] != "infeasible"
+    ):
+        raise ValidationError(
+            "frame-search minimum boundary was not proven infeasible"
+        )
     if any(
         slots < selected and attempt["status"] != "infeasible"
         for slots, attempt in by_slots.items()
     ):
         raise ValidationError("frame-search has a feasible smaller candidate")
+    if report.get("selected_candidate") != f"frame-{selected:08d}":
+        raise ValidationError("frame-search selected candidate is inconsistent")
     speedup = report.get("speedup_over_maximum")
     if (
         isinstance(speedup, bool)
@@ -71,6 +104,48 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
         or abs(float(speedup) - maximum / selected) > 1.0e-12
     ):
         raise ValidationError("frame-search speedup is inconsistent")
+    configuration = report.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValidationError("frame-search configuration is invalid")
+    expected_configuration_keys = {
+        "ratio_max_iterations",
+        "max_ratio",
+        "ratio_quantum",
+        "post_refinement_iterations",
+        "ratio_convergence",
+        "simulation_frames",
+    }
+    if set(configuration) != expected_configuration_keys:
+        raise ValidationError("frame-search configuration is incomplete")
+    for name in (
+        "ratio_max_iterations",
+        "ratio_quantum",
+        "post_refinement_iterations",
+        "simulation_frames",
+    ):
+        value = configuration[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValidationError(
+                f"frame-search configuration {name} is invalid"
+            )
+    max_ratio = configuration["max_ratio"]
+    if max_ratio is not None and (
+        isinstance(max_ratio, bool)
+        or not isinstance(max_ratio, int)
+        or max_ratio <= 0
+    ):
+        raise ValidationError(
+            "frame-search configuration max_ratio is invalid"
+        )
+    convergence = configuration["ratio_convergence"]
+    if (
+        isinstance(convergence, bool)
+        or not isinstance(convergence, (int, float))
+        or convergence <= 0.0
+    ):
+        raise ValidationError(
+            "frame-search configuration ratio_convergence is invalid"
+        )
     return {
         "status": "pass",
         "selected_frame_slots": selected,
@@ -93,6 +168,11 @@ def run_frame_length_search(
     router: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
     simulation_frames: int = 16,
+    ratio_max_iterations: int = 500,
+    max_ratio: Optional[int] = None,
+    ratio_quantum: int = 8,
+    post_refinement_iterations: int = 200,
+    ratio_convergence: float = 1.0e-9,
 ) -> Dict[str, Any]:
     """Find the shortest feasible frame under the exact downstream checks.
 
@@ -140,6 +220,11 @@ def run_frame_length_search(
                 tdm_root,
                 simulation_frames=simulation_frames,
                 ratio_optimizer=ratio_optimizer,
+                ratio_max_iterations=ratio_max_iterations,
+                max_ratio=max_ratio,
+                ratio_quantum=ratio_quantum,
+                post_refinement_iterations=post_refinement_iterations,
+                convergence=ratio_convergence,
             )
             schedule = read_json(tdm_root / "schedule.json")
             runtime = build_virtual_runtime(schedule, platform)
@@ -213,6 +298,14 @@ def run_frame_length_search(
         "selected_frame_slots": chosen,
         "speedup_over_maximum": max_frame_slots / chosen,
         "evaluated_candidates": len(attempts),
+        "configuration": {
+            "ratio_max_iterations": ratio_max_iterations,
+            "max_ratio": max_ratio,
+            "ratio_quantum": ratio_quantum,
+            "post_refinement_iterations": post_refinement_iterations,
+            "ratio_convergence": ratio_convergence,
+            "simulation_frames": simulation_frames,
+        },
         "attempts": [attempts[key] for key in sorted(attempts)],
         "selected_candidate": str(selected_root.relative_to(search_root)),
     }

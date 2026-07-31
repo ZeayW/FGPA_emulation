@@ -537,6 +537,15 @@ interpolation, with a deterministic decreasing-step line search; this limits
 the discontinuity of a new hypergraph partition and never promotes a
 regressing full-step candidate.
 
+With `--optimize-frame-slots`, every partition candidate treats
+`--frame-slots` as a feasible upper bound and reruns the checked Phase 4/5
+minimum-frame search. The outer-loop objective first minimizes the exact
+feasible frame, then maximizes the estimated timing margin against the
+pausible virtual-DUT clock. Original RTL-clock slack remains a secondary
+research metric and is not used as the emulation closure gate. The report
+checker independently rebuilds each candidate score, validates the proven
+feasible/infeasible frame boundary, and replays accept/rollback.
+
 The academic Phase 5 provider is likewise rooted in editable C++17 source at
 `src/native/tdm_ratio_optimizer.cpp`. The Python layer constructs the
 versioned timing model, realizes the optimized ratio/lane groups as an exact

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "emuflow"
 version = "0.1.0"
-description = "Open multi-FPGA emulation flow targeting AMD UltraScale+"
+description = "Open, source-complete multi-FPGA emulation flow"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}

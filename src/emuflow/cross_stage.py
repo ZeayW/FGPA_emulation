@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .errors import EmuFlowError, ValidationError
+from .frame_search import (
+    run_frame_length_search,
+    validate_frame_search_report,
+)
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
@@ -28,6 +32,7 @@ from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .platform import Platform
 from .routing import validate_system_routes
+from .runtime import build_virtual_runtime, validate_virtual_runtime
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     _normalized_slack,
@@ -39,14 +44,16 @@ from .tdm_ratio import TDM_RATIO_PROVIDER, validate_tdm_ratio_plan
 from .timing_routing import ROUTE_TDM_PROVIDER
 
 
-CROSS_STAGE_CANDIDATE_SCHEMA = "emuflow.cross-stage-candidate/v1"
-CROSS_STAGE_REPORT_SCHEMA = "emuflow.cross-stage-report/v1"
-CROSS_STAGE_PROVIDER = "tdm-feedback-proximal-line-search-v1"
+CROSS_STAGE_CANDIDATE_SCHEMA = "emuflow.cross-stage-candidate/v2"
+CROSS_STAGE_REPORT_SCHEMA = "emuflow.cross-stage-report/v2"
+CROSS_STAGE_PROVIDER = "throughput-first-tdm-feedback-line-search-v2"
 DEFAULT_FEEDBACK_STEPS = (1.0, 0.5, 0.25, 0.125)
 CROSS_STAGE_OBJECTIVE = (
-    "lexicographic(all-path worst normalized slack, all-path total "
-    "negative normalized slack, negative path count, maximum TDM ratio, "
-    "completion slot, link bit-hops, cut bits, replica LUTs)"
+    "lexicographic(minimum feasible frame slots, maximum virtual-clock "
+    "timing margin, all-path worst normalized original-clock slack, "
+    "all-path total negative normalized original-clock slack, negative "
+    "path count, maximum TDM ratio, completion slot, link bit-hops, cut "
+    "bits, replica LUTs)"
 )
 
 
@@ -301,6 +308,9 @@ def _path_metrics(
         record for record in records if record["slack_ns"] < 0.0
     ]
     worst = ordered[0]
+    slowest = max(
+        records, key=lambda item: (item["delay_ns"], item["path"])
+    )
     return {
         "all_paths": len(records),
         "crossing_paths": sum(
@@ -314,6 +324,8 @@ def _path_metrics(
         "worst_delay_ns": worst["delay_ns"],
         "worst_slack_ns": worst["slack_ns"],
         "worst_normalized_slack": worst["normalized_slack"],
+        "maximum_delay_path": slowest["path"],
+        "maximum_delay_ns": slowest["delay_ns"],
         "total_negative_normalized_slack": sum(
             record["normalized_slack"] for record in negative
         ),
@@ -331,6 +343,7 @@ def _objective_metrics(
     assignment: Mapping[str, Any],
     routes: Mapping[str, Any],
     schedule: Mapping[str, Any],
+    runtime: Mapping[str, Any],
 ) -> Dict[str, Any]:
     route_metrics = routes.get("metrics", {})
     schedule_metrics = schedule.get("metrics", {})
@@ -351,7 +364,15 @@ def _objective_metrics(
         or replica_luts < 0
     ):
         raise ValidationError("assignment replica LUT count is invalid")
+    virtual_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
+    runtime_slack = virtual_period - path_metrics["maximum_delay_ns"]
     return {
+        "frame_slots": runtime["frame"]["slots"],
+        "nominal_virtual_frequency_mhz": runtime["virtual_dut_clock"][
+            "nominal_frequency_mhz"
+        ],
+        "estimated_runtime_slack_ns": runtime_slack,
+        "estimated_runtime_closed": runtime_slack >= 0.0,
         "worst_normalized_slack": path_metrics[
             "worst_normalized_slack"
         ],
@@ -371,6 +392,8 @@ def _objective_metrics(
 
 def _objective_key(metrics: Mapping[str, Any]) -> Tuple[float, ...]:
     return (
+        float(metrics["frame_slots"]),
+        -float(metrics["estimated_runtime_slack_ns"]),
         -float(metrics["worst_normalized_slack"]),
         -float(metrics["total_negative_normalized_slack"]),
         float(metrics["negative_slack_paths"]),
@@ -483,13 +506,20 @@ def build_cross_stage_candidate(
     validate_system_routes(assignment, platform, routes)
     validate_tdm_ratio_plan(routes, platform, ratio_plan)
     validate_tdm_schedule(routes, platform, schedule, ratio_plan)
+    runtime = build_virtual_runtime(schedule, platform)
+    runtime_validation = validate_virtual_runtime(runtime, schedule, platform)
     transport_delay = _scheduled_transport_delay_by_net(
         routes, schedule, platform
     )
     paths = _path_metrics(database, assignment, transport_delay)
     objective_metrics = _objective_metrics(
-        paths, assignment, routes, schedule
+        paths, assignment, routes, schedule, runtime
     )
+    if not objective_metrics["estimated_runtime_closed"]:
+        raise ValidationError(
+            "cross-stage candidate scheduled path delay exceeds its "
+            "virtual clock period"
+        )
     hashes = dict(source_hashes or {})
     candidate_id = hashlib.sha256(
         "\n".join(
@@ -504,6 +534,27 @@ def build_cross_stage_candidate(
         "candidate_id": candidate_id,
         "source_sha256": hashes,
         "path_metrics": paths,
+        "runtime": {
+            "provider": runtime["provider"],
+            "validation": runtime_validation,
+            "estimated_timing": {
+                "qualification": (
+                    "academic-preplacement-fixed-delay-plus-concrete-"
+                    "tdm-schedule"
+                ),
+                "maximum_delay_path": paths["maximum_delay_path"],
+                "maximum_delay_ns": paths["maximum_delay_ns"],
+                "virtual_period_ns": runtime["virtual_dut_clock"][
+                    "nominal_period_ns"
+                ],
+                "estimated_slack_ns": objective_metrics[
+                    "estimated_runtime_slack_ns"
+                ],
+                "estimated_closed": objective_metrics[
+                    "estimated_runtime_closed"
+                ],
+            },
+        },
         "objective": CROSS_STAGE_OBJECTIVE,
         "objective_metrics": objective_metrics,
         "objective_key": list(_objective_key(objective_metrics)),
@@ -592,6 +643,7 @@ def _run_candidate_flow(
     platform_path: Path,
     route_constraints_path: Optional[Path],
     frame_slots: Optional[int],
+    optimize_frame_slots: bool,
     route_max_iterations: Optional[int],
     router: Optional[str],
     simulation_frames: int,
@@ -610,30 +662,59 @@ def _run_candidate_flow(
     projection = project_sta_path_database(
         database_path, assignment_path, timing_path
     )
-    phase4 = run_phase4(
-        assignment_path,
-        platform_path,
-        phase4_root,
-        constraints_path=route_constraints_path,
-        frame_slots=frame_slots,
-        max_iterations=route_max_iterations,
-        provider=ROUTE_TDM_PROVIDER,
-        timing_paths_path=timing_path,
-        router=router,
-    )
-    phase5 = run_phase5(
-        phase4_root / "routes.json",
-        platform_path,
-        phase5_root,
-        simulation_frames=simulation_frames,
-        provider=TDM_RATIO_PROVIDER,
-        ratio_optimizer=ratio_optimizer,
-        ratio_max_iterations=ratio_max_iterations,
-        max_ratio=max_ratio,
-        ratio_quantum=ratio_quantum,
-        post_refinement_iterations=post_refinement_iterations,
-        convergence=ratio_convergence,
-    )
+    frame_search = None
+    if optimize_frame_slots:
+        if frame_slots is None:
+            raise ValidationError(
+                "cross-stage frame optimization requires a feasible upper "
+                "bound"
+            )
+        frame_search = run_frame_length_search(
+            assignment_path,
+            platform_path,
+            timing_path,
+            iteration_root / "frame-search",
+            phase4_root,
+            phase5_root,
+            max_frame_slots=frame_slots,
+            route_constraints=route_constraints_path,
+            route_max_iterations=route_max_iterations,
+            router=router,
+            ratio_optimizer=ratio_optimizer,
+            simulation_frames=simulation_frames,
+            ratio_max_iterations=ratio_max_iterations,
+            max_ratio=max_ratio,
+            ratio_quantum=ratio_quantum,
+            post_refinement_iterations=post_refinement_iterations,
+            ratio_convergence=ratio_convergence,
+        )
+        phase4 = read_json(phase4_root / "phase4_report.json")
+        phase5 = read_json(phase5_root / "phase5_report.json")
+    else:
+        phase4 = run_phase4(
+            assignment_path,
+            platform_path,
+            phase4_root,
+            constraints_path=route_constraints_path,
+            frame_slots=frame_slots,
+            max_iterations=route_max_iterations,
+            provider=ROUTE_TDM_PROVIDER,
+            timing_paths_path=timing_path,
+            router=router,
+        )
+        phase5 = run_phase5(
+            phase4_root / "routes.json",
+            platform_path,
+            phase5_root,
+            simulation_frames=simulation_frames,
+            provider=TDM_RATIO_PROVIDER,
+            ratio_optimizer=ratio_optimizer,
+            ratio_max_iterations=ratio_max_iterations,
+            max_ratio=max_ratio,
+            ratio_quantum=ratio_quantum,
+            post_refinement_iterations=post_refinement_iterations,
+            convergence=ratio_convergence,
+        )
     score = evaluate_cross_stage_candidate(
         database_path,
         assignment_path,
@@ -643,7 +724,7 @@ def _run_candidate_flow(
         platform_path,
         score_path,
     )
-    return {
+    result = {
         "iteration": iteration,
         "status": "pass",
         "assignment": _relative(assignment_path, root),
@@ -659,6 +740,14 @@ def _run_candidate_flow(
         "objective_key": score["objective_key"],
         "candidate_id": score["candidate_id"],
     }
+    if frame_search is not None:
+        result["frame_search"] = _relative(
+            iteration_root / "frame-search/frame-search-report.json", root
+        )
+        result["frame_search_validation"] = (
+            validate_frame_search_report(frame_search)
+        )
+    return result
 
 
 def run_cross_stage_optimization(
@@ -680,6 +769,7 @@ def run_cross_stage_optimization(
     partition_timeout_seconds: int = 3600,
     router: Optional[str] = None,
     frame_slots: Optional[int] = None,
+    optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
     ratio_optimizer: Optional[str] = None,
     feedback_optimizer: Optional[str] = None,
@@ -701,6 +791,10 @@ def run_cross_stage_optimization(
             "cross-stage max outer iterations must be non-negative"
         )
     steps = _normalize_feedback_steps(feedback_steps)
+    if optimize_frame_slots and frame_slots is None:
+        raise ValidationError(
+            "cross-stage --optimize-frame-slots requires --frame-slots"
+        )
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValidationError(
             f"cross-stage output directory is not empty: {output_dir}"
@@ -746,6 +840,7 @@ def run_cross_stage_optimization(
         platform_path=platform_path,
         route_constraints_path=route_constraints_path,
         frame_slots=frame_slots,
+        optimize_frame_slots=optimize_frame_slots,
         route_max_iterations=route_max_iterations,
         router=router,
         simulation_frames=simulation_frames,
@@ -834,6 +929,7 @@ def run_cross_stage_optimization(
                     platform_path=platform_path,
                     route_constraints_path=route_constraints_path,
                     frame_slots=frame_slots,
+                    optimize_frame_slots=optimize_frame_slots,
                     route_max_iterations=route_max_iterations,
                     router=router,
                     simulation_frames=simulation_frames,
@@ -929,6 +1025,8 @@ def run_cross_stage_optimization(
             "simulation_frames": simulation_frames,
             "pair_pressure_weight": pair_pressure_weight,
             "partition_timeout_seconds": partition_timeout_seconds,
+            "frame_slots": frame_slots,
+            "optimize_frame_slots": optimize_frame_slots,
             "feedback_steps": list(steps),
             "feedback_interpolation": (
                 "exp(step_size*log(raw_weight))"
@@ -1029,6 +1127,24 @@ def validate_cross_stage_report(
     ):
         raise ValidationError(
             "cross-stage report partition timeout is invalid"
+        )
+    optimize_frame_slots = configuration.get("optimize_frame_slots")
+    frame_slots = configuration.get("frame_slots")
+    if not isinstance(optimize_frame_slots, bool):
+        raise ValidationError(
+            "cross-stage report frame optimization flag is invalid"
+        )
+    if frame_slots is not None and (
+        isinstance(frame_slots, bool)
+        or not isinstance(frame_slots, int)
+        or frame_slots < 2
+    ):
+        raise ValidationError(
+            "cross-stage report frame upper bound is invalid"
+        )
+    if optimize_frame_slots and frame_slots is None:
+        raise ValidationError(
+            "cross-stage report optimized frame has no upper bound"
         )
     incumbent = None
     incumbent_record = None
@@ -1136,6 +1252,34 @@ def validate_cross_stage_report(
                 "cross-stage report Phase 3 validation mismatch"
             )
         score = read_json(root / candidate["score"])
+        frame_search_path = candidate.get("frame_search")
+        if optimize_frame_slots:
+            if not isinstance(frame_search_path, str):
+                raise ValidationError(
+                    "cross-stage optimized candidate has no frame search"
+                )
+            frame_validation = validate_frame_search_report(
+                read_json(root / frame_search_path)
+            )
+            if (
+                candidate.get("frame_search_validation")
+                != frame_validation
+                or frame_validation["selected_frame_slots"]
+                != score["objective_metrics"]["frame_slots"]
+                or frame_validation["selected_frame_slots"]
+                != read_json(root / candidate["schedule"])["metrics"][
+                    "frame_slots"
+                ]
+            ):
+                raise ValidationError(
+                    "cross-stage frame-search selection mismatch"
+                )
+        elif frame_search_path is not None or (
+            "frame_search_validation" in candidate
+        ):
+            raise ValidationError(
+                "cross-stage fixed-frame candidate has frame-search metadata"
+            )
         for key in (
             "candidate_id",
             "objective_metrics",

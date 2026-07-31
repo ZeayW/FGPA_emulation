@@ -1039,6 +1039,14 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument("--router")
     cross_stage_optimize.add_argument("--frame-slots", type=int)
     cross_stage_optimize.add_argument(
+        "--optimize-frame-slots",
+        action="store_true",
+        help=(
+            "treat --frame-slots as an upper bound and minimize the exact "
+            "feasible frame for every partition candidate"
+        ),
+    )
+    cross_stage_optimize.add_argument(
         "--route-max-iterations", type=int
     )
     cross_stage_optimize.add_argument("--ratio-optimizer")
@@ -1774,6 +1782,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 router=args.router,
                 frame_slots=args.frame_slots,
+                optimize_frame_slots=args.optimize_frame_slots,
                 route_max_iterations=args.route_max_iterations,
                 ratio_optimizer=args.ratio_optimizer,
                 feedback_optimizer=args.feedback_optimizer,

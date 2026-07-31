@@ -177,6 +177,10 @@ class CrossStageCandidateTest(unittest.TestCase):
     def test_lexicographic_acceptance_and_rollback(self) -> None:
         incumbent = {
             "objective_metrics": {
+                "frame_slots": 32,
+                "nominal_virtual_frequency_mhz": 7.8125,
+                "estimated_runtime_slack_ns": 20.0,
+                "estimated_runtime_closed": True,
                 "worst_normalized_slack": -2.0,
                 "total_negative_normalized_slack": -8.0,
                 "negative_slack_paths": 4,
@@ -200,6 +204,28 @@ class CrossStageCandidateTest(unittest.TestCase):
             }
         }
         tied = {"objective_metrics": dict(incumbent["objective_metrics"])}
+        faster = {
+            "objective_metrics": {
+                **regressed["objective_metrics"],
+                "frame_slots": 31,
+                "estimated_runtime_slack_ns": 1.0,
+            }
+        }
+        slower_with_better_original_slack = {
+            "objective_metrics": {
+                **improved["objective_metrics"],
+                "frame_slots": 33,
+                "estimated_runtime_slack_ns": 24.0,
+            }
+        }
+        self.assertTrue(
+            compare_candidate_objectives(faster, incumbent)["accepted"]
+        )
+        self.assertFalse(
+            compare_candidate_objectives(
+                slower_with_better_original_slack, incumbent
+            )["accepted"]
+        )
         self.assertTrue(
             compare_candidate_objectives(improved, incumbent)["accepted"]
         )
@@ -381,6 +407,61 @@ class CrossStageCandidateTest(unittest.TestCase):
                     database_path,
                     platform_path,
                 )
+
+            optimized_root = root / "frame_optimized"
+            optimized = run_cross_stage_optimization(
+                ir_path=ir_path,
+                platform_path=platform_path,
+                database_path=database_path,
+                initial_assignment_path=initial_root / "assignment.json",
+                output_dir=optimized_root,
+                phase3_provider="greedy",
+                max_outer_iterations=0,
+                min_used_fpgas=2,
+                balance_tolerance=1.0,
+                router=str(router),
+                ratio_optimizer=str(ratio_optimizer),
+                feedback_optimizer=str(feedback_optimizer),
+                simulation_frames=2,
+                frame_slots=16,
+                optimize_frame_slots=True,
+                max_ratio=8,
+                post_refinement_iterations=10,
+            )
+            optimized_candidate = optimized["candidates"][0]
+            frame_report_path = (
+                optimized_root / optimized_candidate["frame_search"]
+            )
+            frame_report = json.loads(frame_report_path.read_text())
+            selected_slots = frame_report["selected_frame_slots"]
+            self.assertEqual(
+                selected_slots,
+                optimized_candidate["objective_metrics"]["frame_slots"],
+            )
+            self.assertTrue(
+                optimized_candidate["objective_metrics"][
+                    "estimated_runtime_closed"
+                ]
+            )
+            if selected_slots > 2:
+                frame_report["attempts"] = [
+                    attempt
+                    for attempt in frame_report["attempts"]
+                    if attempt["frame_slots"] != selected_slots - 1
+                ]
+                frame_report["evaluated_candidates"] = len(
+                    frame_report["attempts"]
+                )
+                write_json(frame_report_path, frame_report)
+                with self.assertRaisesRegex(
+                    ValidationError, "minimum boundary"
+                ):
+                    validate_cross_stage_report(
+                        optimized_root / "cross_stage_report.json",
+                        ir_path,
+                        database_path,
+                        platform_path,
+                    )
             corrupted = copy.deepcopy(reports[0])
             corrupted["configuration"][
                 "partition_timeout_seconds"
