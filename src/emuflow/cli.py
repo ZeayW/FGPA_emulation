@@ -293,6 +293,48 @@ def _build_parser() -> argparse.ArgumentParser:
             "checked multi-resource balance bounds"
         ),
     )
+    multi_fpga_compile.add_argument(
+        "--timing-driven",
+        action="store_true",
+        help=(
+            "run OpenSTA, derive partition weights, project cut paths, and "
+            "enable timing-aware system routing/TDM"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--clock-period",
+        action="append",
+        default=[],
+        metavar="CLOCK=PERIOD_NS",
+    )
+    multi_fpga_compile.add_argument(
+        "--timing-model",
+        type=Path,
+        default=DEFAULT_TIMING_MODEL,
+    )
+    multi_fpga_compile.add_argument(
+        "--architecture-timing-db",
+        type=Path,
+        help=(
+            "public VTR TimingDB used to construct the pre-placement "
+            "OpenSTA model; also enables --timing-driven"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--opensta",
+        "--openroad-sta",
+        dest="opensta",
+        help="explicit OpenSTA executable override",
+    )
+    multi_fpga_compile.add_argument(
+        "--sta-max-paths", type=int, default=200000
+    )
+    multi_fpga_compile.add_argument(
+        "--timing-criticality-scale", type=float, default=9.0
+    )
+    multi_fpga_compile.add_argument(
+        "--timing-criticality-exponent", type=float, default=2.0
+    )
     multi_fpga_compile.add_argument("--route-constraints", type=Path)
     multi_fpga_compile.add_argument("--timing-paths", type=Path)
     multi_fpga_compile.add_argument("--router")
@@ -1501,6 +1543,20 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.partition_repair_min_used_fpgas
             ),
             partition_repair_balance=args.partition_repair_balance,
+            timing_driven=args.timing_driven,
+            clock_periods=(
+                parse_clock_definitions(args.clock_period)
+                if args.clock_period
+                else None
+            ),
+            timing_model=args.timing_model,
+            architecture_timing_db=args.architecture_timing_db,
+            opensta=args.opensta,
+            sta_max_paths=args.sta_max_paths,
+            timing_criticality_scale=args.timing_criticality_scale,
+            timing_criticality_exponent=(
+                args.timing_criticality_exponent
+            ),
             route_constraints=args.route_constraints,
             timing_paths=args.timing_paths,
             router=args.router,

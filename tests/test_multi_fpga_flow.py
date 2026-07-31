@@ -1,4 +1,6 @@
 import copy
+import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +10,7 @@ from emuflow.multi_fpga_flow import (
     run_multi_fpga_flow,
     validate_multi_fpga_flow_report,
 )
-from tests.native_build import tlr_router
+from tests.native_build import tdm_ratio_optimizer, tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +40,15 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertEqual(
                 report["stages"]["frontend"]["synthesis"]["mode"],
                 "provided-yosys-json",
+            )
+            persisted = json.loads(
+                (output / "multi-fpga-flow-report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                validate_multi_fpga_flow_report(persisted)["status"],
+                "pass",
             )
             for relative in (
                 "multi-fpga-flow-report.json",
@@ -70,6 +81,71 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ValidationError, "platform identity disagrees"
             ):
                 validate_multi_fpga_flow_report(broken)
+
+    def test_timing_driven_pipeline_connects_sta_through_tdm(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fake_sta = root / "sta"
+            fake_sta.write_text(
+                """#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]
+header = (
+    "path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
+    "slack_ns\\tfixed_delay_ns\\tpath_nets_hex"
+)
+records = [header]
+clock = "clk".encode().hex()
+for index, row in enumerate(rows):
+    _, emuir_hex = row.split("\\t")
+    path_id = f"path-{index}".encode().hex()
+    records.append(
+        f"{path_id}\\t{clock}\\t10\\t9.5\\t0.5\\t{emuir_hex}"
+    )
+Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
+    "\\n".join(records) + "\\n"
+)
+""",
+                encoding="utf-8",
+            )
+            fake_sta.chmod(fake_sta.stat().st_mode | stat.S_IXUSR)
+            output = root / "multi"
+            report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=output,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                timing_driven=True,
+                clock_periods={"clk": 10.0},
+                opensta=str(fake_sta),
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                frame_slots=32,
+                equivalence_cycles=2,
+            )
+            self.assertEqual(report["timing"]["status"], "pass")
+            self.assertFalse(
+                report["timing"]["partition_weights_applied"]
+            )
+            self.assertGreater(
+                report["timing"]["cut_path_projection"][
+                    "projected_paths"
+                ],
+                0,
+            )
+            self.assertIn(
+                "timing_validation", report["stages"]["tdm"]
+            )
+            for relative in (
+                "timing/path-database.json",
+                "timing/partition-net-weights.json",
+                "timing/cut-timing-paths.json",
+            ):
+                self.assertTrue((output / relative).is_file(), relative)
 
     def test_nonempty_output_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

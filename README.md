@@ -314,6 +314,13 @@ For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.
 
+Add `--timing-driven --clock-period CLOCK=PERIOD_NS` to make this same command
+run OpenSTA, derive timing-critical partition weights, project timing paths
+onto the selected cut nets, and drive timing-aware system routing and TDM.
+Passing a public VTR TimingDB with
+`--architecture-timing-db build/architecture/timing.json` automatically
+enables this mode.
+
 To validate one FPGA independently with the open physical backend, the
 following command fetches the pinned architecture automatically and enables
 its multiplier/RAM mapping profile:

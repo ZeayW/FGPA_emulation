@@ -9,11 +9,16 @@ from typing import Any, Dict, Iterable, Optional
 
 from .errors import EmuFlowError, ValidationError
 from .io import write_json
+from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
 from .phase1 import run_phase1
 from .phase3 import run_phase3
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .phase6 import run_phase6
+from .sta import (
+    derive_partition_net_weights,
+    project_sta_path_database,
+)
 from .synthesis import run_generic_yosys
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
@@ -43,7 +48,10 @@ def validate_multi_fpga_flow_report(
     if report.get("status") != "pass":
         raise ValidationError("multi-FPGA flow report did not pass")
     stages = report.get("stages")
-    if not isinstance(stages, dict) or tuple(stages) != _REQUIRED_STAGES:
+    if (
+        not isinstance(stages, dict)
+        or set(stages) != set(_REQUIRED_STAGES)
+    ):
         raise ValidationError("multi-FPGA flow stages are incomplete")
     for name in _REQUIRED_STAGES:
         stage = stages[name]
@@ -116,6 +124,14 @@ def run_multi_fpga_flow(
     partition_seed_attempts: int = 1,
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
+    timing_driven: bool = False,
+    clock_periods: Optional[Dict[str, float]] = None,
+    timing_model: Path = DEFAULT_TIMING_MODEL,
+    architecture_timing_db: Optional[Path] = None,
+    opensta: Optional[str] = None,
+    sta_max_paths: int = 200000,
+    timing_criticality_scale: float = 9.0,
+    timing_criticality_exponent: float = 2.0,
     route_constraints: Optional[Path] = None,
     timing_paths: Optional[Path] = None,
     router: Optional[str] = None,
@@ -133,6 +149,17 @@ def run_multi_fpga_flow(
             "unsupported multi-FPGA mapping profile "
             f"{mapping_profile!r}; expected one of "
             f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
+        )
+    timing_driven = timing_driven or architecture_timing_db is not None
+    if timing_driven and timing_paths is not None:
+        raise EmuFlowError(
+            "--timing-driven/--architecture-timing-db cannot be combined "
+            "with externally projected --timing-paths"
+        )
+    if timing_driven and not clock_periods:
+        raise EmuFlowError(
+            "timing-driven multi-FPGA compilation requires at least one "
+            "--clock-period CLOCK=PERIOD_NS"
         )
 
     output_dir = output_dir.resolve()
@@ -238,6 +265,37 @@ def run_multi_fpga_flow(
     }
     ir_path = phase1_root / "design.emuir.json"
 
+    timing_root = output_dir / "timing"
+    path_database_path = timing_root / "path-database.json"
+    net_weights_path = timing_root / "partition-net-weights.json"
+    timing_report = None
+    if timing_driven:
+        timing_root.mkdir(parents=True, exist_ok=True)
+        sta_report = run_opensta_path_database(
+            ir_path=ir_path,
+            output_path=path_database_path,
+            clocks=clock_periods,
+            timing_model_path=timing_model,
+            architecture_timing_db_path=architecture_timing_db,
+            executable=opensta,
+            max_paths=sta_max_paths,
+            log_path=timing_root / "opensta.log",
+        )
+        weights_report = derive_partition_net_weights(
+            path_database_path,
+            ir_path,
+            net_weights_path,
+            criticality_scale=timing_criticality_scale,
+            criticality_exponent=timing_criticality_exponent,
+        )
+        timing_report = {
+            "status": "pass",
+            "mode": "opensta-preplacement",
+            "sta": sta_report,
+            "partition_weights": weights_report,
+            "partition_weights_applied": partition_provider != "greedy",
+        }
+
     phase3_root = output_dir / "partition"
     phase3_report = run_phase3(
         ir_path,
@@ -257,8 +315,23 @@ def run_multi_fpga_flow(
         tritonpart_repair_balance=partition_repair_balance,
         repart=repart,
         repart_timeout_seconds=partition_timeout_seconds,
+        net_weights_path=(
+            net_weights_path
+            if timing_driven and partition_provider != "greedy"
+            else None
+        ),
     )
     assignment_path = phase3_root / "assignment.json"
+
+    projected_timing_paths = timing_paths
+    if timing_driven:
+        projected_timing_paths = timing_root / "cut-timing-paths.json"
+        projection_report = project_sta_path_database(
+            path_database_path,
+            assignment_path,
+            projected_timing_paths,
+        )
+        timing_report["cut_path_projection"] = projection_report
 
     phase4_root = output_dir / "system-route"
     phase4_report = run_phase4(
@@ -268,7 +341,7 @@ def run_multi_fpga_flow(
         constraints_path=route_constraints,
         frame_slots=frame_slots,
         max_iterations=route_max_iterations,
-        timing_paths_path=timing_paths,
+        timing_paths_path=projected_timing_paths,
         router=router,
     )
     routes_path = phase4_root / "routes.json"
@@ -299,6 +372,7 @@ def run_multi_fpga_flow(
         "status": "pass",
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
+        **({"timing": timing_report} if timing_report is not None else {}),
         "stages": {
             "frontend": frontend_report,
             "partition": phase3_report,
@@ -327,6 +401,24 @@ def run_multi_fpga_flow(
                 "path": "split/manifest.json",
                 "sha256": _sha256(phase6_root / "manifest.json"),
             },
+            **(
+                {
+                    "timing_path_database": {
+                        "path": "timing/path-database.json",
+                        "sha256": _sha256(path_database_path),
+                    },
+                    "partition_net_weights": {
+                        "path": "timing/partition-net-weights.json",
+                        "sha256": _sha256(net_weights_path),
+                    },
+                    "cut_timing_paths": {
+                        "path": "timing/cut-timing-paths.json",
+                        "sha256": _sha256(projected_timing_paths),
+                    },
+                }
+                if timing_driven
+                else {}
+            ),
         },
     }
     report["summary"] = validate_multi_fpga_flow_report(report)

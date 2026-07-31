@@ -36,6 +36,30 @@ def tlr_router() -> Path:
 
 
 @lru_cache(maxsize=1)
+def tdm_ratio_optimizer() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError("a C++17 compiler is required for TDM tests")
+    executable = Path(_BUILD_ROOT.name) / "emuflow_tdm_ratio_optimizer"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            str(ROOT / "src" / "native" / "tdm_ratio_optimizer.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
 def vtr_architecture_importer() -> Path:
     compiler = (
         shutil.which("c++")
