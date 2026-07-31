@@ -22,6 +22,7 @@ from .fpga_interchange import (
 from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
+from .multi_fpga_flow import run_multi_fpga_flow
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     parse_clock_definitions,
@@ -189,8 +190,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     vpr_full_open = vpr_subparsers.add_parser(
-        "full-open",
-        help="run the checked RTL-to-routed open academic physical flow",
+        "fpga-open",
+        aliases=["full-open"],
+        help=(
+            "run one FPGA's checked RTL-to-routed open physical backend "
+            "('full-open' is a deprecated alias)"
+        ),
     )
     vpr_full_open.add_argument("sources", nargs="+", type=Path)
     vpr_full_open.add_argument("--top", required=True)
@@ -218,6 +223,76 @@ def _build_parser() -> argparse.ArgumentParser:
     vpr_full_open.add_argument("--seed", type=int, default=1)
     vpr_full_open.add_argument(
         "--route-channel-width", type=int, default=300
+    )
+
+    multi_fpga = subparsers.add_parser(
+        "multi-fpga",
+        help="board-independent multi-FPGA compilation",
+    )
+    multi_fpga_subparsers = multi_fpga.add_subparsers(
+        dest="multi_fpga_command", required=True
+    )
+    multi_fpga_compile = multi_fpga_subparsers.add_parser(
+        "compile",
+        help=(
+            "run generic synthesis, partitioning, system routing, TDM, "
+            "and per-FPGA split generation"
+        ),
+    )
+    multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
+    multi_fpga_compile.add_argument("--top")
+    multi_fpga_compile.add_argument("--clock", action="append", default=[])
+    multi_fpga_compile.add_argument(
+        "--yosys-json",
+        type=Path,
+        help="use existing Yosys JSON instead of synthesizing RTL",
+    )
+    multi_fpga_compile.add_argument("--platform", type=Path, required=True)
+    multi_fpga_compile.add_argument("--out", type=Path, required=True)
+    multi_fpga_compile.add_argument("--yosys")
+    multi_fpga_compile.add_argument("--partition-constraints", type=Path)
+    multi_fpga_compile.add_argument(
+        "--partition-provider",
+        choices=("repart-replication", "repart", "tritonpart", "greedy"),
+        default="tritonpart",
+    )
+    multi_fpga_compile.add_argument("--seed", type=int, default=0)
+    multi_fpga_compile.add_argument("--min-used-fpgas", type=int)
+    multi_fpga_compile.add_argument("--balance-tolerance", type=float)
+    multi_fpga_compile.add_argument("--openroad")
+    multi_fpga_compile.add_argument("--repart")
+    multi_fpga_compile.add_argument(
+        "--partition-timeout-seconds", type=int, default=3600
+    )
+    multi_fpga_compile.add_argument(
+        "--partition-seed-attempts", type=int, default=1
+    )
+    multi_fpga_compile.add_argument(
+        "--partition-repair-min-used-fpgas",
+        action="store_true",
+        help=(
+            "minimally move legal atomic clusters if the partitioner "
+            "leaves required FPGAs empty"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--partition-repair-balance",
+        action="store_true",
+        help=(
+            "legalize a best-effort assignment against independently "
+            "checked multi-resource balance bounds"
+        ),
+    )
+    multi_fpga_compile.add_argument("--route-constraints", type=Path)
+    multi_fpga_compile.add_argument("--timing-paths", type=Path)
+    multi_fpga_compile.add_argument("--router")
+    multi_fpga_compile.add_argument("--frame-slots", type=int)
+    multi_fpga_compile.add_argument("--route-max-iterations", type=int)
+    multi_fpga_compile.add_argument("--ratio-optimizer")
+    multi_fpga_compile.add_argument("--simulation-frames", type=int, default=16)
+    multi_fpga_compile.add_argument("--equivalence-cycles", type=int, default=16)
+    multi_fpga_compile.add_argument(
+        "--equivalence-seed", type=int, default=20260727
     )
     vpr_run = vpr_subparsers.add_parser(
         "run",
@@ -1160,7 +1235,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "vpr":
-        if args.vpr_command == "full-open":
+        if args.vpr_command in {"fpga-open", "full-open"}:
             report = run_open_physical_flow(
                 sources=args.sources,
                 top=args.top,
@@ -1373,6 +1448,41 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0
+
+    if args.command == "multi-fpga":
+        report = run_multi_fpga_flow(
+            platform_path=args.platform,
+            output_dir=args.out,
+            sources=args.sources,
+            top=args.top,
+            clocks=args.clock,
+            yosys_json=args.yosys_json,
+            yosys=args.yosys,
+            partition_constraints=args.partition_constraints,
+            partition_provider=args.partition_provider,
+            seed=args.seed,
+            min_used_fpgas=args.min_used_fpgas,
+            balance_tolerance=args.balance_tolerance,
+            openroad=args.openroad,
+            repart=args.repart,
+            partition_timeout_seconds=args.partition_timeout_seconds,
+            partition_seed_attempts=args.partition_seed_attempts,
+            partition_repair_min_used_fpgas=(
+                args.partition_repair_min_used_fpgas
+            ),
+            partition_repair_balance=args.partition_repair_balance,
+            route_constraints=args.route_constraints,
+            timing_paths=args.timing_paths,
+            router=args.router,
+            frame_slots=args.frame_slots,
+            route_max_iterations=args.route_max_iterations,
+            ratio_optimizer=args.ratio_optimizer,
+            simulation_frames=args.simulation_frames,
+            equivalence_cycles=args.equivalence_cycles,
+            equivalence_seed=args.equivalence_seed,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
 
     if args.command == "partition":
         report = validate_phase3(

@@ -34,6 +34,46 @@ def _stimulus(seed: int, cycle: int, port: str, bit: int) -> int:
     return digest[0] & 1
 
 
+def _is_lut_type(cell_type: str) -> bool:
+    return cell_type.startswith("LUT") or cell_type in {"$lut", "$_LUT_"}
+
+
+def _is_ff_type(cell_type: str) -> bool:
+    return cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"} or (
+        cell_type.startswith("$_DFF_")
+    )
+
+
+def _lut_definition(
+    instance: Mapping[str, Any],
+) -> Tuple[int, str, str, int]:
+    cell_type = instance["type"]
+    parameters = instance.get("parameters", {})
+    if cell_type == "$lut":
+        width_text = str(parameters.get("WIDTH", ""))
+        truth_text = str(parameters.get("LUT", ""))
+        if not width_text or not truth_text:
+            raise ValidationError(
+                f"generic LUT {instance['id']!r} lacks WIDTH/LUT parameters"
+            )
+        return int(width_text, 2), "A", "Y", int(truth_text, 2)
+    if cell_type == "$_LUT_":
+        width_text = str(parameters.get("WIDTH", ""))
+        truth_text = str(parameters.get("LUT", parameters.get("INIT", "")))
+        if not width_text or not truth_text:
+            raise ValidationError(
+                f"generic LUT {instance['id']!r} lacks WIDTH/LUT parameters"
+            )
+        return int(width_text, 2), "A", "Y", int(truth_text, 2)
+    width_text = cell_type[3:]
+    if not width_text.isdigit():
+        raise ValidationError(f"unsupported LUT primitive {cell_type!r}")
+    init = parameters.get("INIT")
+    if init is None:
+        raise ValidationError(f"LUT {instance['id']!r} lacks INIT parameter")
+    return int(width_text), "I", "O", int(str(init), 2)
+
+
 class _MappedModel:
     def __init__(self, ir: EmuIR):
         self.ir = ir
@@ -45,13 +85,8 @@ class _MappedModel:
                 instance["type"]
                 for instance in self.instances.values()
                 if not (
-                    instance["type"].startswith("LUT")
-                    or instance["type"] in {
-                        "FDCE",
-                        "FDPE",
-                        "FDRE",
-                        "FDSE",
-                    }
+                    _is_lut_type(instance["type"])
+                    or _is_ff_type(instance["type"])
                 )
             }
         )
@@ -98,12 +133,12 @@ class _MappedModel:
         self.ff_ids = sorted(
             instance_id
             for instance_id, instance in self.instances.items()
-            if instance["type"] in {"FDCE", "FDPE", "FDRE", "FDSE"}
+            if _is_ff_type(instance["type"])
         )
         self.lut_ids = sorted(
             instance_id
             for instance_id, instance in self.instances.items()
-            if instance["type"].startswith("LUT")
+            if _is_lut_type(instance["type"])
         )
 
     def initial_state(self) -> Dict[str, int]:
@@ -123,13 +158,14 @@ class _MappedModel:
         port: str,
         default: int = 0,
         overrides: Optional[Mapping[Tuple[str, str], int]] = None,
+        bit: int = 0,
     ) -> Optional[int]:
-        net = self.input_net.get((instance_id, port, 0))
+        net = self.input_net.get((instance_id, port, bit))
         if net is not None:
             if overrides is not None and (instance_id, net) in overrides:
                 return overrides[(instance_id, net)]
             return values.get(net)
-        return self.constants.get((instance_id, port, 0), default)
+        return self.constants.get((instance_id, port, bit), default)
 
     def evaluate(
         self,
@@ -151,17 +187,19 @@ class _MappedModel:
             progressed = False
             for instance_id in sorted(pending):
                 instance = self.instances[instance_id]
-                width_text = instance["type"][3:]
-                if not width_text.isdigit():
-                    raise ValidationError(
-                        f"unsupported LUT primitive {instance['type']!r}"
-                    )
-                width = int(width_text)
+                width, input_port, output_port, truth = _lut_definition(
+                    instance
+                )
                 inputs = [
                     self._pin(
                         values,
                         instance_id,
-                        f"I{index}",
+                        (
+                            f"I{index}"
+                            if input_port == "I"
+                            else input_port
+                        ),
+                        bit=(0 if input_port == "I" else index),
                         overrides=overrides,
                     )
                     for index in range(width)
@@ -169,13 +207,10 @@ class _MappedModel:
                 if any(value is None for value in inputs):
                     continue
                 index = sum(int(value) << offset for offset, value in enumerate(inputs))
-                init = instance.get("parameters", {}).get("INIT")
-                if init is None:
-                    raise ValidationError(
-                        f"LUT {instance_id!r} lacks INIT parameter"
-                    )
-                output = (int(str(init), 2) >> index) & 1
-                output_net = self.output_net.get((instance_id, "O", 0))
+                output = (truth >> index) & 1
+                output_net = self.output_net.get(
+                    (instance_id, output_port, 0)
+                )
                 if output_net is not None:
                     values[output_net] = output
                 pending.remove(instance_id)
@@ -193,6 +228,9 @@ class _MappedModel:
             data = self._pin(
                 values, instance_id, "D", current, overrides
             )
+            if instance["type"].startswith("$_DFF_"):
+                next_state[instance_id] = int(data)
+                continue
             data = int(data) ^ _bit(
                 instance.get("parameters", {}).get("IS_D_INVERTED", 0)
             )
@@ -266,16 +304,22 @@ class _MappedModel:
             progressed = False
             for instance_id in sorted(pending):
                 instance = self.instances[instance_id]
-                width = int(instance["type"][3:])
+                width, input_port, output_port, truth = _lut_definition(
+                    instance
+                )
                 inputs = []
                 unresolved = False
                 for index in range(width):
+                    port = (
+                        f"I{index}" if input_port == "I" else input_port
+                    )
+                    bit = 0 if input_port == "I" else index
                     net = self.input_net.get(
-                        (instance_id, f"I{index}", 0)
+                        (instance_id, port, bit)
                     )
                     if net is None:
                         value = self.constants.get(
-                            (instance_id, f"I{index}", 0), 0
+                            (instance_id, port, bit), 0
                         )
                     elif (instance_id, net) in overrides:
                         value = overrides[(instance_id, net)]
@@ -293,14 +337,11 @@ class _MappedModel:
                     int(value) << offset
                     for offset, value in enumerate(inputs)
                 )
-                init = instance.get("parameters", {}).get("INIT")
-                if init is None:
-                    raise ValidationError(
-                        f"LUT {instance_id!r} lacks INIT parameter"
-                    )
-                output_net = self.output_net.get((instance_id, "O", 0))
+                output_net = self.output_net.get(
+                    (instance_id, output_port, 0)
+                )
                 if output_net is not None:
-                    values[output_net] = (int(str(init), 2) >> address) & 1
+                    values[output_net] = (truth >> address) & 1
                 pending.remove(instance_id)
                 progressed = True
             if not progressed:
@@ -508,7 +549,7 @@ def simulate_partition_equivalence(
 
     return {
         "status": "pass",
-        "provider": "xilinx-lut-ff-cycle-model-v1",
+        "provider": "generic-lut-ff-cycle-model-v2",
         "cycles": cycles,
         "seed": seed,
         "primitive_instances": len(model.instances),

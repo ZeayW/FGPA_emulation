@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/multi-fpga-flow-v1.schema.json",
+  "title": "EmuFlow board-independent multi-FPGA flow report v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "provider",
+    "architecture_policy",
+    "stages",
+    "artifacts",
+    "summary"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.multi-fpga-flow/v1"},
+    "status": {"const": "pass"},
+    "architecture_policy": {"const": "provider-neutral"},
+    "stages": {
+      "type": "object",
+      "required": ["frontend", "partition", "system_route", "tdm", "split"]
+    },
+    "artifacts": {"type": "object"},
+    "summary": {"type": "object"}
+  },
+  "additionalProperties": true
+}

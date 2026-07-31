@@ -159,8 +159,13 @@ boundaries; combinational loops and hard macros remain atomic.
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
-`emuflow vpr full-open` is the clean-checkout integration gate for the open
-per-FPGA physical backend. It binds synthesis, baseline VPR packing and
+`emuflow multi-fpga compile` is the board-independent multi-FPGA integration
+gate. It binds generic LUT6/FF synthesis, EmuIR import, partitioning, system
+routing, TDM scheduling, per-FPGA splitting, transport generation, independent
+checks, and cycle-equivalence in one report.
+
+`emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
+physical backend. It binds synthesis, baseline VPR packing and
 auto-layout sizing, ArchitectureDB/TimingDB import, OpenPARF placement, final
 VPR routing, and the independent route checker in one versioned report.
 
@@ -286,16 +291,35 @@ emuflow arch fetch-default-vtr \
   --output build/architectures/vtr-flagship.xml
 ```
 
-The shortest complete open physical-flow invocation fetches that pinned
-architecture automatically and enables its multiplier/RAM mapping profile:
+Compile RTL through the board-independent multi-FPGA flow using the public
+academic platform:
 
 ```bash
-emuflow vpr full-open examples/rtl/vtr_hard_blocks.v \
+emuflow multi-fpga compile examples/rtl/counter.v \
+  --top counter \
+  --clock clk \
+  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
+  --out build/counter-multi-fpga
+```
+
+The command writes a hash-bound `multi-fpga-flow-report.json` only after
+partition, route, schedule, split, and cycle-equivalence checks pass. The
+default partition provider is the source-built OpenROAD/TritonPart engine.
+For a design that naturally collapses into one zero-cut partition, pass
+`--partition-repair-min-used-fpgas`; every repair move remains explicit in the
+partition artifact and is checked independently.
+
+To validate one FPGA independently with the open physical backend, the
+following command fetches the pinned architecture automatically and enables
+its multiplier/RAM mapping profile:
+
+```bash
+emuflow vpr fpga-open examples/rtl/vtr_hard_blocks.v \
   --top vtr_hard_blocks \
   --out build/vtr-hard-block-flow
 ```
 
-The command refuses a non-empty output directory and writes a
+The per-FPGA command refuses a non-empty output directory and writes a
 hash-bound `open-physical-flow-report.json`. Use `--logic-only` for RTL that
 must deliberately avoid hard-block inference, or `--architecture` to provide
 another VTR XML explicitly.
@@ -386,8 +410,9 @@ emuflow sta run-opensta \
   --output build/phase1-demo/timing-paths.json
 ```
 
-The counter fixture avoids requiring synthesis for the first run. The current
-RTL synthesis command is the UltraScale+ compatibility frontend:
+The counter fixture avoids requiring synthesis for the first run. The
+following command is retained only for the optional UltraScale+/Vivado
+compatibility backend:
 
 ```bash
 emuflow synth-yosys examples/rtl/counter.v \

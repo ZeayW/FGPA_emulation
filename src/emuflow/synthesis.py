@@ -106,6 +106,76 @@ def build_yosys_script(
     return "; ".join(commands)
 
 
+def build_generic_yosys_script(
+    sources: Iterable[Path],
+    top: str,
+    output: Path,
+) -> str:
+    """Build an architecture-neutral LUT6/FF synthesis script for EmuIR."""
+
+    source_list = list(sources)
+    if not source_list:
+        raise EmuFlowError("synthesis requires at least one RTL source")
+    top_identifier = _yosys_identifier(top)
+    read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
+    commands = [
+        f"read_verilog -sv {read_sources}",
+        f"hierarchy -check -top {top_identifier}",
+        "proc",
+        "flatten",
+        "opt",
+        "memory_dff",
+        "memory_map",
+        "techmap",
+        "opt",
+        "dffunmap",
+        "abc -lut 6",
+        "dffunmap",
+        "clean",
+        "check",
+        f"write_json {_yosys_quote(str(output))}",
+    ]
+    return "; ".join(commands)
+
+
+def run_generic_yosys(
+    sources: Iterable[Path],
+    top: str,
+    output: Path,
+    executable: Optional[str] = None,
+    log_path: Optional[Path] = None,
+) -> None:
+    """Synthesize RTL to provider-neutral LUT6/FF Yosys JSON."""
+
+    source_list = list(sources)
+    for source in source_list:
+        if not source.is_file():
+            raise EmuFlowError(f"RTL source does not exist: {source}")
+    command = resolve_native_executable("yosys", executable)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    script = build_generic_yosys_script(source_list, top, output)
+    completed = subprocess.run(
+        [command, "-p", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(completed.stdout, encoding="utf-8")
+    if completed.returncode != 0:
+        tail = "\n".join(completed.stdout.splitlines()[-20:])
+        raise EmuFlowError(
+            "generic Yosys synthesis failed with exit code "
+            f"{completed.returncode}\n{tail}"
+        )
+    if not output.is_file():
+        raise EmuFlowError(
+            f"Yosys reported success but did not create expected output: {output}"
+        )
+
+
 def run_yosys(
     sources: Iterable[Path],
     top: str,

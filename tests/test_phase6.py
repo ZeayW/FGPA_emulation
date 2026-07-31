@@ -89,6 +89,72 @@ class Phase6Test(unittest.TestCase):
         self.assertEqual(equivalence["mismatches"], 0)
         self.assertEqual(equivalence["cycles"], 12)
 
+    def test_cycle_model_supports_generic_yosys_lut_and_dff(self) -> None:
+        value = {
+            "modules": {
+                "generic": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "clk": {"direction": "input", "bits": [2]},
+                        "d": {"direction": "input", "bits": [3]},
+                        "q": {"direction": "output", "bits": [4]},
+                        "y": {"direction": "output", "bits": [5]},
+                    },
+                    "cells": {
+                        "ff": {
+                            "type": "$_DFF_P_",
+                            "parameters": {},
+                            "attributes": {},
+                            "port_directions": {
+                                "C": "input",
+                                "D": "input",
+                                "Q": "output",
+                            },
+                            "connections": {
+                                "C": [2],
+                                "D": [3],
+                                "Q": [4],
+                            },
+                        },
+                        "lut": {
+                            "type": "$lut",
+                            "parameters": {
+                                "WIDTH": "00000000000000000000000000000010",
+                                "LUT": "0110",
+                            },
+                            "attributes": {},
+                            "port_directions": {
+                                "A": "input",
+                                "Y": "output",
+                            },
+                            "connections": {"A": [4, 3], "Y": [5]},
+                        },
+                    },
+                    "netnames": {
+                        "clk": {"bits": [2]},
+                        "d": {"bits": [3]},
+                        "q": {"bits": [4]},
+                        "y": {"bits": [5]},
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "generic.json"
+            source.write_text(json.dumps(value), encoding="utf-8")
+            model = _MappedModel(
+                import_yosys_json(source, top="generic", clocks=["clk"])
+            )
+            values, next_state, outputs = model.evaluate(
+                model.initial_state(), cycle=0, seed=7
+            )
+            self.assertEqual(len(model.ff_ids), 1)
+            self.assertEqual(len(model.lut_ids), 1)
+            self.assertIn("ff", next_state)
+            self.assertEqual(outputs["q[0]"], 0)
+            self.assertIn("y[0]", outputs)
+            self.assertIn("y", values)
+
     def test_phase6_writes_and_independently_reloads_all_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

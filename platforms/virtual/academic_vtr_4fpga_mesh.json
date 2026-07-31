@@ -1,0 +1,72 @@
+{
+  "schema": "emuflow.boarddb/v1",
+  "platform": {
+    "name": "academic_vtr_4fpga_mesh",
+    "kind": "virtual",
+    "description": "Architecture-open four-FPGA 2x2 mesh using abstract VTR-class capacities"
+  },
+  "fpgas": [
+    {
+      "id": "fpga0",
+      "part": "vtr-flagship-k6-n10-40nm-virtual",
+      "utilization_limit": 0.75,
+      "capacity": {"lut": 400000, "ff": 800000, "bram18k": 1600, "dsp48": 2400, "io": 1024, "other": 10000}
+    },
+    {
+      "id": "fpga1",
+      "part": "vtr-flagship-k6-n10-40nm-virtual",
+      "utilization_limit": 0.75,
+      "capacity": {"lut": 400000, "ff": 800000, "bram18k": 1600, "dsp48": 2400, "io": 1024, "other": 10000}
+    },
+    {
+      "id": "fpga2",
+      "part": "vtr-flagship-k6-n10-40nm-virtual",
+      "utilization_limit": 0.75,
+      "capacity": {"lut": 400000, "ff": 800000, "bram18k": 1600, "dsp48": 2400, "io": 1024, "other": 10000}
+    },
+    {
+      "id": "fpga3",
+      "part": "vtr-flagship-k6-n10-40nm-virtual",
+      "utilization_limit": 0.75,
+      "capacity": {"lut": 400000, "ff": 800000, "bram18k": 1600, "dsp48": 2400, "io": 1024, "other": 10000}
+    }
+  ],
+  "links": [
+    {
+      "id": "link_0_1",
+      "endpoints": ["fpga0", "fpga1"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    },
+    {
+      "id": "link_2_3",
+      "endpoints": ["fpga2", "fpga3"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    },
+    {
+      "id": "link_0_2",
+      "endpoints": ["fpga0", "fpga2"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    },
+    {
+      "id": "link_1_3",
+      "endpoints": ["fpga1", "fpga3"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 32,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    }
+  ]
+}

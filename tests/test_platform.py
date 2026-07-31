@@ -22,6 +22,16 @@ class PlatformTest(unittest.TestCase):
             8_000_000_000.0,
         )
 
+    def test_default_academic_platform_has_no_vendor_part(self) -> None:
+        platform = Platform.load(
+            ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json"
+        )
+        self.assertEqual(platform.name, "academic_vtr_2fpga_p2p")
+        self.assertEqual(len(platform.fpgas), 2)
+        self.assertTrue(
+            all(fpga.part.startswith("vtr-") for fpga in platform.fpgas)
+        )
+
     def test_eight_fpga_scale_platform(self) -> None:
         platform = Platform.load(
             ROOT / "platforms/virtual/xcvu3p_8fpga_mesh.json"

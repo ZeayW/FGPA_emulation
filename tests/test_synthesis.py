@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import EmuFlowError
-from emuflow.synthesis import build_yosys_script
+from emuflow.synthesis import build_generic_yosys_script, build_yosys_script
 
 
 class SynthesisTest(unittest.TestCase):
@@ -39,6 +39,18 @@ class SynthesisTest(unittest.TestCase):
             self.assertIn(option, script)
         self.assertIn("techmap -map", script)
         self.assertIn("logic_only_map.v", script)
+
+    def test_generic_script_has_no_vendor_family_dependency(self) -> None:
+        script = build_generic_yosys_script(
+            [Path("rtl/counter.sv")],
+            top="counter",
+            output=Path("build/counter-generic.json"),
+        )
+        self.assertIn("abc -lut 6", script)
+        self.assertIn("memory_map", script)
+        self.assertIn('write_json "build/counter-generic.json"', script)
+        self.assertNotIn("synth_xilinx", script)
+        self.assertNotIn("xcup", script)
 
     def test_optional_mapped_verilog_preserves_names(self) -> None:
         script = build_yosys_script(

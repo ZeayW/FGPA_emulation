@@ -135,7 +135,8 @@ Deliverables:
 - EmuIR v1 model and validator;
 - Virtual BoardDB v1 model and validator;
 - Yosys JSON importer;
-- UltraScale+ resource classification;
+- provider-neutral LUT/FF plus hard-resource classification, with
+  vendor-specific extensions isolated behind adapters;
 - CLI and Phase 1 report;
 - virtual `xcvu3p` two-FPGA platform;
 - deterministic regression fixture and unit tests.
@@ -177,7 +178,7 @@ and synchronous RAM cells into the exact VTR model ports and legal modes.
 VTR's bit-sliced RAM atoms remain visible until VPR packs them into a physical
 memory block. ArchitectureDB dimensions are derived from VPR's auto-layout
 placement header so the OpenPARF and VPR device views cannot silently diverge.
-The `vpr full-open` orchestration command executes these contracts in order,
+The `vpr fpga-open` orchestration command executes these contracts in order,
 rejects stale output directories, and writes one aggregate report only after
 all independent checks pass.
 
@@ -546,7 +547,7 @@ Until a board is selected:
 
 - architecture: pinned VTR flagship heterogeneous 40 nm academic model;
 - virtual device: scalable auto layout, initially 64 by 64;
-- virtual platform: two-FPGA point-to-point;
+- default virtual platform: academic VTR-class two-FPGA point-to-point;
 - per-FPGA utilization limit: 75%;
 - logical link: 32 lanes per direction at 250 MHz;
 - modeled link latency: two fabric cycles;
@@ -556,8 +557,9 @@ Until a board is selected:
 - current placement/routing bridge: the VPR packed-cluster contract,
   OpenPARF clustered placement, checked VPR `.place` emission, and VPR
   detailed routing work for the heterogeneous VTR flagship backend;
-- complete entry point: `emuflow vpr full-open`, with a hash-bound aggregate
-  report over every preceding stage;
+- multi-FPGA entry point: `emuflow multi-fpga compile`, with a hash-bound
+  report through per-FPGA split and transport generation;
+- per-FPGA open physical entry point: `emuflow vpr fpga-open`;
 - optional real-device backend: UltraScale+/Vivado.
 
 The device capacities in the virtual platform are planning values. Phase 2 will

@@ -6,7 +6,7 @@ from typing import Any, DefaultDict, Dict, Iterable, List, Mapping, Optional, Tu
 from .errors import ImportError
 from .io import read_json
 from .ir import EMUIR_SCHEMA, EmuIR
-from .resources import ResourceVector, classify_ultrascale_primitive
+from .resources import ResourceVector, classify_primitive_resources
 
 
 _CLOCK_NAME = re.compile(r"(^|[_/])(clk|clock)([_/]|$)", re.IGNORECASE)
@@ -151,7 +151,7 @@ def import_yosys_json(
         cell_type = raw_cell.get("type")
         if not isinstance(cell_type, str) or not cell_type:
             raise ImportError(f"cell {cell_name!r}: missing type")
-        resources = classify_ultrascale_primitive(cell_type)
+        resources = classify_primitive_resources(cell_type)
         instance_resources[cell_name] = resources
         instance_types[cell_name] = cell_type
         parameters = raw_cell.get("parameters", {})

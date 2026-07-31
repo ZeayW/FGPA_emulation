@@ -73,8 +73,8 @@ class ResourceVector:
         return True
 
 
-def classify_ultrascale_primitive(cell_type: str) -> ResourceVector:
-    """Classify one mapped primitive into a Phase 1 planning resource vector."""
+def classify_primitive_resources(cell_type: str) -> ResourceVector:
+    """Classify generic or vendor-mapped cells into planning resources."""
 
     kind = cell_type.upper()
 
@@ -88,12 +88,30 @@ def classify_ultrascale_primitive(cell_type: str) -> ResourceVector:
         return ResourceVector(dsp48=1)
     if kind.startswith("CARRY8"):
         return ResourceVector(carry8=1)
-    if kind.startswith("LUT") or kind in {"$LUT", "$_LUT_"}:
+    if (
+        kind.startswith("LUT")
+        or kind in {"$LUT", "$_LUT_"}
+        or kind.startswith("$_LUT")
+    ):
         return ResourceVector(lut=1)
-    if kind.startswith("FD") or kind.startswith("$_DFF") or kind.startswith("$DFF"):
+    if (
+        kind.startswith("FD")
+        or kind.startswith("$DFF")
+        or kind.startswith("$SDFF")
+        or kind.startswith("$ADFF")
+        or kind.startswith("$_DFF")
+        or kind.startswith("$_SDFF")
+        or kind.startswith("$_ADFF")
+    ):
         return ResourceVector(ff=1)
     if kind.startswith(("IBUF", "OBUF", "IOBUF")):
         return ResourceVector(io=1)
     if kind.startswith(("BUFG", "BUFH", "BUFMR", "MMCM", "PLLE", "STARTUPE")):
         return ResourceVector(clock=1)
     return ResourceVector(other=1)
+
+
+def classify_ultrascale_primitive(cell_type: str) -> ResourceVector:
+    """Backward-compatible name for the provider-neutral classifier."""
+
+    return classify_primitive_resources(cell_type)
