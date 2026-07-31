@@ -113,8 +113,13 @@ algorithms are promoted.
    segments, and directs.
 2. Preserve mutually exclusive VTR modes and equivalent sites in an exact
    packing contract; connect generic Yosys/ABC mapping to those modes.
-3. Translate Architecture TimingDB cell and interconnect arcs into OpenSTA and
-   retain stable EmuIR path identities.
+3. Translate Architecture TimingDB cell and interconnect arcs into OpenSTA,
+   retain stable EmuIR path identities, and project maximum path criticality
+   into power-law TritonPart hyperedge weights. This pre-placement increment
+   is implemented for LUT, FF, multiplier, and synchronous RAM mappings.
+   Candidate selection independently recomputes the weighted cut objective
+   across all requested seeds and an automatic unweighted baseline, preventing
+   timing mode from silently regressing below its same-seed baseline.
 4. Build the VTR routing-resource graph and integrate source-built VPR detailed
    routing after OpenPARF placement.
 5. Extend BoardDB from link-level capacity to direction groups, cable/SLL

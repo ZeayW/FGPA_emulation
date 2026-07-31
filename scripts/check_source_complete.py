@@ -130,6 +130,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "schemas/tdm-ratio-plan-v1.schema.json",
     "schemas/sta-path-database-v1.schema.json",
     "schemas/fpga-timing-model-v1.schema.json",
+    "schemas/fpga-timing-model-v2.schema.json",
     "schemas/partition-net-weights-v1.schema.json",
     "schemas/signal-position-hints-v1.schema.json",
     "schemas/placement-aware-pin-plan-v1.schema.json",

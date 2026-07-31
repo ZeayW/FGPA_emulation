@@ -7,7 +7,9 @@ from pathlib import Path
 from emuflow.opensta import (
     DEFAULT_TIMING_MODEL,
     FPGA_TIMING_MODEL_SCHEMA,
+    FPGA_TIMING_MODEL_SCHEMA_V2,
     OPENSTA_PROVIDER,
+    build_vtr_opensta_timing_model,
     load_timing_model,
     parse_clock_definitions,
     render_opensta_liberty,
@@ -16,10 +18,15 @@ from emuflow.opensta import (
 )
 from emuflow.sta import validate_sta_path_database
 from emuflow.verilog import mapped_verilog
+from emuflow.vtr_architecture import run_vtr_architecture_import
 from emuflow.yosys import import_yosys_json
+from tests.native_build import vtr_architecture_importer
 
 
 ROOT = Path(__file__).resolve().parents[1]
+VTR_FIXTURE = (
+    ROOT / "examples" / "architecture" / "vtr_k6_heterogeneous_fixture.xml"
+)
 
 
 class OpenStaProviderTest(unittest.TestCase):
@@ -58,6 +65,85 @@ class OpenStaProviderTest(unittest.TestCase):
             parse_clock_definitions(["clk=10", "clk=5"])
         with self.assertRaisesRegex(Exception, "expected CLOCK"):
             parse_clock_definitions(["clk"])
+
+    def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:
+        source = {
+            "creator": "OpenSTA VTR timing test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "clk": {"direction": "input", "bits": [2]},
+                        "a": {"direction": "input", "bits": [3, 4]},
+                        "q": {"direction": "output", "bits": [7]},
+                    },
+                    "cells": {
+                        "lut": {
+                            "type": "$lut",
+                            "parameters": {"WIDTH": "10", "LUT": "0110"},
+                            "port_directions": {
+                                "A": "input",
+                                "Y": "output",
+                            },
+                            "connections": {"A": [3, 4], "Y": [5]},
+                        },
+                        "ff": {
+                            "type": "$_DFF_P_",
+                            "parameters": {},
+                            "port_directions": {
+                                "C": "input",
+                                "D": "input",
+                                "Q": "output",
+                            },
+                            "connections": {"C": [2], "D": [5], "Q": [7]},
+                        },
+                    },
+                    "netnames": {
+                        "clk": {"bits": [2]},
+                        "a": {"bits": [3, 4]},
+                        "n": {"bits": [5]},
+                        "q": {"bits": [7]},
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            yosys_path = root / "mapped.json"
+            architecture_path = root / "architecture.json"
+            timing_path = root / "timing.json"
+            model_path = root / "model.json"
+            yosys_path.write_text(json.dumps(source), encoding="utf-8")
+            ir = import_yosys_json(yosys_path, top="top", clocks=["clk"])
+            run_vtr_architecture_import(
+                input_path=VTR_FIXTURE,
+                architecture_output_path=architecture_path,
+                timing_output_path=timing_path,
+                architecture_id="fixture-k6",
+                width=24,
+                height=24,
+                executable=str(vtr_architecture_importer()),
+            )
+            model, cell_types = build_vtr_opensta_timing_model(
+                ir, timing_path, model_path
+            )
+            liberty = render_opensta_liberty(model)
+            verilog = mapped_verilog(
+                ir,
+                timing_only=True,
+                timing_cell_types=cell_types,
+            )
+        self.assertEqual(model["schema"], FPGA_TIMING_MODEL_SCHEMA_V2)
+        self.assertEqual(
+            model["source"]["qualification"], "academic_open_model"
+        )
+        self.assertGreater(
+            model["source"]["sink_interconnect_delay_ns"], 0.0
+        )
+        self.assertIn("cell (EMUFLOW_VTR_LUT2)", liberty)
+        self.assertIn("cell (EMUFLOW_VTR_DFF)", liberty)
+        self.assertIn("pin (A__0)", liberty)
+        self.assertIn(".\\A__1 ", verilog)
 
     def test_runner_imports_and_independently_checks_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -107,6 +193,8 @@ print("fake OpenSTA pass")
             "analytical_uncharacterized",
         )
         self.assertEqual(report["paths"], 1)
+        self.assertEqual(report["max_paths"], 8)
+        self.assertFalse(report["path_limit_reached"])
         self.assertEqual(checked["status"], "pass")
         self.assertEqual(artifact["source"]["provider"], OPENSTA_PROVIDER)
         self.assertEqual(

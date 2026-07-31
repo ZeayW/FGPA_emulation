@@ -19,6 +19,7 @@ VIVADO_STA_TSV_HEADER = (
 )
 VIVADO_CUT_NET_MAP_HEADER = "vivado_net_hex\tcut_net_hex"
 STA_PATH_DATABASE_SCHEMA = "emuflow.sta-path-database/v1"
+PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 STA_PATH_DATABASE_PROVIDERS = {
     "opensta-fpga-path-database-v1",
     "vivado-get-timing-path-database-v1",
@@ -449,6 +450,89 @@ def validate_sta_path_database(
         "clock_domains": sorted(clock_domains),
         "unique_path_nets": len(path_nets_union),
         "worst_slack_ns": worst_slack,
+    }
+
+
+def derive_partition_net_weights(
+    database_path: Path,
+    ir_path: Path,
+    output_path: Path,
+    *,
+    criticality_scale: float = 9.0,
+    criticality_exponent: float = 2.0,
+) -> Dict[str, Any]:
+    """Project path criticality onto hyperedges before partitioning.
+
+    Net criticality is the maximum ``clamp(1 - slack / period, 0, 1)`` over
+    all extracted paths containing the net. The power-law edge weight is the
+    standard timing-driven partitioning form ``1 + scale * criticality^p``.
+    """
+    for name, value in (
+        ("criticality_scale", criticality_scale),
+        ("criticality_exponent", criticality_exponent),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValidationError(f"{name} must be positive")
+    checked = validate_sta_path_database(database_path, ir_path)
+    database = read_json(database_path)
+    criticality_by_net: Dict[str, float] = {}
+    path_count_by_net: Dict[str, int] = {}
+    for path in database["paths"]:
+        criticality = max(
+            0.0,
+            min(
+                1.0,
+                1.0
+                - float(path["slack_ns"])
+                / float(path["clock_period_ns"]),
+            ),
+        )
+        for net in path["path_nets"]:
+            criticality_by_net[net] = max(
+                criticality_by_net.get(net, 0.0),
+                criticality,
+            )
+            path_count_by_net[net] = path_count_by_net.get(net, 0) + 1
+    weights = {
+        net: 1.0
+        + float(criticality_scale)
+        * criticality ** float(criticality_exponent)
+        for net, criticality in sorted(criticality_by_net.items())
+        if criticality > 0.0
+    }
+    artifact = {
+        "schema": PARTITION_NET_WEIGHTS_SCHEMA,
+        "design": database["design"],
+        "source": {
+            "provider": "sta-max-criticality-power-law-v1",
+            "path_database": str(database_path),
+            "path_database_provider": database["source"]["provider"],
+        },
+        "parameters": {
+            "criticality_scale": float(criticality_scale),
+            "criticality_exponent": float(criticality_exponent),
+            "criticality_definition": "clamp(1-slack/period,0,1)",
+            "path_reduction": "maximum",
+        },
+        "criticality": dict(sorted(criticality_by_net.items())),
+        "path_count": dict(sorted(path_count_by_net.items())),
+        "weights": weights,
+    }
+    write_json(output_path, artifact)
+    return {
+        "status": "pass",
+        "design": database["design"],
+        "paths": checked["paths"],
+        "timed_nets": len(criticality_by_net),
+        "weighted_nets": len(weights),
+        "minimum_weight": min(weights.values(), default=1.0),
+        "maximum_weight": max(weights.values(), default=1.0),
+        "output": str(output_path),
     }
 
 

@@ -40,7 +40,26 @@ def _emittable_parameters(instance: Mapping[str, Any]) -> Dict[str, Any]:
     return parameters
 
 
-def mapped_verilog(ir: EmuIR, *, timing_only: bool = False) -> str:
+def _timing_pin_name(
+    pins: set[Tuple[str, int]],
+    port: str,
+    bit: int,
+) -> str:
+    """Scalarize a bus pin for OpenSTA's deliberately small Verilog reader."""
+    width = 1 + max(
+        (candidate_bit for candidate_port, candidate_bit in pins
+         if candidate_port == port),
+        default=0,
+    )
+    return port if width == 1 else f"{port}__{bit}"
+
+
+def mapped_verilog(
+    ir: EmuIR,
+    *,
+    timing_only: bool = False,
+    timing_cell_types: Optional[Mapping[str, str]] = None,
+) -> str:
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
         for index, net in enumerate(ir.value["nets"])
@@ -132,7 +151,7 @@ def mapped_verilog(ir: EmuIR, *, timing_only: bool = False) -> str:
         pins = pins_by_instance.get(instance["id"], set())
         connections = []
         for port, bit in sorted(pins):
-            if bit != 0:
+            if bit != 0 and not timing_only:
                 raise ValidationError(
                     f"multi-bit primitive pin unsupported: "
                     f"{instance['id']}.{port}[{bit}]"
@@ -140,14 +159,24 @@ def mapped_verilog(ir: EmuIR, *, timing_only: bool = False) -> str:
             expression = pin_net.get((instance["id"], port, bit))
             if expression is None:
                 expression = f"1'b{constants[(instance['id'], port, bit)]}"
+            emitted_port = (
+                _timing_pin_name(pins, port, bit)
+                if timing_only
+                else port
+            )
             connections.append(
-                f".{_identifier(port)}({expression})"
+                f".{_identifier(emitted_port)}({expression})"
             )
         if not timing_only:
             lines.append('  (* KEEP = "yes", DONT_TOUCH = "yes" *)')
+        cell_type = (
+            timing_cell_types.get(instance["id"], instance["type"])
+            if timing_cell_types is not None
+            else instance["type"]
+        )
         lines.extend(
             [
-                f"  {_identifier(instance['type'])}{parameter_text} "
+                f"  {_identifier(cell_type)}{parameter_text} "
                 f"{_identifier(instance['id'])}(",
                 "    " + ",\n    ".join(connections),
                 "  );",

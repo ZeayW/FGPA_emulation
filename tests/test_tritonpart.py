@@ -43,6 +43,11 @@ class TritonPartTest(unittest.TestCase):
         self.clusters = build_clusters(self.ir, self.constraints)
 
     def test_export_is_weighted_multiresource_hypergraph(self) -> None:
+        timed_net = next(
+            net["id"]
+            for net in self.ir.value["nets"]
+            if net["cut_class"] in {"register_input", "register_output"}
+        )
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
             artifact = export_tritonpart_inputs(
@@ -51,6 +56,7 @@ class TritonPartTest(unittest.TestCase):
                 self.clusters,
                 self.constraints,
                 output,
+                net_weights={timed_net: 7.0},
             )
             self.assertEqual(artifact["schema"], TRITONPART_INPUT_SCHEMA)
             self.assertEqual(artifact["fpga_order"], ["fpga0", "fpga1"])
@@ -58,6 +64,18 @@ class TritonPartTest(unittest.TestCase):
             self.assertIn("lut", artifact["vertex_dimensions"])
             self.assertIn("ff", artifact["vertex_dimensions"])
             self.assertGreater(len(artifact["hyperedges"]), 0)
+            self.assertEqual(
+                artifact["timing_weight_coverage"]["specified_nets"], 1
+            )
+            self.assertEqual(
+                artifact["timing_weight_coverage"][
+                    "timed_legal_hyperedges"
+                ],
+                1,
+            )
+            self.assertTrue(
+                (output / "partition.unweighted.hgr").is_file()
+            )
 
             lines = (output / "partition.hgr").read_text().splitlines()
             edge_count, vertex_count, weight_flag = map(
@@ -306,6 +324,88 @@ class TritonPartTest(unittest.TestCase):
                     / "openroad-tritonpart.seed-20.log"
                 ).is_file()
             )
+
+    def test_timing_portfolio_binds_each_hypergraph_solution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            ir_path = output / "design.emuir.json"
+            weights_path = output / "weights.json"
+            ir_path.write_text(
+                json.dumps(self.ir.to_dict()), encoding="utf-8"
+            )
+            timed_net = next(
+                net["id"]
+                for net in self.ir.value["nets"]
+                if net["cut_class"] in {"register_input", "register_output"}
+            )
+            weights_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.partition-net-weights/v1",
+                        "weights": {timed_net: 7.0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hypergraphs = []
+
+            def fake_openroad(command, **kwargs):
+                run_directory = Path(kwargs["cwd"])
+                tcl = Path(command[-1]).read_text(encoding="utf-8")
+                line = next(
+                    item
+                    for item in tcl.splitlines()
+                    if "-hypergraph_file" in item
+                )
+                hypergraph = Path(line.split("{", 1)[1].split("}", 1)[0])
+                hypergraphs.append(hypergraph.name)
+                tritonpart_input = json.loads(
+                    (run_directory / "tritonpart_input.json").read_text()
+                )
+                Path(
+                    f"{hypergraph}.part."
+                    f"{len(tritonpart_input['fpga_order'])}"
+                ).write_text(
+                    "\n".join(
+                        str(index % 2)
+                        for index in range(
+                            len(tritonpart_input["cluster_order"])
+                        )
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n")
+
+            with mock.patch(
+                "emuflow.tritonpart.subprocess.run",
+                side_effect=fake_openroad,
+            ):
+                run_phase3(
+                    ir_path=ir_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=output / "phase3",
+                    seed=7,
+                    provider="tritonpart",
+                    openroad="/fake/openroad",
+                    net_weights_path=weights_path,
+                )
+            assignment = json.loads(
+                (output / "phase3" / "assignment.json").read_text()
+            )
+        self.assertEqual(
+            hypergraphs,
+            ["partition.hgr", "partition.unweighted.hgr"],
+        )
+        self.assertEqual(
+            [
+                attempt["mode"]
+                for attempt in assignment["provider_metadata"][
+                    "seed_attempts"
+                ]
+            ],
+            ["timing_weighted", "unweighted_baseline"],
+        )
 
     def test_phase3_balance_repair_is_audited_and_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

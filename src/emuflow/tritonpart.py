@@ -293,9 +293,30 @@ def export_tritonpart_inputs(
             "hyperedges; "
             "use the greedy provider for disconnected designs"
         )
+    specified_weights = net_weights or {}
+    timed_hyperedges = [
+        edge for edge in hyperedges if edge["net"] in specified_weights
+    ]
+    timing_weight_coverage = {
+        "specified_nets": len(specified_weights),
+        "legal_hyperedges": len(hyperedges),
+        "timed_legal_hyperedges": len(timed_hyperedges),
+        "timed_legal_hyperedge_fraction": (
+            len(timed_hyperedges) / len(hyperedges)
+        ),
+        "minimum_timed_weight": min(
+            (edge["weight"] for edge in timed_hyperedges),
+            default=1.0,
+        ),
+        "maximum_timed_weight": max(
+            (edge["weight"] for edge in timed_hyperedges),
+            default=1.0,
+        ),
+    }
 
     output_dir.mkdir(parents=True, exist_ok=True)
     hypergraph_path = output_dir / "partition.hgr"
+    baseline_hypergraph_path = output_dir / "partition.unweighted.hgr"
     fixed_path = output_dir / "partition.fix"
     tcl_path = output_dir / "run_tritonpart.tcl"
     solution_path = output_dir / f"partition.hgr.part.{len(fpga_ids)}"
@@ -306,6 +327,20 @@ def export_tritonpart_inputs(
         hgr_lines.append(f"{edge['weight']:.9g} {vertices}")
     hgr_lines.extend(" ".join(str(value) for value in item) for item in weights)
     hypergraph_path.write_text("\n".join(hgr_lines) + "\n", encoding="utf-8")
+    if specified_weights:
+        baseline_lines = [f"{len(hyperedges)} {len(clusters)} 11"]
+        for edge in hyperedges:
+            vertices = " ".join(
+                str(vertex) for vertex in edge["vertices"]
+            )
+            baseline_lines.append(f"1 {vertices}")
+        baseline_lines.extend(
+            " ".join(str(value) for value in item) for item in weights
+        )
+        baseline_hypergraph_path.write_text(
+            "\n".join(baseline_lines) + "\n",
+            encoding="utf-8",
+        )
 
     fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
     fixed_path.write_text(
@@ -350,6 +385,7 @@ def export_tritonpart_inputs(
         "vertex_dimensions": dimensions,
         "vertex_weights": weights,
         "hyperedges": hyperedges,
+        "timing_weight_coverage": timing_weight_coverage,
         "base_balance": base_balance,
         "requested_balance_percent": requested_balance,
         "effective_balance_percent": effective_balance,
@@ -357,6 +393,11 @@ def export_tritonpart_inputs(
         "balance_auto_relaxed": effective_balance > requested_balance + 1e-9,
         "files": {
             "hypergraph": hypergraph_path.name,
+            "unweighted_baseline_hypergraph": (
+                baseline_hypergraph_path.name
+                if specified_weights
+                else None
+            ),
             "fixed": fixed_path.name,
             "tcl": tcl_path.name,
             "solution": solution_path.name,
@@ -839,13 +880,54 @@ def run_tritonpart(
     cluster_assignment: Optional[Dict[str, str]] = None
     selected_seed = seed
     selected_log: Optional[Path] = None
+    selected_solution_path: Optional[Path] = None
     selected_repair_moves: List[Dict[str, Any]] = []
     selected_balance_repair: Optional[Dict[str, Any]] = None
+    selected_objective: Optional[Tuple[float, int, int]] = None
+    selected_attempt_mode: Optional[str] = None
     attempts = []
-    for offset in range(seed_attempts):
-        attempt_seed = seed + offset
+    attempt_specs = [
+        {
+            "mode": "timing_weighted",
+            "seed": seed + offset,
+            "hypergraph": output_dir
+            / tritonpart_input["files"]["hypergraph"],
+        }
+        for offset in range(seed_attempts)
+    ]
+    baseline_name = tritonpart_input["files"][
+        "unweighted_baseline_hypergraph"
+    ]
+    if (
+        net_weights
+        and baseline_name is not None
+        and solution_input is None
+    ):
+        attempt_specs.append(
+            {
+                "mode": "unweighted_baseline",
+                "seed": seed,
+                "hypergraph": output_dir / baseline_name,
+            }
+        )
+    weighted_hypergraph = (
+        output_dir / tritonpart_input["files"]["hypergraph"]
+    ).resolve()
+    for spec in attempt_specs:
+        attempt_seed = spec["seed"]
+        provider_solution_path = (
+            solution_path
+            if spec["mode"] == "timing_weighted"
+            else Path(
+                f"{spec['hypergraph']}.part.{len(platform.fpgas)}"
+            )
+        )
         tcl_text = tcl_template.replace(
             "  -seed 0 \\\n", f"  -seed {attempt_seed} \\\n"
+        )
+        tcl_text = tcl_text.replace(
+            str(weighted_hypergraph),
+            str(spec["hypergraph"].resolve()),
         )
         tcl_path.write_text(tcl_text, encoding="utf-8")
         tritonpart_input["seed"] = attempt_seed
@@ -862,14 +944,20 @@ def run_tritonpart(
             mode = "import"
             log_path = None
         else:
-            log_name = (
-                "openroad-tritonpart.log"
-                if seed_attempts == 1
-                else f"openroad-tritonpart.seed-{attempt_seed}.log"
-            )
+            if spec["mode"] == "unweighted_baseline":
+                log_name = (
+                    "openroad-tritonpart.unweighted-baseline."
+                    f"seed-{attempt_seed}.log"
+                )
+            else:
+                log_name = (
+                    "openroad-tritonpart.log"
+                    if len(attempt_specs) == 1
+                    else f"openroad-tritonpart.seed-{attempt_seed}.log"
+                )
             log_path = output_dir / log_name
-            if solution_path.exists():
-                solution_path.unlink()
+            if provider_solution_path.exists():
+                provider_solution_path.unlink()
             try:
                 completed = subprocess.run(
                     [resolved_executable, "-exit", str(tcl_path.resolve())],
@@ -891,22 +979,29 @@ def run_tritonpart(
                     "OpenROAD/TritonPart failed with exit code "
                     f"{completed.returncode}\n{tail}"
                 )
-            if not solution_path.is_file():
+            if not provider_solution_path.is_file():
                 raise EmuFlowError(
                     "OpenROAD/TritonPart reported success but did not create "
-                    f"{solution_path}"
+                    f"{provider_solution_path}"
                 )
 
         candidate = parse_tritonpart_solution(
-            solution_path, tritonpart_input
+            provider_solution_path, tritonpart_input
         )
         attempt_solution = None
-        if seed_attempts > 1:
-            attempt_solution = (
-                output_dir
-                / f"partition.hgr.seed-{attempt_seed}.part.{len(platform.fpgas)}"
+        if len(attempt_specs) > 1:
+            solution_stem = (
+                f"partition.hgr.seed-{attempt_seed}"
+                if spec["mode"] == "timing_weighted"
+                else (
+                    "partition.hgr.unweighted-baseline."
+                    f"seed-{attempt_seed}"
+                )
             )
-            shutil.copyfile(solution_path, attempt_solution)
+            attempt_solution = output_dir / (
+                f"{solution_stem}.part.{len(platform.fpgas)}"
+            )
+            shutil.copyfile(provider_solution_path, attempt_solution)
         raw_used_fpgas = len(set(candidate.values()))
         balance_repair = None
         repaired_solution_path = None
@@ -918,12 +1013,17 @@ def run_tritonpart(
                 constraints,
                 tritonpart_input,
             )
+            repaired_tag = (
+                f"seed-{attempt_seed}"
+                if spec["mode"] == "timing_weighted"
+                else f"unweighted-baseline.seed-{attempt_seed}"
+            )
             repaired_solution_path = output_dir / (
                 (
-                    f"partition.hgr.seed-{attempt_seed}.repaired.part."
+                    f"partition.hgr.{repaired_tag}.repaired.part."
                     f"{len(platform.fpgas)}"
                 )
-                if seed_attempts > 1
+                if len(attempt_specs) > 1
                 else (
                     "partition.hgr.repaired.part."
                     f"{len(platform.fpgas)}"
@@ -957,6 +1057,7 @@ def run_tritonpart(
             )
         used_fpgas = len(set(candidate.values()))
         attempt: Dict[str, Any] = {
+            "mode": spec["mode"],
             "seed": attempt_seed,
             "raw_used_fpgas": raw_used_fpgas,
             "used_fpgas": used_fpgas,
@@ -996,14 +1097,44 @@ def run_tritonpart(
             continue
 
         attempt["accepted"] = True
+        cut_edges = [
+            edge
+            for edge in tritonpart_input["hyperedges"]
+            if len(
+                {
+                    candidate[cluster_id]
+                    for cluster_id in edge["clusters"]
+                }
+            )
+            > 1
+        ]
+        attempt["cut_hyperedges"] = len(cut_edges)
+        attempt["cut_weight"] = sum(
+            edge["weight"] for edge in cut_edges
+        )
         attempts.append(attempt)
-        if used_fpgas >= constraints["min_used_fpgas"]:
+        objective = (
+            float(attempt["cut_weight"]),
+            int(attempt["cut_hyperedges"]),
+            attempt_seed,
+        )
+        if selected_objective is None or objective < selected_objective:
             cluster_assignment = candidate
             selected_seed = attempt_seed
-        selected_log = log_path
-        selected_repair_moves = repair_moves
-        selected_balance_repair = balance_repair
-        break
+            selected_objective = objective
+            selected_attempt_mode = spec["mode"]
+            selected_log = log_path
+            selected_solution_path = (
+                repaired_solution_path
+                if repaired_solution_path is not None
+                else (
+                    attempt_solution
+                    if attempt_solution is not None
+                    else provider_solution_path
+                )
+            )
+            selected_repair_moves = repair_moves
+            selected_balance_repair = balance_repair
 
     if cluster_assignment is None:
         raise ValidationError(
@@ -1011,8 +1142,35 @@ def run_tritonpart(
             "assignment; "
             f"attempts={attempts}"
         )
+    if (
+        len(attempt_specs) > 1
+        and selected_solution_path is not None
+        and selected_solution_path.resolve() != solution_path.resolve()
+    ):
+        shutil.copyfile(selected_solution_path, solution_path)
     tritonpart_input["seed"] = selected_seed
     tritonpart_input["seed_attempts"] = attempts
+    timed_nets = set(net_weights or {})
+    timed_cut_edges = [
+        edge
+        for edge in tritonpart_input["hyperedges"]
+        if edge["net"] in timed_nets
+        and len(
+            {
+                cluster_assignment[cluster_id]
+                for cluster_id in edge["clusters"]
+            }
+        )
+        > 1
+    ]
+    timing_weight_result = {
+        **tritonpart_input["timing_weight_coverage"],
+        "timed_cut_hyperedges": len(timed_cut_edges),
+        "timed_cut_weight": sum(
+            edge["weight"] for edge in timed_cut_edges
+        ),
+    }
+    tritonpart_input["timing_weight_result"] = timing_weight_result
     write_json(output_dir / "tritonpart_input.json", tritonpart_input)
     return build_partition_assignment(
         ir,
@@ -1024,10 +1182,12 @@ def run_tritonpart(
         seed=selected_seed,
         provider_metadata={
             "mode": mode,
+            "selected_attempt_mode": selected_attempt_mode,
             "executable": resolved_executable,
             "input_schema": TRITONPART_INPUT_SCHEMA,
             "vertex_dimensions": tritonpart_input["vertex_dimensions"],
             "hyperedges": len(tritonpart_input["hyperedges"]),
+            "timing_weights": timing_weight_result,
             "requested_balance_percent": tritonpart_input[
                 "requested_balance_percent"
             ],

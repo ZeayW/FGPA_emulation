@@ -148,7 +148,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | --- | --- | --- |
 | Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; VPR consumes the original XML for exact mode-aware packing |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
-| Static timing | In-tree standalone OpenSTA plus provider-neutral Architecture TimingDB | VTR timing data is imported and source-qualified; conversion to the OpenSTA cell/interconnect model is pending |
+| Static timing | In-tree standalone OpenSTA plus provider-neutral Architecture TimingDB | The public VTR TimingDB is translated into design-specialized Liberty for LUT/FF/multiplier/RAM primitives; a source-qualified pre-placement sink-delay model combines block arcs with switch/segment RC, and OpenSTA paths drive timing-weighted partitioning |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++ route/TDM co-optimization kernel plus independent checker | Default academic provider builds and runs repository source |
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
@@ -176,8 +176,8 @@ implemented for the pinned VTR flagship profile: VTR architecture import,
 LUT6/DFF plus multiplier/RAM mapping, exact VPR packing, the checked
 packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
 routing, timing analysis, and independent route/RR-graph verification.
-TimingDB-to-OpenSTA translation and additional architecture mapping profiles
-remain open gates.
+Additional architecture mapping profiles and post-placement timing
+back-annotation remain open gates.
 EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
 used to compare results or generate a bitstream, but success in Vivado cannot
 satisfy the default open-flow completion gate.
@@ -413,7 +413,22 @@ emuflow sta run-opensta \
   --ir build/phase1-demo/design.emuir.json \
   --clock-period clk=10 \
   --output build/phase1-demo/timing-paths.json
+
+emuflow sta derive-partition-net-weights \
+  --database build/phase1-demo/timing-paths.json \
+  --ir build/phase1-demo/design.emuir.json \
+  --output build/phase1-demo/partition-net-weights.json
 ```
+
+For a VTR-mapped design, pass the imported public timing database with
+`--architecture-timing-db build/architecture/timing.json`; the generated
+model is an architecture-sourced pre-placement estimate, not routed sign-off.
+Pass the resulting weight artifact to Phase 3 with `--net-weights`.
+OpenSTA queries up to 200,000 endpoint paths by default and reports
+`path_limit_reached`; raise `--max-paths` when that flag is true.
+Timing-weighted TritonPart automatically includes a same-seed unweighted
+baseline candidate and selects the lowest independently recomputed weighted
+cut objective; `--tritonpart-seed-attempts` adds weighted candidates.
 
 The counter fixture avoids requiring synthesis for the first run. The
 following command is retained only for the optional UltraScale+/Vivado

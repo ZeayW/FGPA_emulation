@@ -62,6 +62,7 @@ from .synthesis import (
     run_yosys,
 )
 from .sta import (
+    derive_partition_net_weights,
     import_vivado_path_database_tsv,
     import_vivado_sta_tsv,
     project_sta_path_database,
@@ -633,8 +634,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help=(
-            "try consecutive deterministic seeds until min-used-fpgas "
-            "is satisfied"
+            "evaluate consecutive deterministic seeds and select the "
+            "lowest independently legal weighted-cut objective"
         ),
     )
     phase3.add_argument(
@@ -730,6 +731,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--database", type=Path, required=True
     )
     sta_database_validate.add_argument("--ir", type=Path, required=True)
+    sta_weights = sta_subparsers.add_parser(
+        "derive-partition-net-weights",
+        help="derive timing-driven hyperedge weights from OpenSTA paths",
+    )
+    sta_weights.add_argument("--database", type=Path, required=True)
+    sta_weights.add_argument("--ir", type=Path, required=True)
+    sta_weights.add_argument("--output", "-o", type=Path, required=True)
+    sta_weights.add_argument("--criticality-scale", type=float, default=9.0)
+    sta_weights.add_argument(
+        "--criticality-exponent", type=float, default=2.0
+    )
     sta_opensta = sta_subparsers.add_parser(
         "run-opensta",
         help="build a partition-independent path database with in-tree OpenSTA",
@@ -748,12 +760,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TIMING_MODEL,
     )
     sta_opensta.add_argument(
+        "--architecture-timing-db",
+        type=Path,
+        help=(
+            "public VTR TimingDB; generates a design-specialized "
+            "pre-placement OpenSTA model"
+        ),
+    )
+    sta_opensta.add_argument(
         "--opensta",
         "--openroad",
         dest="opensta",
         help="explicit comparison override; defaults to the in-tree build",
     )
-    sta_opensta.add_argument("--max-paths", type=int, default=10000)
+    sta_opensta.add_argument("--max-paths", type=int, default=200000)
     sta_opensta.add_argument("--log", type=Path)
 
     route_parser = subparsers.add_parser(
@@ -1551,6 +1571,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.sta_command == "validate-path-database":
             report = validate_sta_path_database(args.database, args.ir)
+        elif args.sta_command == "derive-partition-net-weights":
+            report = derive_partition_net_weights(
+                args.database,
+                args.ir,
+                args.output,
+                criticality_scale=args.criticality_scale,
+                criticality_exponent=args.criticality_exponent,
+            )
         else:
             clock_definitions = parse_clock_definitions(
                 args.clock_period
@@ -1560,6 +1588,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 output_path=args.output,
                 clocks=clock_definitions or None,
                 timing_model_path=args.timing_model,
+                architecture_timing_db_path=args.architecture_timing_db,
                 executable=args.opensta,
                 max_paths=args.max_paths,
                 log_path=args.log,

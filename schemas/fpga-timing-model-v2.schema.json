@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/fpga-timing-model-v2.schema.json",
+  "title": "EmuFlow FPGA timing model v2",
+  "type": "object",
+  "required": ["schema", "name", "family", "source", "cells"],
+  "properties": {
+    "schema": {"const": "emuflow.fpga-timing-model/v2"},
+    "name": {"type": "string", "minLength": 1},
+    "family": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "required": ["provider", "qualification"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "qualification": {
+          "enum": [
+            "analytical_uncharacterized",
+            "academic_open_model",
+            "calibrated",
+            "characterized"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "cells": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind", "inputs", "outputs", "delay_ns"],
+            "properties": {
+              "kind": {"const": "combinational"},
+              "inputs": {"$ref": "#/$defs/pins"},
+              "outputs": {"$ref": "#/$defs/pins"},
+              "delay_ns": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "clock",
+              "data",
+              "output",
+              "controls",
+              "setup_ns",
+              "clock_to_q_ns"
+            ],
+            "properties": {
+              "kind": {"const": "rising_edge_ff"},
+              "clock": {"type": "string", "minLength": 1},
+              "data": {"type": "string", "minLength": 1},
+              "output": {"type": "string", "minLength": 1},
+              "controls": {"$ref": "#/$defs/optionalPins"},
+              "setup_ns": {"type": "number", "minimum": 0},
+              "clock_to_q_ns": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "clock",
+              "inputs",
+              "outputs",
+              "setup_ns",
+              "clock_to_q_ns"
+            ],
+            "properties": {
+              "kind": {"const": "rising_edge_bank"},
+              "clock": {"type": "string", "minLength": 1},
+              "inputs": {"$ref": "#/$defs/pins"},
+              "outputs": {"$ref": "#/$defs/pins"},
+              "setup_ns": {"type": "number", "minimum": 0},
+              "clock_to_q_ns": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["kind", "outputs"],
+            "properties": {
+              "kind": {"const": "constant"},
+              "outputs": {"$ref": "#/$defs/pins"}
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "pins": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "optionalPins": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

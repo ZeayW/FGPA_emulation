@@ -12,8 +12,9 @@ The default research target is a public VTR academic architecture. The same
 provider-neutral artifacts support later ECP5 and UltraScale+ adapters.
 Vivado is an optional UltraScale+ comparison/sign-off and bitstream backend;
 it cannot satisfy the default open-flow completion gate. The current open
-gates are architecture-aware mapping/packing, TimingDB-to-OpenSTA translation,
-and detailed routing. The authoritative machine-checked inventory is
+gates are additional architecture mapping profiles and post-placement timing
+back-annotation. Public VTR TimingDB-to-OpenSTA translation and VPR detailed
+routing are implemented. The authoritative machine-checked inventory is
 `SOURCE_MANIFEST.json`.
 
 The initial semantic envelope is intentionally narrow:
