@@ -235,15 +235,6 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "--timing-vivado applies only to timing-backend=vivado"
         )
-    if (
-        physical
-        and physical_backend == "vivado"
-        and mapping_profile != "generic-soft"
-    ):
-        raise EmuFlowError(
-            "physical-backend=vivado currently requires "
-            "--mapping-profile generic-soft"
-        )
     timing_driven = timing_driven or architecture_timing_db is not None
     if timing_driven and timing_paths is not None:
         raise EmuFlowError(

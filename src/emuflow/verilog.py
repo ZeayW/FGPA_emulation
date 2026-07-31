@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
 from .io import write_json
@@ -17,11 +17,13 @@ def _identifier(value: str) -> str:
 
 
 def _parameter(value: Any) -> str:
+    if isinstance(value, bool):
+        return "1'b1" if value else "1'b0"
+    if isinstance(value, (int, float)):
+        return str(value)
     text = str(value)
     if text and all(character.lower() in "01xz" for character in text):
         return f"{len(text)}'b{text}"
-    if isinstance(value, (int, float)):
-        return str(value)
     return json.dumps(text)
 
 
@@ -61,6 +63,8 @@ def mapped_verilog(
     *,
     timing_only: bool = False,
     timing_cell_types: Optional[Mapping[str, str]] = None,
+    allow_bus_pins: bool = False,
+    synthesized_macro_types: Optional[Set[str]] = None,
 ) -> str:
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
@@ -152,25 +156,64 @@ def mapped_verilog(
             ) + ")"
         pins = pins_by_instance.get(instance["id"], set())
         connections = []
-        for port, bit in sorted(pins):
-            if bit != 0 and not timing_only:
-                raise ValidationError(
-                    f"multi-bit primitive pin unsupported: "
-                    f"{instance['id']}.{port}[{bit}]"
+        if allow_bus_pins and not timing_only:
+            ports: Dict[str, Dict[int, str]] = {}
+            for port, bit in sorted(pins):
+                expression = pin_net.get((instance["id"], port, bit))
+                if expression is None:
+                    expression = (
+                        f"1'b{constants[(instance['id'], port, bit)]}"
+                    )
+                ports.setdefault(port, {})[bit] = expression
+            for port, bits in sorted(ports.items()):
+                expected_bits = set(range(max(bits) + 1))
+                if set(bits) != expected_bits:
+                    raise ValidationError(
+                        f"non-contiguous primitive bus pin: "
+                        f"{instance['id']}.{port}"
+                    )
+                expression = bits[0]
+                if len(bits) > 1:
+                    expression = "{" + ", ".join(
+                        bits[bit] for bit in reversed(range(len(bits)))
+                    ) + "}"
+                connections.append(
+                    f".{_identifier(port)}({expression})"
                 )
-            expression = pin_net.get((instance["id"], port, bit))
-            if expression is None:
-                expression = f"1'b{constants[(instance['id'], port, bit)]}"
-            emitted_port = (
-                _timing_pin_name(pins, port, bit)
-                if timing_only
-                else port
-            )
-            connections.append(
-                f".{_identifier(emitted_port)}({expression})"
-            )
+        else:
+            for port, bit in sorted(pins):
+                if bit != 0 and not timing_only:
+                    raise ValidationError(
+                        f"multi-bit primitive pin unsupported: "
+                        f"{instance['id']}.{port}[{bit}]"
+                    )
+                expression = pin_net.get((instance["id"], port, bit))
+                if expression is None:
+                    expression = (
+                        f"1'b{constants[(instance['id'], port, bit)]}"
+                    )
+                emitted_port = (
+                    _timing_pin_name(pins, port, bit)
+                    if timing_only
+                    else port
+                )
+                connections.append(
+                    f".{_identifier(emitted_port)}({expression})"
+                )
         if not timing_only:
-            lines.append('  (* KEEP = "yes", DONT_TOUCH = "yes" *)')
+            if (
+                synthesized_macro_types is not None
+                and instance["type"] in synthesized_macro_types
+            ):
+                lines.append(
+                    '  (* KEEP_HIERARCHY = "yes", '
+                    'EMUFLOW_MAPPED = "yes" *)'
+                )
+            else:
+                lines.append(
+                    '  (* KEEP = "yes", DONT_TOUCH = "yes", '
+                    'EMUFLOW_MAPPED = "yes" *)'
+                )
         cell_type = (
             timing_cell_types.get(instance["id"], instance["type"])
             if timing_cell_types is not None

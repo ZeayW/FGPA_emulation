@@ -441,23 +441,24 @@ def validate_physical_summary(
             raise ValidationError(
                 f"physical summary {fpga_id} cell accounting is inconsistent"
             )
-        if item["physical_cells"] != (
-            item["routed_cells"] + item["infrastructure_cells"]
-        ):
-            raise ValidationError(
-                f"physical summary {fpga_id} physical cell accounting "
-                "is inconsistent"
-            )
         optimization_cells = item.get("optimization_cells", 0)
         if (
             isinstance(optimization_cells, bool)
             or not isinstance(optimization_cells, int)
             or optimization_cells < 0
-            or optimization_cells > item["infrastructure_cells"]
         ):
             raise ValidationError(
                 f"physical summary {fpga_id}.optimization_cells must be "
-                "a non-negative subset of infrastructure_cells"
+                "non-negative"
+            )
+        if item["physical_cells"] != (
+            item["routed_cells"]
+            + item["infrastructure_cells"]
+            + optimization_cells
+        ):
+            raise ValidationError(
+                f"physical summary {fpga_id} physical cell accounting "
+                "is inconsistent"
             )
         if item["unrouted_nets"] or item["drc_violations"]:
             raise ValidationError(

@@ -55,6 +55,9 @@ class PhysicalBackendContractTest(unittest.TestCase):
 
     def test_common_result_projects_to_phase7b(self):
         result = self._result()
+        result["cell_accounting"].update(
+            {"physical_cells": 109, "optimization_cells": 3}
+        )
         validation = validate_physical_partition_result(
             result,
             backend="open",
@@ -65,7 +68,7 @@ class PhysicalBackendContractTest(unittest.TestCase):
         )
         summary = physical_summary_item(result)
         self.assertEqual(validation["routed_cells"], 105)
-        self.assertEqual(summary["physical_cells"], 106)
+        self.assertEqual(summary["physical_cells"], 109)
         self.assertEqual(summary["timing"]["fabric_wns_ns"], 0.5)
 
     def test_common_result_rejects_provider_identity_and_timing_failure(self):

@@ -17,6 +17,8 @@ class PlatformTest(unittest.TestCase):
         self.assertEqual(len(platform.fpgas), 2)
         self.assertEqual(len(platform.links), 1)
         self.assertEqual(platform.fpgas[0].effective_capacity["lut"], 295560)
+        self.assertEqual(platform.fpgas[0].effective_capacity["bram"], 540)
+        self.assertEqual(platform.fpgas[0].effective_capacity["dsp"], 1710)
         self.assertAlmostEqual(
             platform.links[0].raw_bits_per_second_per_direction,
             8_000_000_000.0,

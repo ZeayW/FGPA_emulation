@@ -47,6 +47,18 @@
       },
       "additionalProperties": true
     },
+    "hard_resources": {
+      "type": "object",
+      "properties": {
+        "vtr_multiply_macros": {"type": "integer", "minimum": 0},
+        "vtr_ram_macros": {"type": "integer", "minimum": 0},
+        "vtr_ram_bits": {"type": "integer", "minimum": 0},
+        "dsp48_cells": {"type": "integer", "minimum": 0},
+        "ramb18_cells": {"type": "integer", "minimum": 0},
+        "ramb36_cells": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
     "clocks": {
       "type": "object",
       "required": ["fabric_period_ns", "dut_period_ns"],

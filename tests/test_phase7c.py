@@ -257,8 +257,17 @@ class Phase7CTest(unittest.TestCase):
             validate_physical_summary(broken, runtime, self.platform)
         broken = copy.deepcopy(physical)
         broken["fpgas"][0]["optimization_cells"] = 2
-        with self.assertRaisesRegex(ValidationError, "optimization_cells"):
+        with self.assertRaisesRegex(ValidationError, "physical cell"):
             validate_physical_summary(broken, runtime, self.platform)
+        expanded = copy.deepcopy(physical)
+        expanded["fpgas"][0]["optimization_cells"] = 2
+        expanded["fpgas"][0]["physical_cells"] += 2
+        self.assertEqual(
+            validate_physical_summary(
+                expanded, runtime, self.platform
+            )["optimization_cells"],
+            2,
+        )
         conservative = copy.deepcopy(physical)
         conservative["fpgas"][0]["clocks"]["dut_period_ns"] = 64.0
         self.assertEqual(

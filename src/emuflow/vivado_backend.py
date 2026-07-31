@@ -62,28 +62,32 @@ def vivado_runtime_xdc(
     timing = runtime["timing_model"]
     dut_port = timing["dut_clock_port"]
     fabric_port = timing["fabric_clock_port"]
-    missing = sorted({dut_port, fabric_port} - ports)
-    if missing:
+    if fabric_port not in ports:
         raise ValidationError(
             "Vivado physical partition lacks required clock ports: "
-            + ", ".join(missing)
+            + fabric_port
         )
     dut_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
     fabric_period = runtime["fabric_clock"]["period_ns"]
     cross_delay = timing["fabric_to_dut_max_delay_ns"]
-    return "\n".join(
-        [
-            "# EmuFlow provider-neutral runtime timing contract.",
+    lines = ["# EmuFlow provider-neutral runtime timing contract."]
+    if dut_port in ports:
+        lines.append(
             f"create_clock -name emuflow_dut_clk -period {dut_period:.9f} "
-            f"[get_ports {{{dut_port}}}]",
-            f"create_clock -name emuflow_fabric_clk -period "
-            f"{fabric_period:.9f} [get_ports {{{fabric_port}}}]",
+            f"[get_ports {{{dut_port}}}]"
+        )
+    lines.append(
+        f"create_clock -name emuflow_fabric_clk -period "
+        f"{fabric_period:.9f} [get_ports {{{fabric_port}}}]"
+    )
+    if dut_port in ports:
+        lines.append(
             f"set_max_delay -datapath_only {cross_delay:.9f} "
             "-from [get_clocks {emuflow_fabric_clk}] "
-            "-to [get_clocks {emuflow_dut_clk}]",
-            "",
-        ]
-    )
+            "-to [get_clocks {emuflow_dut_clk}]"
+        )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def vivado_design_timing_xdc(
@@ -348,6 +352,7 @@ def run_vivado_partition_backend(
             str(xdc_path),
             str(output_dir),
             str(expected_cells),
+            str(runtime["virtual_dut_clock"]["nominal_period_ns"]),
             place_directive,
             route_directive,
         ],
@@ -360,6 +365,33 @@ def run_vivado_partition_backend(
         raise ValidationError("Vivado implemented a different part")
     if _integer(metrics, "mapped_cells") != expected_cells:
         raise ValidationError("Vivado mapped-cell coverage disagrees")
+    expected_dsp = sum(
+        item["type"] == "VTR_MULTIPLY" for item in ir.value["instances"]
+    )
+    expected_bram = sum(
+        item["type"] in {"VTR_SP_RAM", "VTR_DP_RAM"}
+        for item in ir.value["instances"]
+    )
+    expected_bram_bits = sum(
+        int(item.get("parameters", {}).get("DEPTH", 0))
+        * int(item.get("parameters", {}).get("DATA_WIDTH", 0))
+        for item in ir.value["instances"]
+        if item["type"] in {"VTR_SP_RAM", "VTR_DP_RAM"}
+    )
+    dsp48_cells = _integer(metrics, "dsp48_cells")
+    ramb18_cells = _integer(metrics, "ramb18_cells")
+    ramb36_cells = _integer(metrics, "ramb36_cells")
+    if dsp48_cells < expected_dsp:
+        raise ValidationError(
+            f"Vivado inferred {dsp48_cells} DSP48 cells for "
+            f"{expected_dsp} VTR multipliers"
+        )
+    realized_bram_bits = 18432 * ramb18_cells + 36864 * ramb36_cells
+    if realized_bram_bits < expected_bram_bits:
+        raise ValidationError(
+            "Vivado inferred insufficient block-RAM capacity for "
+            f"{expected_bram} VTR RAM macros ({expected_bram_bits} bits)"
+        )
 
     net_map = output_dir / "vivado-net-map.tsv"
     net_map_report = write_vivado_net_map(ir_path, net_map)
@@ -437,6 +469,15 @@ def run_vivado_partition_backend(
         "closure": {
             "unrouted_nets": _integer(metrics, "unrouted_nets"),
             "drc_violations": _integer(metrics, "drc_violations"),
+            "drc_warnings": _integer(metrics, "drc_warnings"),
+        },
+        "hard_resources": {
+            "vtr_multiply_macros": expected_dsp,
+            "vtr_ram_macros": expected_bram,
+            "vtr_ram_bits": expected_bram_bits,
+            "dsp48_cells": dsp48_cells,
+            "ramb18_cells": ramb18_cells,
+            "ramb36_cells": ramb36_cells,
         },
         "clocks": {
             "fabric_period_ns": _number(metrics, "fabric_period_ns"),

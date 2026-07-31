@@ -131,21 +131,37 @@ def validate_physical_partition_result(
             f"physical result routed cells for {fpga} disagree"
         )
     infrastructure = accounting.get("infrastructure_cells")
+    optimization = accounting.get("optimization_cells")
     physical_cells = accounting.get("physical_cells")
     if (
         isinstance(infrastructure, bool)
         or not isinstance(infrastructure, int)
         or infrastructure < 0
-        or physical_cells != expected_routed + infrastructure
+        or isinstance(optimization, bool)
+        or not isinstance(optimization, int)
+        or optimization < 0
+        or physical_cells
+        != expected_routed + infrastructure + optimization
     ):
         raise ValidationError(
-            f"physical result infrastructure cells for {fpga} disagree"
+            f"physical result implementation cells for {fpga} disagree"
         )
     closure = result.get("closure")
     if not isinstance(closure, dict):
         raise ValidationError(f"physical result for {fpga} has no closure")
     if closure.get("unrouted_nets") != 0 or closure.get("drc_violations") != 0:
         raise ValidationError(f"physical result for {fpga} did not close")
+    hard_resources = result.get("hard_resources")
+    if hard_resources is not None:
+        if not isinstance(hard_resources, dict) or any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for value in hard_resources.values()
+        ):
+            raise ValidationError(
+                f"physical result hard resources for {fpga} are invalid"
+            )
     timing = result.get("timing")
     if not isinstance(timing, dict):
         raise ValidationError(f"physical result for {fpga} has no timing")
@@ -192,6 +208,11 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
         **accounting,
         "unrouted_nets": result["closure"]["unrouted_nets"],
         "drc_violations": result["closure"]["drc_violations"],
+        **(
+            {"drc_warnings": result["closure"]["drc_warnings"]}
+            if "drc_warnings" in result["closure"]
+            else {}
+        ),
         "wns_ns": timing["wns_ns"],
         "timing": {
             "dut_wns_ns": timing["dut_wns_ns"],
@@ -209,6 +230,11 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
         **(
             {"clock_domain_delays_ns": timing["clock_domain_delays_ns"]}
             if "clock_domain_delays_ns" in timing
+            else {}
+        ),
+        **(
+            {"hard_resources": dict(result["hard_resources"])}
+            if "hard_resources" in result
             else {}
         ),
     }

@@ -7,13 +7,19 @@ from emuflow.errors import EmuFlowError
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
 from emuflow.sta import VIVADO_PATH_DATABASE_TSV_HEADER
+from emuflow.vtr_netlist import normalize_vtr_hard_block_json
+from emuflow.yosys import import_yosys_json
 from emuflow.vivado_backend import (
     _run_vivado,
     run_vivado_partition_backend,
     run_vivado_timing_path_database,
     vivado_runtime_xdc,
 )
-from emuflow.vivado_netlist import lower_vivado_primitives
+from emuflow.vivado_netlist import (
+    emit_vivado_mapped_verilog,
+    lower_vivado_primitives,
+)
+from tests.test_vtr_netlist import _raw_vtr_json
 
 
 def _ir():
@@ -95,6 +101,35 @@ RUNTIME = {
 
 
 class VivadoBackendTest(unittest.TestCase):
+    def test_vtr_dsp_and_bram_macros_emit_synthesizable_models(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            raw = root / "raw.json"
+            normalized = root / "normalized.json"
+            ir_path = root / "hard-blocks.emuir.json"
+            verilog = root / "hard-blocks.v"
+            write_json(raw, _raw_vtr_json())
+            normalize_vtr_hard_block_json(raw, normalized, top="top")
+            ir = import_yosys_json(normalized, top="top", clocks=["clk"])
+            write_json(ir_path, ir.to_dict())
+            report = emit_vivado_mapped_verilog(ir_path, verilog)
+            text = verilog.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            report["hard_macro_models"],
+            ["VTR_MULTIPLY", "VTR_SP_RAM"],
+        )
+        self.assertIn("module VTR_MULTIPLY", text)
+        self.assertIn("module VTR_SP_RAM", text)
+        self.assertIn("ram_style = \"block\"", text)
+        self.assertIn(".\\ADDR_WIDTH (2)", text)
+        self.assertNotIn(".\\ADDR_WIDTH (2'b10)", text)
+        self.assertIn("{__emuflow_net_", text)
+        self.assertIn("EMUFLOW_MAPPED = \"yes\"", text)
+        self.assertIn(
+            'KEEP_HIERARCHY = "yes", EMUFLOW_MAPPED = "yes"', text
+        )
+
     def test_vivado_critical_warning_is_a_hard_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -149,6 +184,19 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertNotIn("\n  [get_ports", xdc)
         self.assertNotIn("\n  -from", xdc)
 
+    def test_runtime_xdc_allows_a_combinational_dut_partition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "ir.json"
+            value = _ir().to_dict()
+            value["ports"] = [
+                port for port in value["ports"] if port["id"] != "clk"
+            ]
+            value["nets"] = []
+            write_json(path, value)
+            xdc = vivado_runtime_xdc(path, RUNTIME)
+        self.assertNotIn("emuflow_dut_clk", xdc)
+        self.assertIn("emuflow_fabric_clk", xdc)
+
     def test_vivado_outputs_the_same_partition_result_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -169,9 +217,13 @@ class VivadoBackendTest(unittest.TestCase):
                         "physical_cells": "3",
                         "infrastructure_cells": "1",
                         "optimization_cells": "0",
+                        "dsp48_cells": "0",
+                        "ramb18_cells": "0",
+                        "ramb36_cells": "0",
                         "nets": "10",
                         "unrouted_nets": "0",
                         "drc_violations": "0",
+                        "drc_warnings": "5",
                         "dut_period_ns": "100.0",
                         "fabric_period_ns": "4.0",
                         "wns_ns": "0.25",
@@ -249,6 +301,11 @@ class VivadoBackendTest(unittest.TestCase):
         result = report["result"]
         self.assertEqual(result["identity"]["backend"], "vivado")
         self.assertEqual(result["cell_accounting"]["physical_cells"], 3)
+        self.assertEqual(result["hard_resources"]["dsp48_cells"], 0)
+        self.assertEqual(result["closure"]["drc_warnings"], 5)
+        self.assertEqual(
+            report["validation"]["physical_cells"], 3
+        )
         self.assertEqual(result["timing"]["fabric_wns_ns"], 0.25)
         self.assertEqual(report["timing_path_validation"]["paths"], 1)
 

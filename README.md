@@ -353,8 +353,12 @@ emuflow multi-fpga compile examples/rtl/counter.v \
 This provider lowers generic LUT/FF EmuIR to Xilinx primitives, runs Vivado
 synthesis/place/route/timing for every partition, and emits the same
 `physical-partition-result/v1` and `physical-summary/v1` contracts as the open
-provider. It currently requires `--mapping-profile generic-soft`; vendor RAM,
-DSP, board XDC, and bitstream generation are later gates.
+provider. Both `generic-soft` and `vtr-hard-blocks` inputs are accepted; VTR
+multiplier and single/dual-port RAM macros are inferred into Xilinx DSP/BRAM
+resources while preserving logical-instance coverage. Board XDC and bitstream
+generation remain later gates. Xilinx BoardDB files expose conservative VTR
+planning aliases (`dsp = dsp48`, `bram = floor(bram18k / 2)`); the Vivado
+result independently checks the realized DSP48 and RAMB18/RAMB36 counts.
 
 Add `--timing-driven --clock-period CLOCK=PERIOD_NS` to make this same command
 run the default OpenSTA provider, derive timing-critical partition weights,

@@ -15,9 +15,9 @@ create_project -in_memory -part $part
 read_verilog $mapped_verilog
 read_xdc $timing_xdc
 synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
-set cells [get_cells -quiet -hier -filter {REF_NAME != GND && REF_NAME != VCC}]
+set cells [get_cells -quiet -hier -filter {EMUFLOW_MAPPED == yes}]
 if {[llength $cells] != $expected_cells} {
-  error "post-synthesis timing design has [llength $cells] cells; expected $expected_cells"
+  error "post-synthesis timing design has [llength $cells] tagged mapped cells; expected $expected_cells"
 }
 set clocks [get_clocks -quiet]
 if {[llength $clocks] == 0} {
