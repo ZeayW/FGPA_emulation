@@ -321,6 +321,18 @@ Passing a public VTR TimingDB with
 `--architecture-timing-db build/architecture/timing.json` automatically
 enables this mode.
 
+For emulation-speed optimization, pass a known-feasible upper bound such as
+`--frame-slots 4096 --optimize-frame-slots`. The flow then searches for the
+minimum frame that still passes route capacity, ratio legalization, concrete
+lane/slot scheduling, precedence, barrier, collision, and transport checks.
+Every multi-FPGA run also emits the Phase 7C pausible-clock runtime contract;
+its virtual DUT frequency is the fabric frequency divided by the selected
+frame length. Original-clock path slack and emulation runtime frequency are
+reported separately. For timing-annotated runs, the runtime QoR also checks
+the concrete worst scheduled path delay against the selected virtual period;
+this remains an academic pre-placement estimate until physical timing is
+available.
+
 To validate one FPGA independently with the open physical backend, the
 following command fetches the pinned architecture automatically and enables
 its multiplier/RAM mapping profile:

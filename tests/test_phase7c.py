@@ -11,6 +11,7 @@ from emuflow.runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
     aggregate_qor,
     build_virtual_runtime,
+    estimate_runtime_timing,
     runtime_controller_testbench,
     runtime_timing_xdc,
     validate_physical_summary,
@@ -180,6 +181,29 @@ class Phase7CTest(unittest.TestCase):
         self.assertEqual(
             runtime["barrier"]["stall_behavior"],
             "hold-slot-and-suppress-dut-clock-enable",
+        )
+
+    def test_runtime_timing_uses_virtual_not_original_period(self):
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        report = copy.deepcopy(self.reports["phase5"])
+        report["timing_validation"] = {
+            "status": "pass",
+            "worst_path": "critical",
+            "worst_delay_ns": 80.0,
+            "worst_slack_ns": -70.0,
+            "negative_slack_paths": 1,
+        }
+        timing = estimate_runtime_timing(runtime, report)
+        self.assertEqual(timing["status"], "pass")
+        self.assertFalse(
+            timing["original_clock_reference"]["closure_gate"]
+        )
+        self.assertEqual(
+            timing["virtual_clock"]["estimated_worst_slack_ns"], 48.0
+        )
+        report["timing_validation"]["worst_delay_ns"] = 129.0
+        self.assertEqual(
+            estimate_runtime_timing(runtime, report)["status"], "fail"
         )
 
     def test_controller_and_timing_artifacts_encode_contract(self):

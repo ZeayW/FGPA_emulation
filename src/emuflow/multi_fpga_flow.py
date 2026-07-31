@@ -8,13 +8,18 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from .errors import EmuFlowError, ValidationError
-from .io import write_json
+from .frame_search import (
+    run_frame_length_search,
+    validate_frame_search_report,
+)
+from .io import read_json, write_json
 from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
 from .phase1 import run_phase1
 from .phase3 import run_phase3
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .phase6 import run_phase6
+from .phase7c import run_phase7c
 from .sta import (
     derive_partition_net_weights,
     project_sta_path_database,
@@ -24,9 +29,9 @@ from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
 
 
-MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v1"
+MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
-    "profiled-yosys+partition+system-route+tdm+split-transport"
+    "profiled-yosys+partition+system-route+tdm+split-transport+runtime"
 )
 MULTI_FPGA_MAPPING_PROFILES = ("vtr-hard-blocks", "generic-soft")
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
@@ -77,6 +82,27 @@ def validate_multi_fpga_flow_report(
     tdm_validation = stages["tdm"].get("validation", {})
     split_validation = stages["split"].get("validation", {})
     equivalence = stages["split"].get("equivalence", {})
+    runtime = report.get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or runtime.get("design") != design
+        or runtime.get("platform") != platform
+        or runtime.get("validation", {}).get("status") != "pass"
+        or runtime.get("runtime_timing", {}).get("status") == "fail"
+    ):
+        raise ValidationError("multi-FPGA runtime contract did not pass")
+    frame_search = report.get("frame_search")
+    if frame_search is not None:
+        frame_validation = validate_frame_search_report(frame_search)
+        if (
+            frame_validation["selected_frame_slots"]
+            != tdm_validation.get("frame_slots")
+            or frame_validation["selected_frame_slots"]
+            != runtime["validation"].get("frame_slots")
+        ):
+            raise ValidationError(
+                "frame-search selection disagrees with TDM/runtime"
+            )
     if any(
         item.get("status") != "pass"
         for item in (
@@ -100,6 +126,10 @@ def validate_multi_fpga_flow_report(
         "cut_nets": partition_validation.get("cut_nets"),
         "scheduled_hops": split_validation.get("scheduled_hops"),
         "equivalence_mismatches": equivalence.get("mismatches"),
+        "frame_slots": runtime["validation"].get("frame_slots"),
+        "nominal_virtual_frequency_mhz": runtime["validation"].get(
+            "nominal_virtual_frequency_mhz"
+        ),
     }
 
 
@@ -136,6 +166,7 @@ def run_multi_fpga_flow(
     timing_paths: Optional[Path] = None,
     router: Optional[str] = None,
     frame_slots: Optional[int] = None,
+    optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
     ratio_optimizer: Optional[str] = None,
     simulation_frames: int = 16,
@@ -334,26 +365,49 @@ def run_multi_fpga_flow(
         timing_report["cut_path_projection"] = projection_report
 
     phase4_root = output_dir / "system-route"
-    phase4_report = run_phase4(
-        assignment_path,
-        platform_path,
-        phase4_root,
-        constraints_path=route_constraints,
-        frame_slots=frame_slots,
-        max_iterations=route_max_iterations,
-        timing_paths_path=projected_timing_paths,
-        router=router,
-    )
-    routes_path = phase4_root / "routes.json"
-
     phase5_root = output_dir / "tdm"
-    phase5_report = run_phase5(
-        routes_path,
-        platform_path,
-        phase5_root,
-        simulation_frames=simulation_frames,
-        ratio_optimizer=ratio_optimizer,
-    )
+    frame_search_report = None
+    if optimize_frame_slots:
+        if frame_slots is None:
+            raise EmuFlowError(
+                "--optimize-frame-slots requires --frame-slots as its "
+                "feasible upper bound"
+            )
+        frame_search_report = run_frame_length_search(
+            assignment_path,
+            platform_path,
+            projected_timing_paths,
+            output_dir / "frame-search",
+            phase4_root,
+            phase5_root,
+            max_frame_slots=frame_slots,
+            route_constraints=route_constraints,
+            route_max_iterations=route_max_iterations,
+            router=router,
+            ratio_optimizer=ratio_optimizer,
+            simulation_frames=simulation_frames,
+        )
+        phase4_report = read_json(phase4_root / "phase4_report.json")
+        phase5_report = read_json(phase5_root / "phase5_report.json")
+    else:
+        phase4_report = run_phase4(
+            assignment_path,
+            platform_path,
+            phase4_root,
+            constraints_path=route_constraints,
+            frame_slots=frame_slots,
+            max_iterations=route_max_iterations,
+            timing_paths_path=projected_timing_paths,
+            router=router,
+        )
+        phase5_report = run_phase5(
+            phase4_root / "routes.json",
+            platform_path,
+            phase5_root,
+            simulation_frames=simulation_frames,
+            ratio_optimizer=ratio_optimizer,
+        )
+    routes_path = phase4_root / "routes.json"
     schedule_path = phase5_root / "schedule.json"
 
     phase6_root = output_dir / "split"
@@ -367,12 +421,29 @@ def run_multi_fpga_flow(
         equivalence_seed=equivalence_seed,
     )
 
+    runtime_root = output_dir / "runtime"
+    runtime_report = run_phase7c(
+        schedule_path,
+        platform_path,
+        phase3_root / "phase3_report.json",
+        phase4_root / "phase4_report.json",
+        phase5_root / "phase5_report.json",
+        phase6_root / "phase6_report.json",
+        runtime_root,
+    )
+
     report = {
         "schema": MULTI_FPGA_FLOW_SCHEMA,
         "status": "pass",
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
         **({"timing": timing_report} if timing_report is not None else {}),
+        **(
+            {"frame_search": frame_search_report}
+            if frame_search_report is not None
+            else {}
+        ),
+        "runtime": runtime_report,
         "stages": {
             "frontend": frontend_report,
             "partition": phase3_report,
@@ -401,6 +472,27 @@ def run_multi_fpga_flow(
                 "path": "split/manifest.json",
                 "sha256": _sha256(phase6_root / "manifest.json"),
             },
+            "runtime_contract": {
+                "path": "runtime/runtime_contract.json",
+                "sha256": _sha256(runtime_root / "runtime_contract.json"),
+            },
+            "qor_report": {
+                "path": "runtime/qor_report.json",
+                "sha256": _sha256(runtime_root / "qor_report.json"),
+            },
+            **(
+                {
+                    "frame_search_report": {
+                        "path": "frame-search/frame-search-report.json",
+                        "sha256": _sha256(
+                            output_dir
+                            / "frame-search/frame-search-report.json"
+                        ),
+                    }
+                }
+                if frame_search_report is not None
+                else {}
+            ),
             **(
                 {
                     "timing_path_database": {

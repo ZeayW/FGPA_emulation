@@ -75,6 +75,7 @@ def run_phase7c(
         "platform": platform.name,
         "provider": runtime["provider"],
         "validation": validation,
+        "runtime_timing": qor["timing"],
         "physical": qor["physical"],
         "artifacts": {
             "runtime_contract": "runtime_contract.json",

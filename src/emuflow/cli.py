@@ -339,6 +339,14 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--timing-paths", type=Path)
     multi_fpga_compile.add_argument("--router")
     multi_fpga_compile.add_argument("--frame-slots", type=int)
+    multi_fpga_compile.add_argument(
+        "--optimize-frame-slots",
+        action="store_true",
+        help=(
+            "treat --frame-slots as an upper bound and search for the "
+            "minimum independently feasible route/TDM frame"
+        ),
+    )
     multi_fpga_compile.add_argument("--route-max-iterations", type=int)
     multi_fpga_compile.add_argument("--ratio-optimizer")
     multi_fpga_compile.add_argument("--simulation-frames", type=int, default=16)
@@ -1561,6 +1569,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             timing_paths=args.timing_paths,
             router=args.router,
             frame_slots=args.frame_slots,
+            optimize_frame_slots=args.optimize_frame_slots,
             route_max_iterations=args.route_max_iterations,
             ratio_optimizer=args.ratio_optimizer,
             simulation_frames=args.simulation_frames,

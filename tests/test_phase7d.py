@@ -197,7 +197,7 @@ class Phase7DTest(unittest.TestCase):
             "physical": physical,
         }
         qor = {
-            "schema": "emuflow.qor-report/v1",
+            "schema": "emuflow.qor-report/v2",
             "status": "pass",
             "physical": physical,
         }

@@ -38,6 +38,10 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertEqual(report["summary"]["instances"], 8)
             self.assertEqual(report["summary"]["equivalence_mismatches"], 0)
             self.assertEqual(
+                report["runtime"]["validation"]["status"], "pass"
+            )
+            self.assertEqual(report["summary"]["frame_slots"], 32)
+            self.assertEqual(
                 report["stages"]["frontend"]["synthesis"]["mode"],
                 "provided-yosys-json",
             )
@@ -59,6 +63,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "split/manifest.json",
                 "split/fpga0/netlist.json",
                 "split/fpga1/netlist.json",
+                "runtime/runtime_contract.json",
+                "runtime/qor_report.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)
 
@@ -125,6 +131,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 frame_slots=32,
+                optimize_frame_slots=True,
                 equivalence_cycles=2,
             )
             self.assertEqual(report["timing"]["status"], "pass")
@@ -140,10 +147,25 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             self.assertIn(
                 "timing_validation", report["stages"]["tdm"]
             )
+            self.assertLess(
+                report["frame_search"]["selected_frame_slots"], 32
+            )
+            self.assertEqual(
+                report["summary"]["frame_slots"],
+                report["frame_search"]["selected_frame_slots"],
+            )
+            broken = copy.deepcopy(report)
+            broken["frame_search"]["selected_frame_slots"] = 31
+            with self.assertRaisesRegex(
+                ValidationError, "selected frame-search candidate"
+            ):
+                validate_multi_fpga_flow_report(broken)
             for relative in (
                 "timing/path-database.json",
                 "timing/partition-net-weights.json",
                 "timing/cut-timing-paths.json",
+                "frame-search/frame-search-report.json",
+                "runtime/runtime_contract.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)
 

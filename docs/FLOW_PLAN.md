@@ -368,6 +368,13 @@ checker, schedule ROM table, transport manifest, generic link/barrier RTL,
 Python event model, and generated SystemVerilog transport simulation are
 implemented.
 
+The one-command flow can also treat `frame_slots` as a feasible upper bound
+and run checked monotone bisection across the actual Phase 4/5 providers. Each
+candidate must pass routing capacity, ratio legalization, concrete schedule,
+transport simulation, and pausible-clock barrier validation. Phase 7C then
+reports the selected frame's virtual DUT frequency separately from the
+original RTL clock-domain path slack.
+
 The joint G6 cycle-equivalence gate is now closed for the mapped PicoRV32
 LUT/FF primitive envelope by the Phase 6 split and shadow-endpoint model.
 

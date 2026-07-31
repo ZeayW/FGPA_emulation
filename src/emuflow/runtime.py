@@ -8,7 +8,7 @@ from .tdm import TDM_SCHEDULE_SCHEMA
 
 VIRTUAL_RUNTIME_SCHEMA = "emuflow.virtual-runtime/v1"
 PHYSICAL_SUMMARY_SCHEMA = "emuflow.phase7b-physical-summary/v1"
-QOR_REPORT_SCHEMA = "emuflow.qor-report/v1"
+QOR_REPORT_SCHEMA = "emuflow.qor-report/v2"
 
 
 def virtual_runtime_controller_to_systemverilog() -> str:
@@ -195,6 +195,57 @@ def validate_virtual_runtime(
         "nominal_virtual_frequency_mhz": expected["virtual_dut_clock"][
             "nominal_frequency_mhz"
         ],
+    }
+
+
+def estimate_runtime_timing(
+    runtime: Mapping[str, Any],
+    phase5_report: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Compare concrete scheduled path delay with the virtual clock period."""
+    timing = phase5_report.get("timing_validation")
+    if not isinstance(timing, dict):
+        return {
+            "status": "unavailable",
+            "qualification": "no-scheduled-path-timing",
+        }
+    if timing.get("status") != "pass":
+        raise ValidationError("Phase 5 scheduled timing did not pass")
+    worst_delay = timing.get("worst_delay_ns")
+    original_slack = timing.get("worst_slack_ns")
+    virtual_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
+    for name, value in (
+        ("worst_delay_ns", worst_delay),
+        ("worst_slack_ns", original_slack),
+        ("nominal_period_ns", virtual_period),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise ValidationError(f"runtime timing {name} must be finite")
+    runtime_slack = float(virtual_period) - float(worst_delay)
+    return {
+        "status": "pass" if runtime_slack >= 0.0 else "fail",
+        "qualification": (
+            "academic-preplacement-fixed-delay-plus-concrete-tdm-schedule"
+        ),
+        "original_clock_reference": {
+            "worst_path": timing.get("worst_path"),
+            "worst_delay_ns": float(worst_delay),
+            "worst_slack_ns": float(original_slack),
+            "negative_slack_paths": timing.get("negative_slack_paths"),
+            "closure_gate": False,
+        },
+        "virtual_clock": {
+            "period_ns": float(virtual_period),
+            "frequency_mhz": runtime["virtual_dut_clock"][
+                "nominal_frequency_mhz"
+            ],
+            "estimated_worst_slack_ns": runtime_slack,
+            "estimated_closed": runtime_slack >= 0.0,
+        },
     }
 
 
@@ -541,6 +592,7 @@ def aggregate_qor(
         if physical_summary is None
         else validate_physical_summary(physical_summary, runtime, platform)
     )
+    runtime_timing = estimate_runtime_timing(runtime, phase5_report)
     return {
         "schema": QOR_REPORT_SCHEMA,
         "status": "pass" if physical["status"] == "pass" else "pending",
@@ -582,6 +634,7 @@ def aggregate_qor(
                 "barrier_release_slot"
             ],
         },
+        "timing": runtime_timing,
         "equivalence": {
             "cycles": equivalence["cycles"],
             "compared_state_bits": equivalence["compared_state_bits"],
