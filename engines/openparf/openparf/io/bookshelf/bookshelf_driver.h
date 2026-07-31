@@ -2,6 +2,7 @@
 #define BOOKSHELFPARSER_DRIVER_H_
 
 #include "bookshelf_database.h"
+#include <fstream>
 #include <string>
 
 namespace bookshelfparser {
@@ -95,6 +96,8 @@ public:
   /* parsing pl file */
   void setFixedNodeCbk(std::string const &node_name, unsigned x, unsigned y,
                        unsigned z);
+  void setMovableNodeCbk(std::string const &node_name, unsigned x, unsigned y,
+                         unsigned z);
 
   /* parsing nets file */
   void addNetCbk(std::string const &net_name, unsigned degree);

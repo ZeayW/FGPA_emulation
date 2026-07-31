@@ -1,0 +1,237 @@
+import hashlib
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from emuflow.io import write_json
+from emuflow.ir import EmuIR
+from emuflow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PLATFORM = ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json"
+
+
+def _sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _merged_ir(fpga):
+    instances = [
+        {
+            "id": f"{fpga}_original",
+            "name": f"{fpga}_original",
+            "type": "LUT1",
+            "resources": {"lut": 1},
+            "parameters": {"INIT": "10"},
+            "attributes": {},
+            "constant_connections": [
+                {"port": "I0", "bit": 0, "value": "0"}
+            ],
+        },
+        {
+            "id": f"{fpga}_transport",
+            "name": f"{fpga}_transport",
+            "type": "LUT1",
+            "resources": {"lut": 1},
+            "parameters": {"INIT": "10"},
+            "attributes": {},
+            "constant_connections": [
+                {"port": "I0", "bit": 0, "value": "1"}
+            ],
+        },
+    ]
+    return EmuIR(
+        {
+            "schema": "emuflow.emuir/v1",
+            "design": {
+                "name": f"design__{fpga}",
+                "top": f"design__{fpga}",
+                "source_format": "test",
+            },
+            "ports": [],
+            "instances": instances,
+            "nets": [],
+            "clocks": [],
+            "warnings": [],
+        }
+    )
+
+
+class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_every_partition_is_bound_through_checked_route(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            split = root / "split"
+            split.mkdir()
+            manifest = {
+                "schema": "emuflow.split-manifest/v1",
+                "design": "design",
+                "platform": "academic_vtr_2fpga_p2p",
+                "provider": "test",
+                "board_binding": {"status": "virtual"},
+                "fpgas": [],
+                "lane_map": "lane_map.json",
+                "runtime_controller_rtl": "virtual_runtime_controller.sv",
+            }
+            (split / "virtual_runtime_controller.sv").write_text(
+                "module emuflow_virtual_runtime_controller; endmodule\n",
+                encoding="utf-8",
+            )
+            for fpga in ("fpga0", "fpga1"):
+                fpga_root = split / fpga
+                fpga_root.mkdir()
+                write_json(
+                    fpga_root / "netlist.json",
+                    {
+                        "instances": [{"id": f"{fpga}_original"}],
+                    },
+                )
+                write_json(fpga_root / "transport.json", {})
+                (fpga_root / "transport_schedule.sv").write_text(
+                    f"module emuflow_transport_{fpga}; endmodule\n",
+                    encoding="utf-8",
+                )
+                manifest["fpgas"].append(
+                    {
+                        "fpga": fpga,
+                        "netlist": f"{fpga}/netlist.json",
+                        "transport": f"{fpga}/transport.json",
+                        "transport_rtl": f"{fpga}/transport_schedule.sv",
+                        "virtual_anchors": f"{fpga}/virtual_anchors.json",
+                    }
+                )
+            write_json(split / "manifest.json", manifest)
+            write_json(root / "schedule.json", {})
+            architecture = root / "architecture.xml"
+            architecture.write_text("<architecture/>\n", encoding="utf-8")
+
+            runtime = {
+                "design": "design",
+                "fabric_clock": {"period_ns": 4.0},
+                "virtual_dut_clock": {"nominal_period_ns": 128.0},
+                "timing_model": {"fabric_to_dut_max_delay_ns": 8.0},
+            }
+
+            def fake_yosys(_sources, _top, output, **_kwargs):
+                write_json(output, {"modules": {}})
+
+            def fake_lower(netlist_path, _transport, _transport_ir, output, report):
+                fpga = netlist_path.parent.name
+                value = _merged_ir(fpga)
+                write_json(output, value.to_dict())
+                result = {
+                    "schema": "emuflow.placement-ir-report/v1",
+                    "status": "pass",
+                    "design": f"design__{fpga}",
+                    "instances": 2,
+                    "nets": 0,
+                    "resource_totals": {"lut": 2},
+                    "transport_instances": 1,
+                    "output": str(output),
+                }
+                write_json(report, result)
+                return result
+
+            def fake_pack(arch, circuit, output_dir, **_kwargs):
+                output_dir.mkdir(parents=True, exist_ok=True)
+                netlist = output_dir / "partition.net"
+                placement = output_dir / "partition.place"
+                netlist.write_text("<block/>\n", encoding="utf-8")
+                placement.write_text(
+                    "Array size: 8 x 9 logic blocks\n", encoding="utf-8"
+                )
+                return {
+                    "status": "pass",
+                    "architecture": {"sha256": _sha256(arch)},
+                    "circuit": {"sha256": _sha256(circuit)},
+                    "artifacts": {
+                        "packed_netlist": {"path": str(netlist)},
+                        "placement": {"path": str(placement)},
+                    },
+                }
+
+            def fake_architecture(**kwargs):
+                write_json(kwargs["architecture_output_path"], {})
+                write_json(kwargs["timing_output_path"], {})
+                return {"status": "pass"}
+
+            def fake_packed(netlist, output, **_kwargs):
+                write_json(output, {})
+                return {"status": "pass", "design": "partition"}
+
+            def fake_placement(_packed, _arch, output_dir, **_kwargs):
+                output_dir.mkdir(parents=True, exist_ok=True)
+                placement = output_dir / "partition.place"
+                placement.write_text(
+                    "Array size: 8 x 9 logic blocks\n", encoding="utf-8"
+                )
+                return {
+                    "status": "pass",
+                    "artifacts": {"vpr_placement": str(placement)},
+                }
+
+            def fake_route(arch, circuit, *_args, **_kwargs):
+                return {
+                    "status": "pass",
+                    "architecture": {"sha256": _sha256(arch)},
+                    "circuit": {"sha256": _sha256(circuit)},
+                    "metrics": {"critical_path_ns": 1.0},
+                    "route_check": {"status": "pass"},
+                }
+
+            with (
+                patch(
+                    "emuflow.multi_fpga_physical_flow.build_virtual_runtime",
+                    return_value=runtime,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.run_generic_yosys",
+                    side_effect=fake_yosys,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.import_yosys_json",
+                    return_value=_merged_ir("transport"),
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.run_placement_ir_lowering",
+                    side_effect=fake_lower,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.run_vpr_pack_place",
+                    side_effect=fake_pack,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.run_vtr_architecture_import",
+                    side_effect=fake_architecture,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.run_packed_netlist_import",
+                    side_effect=fake_packed,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.run_packed_openparf_placement",
+                    side_effect=fake_placement,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.run_vpr_route_packed",
+                    side_effect=fake_route,
+                ),
+            ):
+                report = run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    architecture=architecture,
+                )
+
+        self.assertEqual(report["summary"]["fpgas"], 2)
+        self.assertEqual(report["summary"]["original_cells"], 2)
+        self.assertEqual(report["summary"]["transport_cells"], 2)
+        self.assertEqual(report["physical_summary"]["validation"]["status"], "pass")
+
+
+if __name__ == "__main__":
+    unittest.main()

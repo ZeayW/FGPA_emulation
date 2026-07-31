@@ -34,6 +34,10 @@
   AT_ASSERTM((x.numel() % y) == 0, #x "must have "#y"-divisible number of elements")
 #define CHECK_CONTIGUOUS(x)                                                    \
   AT_ASSERTM(x.is_contiguous(), #x "must be contiguous")
+#ifndef CHECK_EQ
+#define CHECK_EQ(x, y)                                                         \
+  TORCH_CHECK((x) == (y), #x " must equal " #y)
+#endif
 
 /// As the API for torch changes, customize a DREAMPlace version to remove
 /// warnings. Use PyTorch's public dispatch API; AT_PRIVATE_CASE_TYPE changed

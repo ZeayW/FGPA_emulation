@@ -197,8 +197,8 @@ class PlaceModel(nn.Module):
             pos.grad.data.copy_(wirelength_grad + density_grad)
 
         # in case some instances are locked
-        pos.grad.data.masked_fill_(self.data_cls.inst_lock_mask.view([-1, 1]),
-                                   0)
+        pos.grad.data.masked_fill_(
+            self.data_cls.inst_lock_mask.view([-1, 1]).bool(), 0)
 
         if self.params.gp_dynamic_precondition:
             # compute normalization factor alphas for preconditioning
@@ -334,8 +334,8 @@ class FenceRegionPlaceModel(PlaceModel):
         pos.grad.data.copy_(temp_grad)
 
         # in case some instances are locked
-        pos.grad.data.masked_fill_(self.data_cls.inst_lock_mask.view([-1, 1]),
-                                   0)
+        pos.grad.data.masked_fill_(
+            self.data_cls.inst_lock_mask.view([-1, 1]).bool(), 0)
 
         # area_type_mover_density_grad_norm = pos.new_ones(self.data_cls.num_area_types)
         # area_type_filler_density_grad_norm = pos.new_ones(self.data_cls.num_area_types)

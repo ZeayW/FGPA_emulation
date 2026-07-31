@@ -13,6 +13,10 @@ from .frame_search import (
     validate_frame_search_report,
 )
 from .io import read_json, write_json
+from .multi_fpga_physical_flow import (
+    run_multi_fpga_physical_flow,
+    validate_multi_fpga_physical_report,
+)
 from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
 from .phase1 import run_phase1
 from .phase3 import run_phase3
@@ -91,6 +95,19 @@ def validate_multi_fpga_flow_report(
         or runtime.get("runtime_timing", {}).get("status") == "fail"
     ):
         raise ValidationError("multi-FPGA runtime contract did not pass")
+    physical = report.get("physical")
+    if physical is not None:
+        physical_validation = validate_multi_fpga_physical_report(physical)
+        if physical_validation["original_cells"] != partition_validation.get(
+            "instances"
+        ):
+            raise ValidationError(
+                "multi-FPGA physical original-cell coverage disagrees"
+            )
+        if runtime.get("physical", {}).get("status") != "pass":
+            raise ValidationError(
+                "multi-FPGA runtime is not closed against physical results"
+            )
     frame_search = report.get("frame_search")
     if frame_search is not None:
         frame_validation = validate_frame_search_report(frame_search)
@@ -129,6 +146,9 @@ def validate_multi_fpga_flow_report(
         "frame_slots": runtime["validation"].get("frame_slots"),
         "nominal_virtual_frequency_mhz": runtime["validation"].get(
             "nominal_virtual_frequency_mhz"
+        ),
+        "physical_status": (
+            "pass" if physical is not None else "not-requested"
         ),
     }
 
@@ -172,6 +192,17 @@ def run_multi_fpga_flow(
     simulation_frames: int = 16,
     equivalence_cycles: int = 16,
     equivalence_seed: int = 20260727,
+    physical: bool = False,
+    physical_architecture: Optional[Path] = None,
+    physical_architecture_id: str = VTR_HARD_BLOCK_PROFILE,
+    physical_vpr: Optional[str] = None,
+    physical_architecture_importer: Optional[str] = None,
+    physical_packed_importer: Optional[str] = None,
+    physical_route_checker: Optional[str] = None,
+    physical_openparf_install: Optional[Path] = None,
+    physical_openparf_python: Optional[Path] = None,
+    physical_seed: int = 1,
+    physical_route_channel_width: int = 300,
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR through the checked board-independent split."""
 
@@ -421,6 +452,28 @@ def run_multi_fpga_flow(
         equivalence_seed=equivalence_seed,
     )
 
+    physical_report = None
+    physical_summary_path = None
+    if physical:
+        physical_report = run_multi_fpga_physical_flow(
+            phase6_root,
+            platform_path,
+            schedule_path,
+            output_dir / "physical",
+            architecture=physical_architecture,
+            architecture_id=physical_architecture_id,
+            yosys=yosys,
+            vpr=physical_vpr,
+            architecture_importer=physical_architecture_importer,
+            packed_importer=physical_packed_importer,
+            route_checker=physical_route_checker,
+            openparf_install=physical_openparf_install,
+            openparf_python=physical_openparf_python,
+            seed=physical_seed,
+            route_channel_width=physical_route_channel_width,
+        )
+        physical_summary_path = output_dir / "physical/physical-summary.json"
+
     runtime_root = output_dir / "runtime"
     runtime_report = run_phase7c(
         schedule_path,
@@ -430,6 +483,7 @@ def run_multi_fpga_flow(
         phase5_root / "phase5_report.json",
         phase6_root / "phase6_report.json",
         runtime_root,
+        physical_summary_path=physical_summary_path,
     )
 
     report = {
@@ -444,6 +498,11 @@ def run_multi_fpga_flow(
             else {}
         ),
         "runtime": runtime_report,
+        **(
+            {"physical": physical_report}
+            if physical_report is not None
+            else {}
+        ),
         "stages": {
             "frontend": frontend_report,
             "partition": phase3_report,
@@ -480,6 +539,25 @@ def run_multi_fpga_flow(
                 "path": "runtime/qor_report.json",
                 "sha256": _sha256(runtime_root / "qor_report.json"),
             },
+            **(
+                {
+                    "physical_flow_report": {
+                        "path": "physical/multi-fpga-physical-flow-report.json",
+                        "sha256": _sha256(
+                            output_dir
+                            / "physical/multi-fpga-physical-flow-report.json"
+                        ),
+                    },
+                    "physical_summary": {
+                        "path": "physical/physical-summary.json",
+                        "sha256": _sha256(
+                            output_dir / "physical/physical-summary.json"
+                        ),
+                    },
+                }
+                if physical_report is not None
+                else {}
+            ),
             **(
                 {
                     "frame_search_report": {

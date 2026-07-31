@@ -131,6 +131,10 @@ def build_generic_yosys_script(
         "dffunmap",
         "abc -lut 6",
         "dffunmap",
+        # Yosys 0.57+ may materialize debug-only hierarchy metadata as
+        # $scopeinfo cells. They have no hardware behavior or pins and must
+        # not enter the physical instance inventory.
+        "delete t:$scopeinfo",
         "clean",
         "check",
         f"write_json {_yosys_quote(str(output))}",

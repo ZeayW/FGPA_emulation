@@ -217,6 +217,7 @@ def run_open_physical_flow(
         packed_contract,
         architecture_db,
         openparf_dir,
+        seed_placement_path=baseline_placement,
         openparf_install=openparf_install,
         openparf_python=openparf_python,
     )

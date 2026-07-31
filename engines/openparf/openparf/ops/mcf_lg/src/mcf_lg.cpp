@@ -5,6 +5,7 @@
  * Last Modified Date: 10.20.2020
  * Last Modified By  : Jing Mai <magic3007@pku.edu.cn>
  */
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -88,6 +89,14 @@ at::Tensor MinCostFlowLegalizer<T>::forward(at::Tensor pos) {
     bool    mcf_legal   = false;
     bool    clock_legal = false;
     int32_t iter        = 0;
+    int32_t max_search_iters = 2;
+    for (auto const &m : sssir_model_infos) {
+        if (m.dist_incr_per_iter > 0) {
+            max_search_iters = std::max(
+                    max_search_iters,
+                    static_cast<int32_t>(std::ceil(m.max_distance / m.dist_incr_per_iter)) + 1);
+        }
+    }
     while (not stop_flag) {
         // purge_arcs
         int32_t total_num_insts = 0;
@@ -148,7 +157,13 @@ at::Tensor MinCostFlowLegalizer<T>::forward(at::Tensor pos) {
 
         // Solve the mcf_problem
         mcf_problem.supply = total_num_insts;
-        openparfAssert(mcf_problem.solve());
+        if (not mcf_problem.solve()) {
+            openparfAssertMsg(
+                    iter < max_search_iters,
+                    "Min-cost-flow legalization remains infeasible after the full site search radius");
+            ++iter;
+            continue;
+        }
 
         // Now check if the results are legal
         stop_flag   = true;

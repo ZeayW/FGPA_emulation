@@ -113,7 +113,10 @@ def run_openparf(
     with console_log_path.open("w", encoding="utf-8") as console_log:
         completed = subprocess.run(
             [
-                str(python.resolve()),
+                # Preserve a virtual-environment launcher path. Resolving its
+                # symlink to /usr/bin/python bypasses pyvenv.cfg and silently
+                # loses the PyTorch environment used to build OpenPARF.
+                str(python.absolute()),
                 str(installation / "openparf.py"),
                 "--config",
                 str(config_path),

@@ -37,7 +37,11 @@ set(CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fno-omit-frame-pointe
 # set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
 # set (CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fsanitize=address")
 set(CMAKE_VERBOSE_MAKEFILE OFF)
-set(CMAKE_CXX_STANDARD 14)
+# Current PyTorch C++ headers use std::optional and require C++17.  OpenPARF's
+# own sources are C++17-clean, so keep the monorepo source build compatible
+# with supported contemporary PyTorch releases instead of relying on an old
+# binary environment.
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

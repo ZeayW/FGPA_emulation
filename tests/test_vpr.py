@@ -76,6 +76,11 @@ class VprTest(unittest.TestCase):
                 Total wirelength: 29761, average net length: 12.7894
                 Final critical path delay (least slack): 8.08208 ns,
                 Fmax: 123.731 MHz
+                intra-domain critical path delays (CPDs):
+                  n10 to n10 CPD: 2.5 ns (400 MHz)
+                  n20 to n20 CPD: 8 ns (125 MHz)
+                inter-domain critical path delays (CPDs):
+                  n10 to n20 CPD: 3.25 ns (307.69 MHz)
                 VPR succeeded
                 """,
                 packed_netlist=netlist,
@@ -87,6 +92,10 @@ class VprTest(unittest.TestCase):
         self.assertEqual(report["metrics"]["clb_blocks"], 263)
         self.assertEqual(report["metrics"]["wirelength"], 29761)
         self.assertEqual(report["metrics"]["fmax_mhz"], 123.731)
+        self.assertEqual(
+            report["metrics"]["clock_domain_cpd_ns"],
+            {"n10->n10": 2.5, "n10->n20": 3.25, "n20->n20": 8.0},
+        )
         self.assertEqual(
             report["stages"], ["pack", "place", "route", "analysis"]
         )

@@ -1998,7 +1998,7 @@ class Placer(nn.Module):
         pos = self.data_cls.pos[0]
 
         # random initial placement
-        if set_random_pos:
+        if set_random_pos and self.params.random_center_init_flag:
             self.op_cls.random_pos_op(pos)
 
         self.init_pos = pos.data.clone()
@@ -2044,7 +2044,10 @@ class Placer(nn.Module):
         # move any out-of-bound cell back to placement region
         self.op_cls.move_boundary_op(pos)
 
-        optimizer.zero_grad()
+        # OpenPARF's custom Nesterov optimizer initializes its history from an
+        # allocated zero gradient.  PyTorch 2.x defaults to setting gradients
+        # to None, which silently skips every parameter in Nesterov.step().
+        optimizer.zero_grad(set_to_none=False)
 
         # one descent step
         tt = time.time()

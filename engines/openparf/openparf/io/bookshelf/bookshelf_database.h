@@ -58,6 +58,8 @@ public:
   /* parsing pl file */
   virtual void setFixedNodeCbk(const std::string &node_name, unsigned x,
                                unsigned y, unsigned z) = 0;
+  virtual void setMovableNodeCbk(const std::string &node_name, unsigned x,
+                                 unsigned y, unsigned z) = 0;
 
   /* parsing nets file */
   virtual void addNetCbk(const std::string &, unsigned degree) = 0;

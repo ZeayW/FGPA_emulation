@@ -6,6 +6,7 @@
  * Last Modified By  : Jing Mai <jingmai@pku.edu.cn>
  */
 #include "chain_legalizer.h"
+#include <fstream>
 
 // C++ standard libraries' headers
 #include <algorithm>

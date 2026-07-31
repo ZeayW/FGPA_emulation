@@ -5,6 +5,7 @@
  */
 
 #include "database/database.h"
+#include <fstream>
 
 // c++ headers
 #include <limits>
@@ -425,6 +426,14 @@ class BookshelfDatabaseCallbacks : public bookshelfparser::BookshelfDatabase {
       auto &inst = *inst_proxy;
       inst.attr().setLoc({x, y, z});
       inst.attr().setPlaceStatus(PlaceStatus::kFixed);
+    }
+  }
+  void setMovableNodeCbk(std::string const &node_name, unsigned x, unsigned y, unsigned z) {
+    auto inst_proxy = top_model_->inst(node_name);
+    if (inst_proxy) {
+      auto &inst = *inst_proxy;
+      inst.attr().setLoc({x, y, z});
+      inst.attr().setPlaceStatus(PlaceStatus::kMovable);
     }
   }
 

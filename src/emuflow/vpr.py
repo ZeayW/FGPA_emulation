@@ -90,7 +90,16 @@ def build_vtr_yosys_script(
         )
     else:
         commands.append(f"synth -top {top_identifier} -noabc")
-    commands.extend(("dffunmap", "abc -lut 6", "dffunmap", "clean", "check"))
+    commands.extend(
+        (
+            "dffunmap",
+            "abc -lut 6",
+            "dffunmap",
+            "delete t:$scopeinfo",
+            "clean",
+            "check",
+        )
+    )
     if hard_blocks:
         commands.extend(
             (
@@ -234,6 +243,10 @@ _FLOAT_PATTERNS = {
     ),
     "fmax_mhz": re.compile(r"Fmax:\s+([0-9.eE+-]+)\s+MHz"),
 }
+_CLOCK_DOMAIN_CPD = re.compile(
+    r"^\s+(\S+)\s+to\s+(\S+)\s+CPD:\s+([0-9.eE+-]+)\s+ns",
+    re.MULTILINE,
+)
 
 
 def validate_vpr_outputs(
@@ -270,6 +283,12 @@ def validate_vpr_outputs(
         matches = pattern.findall(log_text)
         if matches:
             metrics[name] = float(matches[-1])
+    clock_domain_cpd = {
+        f"{launch}->{capture}": float(delay)
+        for launch, capture, delay in _CLOCK_DOMAIN_CPD.findall(log_text)
+    }
+    if clock_domain_cpd:
+        metrics["clock_domain_cpd_ns"] = dict(sorted(clock_domain_cpd.items()))
     for required in ("packed_nets", "packed_blocks", "wirelength"):
         if required not in metrics:
             raise ValidationError(
@@ -362,6 +381,101 @@ def run_vpr(
         }
     )
     write_json(output_dir / "vpr-report.json", report)
+    return report
+
+
+def run_vpr_pack_place(
+    architecture: Path,
+    circuit: Path,
+    output_dir: Path,
+    *,
+    executable: Optional[str] = None,
+    seed: int = 1,
+) -> Dict[str, Any]:
+    """Pack and place only, for an OpenPARF-to-VPR physical handoff.
+
+    The placement establishes VPR's exact auto-sized device and the packing
+    fixes the clusters that OpenPARF subsequently places.  Routing here would
+    be discarded, so it is deliberately left to the final checked route.
+    """
+
+    architecture = architecture.resolve()
+    circuit = circuit.resolve()
+    for name, path in (("architecture", architecture), ("circuit", circuit)):
+        if not path.is_file():
+            raise EmuFlowError(f"VPR {name} does not exist: {path}")
+    if seed < 0:
+        raise EmuFlowError("VPR seed must be non-negative")
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    command = resolve_native_executable("vpr", executable)
+    arguments = [
+        command,
+        str(architecture),
+        str(circuit),
+        "--pack",
+        "--place",
+        "--disp",
+        "off",
+        "--seed",
+        str(seed),
+    ]
+    completed = subprocess.run(
+        arguments,
+        cwd=output_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    log_path = output_dir / "vpr.console.log"
+    log_path.write_text(completed.stdout, encoding="utf-8")
+    if completed.returncode != 0:
+        tail = "\n".join(completed.stdout.splitlines()[-40:])
+        raise EmuFlowError(
+            f"VPR pack/place failed with exit code {completed.returncode}\n{tail}"
+        )
+    if "VPR succeeded" not in completed.stdout:
+        raise ValidationError("VPR pack/place log has no success marker")
+    stem = circuit.stem
+    artifacts = {}
+    for name, path in (
+        ("packed_netlist", output_dir / f"{stem}.net"),
+        ("placement", output_dir / f"{stem}.place"),
+    ):
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValidationError(f"VPR {name} artifact is missing: {path}")
+        artifacts[name] = {
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        }
+    metrics: Dict[str, Any] = {}
+    for name, pattern in _INTEGER_PATTERNS.items():
+        matches = pattern.findall(completed.stdout)
+        if matches:
+            metrics[name] = int(matches[-1])
+    for required in ("packed_nets", "packed_blocks"):
+        if required not in metrics:
+            raise ValidationError(
+                f"VPR pack/place log is missing metric {required!r}"
+            )
+    report = {
+        "status": "pass",
+        "provider": VPR_PROVIDER,
+        "stages": ["pack", "place"],
+        "metrics": metrics,
+        "artifacts": artifacts,
+        "architecture": {
+            "path": str(architecture),
+            "sha256": _sha256(architecture),
+        },
+        "circuit": {"path": str(circuit), "sha256": _sha256(circuit)},
+        "configuration": {"seed": seed},
+        "command": arguments,
+        "log": str(log_path),
+    }
+    write_json(output_dir / "vpr-pack-place-report.json", report)
     return report
 
 

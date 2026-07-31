@@ -23,6 +23,7 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
 from .multi_fpga_flow import run_multi_fpga_flow
+from .multi_fpga_physical_flow import run_multi_fpga_physical_flow
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     parse_clock_definitions,
@@ -354,6 +355,54 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--equivalence-seed", type=int, default=20260727
     )
+    multi_fpga_compile.add_argument(
+        "--physical",
+        action="store_true",
+        help=(
+            "continue every Phase-6 partition through VPR packing, "
+            "OpenPARF placement, checked VPR routing, and physical QoR"
+        ),
+    )
+    multi_fpga_compile.add_argument("--physical-architecture", type=Path)
+    multi_fpga_compile.add_argument(
+        "--physical-architecture-id", default="vtr-flagship-k6-n10-40nm"
+    )
+    multi_fpga_compile.add_argument("--physical-vpr")
+    multi_fpga_compile.add_argument("--physical-architecture-importer")
+    multi_fpga_compile.add_argument("--physical-packed-importer")
+    multi_fpga_compile.add_argument("--physical-route-checker")
+    multi_fpga_compile.add_argument("--physical-openparf-install", type=Path)
+    multi_fpga_compile.add_argument("--physical-openparf-python", type=Path)
+    multi_fpga_compile.add_argument("--physical-seed", type=int, default=1)
+    multi_fpga_compile.add_argument(
+        "--physical-route-channel-width", type=int, default=300
+    )
+    multi_fpga_physical = multi_fpga_subparsers.add_parser(
+        "physical",
+        help=(
+            "lower every Phase-6 partition through VPR packing, OpenPARF "
+            "placement, and checked VPR routing"
+        ),
+    )
+    multi_fpga_physical.add_argument("--split", type=Path, required=True)
+    multi_fpga_physical.add_argument("--platform", type=Path, required=True)
+    multi_fpga_physical.add_argument("--schedule", type=Path, required=True)
+    multi_fpga_physical.add_argument("--out", type=Path, required=True)
+    multi_fpga_physical.add_argument("--architecture", type=Path)
+    multi_fpga_physical.add_argument(
+        "--architecture-id", default="vtr-flagship-k6-n10-40nm"
+    )
+    multi_fpga_physical.add_argument("--yosys")
+    multi_fpga_physical.add_argument("--vpr")
+    multi_fpga_physical.add_argument("--architecture-importer")
+    multi_fpga_physical.add_argument("--packed-importer")
+    multi_fpga_physical.add_argument("--route-checker")
+    multi_fpga_physical.add_argument("--openparf-install", type=Path)
+    multi_fpga_physical.add_argument("--openparf-python", type=Path)
+    multi_fpga_physical.add_argument("--seed", type=int, default=1)
+    multi_fpga_physical.add_argument(
+        "--route-channel-width", type=int, default=300
+    )
     vpr_run = vpr_subparsers.add_parser(
         "run",
         help="run exact VPR pack, baseline place, route, and analysis",
@@ -394,6 +443,7 @@ def _build_parser() -> argparse.ArgumentParser:
     vpr_place_openparf.add_argument(
         "--architecture-db", type=Path, required=True
     )
+    vpr_place_openparf.add_argument("--seed-placement", type=Path)
     vpr_place_openparf.add_argument("--out", type=Path, required=True)
     vpr_place_openparf.add_argument("--openparf-install", type=Path)
     vpr_place_openparf.add_argument("--openparf-python", type=Path)
@@ -1377,6 +1427,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.packed,
                 args.architecture_db,
                 args.out,
+                seed_placement_path=args.seed_placement,
                 openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
             )
@@ -1537,6 +1588,26 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "physical":
+            report = run_multi_fpga_physical_flow(
+                split_root=args.split,
+                platform_path=args.platform,
+                schedule_path=args.schedule,
+                output_dir=args.out,
+                architecture=args.architecture,
+                architecture_id=args.architecture_id,
+                yosys=args.yosys,
+                vpr=args.vpr,
+                architecture_importer=args.architecture_importer,
+                packed_importer=args.packed_importer,
+                route_checker=args.route_checker,
+                openparf_install=args.openparf_install,
+                openparf_python=args.openparf_python,
+                seed=args.seed,
+                route_channel_width=args.route_channel_width,
+            )
+            _print_json(report["summary"])
+            return 0
         report = run_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,
@@ -1583,6 +1654,21 @@ def _dispatch(args: argparse.Namespace) -> int:
             simulation_frames=args.simulation_frames,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
+            physical=args.physical,
+            physical_architecture=args.physical_architecture,
+            physical_architecture_id=args.physical_architecture_id,
+            physical_vpr=args.physical_vpr,
+            physical_architecture_importer=(
+                args.physical_architecture_importer
+            ),
+            physical_packed_importer=args.physical_packed_importer,
+            physical_route_checker=args.physical_route_checker,
+            physical_openparf_install=args.physical_openparf_install,
+            physical_openparf_python=args.physical_openparf_python,
+            physical_seed=args.physical_seed,
+            physical_route_channel_width=(
+                args.physical_route_channel_width
+            ),
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

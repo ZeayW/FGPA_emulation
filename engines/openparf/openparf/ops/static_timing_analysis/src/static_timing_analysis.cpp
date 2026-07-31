@@ -2,6 +2,7 @@
 
 // c++ library headers
 #include <algorithm>
+#include <fstream>
 #include <limits>
 #include <queue>
 #include <tuple>

@@ -5,6 +5,7 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.packed_netlist import run_packed_netlist_import
 from emuflow.route_artifact import validate_vpr_route_artifacts
+from emuflow.route_artifact import _validate_sink_coverage
 from tests.native_build import (
     vpr_packed_netlist_importer,
     vpr_route_checker,
@@ -19,6 +20,31 @@ RR_GRAPH = ROOT / "examples/physical/vpr_rr_graph_fixture.xml"
 
 
 class RouteArtifactTest(unittest.TestCase):
+    def test_pin_level_sink_multiplicity_is_allowed(self) -> None:
+        packed = {"sinks": ["clb[1]", "mult_36[2]"]}
+        self.assertFalse(
+            _validate_sink_coverage(
+                "n0",
+                packed,
+                {"global": False, "local_only": False, "sinks": 3},
+            )
+        )
+        with self.assertRaisesRegex(ValidationError, "sink coverage"):
+            _validate_sink_coverage(
+                "n0",
+                packed,
+                {"global": False, "local_only": False, "sinks": 1},
+            )
+
+    def test_global_endpoint_expansion_is_allowed(self) -> None:
+        self.assertTrue(
+            _validate_sink_coverage(
+                "constant",
+                {"sinks": ["clb[1]"]},
+                {"global": True, "endpoints": 40},
+            )
+        )
+
     def _packed_contract(self, root: Path) -> Path:
         output = root / "packed.json"
         run_packed_netlist_import(

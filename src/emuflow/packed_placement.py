@@ -262,12 +262,90 @@ def _fixed_multi_instance_placements(
     return "\n".join(lines) + ("\n" if lines else ""), fixed_types
 
 
+def _seeded_cluster_placements(
+    placement_path: Path,
+    packed: Mapping[str, Any],
+    cluster_names: Mapping[str, str],
+    fixed_types: List[str],
+) -> str:
+    """Translate a legal VPR placement into movable OpenPARF seed positions."""
+    by_block_number: Dict[int, Mapping[str, Any]] = {}
+    for cluster in packed["clusters"]:
+        match = _BLOCK_INDEX_RE.search(cluster["instance"])
+        if match is None:
+            raise ValidationError(
+                f"packed cluster {cluster['id']!r} has no VPR block number"
+            )
+        block_number = int(match.group(1))
+        if block_number in by_block_number:
+            raise ValidationError(
+                f"duplicate packed VPR block number {block_number}"
+            )
+        by_block_number[block_number] = cluster
+
+    locations: Dict[int, Tuple[int, int, int]] = {}
+    with placement_path.open("r", encoding="utf-8") as stream:
+        for line_number, raw_line in enumerate(stream, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#") or line.startswith(
+                ("Netlist_File:", "Array size:")
+            ):
+                continue
+            fields = line.split()
+            if len(fields) != 6 or not fields[5].startswith("#"):
+                raise ValidationError(
+                    f"{placement_path}:{line_number}: malformed VPR placement"
+                )
+            try:
+                x, y, z = (int(fields[index]) for index in (1, 2, 3))
+                block_number = int(fields[5][1:])
+            except ValueError as error:
+                raise ValidationError(
+                    f"{placement_path}:{line_number}: invalid VPR coordinates"
+                ) from error
+            cluster = by_block_number.get(block_number)
+            if cluster is None:
+                raise ValidationError(
+                    f"{placement_path}:{line_number}: unknown VPR block "
+                    f"number {block_number}"
+                )
+            if fields[0] != cluster["name"]:
+                raise ValidationError(
+                    f"{placement_path}:{line_number}: block {block_number} "
+                    f"name {fields[0]!r} does not match {cluster['name']!r}"
+                )
+            if block_number in locations:
+                raise ValidationError(
+                    f"{placement_path}:{line_number}: duplicate VPR block "
+                    f"number {block_number}"
+                )
+            locations[block_number] = (x, y, z)
+    missing = sorted(set(by_block_number) - set(locations))
+    if missing:
+        raise ValidationError(
+            "VPR seed placement is incomplete; missing block numbers: "
+            + ", ".join(str(item) for item in missing[:10])
+        )
+
+    fixed = set(fixed_types)
+    lines = []
+    for block_number, cluster in sorted(by_block_number.items()):
+        x, y, z = locations[block_number]
+        suffix = " FIXED" if cluster["block_type"] in fixed else ""
+        lines.append(
+            f"{cluster_names[cluster['id']]} {x} {y} {z}{suffix}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _render_config(
     packed: Mapping[str, Any],
     output_dir: Path,
     slots: Mapping[str, List[Tuple[int, int, int]]],
     max_site_capacity: Mapping[str, int],
     fixed_types: List[str],
+    *,
+    seeded: bool = False,
 ) -> Dict[str, Any]:
     demand = Counter(
         cluster["block_type"] for cluster in packed["clusters"]
@@ -306,6 +384,7 @@ def _render_config(
         "dtype": "float64",
         "target_density": target_density,
         "random_seed": 1000,
+        "random_center_init_flag": int(not seeded),
         "max_global_place_iters": 1000,
         "global_place_flag": 1,
         "legalize_flag": 1,
@@ -343,6 +422,8 @@ def export_packed_bookshelf(
     packed_path: Path,
     architecture_path: Path,
     output_dir: Path,
+    *,
+    seed_placement_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     packed = read_json(packed_path)
     packed_summary = validate_packed_netlist_contract(packed)
@@ -377,6 +458,13 @@ def export_packed_bookshelf(
         slots,
         max_site_capacity,
     )
+    if seed_placement_path is not None:
+        initial_placement = _seeded_cluster_placements(
+            seed_placement_path,
+            packed,
+            cluster_names,
+            fixed_types,
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     files = {
         "design.nodes": _render_nodes(packed, cluster_names),
@@ -405,6 +493,7 @@ def export_packed_bookshelf(
         slots,
         max_site_capacity,
         fixed_types,
+        seeded=seed_placement_path is not None,
     )
     write_json(output_dir / "openparf.json", config)
     write_json(
@@ -436,6 +525,11 @@ def export_packed_bookshelf(
         "block_types": dict(sorted(demand.items())),
         "fixed_multi_instance_types": fixed_types,
         "architecture_source_sha256": source_hash,
+        "seed_placement": (
+            str(seed_placement_path.resolve())
+            if seed_placement_path is not None
+            else None
+        ),
         "files": sorted(
             [*files, "openparf.json", "name_map.json"]
         ),
@@ -586,12 +680,16 @@ def run_packed_openparf_placement(
     architecture_path: Path,
     output_dir: Path,
     *,
+    seed_placement_path: Optional[Path] = None,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
 ) -> Dict[str, Any]:
     bookshelf_dir = output_dir / "openparf"
     manifest = export_packed_bookshelf(
-        packed_path, architecture_path, bookshelf_dir
+        packed_path,
+        architecture_path,
+        bookshelf_dir,
+        seed_placement_path=seed_placement_path,
     )
     placement = run_openparf(
         bookshelf_dir / "openparf.json",

@@ -1,4 +1,5 @@
 
+#include <fstream>
 #include <functional>
 #include <vector>
 
@@ -52,9 +53,9 @@ class MinCostFlowLegalizer {
                          .run();
 
       if (res == ResultType::INFEASIBLE) {
-        openparfPrint(MessageType::kError,
-                      "Min cost flow problem has no feasible "
-                      "solution. Not meaningful to continue\n");
+        openparfPrint(MessageType::kDebug,
+                      "Current incremental min-cost-flow graph is infeasible; "
+                      "expanding the search radius\n");
         return false;
       } else if (res == ResultType::UNBOUNDED) {
         openparfPrint(MessageType::kError, "Min cost flow formulation is unbounded. Not meaningful to continue\n");

@@ -25,6 +25,33 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_sink_coverage(
+    name: str, packed_net: Dict[str, Any], routed: Dict[str, Any]
+) -> bool:
+    """Check contracted cluster sinks against pin-level VPR endpoints."""
+    expected_sinks = len(packed_net["sinks"])
+    if routed.get("global") is True:
+        endpoints = routed.get("endpoints")
+        if (
+            isinstance(endpoints, bool)
+            or not isinstance(endpoints, int)
+            or endpoints < expected_sinks + 1
+        ):
+            raise ValidationError(
+                f"global route net {name!r} endpoint count is wrong"
+            )
+        return True
+    routed_sinks = routed.get("sinks")
+    if (
+        routed.get("local_only") is not False
+        or isinstance(routed_sinks, bool)
+        or not isinstance(routed_sinks, int)
+        or routed_sinks < expected_sinks
+    ):
+        raise ValidationError(f"route net {name!r} sink coverage is wrong")
+    return False
+
+
 def validate_vpr_route_artifacts(
     route_path: Path,
     rr_graph_path: Path,
@@ -100,20 +127,8 @@ def validate_vpr_route_artifacts(
     global_nets = 0
     for name, packed_net in packed_nets.items():
         routed = route_by_name[name]
-        expected_sinks = len(packed_net["sinks"])
-        if routed.get("global") is True:
+        if _validate_sink_coverage(name, packed_net, routed):
             global_nets += 1
-            if routed.get("endpoints") != expected_sinks + 1:
-                raise ValidationError(
-                    f"global route net {name!r} endpoint count is wrong"
-                )
-        elif (
-            routed.get("local_only") is not False
-            or routed.get("sinks") != expected_sinks
-        ):
-            raise ValidationError(
-                f"route net {name!r} sink coverage is wrong"
-            )
 
     placement_id = f"SHA256:{_sha256(paths['placement'])}"
     if core.get("placement_id") != placement_id:

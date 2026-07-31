@@ -394,10 +394,10 @@ class DataCollections(object):
             self.pin_mask = ((self.inst_pin_map.b2as >= self.fixed_range[0])
                              & (self.inst_pin_map.b2as < self.fixed_range[1]))
             self.inst_lock_mask = torch.zeros(len(self.inst_areas),
-                                              dtype=torch.uint8,
+                                              dtype=torch.bool,
                                               device=device)
             self.area_type_lock_mask = torch.zeros(self.num_area_types,
-                                                   dtype=torch.uint8,
+                                                   dtype=torch.bool,
                                                    device=device)
             # CK/SR, CE infomation of instances
             # elfplace: src/GlobalPlacer.cpp

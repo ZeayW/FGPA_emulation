@@ -85,6 +85,59 @@ class PackedPlacementTest(unittest.TestCase):
         self.assertEqual(config["generic_cluster_placement_flag"], 1)
         self.assertEqual(config["logic_area_type_names"], ["clb"])
 
+    def test_vpr_placement_seeds_movable_openparf_clusters(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packed_path, architecture_path = self._inputs(root)
+            packed = read_json(packed_path)
+            architecture = ArchitectureDB.load(architecture_path)
+            clb_site = next(
+                site for site in architecture.value["sites"]
+                if site["type"] == "clb"
+            )
+            io_site = next(
+                site for site in architecture.value["sites"]
+                if site["type"] == "io"
+            )
+            by_instance = {
+                cluster["instance"]: cluster
+                for cluster in packed["clusters"]
+            }
+            seed = root / "seed.place"
+            seed.write_text(
+                "\n".join(
+                    [
+                        "Netlist_File: fixture.net Netlist_ID: fixture",
+                        "Array size: 12 x 12 logic blocks",
+                        "",
+                        f"{by_instance['clb[0]']['name']} "
+                        f"{clb_site['x']} {clb_site['y']} 0 0 #0",
+                        f"{by_instance['io[1]']['name']} "
+                        f"{io_site['x']} {io_site['y']} 0 0 #1",
+                        f"{by_instance['io[2]']['name']} "
+                        f"{io_site['x']} {io_site['y']} 1 0 #2",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "bookshelf"
+            manifest = export_packed_bookshelf(
+                packed_path,
+                architecture_path,
+                output,
+                seed_placement_path=seed,
+            )
+            initial = (output / "design.pl").read_text(encoding="utf-8")
+            config = read_json(output / "openparf.json")
+
+        self.assertEqual(config["random_center_init_flag"], 0)
+        self.assertEqual(manifest["seed_placement"], str(seed.resolve()))
+        self.assertIn(
+            f"{clb_site['x']} {clb_site['y']} 0\n", initial
+        )
+        self.assertEqual(initial.count(" FIXED\n"), 2)
+
     def test_legal_cluster_placement_emits_vpr_place(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

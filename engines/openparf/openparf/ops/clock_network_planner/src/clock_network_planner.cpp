@@ -3,6 +3,7 @@
  * @author Yibai Meng
  * @date   Sep 2020
  */
+#include <fstream>
 #include <iostream>
 #include <tuple>
 

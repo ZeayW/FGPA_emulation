@@ -6,6 +6,7 @@
  */
 
 #ifndef VERILOGPARSER_DRIVER_H
+#include <fstream>
 #define VERILOGPARSER_DRIVER_H
 
 #include "VerilogDataBase.h"

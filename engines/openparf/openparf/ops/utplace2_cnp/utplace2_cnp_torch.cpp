@@ -6,6 +6,7 @@
  * Last Modified By  : Jing Mai <jingmai@pku.edu.cn>
  */
 #include "database/placedb.h"
+#include <fstream>
 #include "ops/utplace2_cnp/src/clock_region_assignment_result_factory.h"
 #include "util/torch.h"
 #include "util/message.h"

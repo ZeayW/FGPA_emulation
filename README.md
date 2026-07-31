@@ -154,8 +154,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
-| Placement | Root-built OpenPARF plus EmuFlow adapters/checker | VPR packing decisions enter a checked cluster contract; OpenPARF performs analytical global placement and architecture-defined single-site min-cost-flow legalization, followed by independent site/capacity/collision checking and VPR `.place` emission |
-| FPGA routing | Root-built VTR/VPR plus independent in-tree C++ artifact checker | The checked OpenPARF placement drives timing-aware detailed routing; the checker independently validates every route node, RR edge/switch, tree branch, net/sink, placement hash, and shared-resource capacity against the exported RR graph |
+| Placement | Root-built OpenPARF plus EmuFlow adapters/checker | VPR packing decisions and its legal seed enter a checked cluster contract; OpenPARF performs analytical refinement and architecture-defined min-cost-flow legalization, followed by independent site/capacity/collision checking and VPR `.place` emission |
+| FPGA routing | Root-built VTR/VPR plus independent in-tree C++ artifact checker | The checked OpenPARF placement drives timing-aware detailed routing; the checker independently validates route nodes, RR edges/switches, tree branches, contracted cluster-sink coverage, placement hash, and shared-resource capacity against the exported RR graph |
 | Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -314,6 +314,25 @@ For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.
 
+Add `--physical` to extend the same run through every per-FPGA open physical
+backend and feed routed timing back into Phase 7C:
+
+```bash
+emuflow multi-fpga compile examples/rtl/counter.v \
+  --top counter \
+  --clock clk \
+  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
+  --physical \
+  --out build/counter-multi-fpga-physical
+```
+
+This runs transport synthesis, VTR eBLIF emission, VPR packing and seed
+placement, ArchitectureDB/TimingDB import, seeded OpenPARF analytical
+refinement and legalization, final VPR routing, independent RR-graph checking,
+and physical timing closure for every partition. It requires neither a board
+nor vendor device data. The resulting timing is qualified against the public
+academic architecture and is not vendor sign-off.
+
 Add `--timing-driven --clock-period CLOCK=PERIOD_NS` to make this same command
 run OpenSTA, derive timing-critical partition weights, project timing paths
 onto the selected cut nets, and drive timing-aware system routing and TDM.
@@ -386,6 +405,7 @@ emuflow vpr import-packed \
 emuflow vpr place-openparf \
   --packed build/picorv32-vpr/packed-contract.json \
   --architecture-db build/architectures/picorv32.archdb.json \
+  --seed-placement build/picorv32-vpr/picorv32.place \
   --out build/picorv32-openparf
 
 emuflow vpr route-packed \
@@ -400,10 +420,11 @@ emuflow vpr route-packed \
 `vpr run` emits and verifies the packed `.net`, baseline `.place`, detailed
 `.route`, console log, and `vpr-report.json`. `import-packed` preserves VPR's
 exact cluster modes, pb hierarchy, atom membership, and cross-cluster nets in
-a hash-bound versioned contract. `place-openparf` places those exact clusters
-and emits a checked VPR placement. `route-packed` routes that placement
-without invoking VPR's baseline placer, exports the exact RR graph, and runs
-the independent C++ route checker.
+a hash-bound versioned contract. `place-openparf` uses the legal VPR placement
+only as a movable warm start, refines and re-legalizes those exact clusters
+with OpenPARF, and emits a checked VPR placement. `route-packed` routes that
+result without invoking VPR's placer again, exports the exact RR graph, and
+runs the independent C++ route checker.
 
 To exercise heterogeneous synthesis instead of the logic-only PicoRV32
 example, use the checked-in multiplier/RAM fixture and the pinned mapping

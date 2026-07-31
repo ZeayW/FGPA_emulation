@@ -3,6 +3,7 @@
 
 #include "bookshelf_driver.h"
 #include "bookshelf_scanner.h"
+#include <fstream>
 
 namespace bookshelfparser {
 
@@ -129,6 +130,10 @@ void Driver::addNodeCbk(std::string const &node_name,
 void Driver::setFixedNodeCbk(std::string const &node_name, unsigned x,
                              unsigned y, unsigned z) {
   db_.setFixedNodeCbk(node_name, x, y, z);
+}
+void Driver::setMovableNodeCbk(std::string const &node_name, unsigned x,
+                               unsigned y, unsigned z) {
+  db_.setMovableNodeCbk(node_name, x, y, z);
 }
 void Driver::addNetCbk(std::string const &net_name, unsigned degree) {
   db_.addNetCbk(net_name, degree);

@@ -340,6 +340,7 @@ pl_lines : pl_lines pl_line
          ;
 
 pl_line : STRING INT INT INT KWD_FIXED ENDL_STAR { driver.setFixedNodeCbk(*$1, $2, $3, $4); delete $1; }
+        | STRING INT INT INT ENDL_STAR { driver.setMovableNodeCbk(*$1, $2, $3, $4); delete $1; }
         ;
 
 /***** net file *****/
