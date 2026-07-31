@@ -160,9 +160,11 @@ boundaries; combinational loops and hard macros remain atomic.
 | Hardware BSP | In-tree contract | Pending board selection |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
-gate. It binds generic LUT6/FF synthesis, EmuIR import, partitioning, system
-routing, TDM scheduling, per-FPGA splitting, transport generation, independent
-checks, and cycle-equivalence in one report.
+gate. Its default public VTR mapping preserves multiplier and synchronous
+single/dual-port RAM hard blocks while mapping remaining logic to LUT6/FF. It
+then binds EmuIR import, partitioning, system routing, TDM scheduling,
+per-FPGA splitting, transport generation, independent checks, and
+cycle-equivalence in one report.
 
 `emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
 physical backend. It binds synthesis, baseline VPR packing and
@@ -305,6 +307,9 @@ emuflow multi-fpga compile examples/rtl/counter.v \
 The command writes a hash-bound `multi-fpga-flow-report.json` only after
 partition, route, schedule, split, and cycle-equivalence checks pass. The
 default partition provider is the source-built OpenROAD/TritonPart engine.
+The default `--mapping-profile vtr-hard-blocks` retains public VTR RAM/DSP
+resources. `--mapping-profile generic-soft` is available for architecture-
+neutral LUT6/FF experiments, but may expand memory-heavy designs substantially.
 For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.

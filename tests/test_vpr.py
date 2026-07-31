@@ -32,6 +32,7 @@ class VprTest(unittest.TestCase):
             hard_blocks=True,
         )
         self.assertIn("synth -top vtr_hard_blocks -run begin:fine", script)
+        self.assertIn("-noalumacc -flatten", script)
         self.assertIn("vtr_multiply_map.v", script)
         self.assertIn("memory_libmap -lib", script)
         self.assertIn("vtr_memories.txt", script)
@@ -39,6 +40,17 @@ class VprTest(unittest.TestCase):
         self.assertIn("chtype -set multiply", script)
         self.assertIn("chtype -set single_port_ram", script)
         self.assertEqual(script.count("dffunmap"), 2)
+
+    def test_script_can_emit_json_and_eblif_from_same_mapping(self) -> None:
+        script = build_vtr_yosys_script(
+            [Path("rtl/cpu.v")],
+            "cpu",
+            Path("build/cpu.eblif"),
+            hard_blocks=True,
+            json_output=Path("build/cpu.json"),
+        )
+        self.assertIn('write_json "build/cpu.json"', script)
+        self.assertLess(script.index("write_json"), script.index("write_blif"))
 
     def test_empty_source_list_is_rejected(self) -> None:
         with self.assertRaisesRegex(EmuFlowError, "at least one RTL source"):

@@ -7,6 +7,9 @@ from .errors import ValidationError
 RESOURCE_FIELDS = (
     "lut",
     "ff",
+    "bram",
+    "dsp",
+    "carry",
     "bram18k",
     "uram288",
     "dsp48",
@@ -21,6 +24,9 @@ RESOURCE_FIELDS = (
 class ResourceVector:
     lut: int = 0
     ff: int = 0
+    bram: int = 0
+    dsp: int = 0
+    carry: int = 0
     bram18k: int = 0
     uram288: int = 0
     dsp48: int = 0
@@ -63,12 +69,13 @@ class ResourceVector:
         return {field: count for field, count in result.items() if count}
 
     def fits_capacity(self, capacity: Mapping[str, int]) -> bool:
-        for resource, limit in capacity.items():
+        for resource in capacity:
             if resource not in RESOURCE_FIELDS:
                 raise ValidationError(
                     f"capacity: unknown resource field {resource!r}"
                 )
-            if getattr(self, resource) > limit:
+        for resource in RESOURCE_FIELDS:
+            if getattr(self, resource) > capacity.get(resource, 0):
                 return False
         return True
 
@@ -82,6 +89,10 @@ def classify_primitive_resources(cell_type: str) -> ResourceVector:
         return ResourceVector(bram18k=2)
     if kind.startswith("RAMB18"):
         return ResourceVector(bram18k=1)
+    if kind in {"VTR_SP_RAM", "VTR_DP_RAM"}:
+        return ResourceVector(bram=1)
+    if kind in {"VTR_MULTIPLY", "MULTIPLY"}:
+        return ResourceVector(dsp=1)
     if kind.startswith("URAM288"):
         return ResourceVector(uram288=1)
     if kind.startswith("DSP48"):

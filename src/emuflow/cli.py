@@ -250,6 +250,15 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--platform", type=Path, required=True)
     multi_fpga_compile.add_argument("--out", type=Path, required=True)
     multi_fpga_compile.add_argument("--yosys")
+    multi_fpga_compile.add_argument(
+        "--mapping-profile",
+        choices=("vtr-hard-blocks", "generic-soft"),
+        default="vtr-hard-blocks",
+        help=(
+            "RTL mapping profile; the default preserves public VTR "
+            "multiplier/RAM hard blocks"
+        ),
+    )
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
     multi_fpga_compile.add_argument(
         "--partition-provider",
@@ -1458,6 +1467,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             clocks=args.clock,
             yosys_json=args.yosys_json,
             yosys=args.yosys,
+            mapping_profile=args.mapping_profile,
             partition_constraints=args.partition_constraints,
             partition_provider=args.partition_provider,
             seed=args.seed,

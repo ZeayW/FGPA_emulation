@@ -15,12 +15,15 @@ from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .phase6 import run_phase6
 from .synthesis import run_generic_yosys
+from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
+from .vtr_netlist import normalize_vtr_hard_block_json
 
 
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v1"
 MULTI_FPGA_FLOW_PROVIDER = (
-    "generic-yosys+partition+system-route+tdm+split-transport"
+    "profiled-yosys+partition+system-route+tdm+split-transport"
 )
+MULTI_FPGA_MAPPING_PROFILES = ("vtr-hard-blocks", "generic-soft")
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
 
@@ -101,6 +104,7 @@ def run_multi_fpga_flow(
     clocks: Iterable[str] = (),
     yosys_json: Optional[Path] = None,
     yosys: Optional[str] = None,
+    mapping_profile: str = "vtr-hard-blocks",
     partition_constraints: Optional[Path] = None,
     partition_provider: str = "tritonpart",
     seed: int = 0,
@@ -123,6 +127,13 @@ def run_multi_fpga_flow(
     equivalence_seed: int = 20260727,
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR through the checked board-independent split."""
+
+    if mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
+        raise EmuFlowError(
+            "unsupported multi-FPGA mapping profile "
+            f"{mapping_profile!r}; expected one of "
+            f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
+        )
 
     output_dir = output_dir.resolve()
     if output_dir.exists():
@@ -155,14 +166,34 @@ def run_multi_fpga_flow(
             )
         if top is None:
             raise EmuFlowError("--top is required when compiling RTL sources")
-        run_generic_yosys(
-            source_list,
-            top,
-            synthesized_json,
-            executable=yosys,
-            log_path=frontend_root / "yosys.log",
-        )
-        synthesis_mode = "generic-lut6-ff"
+        if mapping_profile == "vtr-hard-blocks":
+            raw_json = frontend_root / "vtr-hard-block-atoms.json"
+            eblif = frontend_root / "design.eblif"
+            synthesis_report = run_vtr_yosys(
+                source_list,
+                top,
+                eblif,
+                executable=yosys,
+                log_path=frontend_root / "yosys.log",
+                hard_blocks=True,
+                json_output=raw_json,
+            )
+            normalization_report = normalize_vtr_hard_block_json(
+                raw_json,
+                synthesized_json,
+                top=top,
+            )
+            synthesis_mode = "vtr-lut6-ff-hard-blocks"
+        else:
+            synthesis_report = run_generic_yosys(
+                source_list,
+                top,
+                synthesized_json,
+                executable=yosys,
+                log_path=frontend_root / "yosys.log",
+            )
+            normalization_report = None
+            synthesis_mode = "generic-lut6-ff"
 
     phase1_root = frontend_root / "phase1"
     frontend_report = run_phase1(
@@ -181,8 +212,28 @@ def run_multi_fpga_flow(
         "synthesis": {
             "provider": "yosys",
             "mode": synthesis_mode,
+            "mapping_profile": (
+                VTR_HARD_BLOCK_PROFILE
+                if synthesis_mode == "vtr-lut6-ff-hard-blocks"
+                else (
+                    "provided-yosys-json"
+                    if synthesis_mode == "provided-yosys-json"
+                    else mapping_profile
+                )
+            ),
             "sources": [str(path) for path in source_list],
             "yosys_json_sha256": _sha256(synthesized_json),
+            **(
+                {"tool_report": synthesis_report}
+                if yosys_json is None
+                else {}
+            ),
+            **(
+                {"normalization": normalization_report}
+                if yosys_json is None
+                and normalization_report is not None
+                else {}
+            ),
         },
     }
     ir_path = phase1_root / "design.emuir.json"

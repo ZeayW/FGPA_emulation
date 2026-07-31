@@ -18,7 +18,15 @@ PARTITION_CONSTRAINTS_SCHEMA = "emuflow.partition-constraints/v1"
 TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
-HARD_MACRO_RESOURCES = {"bram18k", "uram288", "dsp48", "carry8"}
+HARD_MACRO_RESOURCES = {
+    "bram",
+    "dsp",
+    "carry",
+    "bram18k",
+    "uram288",
+    "dsp48",
+    "carry8",
+}
 
 
 class _UnionFind:
@@ -67,11 +75,6 @@ def _sum_resources(
         ResourceVector.from_mapping(instances[instance_id]["resources"])
         for instance_id in instance_ids
     )
-
-
-def _is_hard_macro(instance: Mapping[str, Any]) -> bool:
-    resources = ResourceVector.from_mapping(instance["resources"])
-    return any(getattr(resources, field) for field in HARD_MACRO_RESOURCES)
 
 
 def _expand_instance_patterns(
@@ -298,14 +301,6 @@ def build_clusters(
         if net["cut_class"] not in LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES:
             for member in members[1:]:
                 union_find.union(index_by_id[members[0]], index_by_id[member])
-        macro_members = [
-            member for member in members if _is_hard_macro(instances[member])
-        ]
-        for member in macro_members[1:]:
-            union_find.union(
-                index_by_id[macro_members[0]], index_by_id[member]
-            )
-
     members_by_root: Dict[int, List[str]] = defaultdict(list)
     for instance_id in instance_ids:
         members_by_root[union_find.find(index_by_id[instance_id])].append(
@@ -363,6 +358,7 @@ def build_clusters(
             "legal_cut_classes": sorted(LEGAL_CUT_CLASSES),
             "replicated_net_classes": sorted(REPLICATED_NET_CLASSES),
             "hard_macro_resources": sorted(HARD_MACRO_RESOURCES),
+            "hard_macro_granularity": "instance",
         },
     }
 

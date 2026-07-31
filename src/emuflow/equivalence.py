@@ -1,4 +1,5 @@
 import hashlib
+import json
 from typing import Any, Dict, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
@@ -44,6 +45,32 @@ def _is_ff_type(cell_type: str) -> bool:
     )
 
 
+def _is_multiply_type(cell_type: str) -> bool:
+    return cell_type == "VTR_MULTIPLY"
+
+
+def _is_ram_type(cell_type: str) -> bool:
+    return cell_type in {"VTR_SP_RAM", "VTR_DP_RAM"}
+
+
+def _parameter_int(instance: Mapping[str, Any], name: str) -> int:
+    raw = instance.get("parameters", {}).get(name)
+    if isinstance(raw, bool):
+        return int(raw)
+    if isinstance(raw, int):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        raise ValidationError(
+            f"instance {instance['id']!r} lacks integer parameter {name}"
+        )
+    if text.lower().startswith(("0x", "0b", "0o")):
+        return int(text, 0)
+    if set(text) <= {"0", "1"}:
+        return int(text, 2)
+    return int(text, 10)
+
+
 def _lut_definition(
     instance: Mapping[str, Any],
 ) -> Tuple[int, str, str, int]:
@@ -87,6 +114,8 @@ class _MappedModel:
                 if not (
                     _is_lut_type(instance["type"])
                     or _is_ff_type(instance["type"])
+                    or _is_multiply_type(instance["type"])
+                    or _is_ram_type(instance["type"])
                 )
             }
         )
@@ -140,9 +169,19 @@ class _MappedModel:
             for instance_id, instance in self.instances.items()
             if _is_lut_type(instance["type"])
         )
+        self.multiply_ids = sorted(
+            instance_id
+            for instance_id, instance in self.instances.items()
+            if _is_multiply_type(instance["type"])
+        )
+        self.ram_ids = sorted(
+            instance_id
+            for instance_id, instance in self.instances.items()
+            if _is_ram_type(instance["type"])
+        )
 
-    def initial_state(self) -> Dict[str, int]:
-        return {
+    def initial_state(self) -> Dict[str, Any]:
+        state: Dict[str, Any] = {
             instance_id: _bit(
                 self.instances[instance_id]
                 .get("parameters", {})
@@ -150,6 +189,18 @@ class _MappedModel:
             )
             for instance_id in self.ff_ids
         }
+        for instance_id in self.ram_ids:
+            instance = self.instances[instance_id]
+            width = _parameter_int(instance, "DATA_WIDTH")
+            state[instance_id] = {
+                "contents": {},
+                **(
+                    {"out": [0] * width}
+                    if instance["type"] == "VTR_SP_RAM"
+                    else {"out1": [0] * width, "out2": [0] * width}
+                ),
+            }
+        return state
 
     def _pin(
         self,
@@ -167,13 +218,48 @@ class _MappedModel:
             return values.get(net)
         return self.constants.get((instance_id, port, bit), default)
 
+    def _bus(
+        self,
+        values: Mapping[str, int],
+        instance_id: str,
+        port: str,
+        width: int,
+        overrides: Optional[Mapping[Tuple[str, str], int]] = None,
+    ) -> Optional[int]:
+        bits = [
+            self._pin(
+                values,
+                instance_id,
+                port,
+                overrides=overrides,
+                bit=bit,
+            )
+            for bit in range(width)
+        ]
+        if any(value is None for value in bits):
+            return None
+        return sum(int(value) << bit for bit, value in enumerate(bits))
+
+    def _drive_bus(
+        self,
+        values: Dict[str, int],
+        instance_id: str,
+        port: str,
+        value: int,
+        width: int,
+    ) -> None:
+        for bit in range(width):
+            net = self.output_net.get((instance_id, port, bit))
+            if net is not None:
+                values[net] = (value >> bit) & 1
+
     def evaluate(
         self,
-        state: Mapping[str, int],
+        state: Mapping[str, Any],
         cycle: int,
         seed: int,
         overrides: Optional[Mapping[Tuple[str, str], int]] = None,
-    ) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int]]:
+    ) -> Tuple[Dict[str, int], Dict[str, Any], Dict[str, int]]:
         values: Dict[str, int] = {}
         for (port, bit), net in self.top_input_net.items():
             values[net] = _stimulus(seed, cycle, port, bit)
@@ -181,38 +267,96 @@ class _MappedModel:
             q_net = self.output_net.get((instance_id, "Q", 0))
             if q_net is not None:
                 values[q_net] = state[instance_id]
+        for instance_id in self.ram_ids:
+            instance = self.instances[instance_id]
+            width = _parameter_int(instance, "DATA_WIDTH")
+            ram_state = state[instance_id]
+            if instance["type"] == "VTR_SP_RAM":
+                self._drive_bus(
+                    values,
+                    instance_id,
+                    "out",
+                    sum(
+                        int(bit) << index
+                        for index, bit in enumerate(ram_state["out"])
+                    ),
+                    width,
+                )
+            else:
+                for port in ("out1", "out2"):
+                    self._drive_bus(
+                        values,
+                        instance_id,
+                        port,
+                        sum(
+                            int(bit) << index
+                            for index, bit in enumerate(ram_state[port])
+                        ),
+                        width,
+                    )
 
-        pending: Set[str] = set(self.lut_ids)
+        pending: Set[str] = set(self.lut_ids) | set(self.multiply_ids)
         while pending:
             progressed = False
             for instance_id in sorted(pending):
                 instance = self.instances[instance_id]
-                width, input_port, output_port, truth = _lut_definition(
-                    instance
-                )
-                inputs = [
-                    self._pin(
+                if _is_multiply_type(instance["type"]):
+                    a_width = _parameter_int(instance, "A_WIDTH")
+                    b_width = _parameter_int(instance, "B_WIDTH")
+                    output_width = _parameter_int(instance, "Y_WIDTH")
+                    left = self._bus(
                         values,
                         instance_id,
-                        (
-                            f"I{index}"
-                            if input_port == "I"
-                            else input_port
-                        ),
-                        bit=(0 if input_port == "I" else index),
-                        overrides=overrides,
+                        "a",
+                        a_width,
+                        overrides,
                     )
-                    for index in range(width)
-                ]
-                if any(value is None for value in inputs):
-                    continue
-                index = sum(int(value) << offset for offset, value in enumerate(inputs))
-                output = (truth >> index) & 1
-                output_net = self.output_net.get(
-                    (instance_id, output_port, 0)
-                )
-                if output_net is not None:
-                    values[output_net] = output
+                    right = self._bus(
+                        values,
+                        instance_id,
+                        "b",
+                        b_width,
+                        overrides,
+                    )
+                    if left is None or right is None:
+                        continue
+                    self._drive_bus(
+                        values,
+                        instance_id,
+                        "out",
+                        (left * right) & ((1 << output_width) - 1),
+                        output_width,
+                    )
+                else:
+                    width, input_port, output_port, truth = _lut_definition(
+                        instance
+                    )
+                    inputs = [
+                        self._pin(
+                            values,
+                            instance_id,
+                            (
+                                f"I{index}"
+                                if input_port == "I"
+                                else input_port
+                            ),
+                            bit=(0 if input_port == "I" else index),
+                            overrides=overrides,
+                        )
+                        for index in range(width)
+                    ]
+                    if any(value is None for value in inputs):
+                        continue
+                    index = sum(
+                        int(value) << offset
+                        for offset, value in enumerate(inputs)
+                    )
+                    output = (truth >> index) & 1
+                    output_net = self.output_net.get(
+                        (instance_id, output_port, 0)
+                    )
+                    if output_net is not None:
+                        values[output_net] = output
                 pending.remove(instance_id)
                 progressed = True
             if not progressed:
@@ -221,7 +365,7 @@ class _MappedModel:
                     f"combinational cells {sorted(pending)[:8]}"
                 )
 
-        next_state: Dict[str, int] = {}
+        next_state: Dict[str, Any] = {}
         for instance_id in self.ff_ids:
             instance = self.instances[instance_id]
             current = state[instance_id]
@@ -277,12 +421,113 @@ class _MappedModel:
                 next_state[instance_id] = (
                     1 if control else int(data) if enable else current
                 )
+        for instance_id in self.ram_ids:
+            instance = self.instances[instance_id]
+            ram_state = state[instance_id]
+            contents = dict(ram_state["contents"])
+            address_width = _parameter_int(instance, "ADDR_WIDTH")
+            data_width = _parameter_int(instance, "DATA_WIDTH")
+            word_mask = (1 << data_width) - 1
+            if instance["type"] == "VTR_SP_RAM":
+                address = self._bus(
+                    values,
+                    instance_id,
+                    "addr",
+                    address_width,
+                    overrides,
+                )
+                data = self._bus(
+                    values,
+                    instance_id,
+                    "data",
+                    data_width,
+                    overrides,
+                )
+                write_enable = self._pin(
+                    values, instance_id, "we", overrides=overrides
+                )
+                if address is None or data is None or write_enable is None:
+                    raise ValidationError(
+                        f"RAM {instance_id!r} has unresolved synchronous input"
+                    )
+                read_word = int(contents.get(address, 0))
+                if write_enable:
+                    contents[address] = data & word_mask
+                next_state[instance_id] = {
+                    "contents": contents,
+                    "out": [
+                        (read_word >> bit) & 1
+                        for bit in range(data_width)
+                    ],
+                }
+            else:
+                addresses = []
+                data_words = []
+                enables = []
+                for port in (1, 2):
+                    address = self._bus(
+                        values,
+                        instance_id,
+                        f"addr{port}",
+                        address_width,
+                        overrides,
+                    )
+                    data = self._bus(
+                        values,
+                        instance_id,
+                        f"data{port}",
+                        data_width,
+                        overrides,
+                    )
+                    enable = self._pin(
+                        values,
+                        instance_id,
+                        f"we{port}",
+                        overrides=overrides,
+                    )
+                    if address is None or data is None or enable is None:
+                        raise ValidationError(
+                            f"RAM {instance_id!r} has unresolved port {port}"
+                        )
+                    addresses.append(address)
+                    data_words.append(data)
+                    enables.append(enable)
+                read_words = [
+                    int(ram_state["contents"].get(address, 0))
+                    for address in addresses
+                ]
+                for address, data, enable in zip(
+                    addresses, data_words, enables
+                ):
+                    if enable:
+                        contents[address] = data & word_mask
+                next_state[instance_id] = {
+                    "contents": contents,
+                    **{
+                        f"out{port}": [
+                            (read_words[port - 1] >> bit) & 1
+                            for bit in range(data_width)
+                        ]
+                        for port in (1, 2)
+                    },
+                }
         outputs = {
             f"{port}[{bit}]": values[net]
             for (port, bit), net in sorted(self.top_output_net.items())
             if net in values
         }
         return values, next_state, outputs
+
+    def state_bit_count(self) -> int:
+        return len(self.ff_ids) + sum(
+            _parameter_int(self.instances[instance_id], "DATA_WIDTH")
+            * (
+                1
+                if self.instances[instance_id]["type"] == "VTR_SP_RAM"
+                else 2
+            )
+            for instance_id in self.ram_ids
+        )
 
     def evaluate_lut_subset(
         self,
@@ -530,14 +775,11 @@ def simulate_partition_equivalence(
                 f"cycle {cycle}: partition top-output mismatch"
             )
         compared_outputs += len(reference_outputs)
-        compared_state_bits += len(reference_next)
+        compared_state_bits += model.state_bit_count()
         trace.update(
             (
                 f"{cycle}:"
-                + "".join(
-                    str(reference_next[item])
-                    for item in sorted(reference_next)
-                )
+                + json.dumps(reference_next, sort_keys=True)
                 + ":"
                 + "".join(
                     str(reference_outputs[item])
@@ -549,12 +791,15 @@ def simulate_partition_equivalence(
 
     return {
         "status": "pass",
-        "provider": "generic-lut-ff-cycle-model-v2",
+        "provider": "generic-lut-ff-vtr-hard-block-cycle-model-v3",
         "cycles": cycles,
         "seed": seed,
         "primitive_instances": len(model.instances),
         "flip_flops": len(model.ff_ids),
         "luts": len(model.lut_ids),
+        "multipliers": len(model.multiply_ids),
+        "memory_macros": len(model.ram_ids),
+        "memory_semantics": "synchronous-read-old-zero-initial-sparse",
         "register_input_cuts": sum(
             cut_class == "register_input"
             for cut_class in cut_class_by_net.values()

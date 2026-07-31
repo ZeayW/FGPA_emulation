@@ -43,6 +43,7 @@ def build_vtr_yosys_script(
     output: Path,
     *,
     hard_blocks: bool = False,
+    json_output: Optional[Path] = None,
 ) -> str:
     """Build a VTR-compatible LUT6/DFF and optional hard-block eBLIF script.
 
@@ -73,7 +74,10 @@ def build_vtr_yosys_script(
                 )
         commands.extend(
             (
-                f"synth -top {top_identifier} -run begin:fine -noalumacc",
+                (
+                    f"synth -top {top_identifier} -run begin:fine "
+                    "-noalumacc -flatten"
+                ),
                 f"read_verilog -lib {_yosys_quote(str(_VTR_MODEL_LIBRARY))}",
                 "wreduce t:$mul",
                 f"techmap -map {_yosys_quote(str(_VTR_MULTIPLY_MAP))}",
@@ -95,6 +99,10 @@ def build_vtr_yosys_script(
                 "chtype -set dual_port_ram t:VTR_DP_BIT_*",
             )
         )
+    if json_output is not None:
+        commands.append(
+            f"write_json {_yosys_quote(str(json_output))}"
+        )
     commands.append(
         f"write_blif -attr -cname {_yosys_quote(str(output))}"
     )
@@ -109,6 +117,7 @@ def run_vtr_yosys(
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
     hard_blocks: bool = False,
+    json_output: Optional[Path] = None,
 ) -> Dict[str, Any]:
     source_list = [path.resolve() for path in sources]
     for source in source_list:
@@ -116,12 +125,16 @@ def run_vtr_yosys(
             raise EmuFlowError(f"RTL source does not exist: {source}")
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    if json_output is not None:
+        json_output = json_output.resolve()
+        json_output.parent.mkdir(parents=True, exist_ok=True)
     command = resolve_native_executable("yosys", executable)
     script = build_vtr_yosys_script(
         source_list,
         top,
         output,
         hard_blocks=hard_blocks,
+        json_output=json_output,
     )
     completed = subprocess.run(
         [command, "-p", script],
@@ -142,6 +155,12 @@ def run_vtr_yosys(
     if not output.is_file() or output.stat().st_size == 0:
         raise EmuFlowError(
             f"Yosys did not create the expected eBLIF: {output}"
+        )
+    if json_output is not None and (
+        not json_output.is_file() or json_output.stat().st_size == 0
+    ):
+        raise EmuFlowError(
+            f"Yosys did not create the expected JSON netlist: {json_output}"
         )
     text = output.read_text(encoding="utf-8", errors="replace")
     subcircuits = [
@@ -183,6 +202,9 @@ def run_vtr_yosys(
             for model in sorted(_VTR_HARD_BLOCK_MODELS)
         },
     }
+    if json_output is not None:
+        report["json_output"] = str(json_output)
+        report["json_sha256"] = _sha256(json_output)
     if hard_blocks:
         report["mapping_inputs"] = {
             path.name: _sha256(path)

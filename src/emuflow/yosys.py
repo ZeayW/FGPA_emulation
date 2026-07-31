@@ -13,6 +13,21 @@ _CLOCK_NAME = re.compile(r"(^|[_/])(clk|clock)([_/]|$)", re.IGNORECASE)
 _RESET_NAME = re.compile(r"(^|[_/])(rst|reset|aresetn?)([_/]|$)", re.IGNORECASE)
 _SEQUENTIAL_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 _TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {"D", "CE"}
+_VTR_RAM_INPUTS = {
+    "VTR_SP_RAM": {"addr", "data", "we"},
+    "VTR_DP_RAM": {"addr1", "addr2", "data1", "data2", "we1", "we2"},
+}
+
+
+def _is_transport_safe_sequential_input(
+    cell_type: str,
+    port: str,
+) -> bool:
+    if cell_type in _SEQUENTIAL_TYPES:
+        return port in _TRANSPORT_SAFE_SEQUENTIAL_INPUTS
+    if cell_type.startswith("$_DFF_"):
+        return port == "D"
+    return port in _VTR_RAM_INPUTS.get(cell_type, set())
 
 
 def _select_top_module(
@@ -251,18 +266,22 @@ def import_yosys_json(
             cut_class = "undriven"
         elif endpoints["drivers"][0]["instance"] is None:
             cut_class = "primary_input"
-        elif driver_resources and driver_resources[0].ff:
+        elif driver_resources and (
+            driver_resources[0].ff or driver_resources[0].bram
+        ):
             cut_class = "register_output"
         elif endpoints["sinks"] and all(
             endpoint["instance"] is not None
-            and instance_types[endpoint["instance"]] in _SEQUENTIAL_TYPES
-            and endpoint["port"] in _TRANSPORT_SAFE_SEQUENTIAL_INPUTS
+            and _is_transport_safe_sequential_input(
+                instance_types[endpoint["instance"]],
+                endpoint["port"],
+            )
             for endpoint in endpoints["sinks"]
         ):
-            # D and CE are sampled only at the virtual DUT edge. They can be
-            # transported during round 1 of the paused-clock frame, after all
-            # remote register outputs arrive in round 0. Async CLR/PRE and
-            # other control pins intentionally remain forbidden.
+            # Synchronous data/control inputs are sampled only at the virtual
+            # DUT edge. They can be transported during round 1 of the
+            # paused-clock frame, after all remote sequential outputs arrive
+            # in round 0. Clock and asynchronous controls remain forbidden.
             cut_class = "register_input"
         else:
             cut_class = "combinational"
