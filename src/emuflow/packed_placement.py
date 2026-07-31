@@ -691,12 +691,33 @@ def run_packed_openparf_placement(
         bookshelf_dir,
         seed_placement_path=seed_placement_path,
     )
-    placement = run_openparf(
-        bookshelf_dir / "openparf.json",
-        log_path=bookshelf_dir / "openparf.log",
-        install_root=openparf_install,
-        python_executable=openparf_python,
+    all_clusters_fixed = set(manifest["fixed_multi_instance_types"]) == set(
+        manifest["block_types"]
     )
+    if all_clusters_fixed:
+        # A saturated auto-layout can make every legal slot mandatory.  There
+        # is then no optimization variable for OpenPARF; its analytical
+        # placer rejects the empty movable set.  Preserve the checked VPR seed
+        # and make the degenerate mode explicit instead of reporting a false
+        # OpenPARF optimization.
+        placement = bookshelf_dir / "design.pl"
+        openparf_stage = {
+            "status": "pass",
+            "mode": "skipped-all-clusters-fixed",
+            "optimizer_invoked": False,
+        }
+    else:
+        placement = run_openparf(
+            bookshelf_dir / "openparf.json",
+            log_path=bookshelf_dir / "openparf.log",
+            install_root=openparf_install,
+            python_executable=openparf_python,
+        )
+        openparf_stage = {
+            "status": "pass",
+            "mode": "analytical-placement-and-legalization",
+            "optimizer_invoked": True,
+        }
     vpr_place_path = output_dir / f"{manifest['design']}.place"
     placement_report = emit_vpr_place(
         packed_path,
@@ -716,6 +737,7 @@ def run_packed_openparf_placement(
         "fixed_multi_instance_types": manifest[
             "fixed_multi_instance_types"
         ],
+        "openparf": openparf_stage,
         "artifacts": {
             "bookshelf": str(bookshelf_dir.resolve()),
             "openparf_placement": str(placement),

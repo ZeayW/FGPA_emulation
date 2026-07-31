@@ -298,9 +298,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timing-driven",
         action="store_true",
         help=(
-            "run OpenSTA, derive partition weights, project cut paths, and "
-            "enable timing-aware system routing/TDM"
+            "produce TimingPathDB, derive partition weights, project cut "
+            "paths, and enable timing-aware system routing/TDM"
         ),
+    )
+    multi_fpga_compile.add_argument(
+        "--timing-backend",
+        choices=("opensta", "vivado"),
+        default="opensta",
+        help="produce the common TimingPathDB with OpenSTA or Vivado",
     )
     multi_fpga_compile.add_argument(
         "--clock-period",
@@ -327,6 +333,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="opensta",
         help="explicit OpenSTA executable override",
     )
+    multi_fpga_compile.add_argument("--timing-vivado")
     multi_fpga_compile.add_argument(
         "--sta-max-paths", type=int, default=200000
     )
@@ -359,9 +366,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--physical",
         action="store_true",
         help=(
-            "continue every Phase-6 partition through VPR packing, "
-            "OpenPARF placement, checked VPR routing, and physical QoR"
+            "continue every Phase-6 partition through the selected physical "
+            "backend and the common physical-QoR gate"
         ),
+    )
+    multi_fpga_compile.add_argument(
+        "--physical-backend",
+        choices=("open", "vivado"),
+        default="open",
+        help="select the provider behind the common physical/timing contract",
     )
     multi_fpga_compile.add_argument("--physical-architecture", type=Path)
     multi_fpga_compile.add_argument(
@@ -377,17 +390,30 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--physical-route-channel-width", type=int, default=300
     )
+    multi_fpga_compile.add_argument("--physical-vivado")
+    multi_fpga_compile.add_argument(
+        "--physical-vivado-max-timing-paths", type=int, default=10000
+    )
+    multi_fpga_compile.add_argument(
+        "--physical-vivado-place-directive", default="Default"
+    )
+    multi_fpga_compile.add_argument(
+        "--physical-vivado-route-directive", default="Default"
+    )
     multi_fpga_physical = multi_fpga_subparsers.add_parser(
         "physical",
         help=(
-            "lower every Phase-6 partition through VPR packing, OpenPARF "
-            "placement, and checked VPR routing"
+            "implement every Phase-6 partition through the selected backend "
+            "and emit checked common physical timing"
         ),
     )
     multi_fpga_physical.add_argument("--split", type=Path, required=True)
     multi_fpga_physical.add_argument("--platform", type=Path, required=True)
     multi_fpga_physical.add_argument("--schedule", type=Path, required=True)
     multi_fpga_physical.add_argument("--out", type=Path, required=True)
+    multi_fpga_physical.add_argument(
+        "--backend", choices=("open", "vivado"), default="open"
+    )
     multi_fpga_physical.add_argument("--architecture", type=Path)
     multi_fpga_physical.add_argument(
         "--architecture-id", default="vtr-flagship-k6-n10-40nm"
@@ -402,6 +428,16 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--seed", type=int, default=1)
     multi_fpga_physical.add_argument(
         "--route-channel-width", type=int, default=300
+    )
+    multi_fpga_physical.add_argument("--vivado")
+    multi_fpga_physical.add_argument(
+        "--vivado-max-timing-paths", type=int, default=10000
+    )
+    multi_fpga_physical.add_argument(
+        "--vivado-place-directive", default="Default"
+    )
+    multi_fpga_physical.add_argument(
+        "--vivado-route-directive", default="Default"
     )
     vpr_run = vpr_subparsers.add_parser(
         "run",
@@ -1594,6 +1630,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 platform_path=args.platform,
                 schedule_path=args.schedule,
                 output_dir=args.out,
+                backend=args.backend,
                 architecture=args.architecture,
                 architecture_id=args.architecture_id,
                 yosys=args.yosys,
@@ -1605,6 +1642,10 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openparf_python=args.openparf_python,
                 seed=args.seed,
                 route_channel_width=args.route_channel_width,
+                vivado=args.vivado,
+                vivado_max_timing_paths=args.vivado_max_timing_paths,
+                vivado_place_directive=args.vivado_place_directive,
+                vivado_route_directive=args.vivado_route_directive,
             )
             _print_json(report["summary"])
             return 0
@@ -1631,6 +1672,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             partition_repair_balance=args.partition_repair_balance,
             timing_driven=args.timing_driven,
+            timing_backend=args.timing_backend,
             clock_periods=(
                 parse_clock_definitions(args.clock_period)
                 if args.clock_period
@@ -1639,6 +1681,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             timing_model=args.timing_model,
             architecture_timing_db=args.architecture_timing_db,
             opensta=args.opensta,
+            timing_vivado=args.timing_vivado,
             sta_max_paths=args.sta_max_paths,
             timing_criticality_scale=args.timing_criticality_scale,
             timing_criticality_exponent=(
@@ -1655,6 +1698,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
             physical=args.physical,
+            physical_backend=args.physical_backend,
             physical_architecture=args.physical_architecture,
             physical_architecture_id=args.physical_architecture_id,
             physical_vpr=args.physical_vpr,
@@ -1668,6 +1712,16 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_seed=args.physical_seed,
             physical_route_channel_width=(
                 args.physical_route_channel_width
+            ),
+            physical_vivado=args.physical_vivado,
+            physical_vivado_max_timing_paths=(
+                args.physical_vivado_max_timing_paths
+            ),
+            physical_vivado_place_directive=(
+                args.physical_vivado_place_directive
+            ),
+            physical_vivado_route_directive=(
+                args.physical_vivado_route_directive
             ),
         )
         _print_json(report)

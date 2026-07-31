@@ -3,8 +3,8 @@
 > [!IMPORTANT]
 > ## Open-source source map
 >
-> Every selected flow engine is stored as editable source and built from this
-> repository. This is the compact upstream-source index:
+> Every selected open-flow engine is stored as editable source and built from
+> this repository. This is the compact upstream-source index:
 >
 > - First-party EmuFlow:
 >   [ZeayW/FGPA_emulation](https://github.com/ZeayW/FGPA_emulation)
@@ -86,6 +86,8 @@
 > - CI:
 >   [actions/checkout](https://github.com/actions/checkout) and
 >   [actions/setup-python](https://github.com/actions/setup-python)
+> - Optional proprietary provider (not bundled or open source):
+>   [AMD Vivado](https://www.amd.com/en/products/software/adaptive-socs-and-fpgas/vivado.html)
 >
 > See the **[complete source, revision, and license inventory](OPEN_SOURCE_COMPONENTS.md)**
 > for every nested component and dependency. The corresponding
@@ -98,9 +100,9 @@ replaceable, and independently verifiable.
 
 The default research backend uses a fully public VTR academic architecture
 model; no commercial board, FPGA database, or Vivado installation is required.
-Real-device backends are adapters behind the same artifacts: ECP5 is the
-planned open hardware smoke backend, while UltraScale+/Vivado remains an
-optional implementation and sign-off path.
+An optional Vivado provider implements the same timing and physical-result
+contracts for a concrete Xilinx part. Vivado is proprietary, is not bundled,
+and is never required by the default open path.
 
 The project targets a source-complete path from logic synthesis to per-FPGA
 placement and routing:
@@ -111,10 +113,10 @@ RTL
      └─ sequential clustering and multi-resource partitioning
          └─ board-level system routing
              └─ TDM ratio, slot, and lane assignment
-                 └─ per-FPGA netlist and transport generation
-                     └─ logical/physical pin planning
-                         └─ OpenPARF placement
-                             └─ FPGA routing and implementation validation
+                 └─ per-FPGA netlist, transport, and pin planning
+                     ├─ open: VPR pack → OpenPARF place → VPR route/timing
+                     ├─ Vivado: synth → place → route/timing
+                     └─ common PhysicalPartitionResult → Phase 7C
 ```
 
 The flow is board-abstracted. Synthesis, partitioning, routing, TDM, logical
@@ -148,15 +150,15 @@ boundaries; combinational loops and hard macros remain atomic.
 | --- | --- | --- |
 | Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; VPR consumes the original XML for exact mode-aware packing |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
-| Static timing | In-tree standalone OpenSTA plus provider-neutral Architecture TimingDB | The public VTR TimingDB is translated into design-specialized Liberty for LUT/FF/multiplier/RAM primitives; a source-qualified pre-placement sink-delay model combines block arcs with switch/segment RC, and OpenSTA paths drive timing-weighted partitioning |
+| Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++ route/TDM co-optimization kernel plus independent checker | Default academic provider builds and runs repository source |
 | TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
-| Placement | Root-built OpenPARF plus EmuFlow adapters/checker | VPR packing decisions and its legal seed enter a checked cluster contract; OpenPARF performs analytical refinement and architecture-defined min-cost-flow legalization, followed by independent site/capacity/collision checking and VPR `.place` emission |
-| FPGA routing | Root-built VTR/VPR plus independent in-tree C++ artifact checker | The checked OpenPARF placement drives timing-aware detailed routing; the checker independently validates route nodes, RR edges/switches, tree branches, contracted cluster-sink coverage, placement hash, and shared-resource capacity against the exported RR graph |
-| Proprietary sign-off | Optional Vivado scripts | Comparison/sign-off only; not part of the open implementation |
+| Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
+| FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C |
+| Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
 | Hardware BSP | In-tree contract | Pending board selection |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
@@ -178,9 +180,9 @@ packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
 routing, timing analysis, and independent route/RR-graph verification.
 Additional architecture mapping profiles and post-placement timing
 back-annotation remain open gates.
-EmuFlow also does not claim an open UltraScale+ bitstream flow. Vivado may be
-used to compare results or generate a bitstream, but success in Vivado cannot
-satisfy the default open-flow completion gate.
+EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
+at routed checkpoints and timing reports; success there cannot satisfy the
+default open-flow completion gate or replace board-level sign-off.
 
 ## Design principles
 
@@ -314,8 +316,8 @@ For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.
 
-Add `--physical` to extend the same run through every per-FPGA open physical
-backend and feed routed timing back into Phase 7C:
+Add `--physical` to select the default open physical provider and feed routed
+timing back into Phase 7C:
 
 ```bash
 emuflow multi-fpga compile examples/rtl/counter.v \
@@ -333,12 +335,40 @@ and physical timing closure for every partition. It requires neither a board
 nor vendor device data. The resulting timing is qualified against the public
 academic architecture and is not vendor sign-off.
 
+To use the identical flow boundary with a concrete Xilinx part, select the
+Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:
+
+```bash
+emuflow multi-fpga compile examples/rtl/counter.v \
+  --top counter \
+  --clock clk \
+  --mapping-profile generic-soft \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --physical \
+  --physical-backend vivado \
+  --physical-vivado /opt/Xilinx/Vivado/bin/vivado \
+  --out build/counter-multi-fpga-vivado
+```
+
+This provider lowers generic LUT/FF EmuIR to Xilinx primitives, runs Vivado
+synthesis/place/route/timing for every partition, and emits the same
+`physical-partition-result/v1` and `physical-summary/v1` contracts as the open
+provider. It currently requires `--mapping-profile generic-soft`; vendor RAM,
+DSP, board XDC, and bitstream generation are later gates.
+
 Add `--timing-driven --clock-period CLOCK=PERIOD_NS` to make this same command
-run OpenSTA, derive timing-critical partition weights, project timing paths
-onto the selected cut nets, and drive timing-aware system routing and TDM.
+run the default OpenSTA provider, derive timing-critical partition weights,
+project timing paths onto selected cut nets, and drive timing-aware system
+routing and TDM.
 Passing a public VTR TimingDB with
 `--architecture-timing-db build/architecture/timing.json` automatically
 enables this mode.
+
+For a Xilinx platform, `--timing-backend vivado --timing-vivado PATH` replaces
+only that TimingPathDB producer. The downstream partitioning, system routing,
+TDM, and checker interfaces are unchanged. The timing and physical backend
+selectors are independent, although an all-Vivado device run normally selects
+both.
 
 For emulation-speed optimization, pass a known-feasible upper bound such as
 `--frame-slots 4096 --optimize-frame-slots`. The flow then searches for the
@@ -501,7 +531,8 @@ Use `emuflow --help` and `emuflow <command> --help` for the complete CLI. The
 installed `emuflow` launcher intentionally uses the in-tree Python control
 plane for orchestration and independent checking; optimization work remains in
 the compiled C/C++/CUDA providers listed above. Vivado remains an optional
-proprietary validation backend and is not an open-source EmuFlow component.
+proprietary timing/physical provider and is not an open-source EmuFlow
+component.
 
 ## Source-complete monorepo
 
@@ -541,7 +572,8 @@ Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The default provider builds standalone OpenSTA from
 `engines/openroad/src/sta`, renders the versioned open FPGA timing model, and
 records ordered stable EmuIR net identities for each global path. The Vivado
-adapter remains an optional calibration/comparison provider.
+adapter is an optional provider that emits the same checked path-database
+contract from a concrete Xilinx part.
 `emuflow sta project-path-database` projects the same database onto every
 candidate partition's cut nets. Slack normalization is frozen once at
 database import, so candidates cannot change either the timing sample or its

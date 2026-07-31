@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.architecture import ArchitectureDB
 from emuflow.io import read_json
@@ -9,6 +10,7 @@ from emuflow.packed_placement import (
     _fixed_multi_instance_placements,
     emit_vpr_place,
     export_packed_bookshelf,
+    run_packed_openparf_placement,
 )
 from emuflow.vtr_architecture import run_vtr_architecture_import
 from tests.native_build import (
@@ -25,6 +27,50 @@ PACKED_FIXTURE = ROOT / "examples/physical/vpr_packed_fixture.net"
 
 
 class PackedPlacementTest(unittest.TestCase):
+    def test_all_fixed_clusters_skip_empty_openparf_optimization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bookshelf = root / "out/openparf"
+
+            def fake_export(*_args, **_kwargs):
+                bookshelf.mkdir(parents=True)
+                (bookshelf / "design.pl").write_text(
+                    "VPR_clb_0 1 1 0 FIXED\n", encoding="utf-8"
+                )
+                return {
+                    "design": "fixed",
+                    "clusters": 1,
+                    "nets": 0,
+                    "block_types": {"clb": 1},
+                    "fixed_multi_instance_types": ["clb"],
+                }
+
+            with (
+                patch(
+                    "emuflow.packed_placement.export_packed_bookshelf",
+                    side_effect=fake_export,
+                ),
+                patch(
+                    "emuflow.packed_placement.emit_vpr_place",
+                    return_value={"status": "pass"},
+                ),
+                patch(
+                    "emuflow.packed_placement.run_openparf"
+                ) as optimizer,
+            ):
+                report = run_packed_openparf_placement(
+                    root / "packed.json",
+                    root / "architecture.json",
+                    root / "out",
+                )
+
+        optimizer.assert_not_called()
+        self.assertFalse(report["openparf"]["optimizer_invoked"])
+        self.assertEqual(
+            report["openparf"]["mode"],
+            "skipped-all-clusters-fixed",
+        )
+
     def test_saturated_single_site_resource_is_fixed(self) -> None:
         initial, fixed_types = _fixed_multi_instance_placements(
             {"clusters": [{"id": "memory[0]", "block_type": "memory"}]},

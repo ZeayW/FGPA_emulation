@@ -3,7 +3,7 @@
   "policy": {
     "implementation_boundary": "Every default flow engine is editable source in this repository and is built from the repository root.",
     "runtime_boundary": "Compiled executables and extension modules are local build products, never published implementations.",
-    "external_tools": "Proprietary tools may be optional comparison or sign-off backends, but may not satisfy an open-flow completion gate."
+    "external_tools": "Proprietary tools may be optional timing, implementation, comparison, or sign-off providers, but may not satisfy an open-flow completion gate."
   },
   "components": [
     {
@@ -110,6 +110,9 @@
         "engines/cudd",
         "scripts/opensta/export_timing_path_database.tcl",
         "scripts/vivado/export_timing_path_database.tcl",
+        "scripts/vivado/analyze_timing.tcl",
+        "src/emuflow/vivado_backend.py",
+        "src/emuflow/vivado_netlist.py",
         "schemas/sta-path-database-v1.schema.json",
         "schemas/fpga-timing-model-v1.schema.json",
         "resources/timing/ultrascaleplus-softlogic-v1.json"
@@ -246,6 +249,10 @@
         "src/emuflow/route_artifact.py",
         "src/native/vpr_packed_netlist_importer.cpp",
         "src/native/vpr_route_checker.cpp",
+        "src/emuflow/physical_backend.py",
+        "src/emuflow/multi_fpga_physical_flow.py",
+        "schemas/physical-backend-v1.schema.json",
+        "schemas/physical-partition-result-v1.schema.json",
         "schemas/vpr-packed-netlist-v1.schema.json",
         "schemas/vpr-route-check-v1.schema.json",
         "engines/vtr/vpr",
@@ -265,6 +272,28 @@
         "emuflow_vpr_route_checker"
       ],
       "integration": "default-in-tree-build"
+    },
+    {
+      "id": "optional-vivado-physical-provider",
+      "stage": "Phase 3 timing / Phase 7 per-FPGA physical backend",
+      "source_paths": [
+        "src/emuflow/physical_backend.py",
+        "src/emuflow/vivado_backend.py",
+        "src/emuflow/vivado_netlist.py",
+        "scripts/vivado/analyze_timing.tcl",
+        "scripts/vivado/implement_partition.tcl",
+        "scripts/vivado/export_timing_path_database.tcl",
+        "schemas/physical-backend-v1.schema.json",
+        "schemas/physical-partition-result-v1.schema.json"
+      ],
+      "build_targets": [
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow",
+        "externally-installed-vivado"
+      ],
+      "integration": "in-tree-python"
     }
   ],
   "open_path_blockers": [
@@ -292,7 +321,8 @@
       "tool": "Vivado",
       "uses": [
         "architecture comparison",
-        "timing comparison",
+        "common TimingPathDB production",
+        "per-FPGA synthesis, placement, routing, and timing",
         "route and DRC comparison",
         "bitstream generation"
       ],

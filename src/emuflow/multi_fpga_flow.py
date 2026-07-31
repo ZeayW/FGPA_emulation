@@ -24,11 +24,13 @@ from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .phase6 import run_phase6
 from .phase7c import run_phase7c
+from .platform import Platform
 from .sta import (
     derive_partition_net_weights,
     project_sta_path_database,
 )
 from .synthesis import run_generic_yosys
+from .vivado_backend import run_vivado_timing_path_database
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
 
@@ -175,10 +177,12 @@ def run_multi_fpga_flow(
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
     timing_driven: bool = False,
+    timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,
     timing_model: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db: Optional[Path] = None,
     opensta: Optional[str] = None,
+    timing_vivado: Optional[str] = None,
     sta_max_paths: int = 200000,
     timing_criticality_scale: float = 9.0,
     timing_criticality_exponent: float = 2.0,
@@ -193,6 +197,7 @@ def run_multi_fpga_flow(
     equivalence_cycles: int = 16,
     equivalence_seed: int = 20260727,
     physical: bool = False,
+    physical_backend: str = "open",
     physical_architecture: Optional[Path] = None,
     physical_architecture_id: str = VTR_HARD_BLOCK_PROFILE,
     physical_vpr: Optional[str] = None,
@@ -203,6 +208,10 @@ def run_multi_fpga_flow(
     physical_openparf_python: Optional[Path] = None,
     physical_seed: int = 1,
     physical_route_channel_width: int = 300,
+    physical_vivado: Optional[str] = None,
+    physical_vivado_max_timing_paths: int = 10000,
+    physical_vivado_place_directive: str = "Default",
+    physical_vivado_route_directive: str = "Default",
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR through the checked board-independent split."""
 
@@ -211,6 +220,29 @@ def run_multi_fpga_flow(
             "unsupported multi-FPGA mapping profile "
             f"{mapping_profile!r}; expected one of "
             f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
+        )
+    if timing_backend not in {"opensta", "vivado"}:
+        raise EmuFlowError(
+            "timing backend must be 'opensta' or 'vivado'"
+        )
+    if timing_backend == "vivado" and architecture_timing_db is not None:
+        raise EmuFlowError(
+            "--architecture-timing-db applies only to timing-backend=opensta"
+        )
+    if timing_backend == "vivado" and opensta is not None:
+        raise EmuFlowError("--opensta applies only to timing-backend=opensta")
+    if timing_backend == "opensta" and timing_vivado is not None:
+        raise EmuFlowError(
+            "--timing-vivado applies only to timing-backend=vivado"
+        )
+    if (
+        physical
+        and physical_backend == "vivado"
+        and mapping_profile != "generic-soft"
+    ):
+        raise EmuFlowError(
+            "physical-backend=vivado currently requires "
+            "--mapping-profile generic-soft"
         )
     timing_driven = timing_driven or architecture_timing_db is not None
     if timing_driven and timing_paths is not None:
@@ -333,16 +365,34 @@ def run_multi_fpga_flow(
     timing_report = None
     if timing_driven:
         timing_root.mkdir(parents=True, exist_ok=True)
-        sta_report = run_opensta_path_database(
-            ir_path=ir_path,
-            output_path=path_database_path,
-            clocks=clock_periods,
-            timing_model_path=timing_model,
-            architecture_timing_db_path=architecture_timing_db,
-            executable=opensta,
-            max_paths=sta_max_paths,
-            log_path=timing_root / "opensta.log",
-        )
+        if timing_backend == "opensta":
+            sta_report = run_opensta_path_database(
+                ir_path=ir_path,
+                output_path=path_database_path,
+                clocks=clock_periods,
+                timing_model_path=timing_model,
+                architecture_timing_db_path=architecture_timing_db,
+                executable=opensta,
+                max_paths=sta_max_paths,
+                log_path=timing_root / "opensta.log",
+            )
+            timing_mode = "opensta-preplacement"
+        else:
+            platform = Platform.load(platform_path)
+            parts = {fpga.part for fpga in platform.fpgas}
+            if len(parts) != 1:
+                raise EmuFlowError(
+                    "Vivado timing backend requires one common FPGA part"
+                )
+            sta_report = run_vivado_timing_path_database(
+                ir_path=ir_path,
+                output_path=path_database_path,
+                clocks=clock_periods,
+                part=next(iter(parts)),
+                executable=timing_vivado,
+                max_paths=sta_max_paths,
+            )
+            timing_mode = "vivado-post-synthesis"
         weights_report = derive_partition_net_weights(
             path_database_path,
             ir_path,
@@ -352,7 +402,8 @@ def run_multi_fpga_flow(
         )
         timing_report = {
             "status": "pass",
-            "mode": "opensta-preplacement",
+            "mode": timing_mode,
+            "backend": timing_backend,
             "sta": sta_report,
             "partition_weights": weights_report,
             "partition_weights_applied": partition_provider != "greedy",
@@ -460,6 +511,7 @@ def run_multi_fpga_flow(
             platform_path,
             schedule_path,
             output_dir / "physical",
+            backend=physical_backend,
             architecture=physical_architecture,
             architecture_id=physical_architecture_id,
             yosys=yosys,
@@ -471,6 +523,10 @@ def run_multi_fpga_flow(
             openparf_python=physical_openparf_python,
             seed=physical_seed,
             route_channel_width=physical_route_channel_width,
+            vivado=physical_vivado,
+            vivado_max_timing_paths=physical_vivado_max_timing_paths,
+            vivado_place_directive=physical_vivado_place_directive,
+            vivado_route_directive=physical_vivado_route_directive,
         )
         physical_summary_path = output_dir / "physical/physical-summary.json"
 

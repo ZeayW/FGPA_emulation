@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/physical-backend-v1.schema.json",
+  "title": "EmuFlow physical backend descriptor v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "implementation_engine",
+    "timing_engine",
+    "architecture_class",
+    "source_model",
+    "qualification",
+    "capabilities"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.physical-backend/v1"},
+    "id": {"enum": ["open", "vivado"]},
+    "implementation_engine": {"type": "string", "minLength": 1},
+    "timing_engine": {"type": "string", "minLength": 1},
+    "architecture_class": {"type": "string", "minLength": 1},
+    "source_model": {"type": "string", "minLength": 1},
+    "qualification": {"type": "string", "minLength": 1},
+    "capabilities": {
+      "type": "object",
+      "required": ["packing", "placement", "routing", "timing", "bitstream"],
+      "properties": {
+        "packing": {"type": "boolean"},
+        "placement": {"type": "boolean"},
+        "routing": {"type": "boolean"},
+        "timing": {"type": "boolean"},
+        "bitstream": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

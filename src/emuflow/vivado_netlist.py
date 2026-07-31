@@ -1,0 +1,120 @@
+"""Lower provider-neutral mapped EmuIR into Vivado primitive Verilog."""
+
+from __future__ import annotations
+
+from collections import Counter
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Dict, Mapping, Optional
+
+from .equivalence import _lut_definition
+from .errors import ValidationError
+from .io import write_json
+from .ir import EmuIR
+from .verilog import mapped_verilog
+
+
+VIVADO_NETLIST_REPORT_SCHEMA = "emuflow.vivado-netlist-report/v1"
+_NATIVE_FFS = {"FDCE", "FDPE", "FDRE", "FDSE"}
+
+
+def lower_vivado_primitives(ir: EmuIR) -> EmuIR:
+    value = deepcopy(ir.value)
+    instances = {item["id"]: item for item in value["instances"]}
+    pin_remap: Dict[tuple[str, str, int], tuple[str, int]] = {}
+    unsupported = []
+    for instance in value["instances"]:
+        instance_id = instance["id"]
+        cell_type = instance["type"]
+        if cell_type.startswith("LUT") or cell_type in {"$lut", "$_LUT_"}:
+            width, input_port, output_port, truth = _lut_definition(instance)
+            if width < 1 or width > 6:
+                raise ValidationError(
+                    f"Vivado LUT {instance_id!r} has unsupported width {width}"
+                )
+            instance["type"] = f"LUT{width}"
+            instance["parameters"] = {
+                "INIT": format(truth, f"0{1 << width}b")
+            }
+            for bit in range(width):
+                source_bit = 0 if input_port == "I" else bit
+                source_port = f"I{bit}" if input_port == "I" else input_port
+                pin_remap[(instance_id, source_port, source_bit)] = (
+                    f"I{bit}",
+                    0,
+                )
+            pin_remap[(instance_id, output_port, 0)] = ("O", 0)
+        elif cell_type in {"$_DFF_P_", "$_DFF_N_"}:
+            instance["type"] = "FDRE"
+            instance["parameters"] = {
+                "INIT": "0",
+                "IS_C_INVERTED": "1" if cell_type == "$_DFF_N_" else "0",
+            }
+            constants = instance.setdefault("constant_connections", [])
+            constants.extend(
+                (
+                    {"port": "CE", "bit": 0, "value": "1"},
+                    {"port": "R", "bit": 0, "value": "0"},
+                )
+            )
+        elif cell_type in _NATIVE_FFS:
+            continue
+        else:
+            unsupported.append(cell_type)
+    if unsupported:
+        raise ValidationError(
+            "Vivado backend does not yet lower mapped primitive types: "
+            + ", ".join(sorted(set(unsupported)))
+        )
+
+    for net in value["nets"]:
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                instance_id = endpoint["instance"]
+                if instance_id is None:
+                    continue
+                remapped = pin_remap.get(
+                    (instance_id, endpoint["port"], endpoint["bit"])
+                )
+                if remapped is not None:
+                    endpoint["port"], endpoint["bit"] = remapped
+    for instance_id, instance in instances.items():
+        for connection in instance.get("constant_connections", []):
+            remapped = pin_remap.get(
+                (instance_id, connection["port"], connection["bit"])
+            )
+            if remapped is not None:
+                connection["port"], connection["bit"] = remapped
+    return EmuIR(value)
+
+
+def emit_vivado_mapped_verilog(
+    ir_path: Path,
+    output_path: Path,
+    report_path: Optional[Path] = None,
+) -> Mapping[str, Any]:
+    source = EmuIR.load(ir_path)
+    lowered = lower_vivado_primitives(source)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(mapped_verilog(lowered), encoding="utf-8")
+    source_inventory = Counter(
+        item["type"] for item in source.value["instances"]
+    )
+    output_inventory = Counter(
+        item["type"] for item in lowered.value["instances"]
+    )
+    report = {
+        "schema": VIVADO_NETLIST_REPORT_SCHEMA,
+        "status": "pass",
+        "provider": "emuflow-vivado-primitive-lowering-v1",
+        "design": source.value["design"]["name"],
+        "top": source.value["design"]["top"],
+        "source_instances": len(source.value["instances"]),
+        "emitted_instances": len(lowered.value["instances"]),
+        "source_inventory": dict(sorted(source_inventory.items())),
+        "emitted_inventory": dict(sorted(output_inventory.items())),
+        "output": str(output_path),
+    }
+    if report_path is not None:
+        write_json(report_path, report)
+    return report

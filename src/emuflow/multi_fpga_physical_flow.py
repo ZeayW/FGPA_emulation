@@ -13,6 +13,13 @@ from .lowering import run_placement_ir_lowering
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
 from .packed_placement import run_packed_openparf_placement
+from .physical_backend import (
+    PHYSICAL_PARTITION_RESULT_SCHEMA,
+    physical_backend_descriptor,
+    physical_summary_item,
+    validate_physical_backend_descriptor,
+    validate_physical_partition_result,
+)
 from .platform import Platform
 from .runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
@@ -27,6 +34,8 @@ from .vtr_architecture import (
     run_vtr_architecture_import,
 )
 from .vtr_eblif import emit_vtr_eblif
+from .vivado_backend import run_vivado_partition_backend
+from .vivado_netlist import emit_vivado_mapped_verilog
 from .yosys import import_yosys_json
 
 
@@ -90,6 +99,11 @@ def validate_multi_fpga_physical_report(
         raise ValidationError("multi-FPGA physical-flow schema is invalid")
     if report.get("status") != "pass":
         raise ValidationError("multi-FPGA physical flow did not pass")
+    descriptor = report.get("backend")
+    if not isinstance(descriptor, dict):
+        raise ValidationError("multi-FPGA physical backend is missing")
+    backend_validation = validate_physical_backend_descriptor(descriptor)
+    backend_id = backend_validation["backend"]
     expected = report.get("expected_fpgas")
     records = report.get("fpgas")
     if not isinstance(expected, list) or not expected:
@@ -102,44 +116,90 @@ def validate_multi_fpga_physical_report(
     original_cells = 0
     transport_cells = 0
     emitted_atoms = 0
+    worst_critical_path = 0.0
     for fpga_id in expected:
         item = by_id[fpga_id]
         if item.get("status") != "pass":
             raise ValidationError(f"physical flow for {fpga_id} did not pass")
         stages = item.get("stages")
-        required = (
-            "transport_synthesis",
-            "placement_ir",
-            "eblif",
-            "vpr_pack_place",
-            "architecture_import",
-            "packed_contract",
-            "openparf_placement",
-            "vpr_route",
-        )
-        if not isinstance(stages, dict) or tuple(stages) != required:
+        required = ("transport_synthesis", "placement_ir")
+        if not isinstance(stages, dict) or any(
+            name not in stages for name in required
+        ):
             raise ValidationError(f"physical stages for {fpga_id} are incomplete")
-        if any(stages[name].get("status") != "pass" for name in required):
+        if any(
+            not isinstance(stage, dict) or stage.get("status") != "pass"
+            for stage in stages.values()
+        ):
             raise ValidationError(f"one or more physical stages for {fpga_id} failed")
         lowering = stages["placement_ir"]
-        eblif = stages["eblif"]
-        pack = stages["vpr_pack_place"]
-        route = stages["vpr_route"]
         if lowering.get("instances") != (
             item.get("original_cells") + item.get("transport_cells")
         ):
             raise ValidationError(f"merged cell accounting for {fpga_id} disagrees")
-        if eblif.get("source_instances") != lowering.get("instances"):
-            raise ValidationError(f"eBLIF source coverage for {fpga_id} disagrees")
-        if pack.get("circuit", {}).get("sha256") != eblif.get("output_sha256"):
-            raise ValidationError(f"VPR packing for {fpga_id} used another circuit")
-        if route.get("circuit", {}).get("sha256") != eblif.get("output_sha256"):
-            raise ValidationError(f"VPR routing for {fpga_id} used another circuit")
-        if route.get("route_check", {}).get("status") != "pass":
-            raise ValidationError(f"independent route check for {fpga_id} failed")
+        part = item.get("part")
+        if not isinstance(part, str) or not part:
+            raise ValidationError(f"physical part for {fpga_id} is invalid")
+        result = item.get("physical_result")
+        if not isinstance(result, dict):
+            raise ValidationError(f"physical result for {fpga_id} is missing")
+        validate_physical_partition_result(
+            result,
+            backend=backend_id,
+            fpga=fpga_id,
+            part=part,
+            original_cells=item["original_cells"],
+            transport_cells=item["transport_cells"],
+        )
+        if backend_id == "open":
+            open_required = (
+                "eblif",
+                "vpr_pack_place",
+                "architecture_import",
+                "packed_contract",
+                "openparf_placement",
+                "vpr_route",
+            )
+            if any(name not in stages for name in open_required):
+                raise ValidationError(
+                    f"open physical stages for {fpga_id} are incomplete"
+                )
+            eblif = stages["eblif"]
+            pack = stages["vpr_pack_place"]
+            route = stages["vpr_route"]
+            if eblif.get("source_instances") != lowering.get("instances"):
+                raise ValidationError(
+                    f"eBLIF source coverage for {fpga_id} disagrees"
+                )
+            if pack.get("circuit", {}).get("sha256") != eblif.get(
+                "output_sha256"
+            ):
+                raise ValidationError(
+                    f"VPR packing for {fpga_id} used another circuit"
+                )
+            if route.get("circuit", {}).get("sha256") != eblif.get(
+                "output_sha256"
+            ):
+                raise ValidationError(
+                    f"VPR routing for {fpga_id} used another circuit"
+                )
+            if route.get("route_check", {}).get("status") != "pass":
+                raise ValidationError(
+                    f"independent route check for {fpga_id} failed"
+                )
+            emitted_atoms += eblif["emitted_atoms"]
+        elif not {"mapped_verilog", "vivado_implementation"}.issubset(stages):
+            raise ValidationError(
+                f"Vivado physical stages for {fpga_id} are incomplete"
+            )
         original_cells += item["original_cells"]
         transport_cells += item["transport_cells"]
-        emitted_atoms += eblif["emitted_atoms"]
+        critical_path = result["timing"].get("critical_path_ns", 0.0)
+        if not isinstance(critical_path, (int, float)) or critical_path < 0:
+            raise ValidationError(
+                f"physical critical path for {fpga_id} is invalid"
+            )
+        worst_critical_path = max(worst_critical_path, float(critical_path))
     summary = report.get("physical_summary")
     if not isinstance(summary, dict) or summary.get("status") != "pass":
         raise ValidationError("multi-FPGA physical summary did not pass")
@@ -151,10 +211,9 @@ def validate_multi_fpga_physical_report(
         "original_cells": original_cells,
         "transport_cells": transport_cells,
         "merged_cells": original_cells + transport_cells,
-        "emitted_atoms": emitted_atoms,
-        "worst_critical_path_ns": max(
-            by_id[fpga]["critical_path_ns"] for fpga in expected
-        ),
+        **({"emitted_atoms": emitted_atoms} if backend_id == "open" else {}),
+        "backend": backend_id,
+        "worst_critical_path_ns": worst_critical_path,
     }
 
 
@@ -164,6 +223,7 @@ def run_multi_fpga_physical_flow(
     schedule_path: Path,
     output_dir: Path,
     *,
+    backend: str = "open",
     architecture: Optional[Path] = None,
     architecture_id: str = VTR_HARD_BLOCK_PROFILE,
     yosys: Optional[str] = None,
@@ -175,6 +235,10 @@ def run_multi_fpga_physical_flow(
     openparf_python: Optional[Path] = None,
     seed: int = 1,
     route_channel_width: int = 300,
+    vivado: Optional[str] = None,
+    vivado_max_timing_paths: int = 10000,
+    vivado_place_directive: str = "Default",
+    vivado_route_directive: str = "Default",
 ) -> Dict[str, Any]:
     split_root = split_root.resolve()
     manifest_path = split_root / "manifest.json"
@@ -184,6 +248,8 @@ def run_multi_fpga_physical_flow(
     platform = Platform.load(platform_path)
     schedule = read_json(schedule_path)
     runtime = build_virtual_runtime(schedule, platform)
+    backend_descriptor = physical_backend_descriptor(backend)
+    validate_physical_backend_descriptor(backend_descriptor)
     expected_fpgas = [fpga.id for fpga in platform.fpgas]
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
@@ -197,20 +263,37 @@ def run_multi_fpga_physical_flow(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
-    architecture_root = output_dir / "architecture"
-    architecture_root.mkdir(parents=True, exist_ok=True)
-    if architecture is None:
-        architecture_path = architecture_root / "vtr-flagship.xml"
-        architecture_source = fetch_pinned_vtr_architecture(architecture_path)
+    architecture_path = None
+    if backend == "open":
+        architecture_root = output_dir / "architecture"
+        architecture_root.mkdir(parents=True, exist_ok=True)
+        if architecture is None:
+            architecture_path = architecture_root / "vtr-flagship.xml"
+            architecture_source = fetch_pinned_vtr_architecture(
+                architecture_path
+            )
+        else:
+            architecture_path = architecture.resolve()
+            if not architecture_path.is_file():
+                raise EmuFlowError(
+                    f"VTR architecture does not exist: {architecture_path}"
+                )
+            architecture_source = {
+                "status": "pass",
+                "mode": "provided",
+                "path": str(architecture_path),
+                "sha256": _sha256(architecture_path),
+            }
     else:
-        architecture_path = architecture.resolve()
-        if not architecture_path.is_file():
-            raise EmuFlowError(f"VTR architecture does not exist: {architecture_path}")
+        if architecture is not None:
+            raise ValidationError(
+                "--physical-architecture applies only to backend=open"
+            )
         architecture_source = {
             "status": "pass",
-            "mode": "provided",
-            "path": str(architecture_path),
-            "sha256": _sha256(architecture_path),
+            "mode": "platform-parts",
+            "parts": sorted({fpga.part for fpga in platform.fpgas}),
+            "provider": "vivado-device-database",
         }
 
     runtime_controller = split_root / manifest["runtime_controller_rtl"]
@@ -260,121 +343,198 @@ def run_multi_fpga_physical_flow(
             merged_ir,
             fpga_root / "placement-ir-report.json",
         )
-        circuit = fpga_root / "partition.eblif"
-        eblif_report = emit_vtr_eblif(
-            merged_ir, circuit, fpga_root / "vtr-eblif-report.json"
-        )
-        pack_report = run_vpr_pack_place(
-            architecture_path,
-            circuit,
-            fpga_root / "vpr-pack-place",
-            executable=vpr,
-            seed=seed,
-        )
-        packed_netlist = Path(
-            pack_report["artifacts"]["packed_netlist"]["path"]
-        )
-        baseline_placement = Path(
-            pack_report["artifacts"]["placement"]["path"]
-        )
-        width, height = read_vpr_placement_dimensions(baseline_placement)
-        architecture_db = fpga_root / "architecture.json"
-        timing_db = fpga_root / "timing.json"
-        architecture_report = run_vtr_architecture_import(
-            input_path=architecture_path,
-            architecture_output_path=architecture_db,
-            timing_output_path=timing_db,
-            architecture_id=architecture_id,
-            width=width,
-            height=height,
-            source_url=architecture_source.get("source"),
-            executable=architecture_importer,
-        )
-        packed_contract = fpga_root / "packed-contract.json"
-        packed_report = run_packed_netlist_import(
-            packed_netlist,
-            packed_contract,
-            architecture_path=architecture_path,
-            circuit_path=circuit,
-            executable=packed_importer,
-        )
-        placement_report = run_packed_openparf_placement(
-            packed_contract,
-            architecture_db,
-            fpga_root / "openparf-placement",
-            seed_placement_path=baseline_placement,
-            openparf_install=openparf_install,
-            openparf_python=openparf_python,
-        )
-        route_report = run_vpr_route_packed(
-            architecture_path,
-            circuit,
-            packed_netlist,
-            packed_contract,
-            Path(placement_report["artifacts"]["vpr_placement"]),
-            fpga_root / "vpr-route",
-            executable=vpr,
-            route_checker=route_checker,
-            route_channel_width=route_channel_width,
-        )
-        physical_delays = _physical_clock_delays(route_report, eblif_report)
-        critical_path = physical_delays["overall"]
         netlist = read_json(source_root / "netlist.json")
         original_cells = len(netlist["instances"])
         transport_cells = lowering_report["transport_instances"]
+        fpga_part = next(
+            fpga.part for fpga in platform.fpgas if fpga.id == fpga_id
+        )
         fabric_period = runtime["fabric_clock"]["period_ns"]
         dut_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
         cross_period = runtime["timing_model"]["fabric_to_dut_max_delay_ns"]
-        timing = {
-            "dut_wns_ns": dut_period - physical_delays["dut"],
-            "fabric_wns_ns": fabric_period - physical_delays["fabric"],
-            "fabric_to_dut_wns_ns": cross_period - physical_delays["cross"],
+        stages = {
+            "transport_synthesis": transport_report,
+            "placement_ir": lowering_report,
         }
-        if min(timing.values()) < 0:
-            raise ValidationError(
-                f"academic physical timing did not close for {fpga_id}: "
-                f"critical_path={critical_path:.6f} ns, "
-                f"fabric_period={fabric_period:.6f} ns"
+        provider_fields: Dict[str, Any] = {}
+        if backend == "open":
+            if architecture_path is None:
+                raise ValidationError("open backend architecture is missing")
+            circuit = fpga_root / "partition.eblif"
+            eblif_report = emit_vtr_eblif(
+                merged_ir, circuit, fpga_root / "vtr-eblif-report.json"
             )
-        physical_item = {
-            "fpga": fpga_id,
-            "backend": "vpr-openparf-vpr-academic",
-            "original_cells": original_cells,
-            "transport_cells": transport_cells,
-            "routed_cells": original_cells + transport_cells,
-            "physical_cells": original_cells + transport_cells,
-            "infrastructure_cells": 0,
-            "optimization_cells": 0,
-            "unrouted_nets": 0,
-            "drc_violations": 0,
-            "wns_ns": min(timing.values()),
-            "timing": timing,
-            "clocks": {
-                "fabric_period_ns": fabric_period,
-                "dut_period_ns": dut_period,
-            },
-            "critical_path_ns": critical_path,
-            "clock_domain_delays_ns": physical_delays,
-        }
-        physical_fpgas.append(physical_item)
-        records.append(
-            {
-                "fpga": fpga_id,
+            pack_report = run_vpr_pack_place(
+                architecture_path,
+                circuit,
+                fpga_root / "vpr-pack-place",
+                executable=vpr,
+                seed=seed,
+            )
+            packed_netlist = Path(
+                pack_report["artifacts"]["packed_netlist"]["path"]
+            )
+            baseline_placement = Path(
+                pack_report["artifacts"]["placement"]["path"]
+            )
+            width, height = read_vpr_placement_dimensions(
+                baseline_placement
+            )
+            architecture_db = fpga_root / "architecture.json"
+            timing_db = fpga_root / "timing.json"
+            architecture_report = run_vtr_architecture_import(
+                input_path=architecture_path,
+                architecture_output_path=architecture_db,
+                timing_output_path=timing_db,
+                architecture_id=architecture_id,
+                width=width,
+                height=height,
+                source_url=architecture_source.get("source"),
+                executable=architecture_importer,
+            )
+            packed_contract = fpga_root / "packed-contract.json"
+            packed_report = run_packed_netlist_import(
+                packed_netlist,
+                packed_contract,
+                architecture_path=architecture_path,
+                circuit_path=circuit,
+                executable=packed_importer,
+            )
+            placement_report = run_packed_openparf_placement(
+                packed_contract,
+                architecture_db,
+                fpga_root / "openparf-placement",
+                seed_placement_path=baseline_placement,
+                openparf_install=openparf_install,
+                openparf_python=openparf_python,
+            )
+            route_report = run_vpr_route_packed(
+                architecture_path,
+                circuit,
+                packed_netlist,
+                packed_contract,
+                Path(placement_report["artifacts"]["vpr_placement"]),
+                fpga_root / "vpr-route",
+                executable=vpr,
+                route_checker=route_checker,
+                route_channel_width=route_channel_width,
+            )
+            physical_delays = _physical_clock_delays(
+                route_report, eblif_report
+            )
+            timing = {
+                "dut_wns_ns": dut_period - physical_delays["dut"],
+                "fabric_wns_ns": fabric_period - physical_delays["fabric"],
+                "fabric_to_dut_wns_ns": (
+                    cross_period - physical_delays["cross"]
+                ),
+            }
+            if min(timing.values()) < 0:
+                raise ValidationError(
+                    f"academic physical timing did not close for {fpga_id}: "
+                    f"critical_path={physical_delays['overall']:.6f} ns, "
+                    f"fabric_period={fabric_period:.6f} ns"
+                )
+            physical_result = {
+                "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
                 "status": "pass",
-                "original_cells": original_cells,
-                "transport_cells": transport_cells,
-                "critical_path_ns": critical_path,
-                "array": {"width": width, "height": height},
-                "stages": {
-                    "transport_synthesis": transport_report,
-                    "placement_ir": lowering_report,
+                "identity": {
+                    "backend": "open",
+                    "fpga": fpga_id,
+                    "part": fpga_part,
+                },
+                "cell_accounting": {
+                    "original_cells": original_cells,
+                    "transport_cells": transport_cells,
+                    "routed_cells": original_cells + transport_cells,
+                    "physical_cells": original_cells + transport_cells,
+                    "infrastructure_cells": 0,
+                    "optimization_cells": 0,
+                },
+                "closure": {"unrouted_nets": 0, "drc_violations": 0},
+                "clocks": {
+                    "fabric_period_ns": fabric_period,
+                    "dut_period_ns": dut_period,
+                },
+                "timing": {
+                    "wns_ns": min(timing.values()),
+                    **timing,
+                    "critical_path_ns": physical_delays["overall"],
+                    "clock_domain_delays_ns": physical_delays,
+                },
+                "artifacts": {
+                    "eblif": {
+                        "path": str(circuit),
+                        "sha256": eblif_report["output_sha256"],
+                    },
+                    "packed_netlist": pack_report["artifacts"][
+                        "packed_netlist"
+                    ],
+                    "placement": placement_report["artifacts"],
+                    "route": route_report.get("artifacts", {}),
+                },
+            }
+            stages.update(
+                {
                     "eblif": eblif_report,
                     "vpr_pack_place": pack_report,
                     "architecture_import": architecture_report,
                     "packed_contract": packed_report,
                     "openparf_placement": placement_report,
                     "vpr_route": route_report,
-                },
+                }
+            )
+            provider_fields["array"] = {"width": width, "height": height}
+        else:
+            mapped_verilog = fpga_root / "partition.v"
+            mapped_report = emit_vivado_mapped_verilog(
+                merged_ir,
+                mapped_verilog,
+                fpga_root / "mapped-verilog-report.json",
+            )
+            vivado_report = run_vivado_partition_backend(
+                fpga=fpga_id,
+                part=fpga_part,
+                ir_path=merged_ir,
+                mapped_verilog_path=mapped_verilog,
+                runtime=runtime,
+                original_cells=original_cells,
+                transport_cells=transport_cells,
+                output_dir=fpga_root / "vivado",
+                executable=vivado,
+                max_timing_paths=vivado_max_timing_paths,
+                place_directive=vivado_place_directive,
+                route_directive=vivado_route_directive,
+            )
+            physical_result = vivado_report["result"]
+            stages.update(
+                {
+                    "mapped_verilog": mapped_report,
+                    "vivado_implementation": vivado_report,
+                }
+            )
+        validate_physical_partition_result(
+            physical_result,
+            backend=backend,
+            fpga=fpga_id,
+            part=fpga_part,
+            original_cells=original_cells,
+            transport_cells=transport_cells,
+        )
+        physical_fpgas.append(physical_summary_item(physical_result))
+        records.append(
+            {
+                "fpga": fpga_id,
+                "part": fpga_part,
+                "status": "pass",
+                "original_cells": original_cells,
+                "transport_cells": transport_cells,
+                "critical_path_ns": physical_result["timing"][
+                    "critical_path_ns"
+                ],
+                **provider_fields,
+                "stages": stages,
+                "physical_result": physical_result,
             }
         )
 
@@ -383,8 +543,9 @@ def run_multi_fpga_physical_flow(
         "status": "pass",
         "design": manifest["design"],
         "platform": platform.name,
-        "provider": "vtr-open-academic-physical-summary-v1",
-        "qualification": "academic-architecture-not-vendor-signoff",
+        "provider": f"{backend}-physical-summary-v1",
+        "qualification": backend_descriptor["qualification"],
+        "backend": backend_descriptor,
         "fpgas": physical_fpgas,
     }
     physical_summary["validation"] = validate_physical_summary(
@@ -394,7 +555,8 @@ def run_multi_fpga_physical_flow(
     report = {
         "schema": MULTI_FPGA_PHYSICAL_SCHEMA,
         "status": "pass",
-        "provider": "phase6-emuir+vpr-pack+openparf-place+vpr-route",
+        "provider": "phase6-emuir+physical-backend-v1",
+        "backend": backend_descriptor,
         "design": manifest["design"],
         "platform": platform.name,
         "split_manifest": {

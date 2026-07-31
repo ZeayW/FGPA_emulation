@@ -54,8 +54,9 @@ if {$mapped == 0} {
   error "none of the mapped EmuIR nets exist in the checkpoint"
 }
 
+set all_clocks [get_clocks -quiet]
 set timing_paths [get_timing_paths -quiet -setup -nworst 1 \
-  -max_paths $max_paths]
+  -max_paths $max_paths -from $all_clocks -to $all_clocks]
 set output [open $output_path w]
 puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
 set emitted 0
@@ -85,6 +86,9 @@ foreach path $timing_paths {
   set period [get_property REQUIREMENT $path]
   set slack [get_property SLACK $path]
   set fixed_delay [get_property DATAPATH_DELAY $path]
+  if {$period eq "" || $slack eq "" || $fixed_delay eq ""} {
+    continue
+  }
   puts $output "[emuflow_hex_encode $path_id]\t[emuflow_hex_encode $group]\t$period\t$slack\t$fixed_delay\t[join $path_hex ,]"
   incr emitted
 }

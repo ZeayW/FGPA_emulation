@@ -1,0 +1,214 @@
+"""Provider-neutral physical implementation contract.
+
+The contract deliberately describes observable implementation results rather
+than provider-native files.  OpenPARF/VPR and Vivado may expose different
+internal stages, but both must account for the same partition cells, clocks,
+routing closure, DRC closure, and timing domains before Phase 7C consumes the
+result.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Mapping
+
+from .errors import ValidationError
+
+
+PHYSICAL_BACKEND_SCHEMA = "emuflow.physical-backend/v1"
+PHYSICAL_PARTITION_RESULT_SCHEMA = (
+    "emuflow.physical-partition-result/v1"
+)
+PHYSICAL_BACKENDS = ("open", "vivado")
+
+
+_DESCRIPTORS: Dict[str, Dict[str, Any]] = {
+    "open": {
+        "schema": PHYSICAL_BACKEND_SCHEMA,
+        "id": "open",
+        "implementation_engine": "vpr-openparf-vpr",
+        "timing_engine": "vpr",
+        "architecture_class": "public-academic",
+        "source_model": "source-complete",
+        "qualification": "academic-architecture-not-vendor-signoff",
+        "capabilities": {
+            "packing": True,
+            "placement": True,
+            "routing": True,
+            "timing": True,
+            "bitstream": False,
+        },
+    },
+    "vivado": {
+        "schema": PHYSICAL_BACKEND_SCHEMA,
+        "id": "vivado",
+        "implementation_engine": "vivado",
+        "timing_engine": "vivado",
+        "architecture_class": "xilinx-commercial-device",
+        "source_model": "external-proprietary-provider",
+        "qualification": "vendor-device-implementation-not-board-signoff",
+        "capabilities": {
+            "packing": True,
+            "placement": True,
+            "routing": True,
+            "timing": True,
+            "bitstream": False,
+        },
+    },
+}
+
+
+def physical_backend_descriptor(name: str) -> Dict[str, Any]:
+    try:
+        descriptor = _DESCRIPTORS[name]
+    except KeyError as error:
+        raise ValidationError(
+            f"physical backend must be one of {list(PHYSICAL_BACKENDS)}"
+        ) from error
+    return {
+        **descriptor,
+        "capabilities": dict(descriptor["capabilities"]),
+    }
+
+
+def validate_physical_backend_descriptor(
+    descriptor: Mapping[str, Any],
+) -> Dict[str, Any]:
+    backend_id = descriptor.get("id")
+    expected = physical_backend_descriptor(str(backend_id))
+    if dict(descriptor) != expected:
+        raise ValidationError(
+            f"physical backend descriptor for {backend_id!r} is invalid"
+        )
+    return {
+        "status": "pass",
+        "backend": backend_id,
+        "implementation_engine": expected["implementation_engine"],
+        "timing_engine": expected["timing_engine"],
+    }
+
+
+def validate_physical_partition_result(
+    result: Mapping[str, Any],
+    *,
+    backend: str,
+    fpga: str,
+    part: str,
+    original_cells: int,
+    transport_cells: int,
+) -> Dict[str, Any]:
+    if result.get("schema") != PHYSICAL_PARTITION_RESULT_SCHEMA:
+        raise ValidationError(
+            f"physical result for {fpga} has an invalid schema"
+        )
+    if result.get("status") != "pass":
+        raise ValidationError(f"physical result for {fpga} did not pass")
+    identity = result.get("identity")
+    expected_identity = {
+        "backend": backend,
+        "fpga": fpga,
+        "part": part,
+    }
+    if identity != expected_identity:
+        raise ValidationError(
+            f"physical result identity for {fpga} is inconsistent"
+        )
+    accounting = result.get("cell_accounting")
+    if not isinstance(accounting, dict):
+        raise ValidationError(
+            f"physical result for {fpga} has no cell accounting"
+        )
+    expected_routed = original_cells + transport_cells
+    if accounting.get("original_cells") != original_cells:
+        raise ValidationError(
+            f"physical result original cells for {fpga} disagree"
+        )
+    if accounting.get("transport_cells") != transport_cells:
+        raise ValidationError(
+            f"physical result transport cells for {fpga} disagree"
+        )
+    if accounting.get("routed_cells") != expected_routed:
+        raise ValidationError(
+            f"physical result routed cells for {fpga} disagree"
+        )
+    infrastructure = accounting.get("infrastructure_cells")
+    physical_cells = accounting.get("physical_cells")
+    if (
+        isinstance(infrastructure, bool)
+        or not isinstance(infrastructure, int)
+        or infrastructure < 0
+        or physical_cells != expected_routed + infrastructure
+    ):
+        raise ValidationError(
+            f"physical result infrastructure cells for {fpga} disagree"
+        )
+    closure = result.get("closure")
+    if not isinstance(closure, dict):
+        raise ValidationError(f"physical result for {fpga} has no closure")
+    if closure.get("unrouted_nets") != 0 or closure.get("drc_violations") != 0:
+        raise ValidationError(f"physical result for {fpga} did not close")
+    timing = result.get("timing")
+    if not isinstance(timing, dict):
+        raise ValidationError(f"physical result for {fpga} has no timing")
+    for field in (
+        "wns_ns",
+        "dut_wns_ns",
+        "fabric_wns_ns",
+        "fabric_to_dut_wns_ns",
+    ):
+        value = timing.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValidationError(
+                f"physical result {fpga}.{field} must be numeric"
+            )
+        if value < 0:
+            raise ValidationError(
+                f"physical result {fpga}.{field} did not meet timing"
+            )
+    artifacts = result.get("artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        raise ValidationError(
+            f"physical result for {fpga} has no bound artifacts"
+        )
+    return {
+        "status": "pass",
+        "backend": backend,
+        "fpga": fpga,
+        "part": part,
+        "routed_cells": expected_routed,
+        "physical_cells": physical_cells,
+        "wns_ns": float(timing["wns_ns"]),
+    }
+
+
+def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """Project a provider result onto the existing Phase-7B interface."""
+    identity = result["identity"]
+    accounting = result["cell_accounting"]
+    timing = result["timing"]
+    clocks = result["clocks"]
+    return {
+        "fpga": identity["fpga"],
+        "backend": identity["backend"],
+        **accounting,
+        "unrouted_nets": result["closure"]["unrouted_nets"],
+        "drc_violations": result["closure"]["drc_violations"],
+        "wns_ns": timing["wns_ns"],
+        "timing": {
+            "dut_wns_ns": timing["dut_wns_ns"],
+            "fabric_wns_ns": timing["fabric_wns_ns"],
+            "fabric_to_dut_wns_ns": timing[
+                "fabric_to_dut_wns_ns"
+            ],
+        },
+        "clocks": clocks,
+        **(
+            {"critical_path_ns": timing["critical_path_ns"]}
+            if "critical_path_ns" in timing
+            else {}
+        ),
+        **(
+            {"clock_domain_delays_ns": timing["clock_domain_delays_ns"]}
+            if "clock_domain_delays_ns" in timing
+            else {}
+        ),
+    }

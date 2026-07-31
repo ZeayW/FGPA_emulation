@@ -140,6 +140,8 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "platforms/synthetic/xcvu9p_4fpga_mesh_bsp.json",
     "scripts/vivado/export_cut_timing_paths.tcl",
     "scripts/vivado/export_timing_path_database.tcl",
+    "scripts/vivado/analyze_timing.tcl",
+    "scripts/vivado/implement_partition.tcl",
     "scripts/opensta/export_timing_path_database.tcl",
     "scripts/yosys/logic_only_map.v",
     "scripts/yosys/vtr_models.v",
@@ -150,6 +152,11 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "tests/check_vtr_hard_block_synthesis.py",
     "tests/test_open_physical_flow.py",
     "resources/timing/ultrascaleplus-softlogic-v1.json",
+    "src/emuflow/physical_backend.py",
+    "src/emuflow/vivado_backend.py",
+    "src/emuflow/vivado_netlist.py",
+    "schemas/physical-backend-v1.schema.json",
+    "schemas/physical-partition-result-v1.schema.json",
 )
 
 OPAQUE_SUFFIXES = {

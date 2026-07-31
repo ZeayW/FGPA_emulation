@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/physical-partition-result-v1.schema.json",
+  "title": "EmuFlow provider-neutral physical partition result v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "identity",
+    "cell_accounting",
+    "closure",
+    "clocks",
+    "timing",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.physical-partition-result/v1"},
+    "status": {"const": "pass"},
+    "identity": {
+      "type": "object",
+      "required": ["backend", "fpga", "part"],
+      "properties": {
+        "backend": {"enum": ["open", "vivado"]},
+        "fpga": {"type": "string", "minLength": 1},
+        "part": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "cell_accounting": {
+      "type": "object",
+      "required": [
+        "original_cells",
+        "transport_cells",
+        "routed_cells",
+        "physical_cells",
+        "infrastructure_cells",
+        "optimization_cells"
+      ],
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "closure": {
+      "type": "object",
+      "required": ["unrouted_nets", "drc_violations"],
+      "properties": {
+        "unrouted_nets": {"type": "integer", "minimum": 0},
+        "drc_violations": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "clocks": {
+      "type": "object",
+      "required": ["fabric_period_ns", "dut_period_ns"],
+      "properties": {
+        "fabric_period_ns": {"type": "number", "exclusiveMinimum": 0},
+        "dut_period_ns": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "timing": {
+      "type": "object",
+      "required": [
+        "wns_ns",
+        "dut_wns_ns",
+        "fabric_wns_ns",
+        "fabric_to_dut_wns_ns"
+      ],
+      "properties": {
+        "wns_ns": {"type": "number"},
+        "dut_wns_ns": {"type": "number"},
+        "fabric_wns_ns": {"type": "number"},
+        "fabric_to_dut_wns_ns": {"type": "number"}
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {"type": "object", "minProperties": 1}
+  },
+  "additionalProperties": false
+}
