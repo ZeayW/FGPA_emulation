@@ -407,6 +407,76 @@ class TritonPartTest(unittest.TestCase):
             ["timing_weighted", "unweighted_baseline"],
         )
 
+    def test_seed_sweep_continues_after_balance_repair_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            ir_path = output / "design.emuir.json"
+            ir_path.write_text(
+                json.dumps(self.ir.to_dict()), encoding="utf-8"
+            )
+
+            def fake_openroad(command, **kwargs):
+                run_directory = Path(kwargs["cwd"])
+                tritonpart_input = json.loads(
+                    (run_directory / "tritonpart_input.json").read_text()
+                )
+                solution = (
+                    run_directory
+                    / tritonpart_input["files"]["solution"]
+                )
+                solution.write_text(
+                    "\n".join(
+                        str(index % 2)
+                        for index in range(
+                            len(tritonpart_input["cluster_order"])
+                        )
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n")
+
+            repair_calls = 0
+
+            def fake_repair(candidate, *_args):
+                nonlocal repair_calls
+                repair_calls += 1
+                if repair_calls == 1:
+                    raise ValidationError("no legal repair move")
+                return candidate, {"moves": 0}
+
+            with (
+                mock.patch(
+                    "emuflow.tritonpart.subprocess.run",
+                    side_effect=fake_openroad,
+                ),
+                mock.patch(
+                    "emuflow.tritonpart._repair_multi_resource_balance",
+                    side_effect=fake_repair,
+                ),
+            ):
+                report = run_phase3(
+                    ir_path=ir_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=output / "phase3",
+                    seed=41,
+                    provider="tritonpart",
+                    openroad="/fake/openroad",
+                    tritonpart_seed_attempts=2,
+                    tritonpart_repair_balance=True,
+                )
+
+            self.assertEqual(report["status"], "pass")
+            assignment = json.loads(
+                (output / "phase3" / "assignment.json").read_text()
+            )
+            attempts = assignment["provider_metadata"]["seed_attempts"]
+            self.assertEqual([item["seed"] for item in attempts], [41, 42])
+            self.assertFalse(attempts[0]["accepted"])
+            self.assertEqual(attempts[0]["rejection"], "balance_repair")
+            self.assertIn("no legal repair move", attempts[0]["error"])
+            self.assertTrue(attempts[1]["accepted"])
+
     def test_phase3_balance_repair_is_audited_and_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)

@@ -1006,13 +1006,38 @@ def run_tritonpart(
         balance_repair = None
         repaired_solution_path = None
         if repair_balance:
-            candidate, balance_repair = _repair_multi_resource_balance(
-                candidate,
-                clusters_artifact,
-                platform,
-                constraints,
-                tritonpart_input,
-            )
+            try:
+                candidate, balance_repair = _repair_multi_resource_balance(
+                    candidate,
+                    clusters_artifact,
+                    platform,
+                    constraints,
+                    tritonpart_input,
+                )
+            except ValidationError as error:
+                attempts.append(
+                    {
+                        "mode": spec["mode"],
+                        "seed": attempt_seed,
+                        "raw_used_fpgas": raw_used_fpgas,
+                        "used_fpgas": raw_used_fpgas,
+                        "balance_repair": None,
+                        "repair_moves": [],
+                        "solution": (
+                            attempt_solution.name
+                            if attempt_solution is not None
+                            else solution_path.name
+                        ),
+                        "repaired_solution": None,
+                        "log": (
+                            log_path.name if log_path is not None else None
+                        ),
+                        "accepted": False,
+                        "rejection": "balance_repair",
+                        "error": str(error),
+                    }
+                )
+                continue
             repaired_tag = (
                 f"seed-{attempt_seed}"
                 if spec["mode"] == "timing_weighted"
