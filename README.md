@@ -104,20 +104,64 @@ An optional Vivado provider implements the same timing and physical-result
 contracts for a concrete Xilinx part. Vivado is proprietary, is not bundled,
 and is never required by the default open path.
 
-The project targets a source-complete path from logic synthesis to per-FPGA
-placement and routing:
+## Flow roadmap
 
-```text
-RTL
- └─ logic synthesis and EmuIR import
-     └─ sequential clustering and multi-resource partitioning
-         └─ board-level system routing
-             └─ TDM ratio, slot, and lane assignment
-                 └─ per-FPGA netlist, transport, and pin planning
-                     ├─ open: VPR pack → OpenPARF place → VPR route/timing
-                     ├─ Vivado: synth → place → route/timing
-                     └─ common PhysicalPartitionResult → Phase 7C
+The timing provider and physical backend are selected independently. Both
+physical backends consume the same board-independent multi-FPGA result and
+must produce the same provider-neutral result contracts.
+
+```mermaid
+flowchart TD
+    RTL["Synchronous RTL"] --> SYN["Yosys/ABC synthesis<br/>EmuIR import"]
+
+    SYN --> IR["Versioned EmuIR"]
+    IR --> PART["Multi-resource partitioning<br/>optional timing-driven weights<br/>OpenROAD/TritonPart or RePart"]
+
+    IR -. optional timing analysis .-> TP{"Timing provider"}
+    PUBARCH["Public VTR ArchitectureDB / TimingDB"] --> OSTA["OpenSTA"]
+    TP -->|open| OSTA
+    TP -->|optional Xilinx| VTIM["Vivado timing<br/>(proprietary)"]
+    OSTA --> TDB["Common TimingPathDB"]
+    VTIM --> TDB
+    TDB --> PART
+
+    PART --> SROUTE["Board-level system routing"]
+    SROUTE --> TDM["TDM ratio, slot and lane assignment"]
+    TDM --> PIN["Logical pin planning and transport generation"]
+    PIN --> SPLIT["Per-FPGA netlist + transport fabric"]
+
+    SPLIT --> PB{"Physical backend"}
+
+    PB -->|fully open| VPACK["VPR packing + legal seed placement"]
+    PUBARCH --> VPACK
+    VPACK --> OP["OpenPARF analytical placement<br/>and legalization"]
+    OP --> VROUTE["VPR detailed routing + timing"]
+
+    PB -->|optional Xilinx| XV["Vivado synthesis + placement<br/>routing + timing"]
+    XDB["Selected Xilinx part<br/>vendor device database"] --> VTIM
+    XDB --> XV
+
+    VROUTE --> PPR["Common PhysicalPartitionResult"]
+    XV --> PPR
+    PPR --> PS["Common PhysicalSummary"]
+    PS --> P7C["Phase 7C runtime and timing-closure report"]
 ```
+
+The solid main path works without timing-driven optimization; `TimingPathDB`
+adds timing weights to partitioning, system routing, and TDM. On the fully
+open route, the VTR architecture supplies public resource and delay data,
+OpenSTA can supply pre-partition timing, OpenPARF performs placement, and VPR
+performs exact packing, detailed routing, and post-route timing. On the Vivado
+route, Vivado supplies device timing and physical implementation for a
+concrete Xilinx part; Vivado itself and its device database are not included
+in this repository.
+
+| Route | Current completion boundary |
+| --- | --- |
+| Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
+| Fully open physical route | Implemented and exercised end to end on a large, four-FPGA Koios DLA design using VPR → OpenPARF → VPR |
+| Vivado physical route | Provider, Tcl handoff, result import, and common contracts are implemented; large-design end-to-end qualification is not yet claimed |
+| Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
 The flow is board-abstracted. Synthesis, partitioning, routing, TDM, logical
 pin assignment, and virtual-platform physical validation can run before a
