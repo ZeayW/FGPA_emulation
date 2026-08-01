@@ -43,11 +43,10 @@ set logical_objects [get_cells -quiet -hier -filter {EMUFLOW_MAPPED == yes}]
 if {[llength $logical_objects] != $expected_cells} {
   error "post-synthesis design has [llength $logical_objects] tagged mapped cells; expected $expected_cells"
 }
-set mapped_objects [get_cells -quiet -hier -filter {REF_NAME != GND && REF_NAME != VCC}]
-set mapped_names [lsort -ascii [get_property NAME $mapped_objects]]
+set mapped_names [lsort -ascii [get_property NAME $logical_objects]]
 set mapped_inventory [open "$output_dir/mapped_cells.tsv" w]
 puts $mapped_inventory "name\tref_name"
-foreach object $mapped_objects {
+foreach object $logical_objects {
   puts $mapped_inventory "[get_property NAME $object]\t[get_property REF_NAME $object]"
 }
 close $mapped_inventory
@@ -64,34 +63,47 @@ report_drc -file "$output_dir/drc.rpt"
 report_timing_summary -file "$output_dir/timing_summary.rpt"
 report_utilization -hierarchical -file "$output_dir/utilization.rpt"
 
-set routed_objects [get_cells -quiet -hier -filter {REF_NAME != GND && REF_NAME != VCC}]
+set routed_logical_objects [get_cells -quiet -hier -filter {EMUFLOW_MAPPED == yes}]
+if {[llength $routed_logical_objects] != $expected_cells} {
+  error "routed design has [llength $routed_logical_objects] tagged mapped cells; expected $expected_cells"
+}
 array set routed_ref_by_name {}
-foreach object $routed_objects {
+set routed_mapped_inventory [open "$output_dir/routed_mapped_cells.tsv" w]
+puts $routed_mapped_inventory "name\tref_name"
+foreach object $routed_logical_objects {
   set name [get_property NAME $object]
   if {[info exists routed_ref_by_name($name)]} {
-    error "routed checkpoint contains duplicate cell $name"
+    error "routed checkpoint contains duplicate mapped cell $name"
   }
   set routed_ref_by_name($name) [get_property REF_NAME $object]
+  puts $routed_mapped_inventory "$name\t[get_property REF_NAME $object]"
 }
+close $routed_mapped_inventory
 foreach name $mapped_names {
   if {![info exists routed_ref_by_name($name)]} {
     error "mapped cell $name is missing from routed checkpoint"
   }
   unset routed_ref_by_name($name)
 }
+if {[array size routed_ref_by_name] != 0} {
+  error "routed checkpoint contains [array size routed_ref_by_name] unexpected tagged mapped cells"
+}
 
 set infrastructure_cells 0
 set infrastructure_inventory [open "$output_dir/infrastructure_cells.tsv" w]
 puts $infrastructure_inventory "name\tref_name\tclass"
-foreach name [lsort -ascii [array names routed_ref_by_name]] {
-  set ref_name $routed_ref_by_name($name)
-  if {![string match "BUFG*" $ref_name] &&
-      ![string match "IBUF*" $ref_name] &&
-      ![string match "OBUF*" $ref_name]} {
-    error "unapproved physical infrastructure cell $name has type $ref_name"
+set physical_objects [get_cells -quiet -hier -filter {
+  IS_PRIMITIVE && REF_NAME != GND && REF_NAME != VCC
+}]
+foreach object $physical_objects {
+  set name [get_property NAME $object]
+  set ref_name [get_property REF_NAME $object]
+  if {[string match "BUFG*" $ref_name] ||
+      [string match "IBUF*" $ref_name] ||
+      [string match "OBUF*" $ref_name]} {
+    puts $infrastructure_inventory "$name\t$ref_name\tclock_or_io"
+    incr infrastructure_cells
   }
-  puts $infrastructure_inventory "$name\t$ref_name\tclock_or_io"
-  incr infrastructure_cells
 }
 close $infrastructure_inventory
 
@@ -180,7 +192,7 @@ if {$wns < 0.0} {
   error "implementation timing failed with WNS $wns ns"
 }
 set critical_path [expr {max($dut_delay, max($fabric_delay, $cross_delay))}]
-set physical_cells [llength $routed_objects]
+set physical_cells [llength $physical_objects]
 set dsp48_cells [llength [get_cells -quiet -hier -filter {REF_NAME =~ DSP48*}]]
 set ramb18_cells [llength [get_cells -quiet -hier -filter {REF_NAME =~ RAMB18*}]]
 set ramb36_cells [llength [get_cells -quiet -hier -filter {REF_NAME =~ RAMB36*}]]

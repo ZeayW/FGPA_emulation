@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from .physical_backend import (
     PHYSICAL_PARTITION_RESULT_SCHEMA,
     validate_physical_partition_result,
 )
+from .placement import _vivado_mapped_name
 from .sta import (
     import_vivado_path_database_tsv,
     validate_sta_path_database,
@@ -28,6 +30,74 @@ _ROOT = Path(__file__).resolve().parents[2]
 _IMPLEMENT_SCRIPT = _ROOT / "scripts/vivado/implement_partition.tcl"
 _TIMING_ANALYSIS_SCRIPT = _ROOT / "scripts/vivado/analyze_timing.tcl"
 _TIMING_SCRIPT = _ROOT / "scripts/vivado/export_timing_path_database.tcl"
+
+
+def _read_vivado_cell_inventory(path: Path) -> Dict[str, str]:
+    if not path.is_file() or path.stat().st_size == 0:
+        raise ValidationError(f"Vivado cell inventory is missing: {path}")
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream, delimiter="\t")
+        if reader.fieldnames != ["name", "ref_name"]:
+            raise ValidationError(
+                f"Vivado cell inventory has an invalid header: {path}"
+            )
+        result: Dict[str, str] = {}
+        for line_number, row in enumerate(reader, start=2):
+            name = row.get("name")
+            ref_name = row.get("ref_name")
+            if not name or not ref_name or len(row) != 2:
+                raise ValidationError(
+                    f"{path}:{line_number}: malformed cell inventory row"
+                )
+            if name in result:
+                raise ValidationError(
+                    f"{path}:{line_number}: duplicate cell {name!r}"
+                )
+            result[name] = ref_name
+    return result
+
+
+def validate_vivado_cell_coverage(
+    ir: EmuIR,
+    synthesized_inventory_path: Path,
+    routed_inventory_path: Path,
+) -> Dict[str, Any]:
+    """Prove logical coverage without constraining legal Vivado transforms.
+
+    EMUFLOW_MAPPED follows each emitted EmuIR instance through synthesis and
+    implementation.  Vivado is free to add, absorb, or rename untagged
+    provider-internal cells, particularly while lowering inferred RAMs and
+    DSPs; those implementation cells are deliberately outside this identity
+    comparison.
+    """
+
+    expected = {
+        _vivado_mapped_name(instance["id"])
+        for instance in ir.value["instances"]
+    }
+    if len(expected) != len(ir.value["instances"]):
+        raise ValidationError("Vivado mapped cell names are not unique")
+    synthesized = _read_vivado_cell_inventory(synthesized_inventory_path)
+    routed = _read_vivado_cell_inventory(routed_inventory_path)
+    for stage, actual in (("synthesized", synthesized), ("routed", routed)):
+        missing = expected - set(actual)
+        extra = set(actual) - expected
+        if missing or extra:
+            raise ValidationError(
+                f"Vivado {stage} logical-cell coverage disagrees: "
+                f"missing={len(missing)}, extra={len(extra)}"
+            )
+    changed_refs = sum(
+        synthesized[name] != routed[name] for name in expected
+    )
+    return {
+        "status": "pass",
+        "provider": "emuflow-mapped-attribute-identity-v1",
+        "logical_cells": len(expected),
+        "synthesized_cells": len(synthesized),
+        "routed_cells": len(routed),
+        "reference_type_changes": changed_refs,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -365,6 +435,11 @@ def run_vivado_partition_backend(
         raise ValidationError("Vivado implemented a different part")
     if _integer(metrics, "mapped_cells") != expected_cells:
         raise ValidationError("Vivado mapped-cell coverage disagrees")
+    cell_coverage = validate_vivado_cell_coverage(
+        ir,
+        output_dir / "mapped_cells.tsv",
+        output_dir / "routed_mapped_cells.tsv",
+    )
     expected_dsp = sum(
         item["type"] == "VTR_MULTIPLY" for item in ir.value["instances"]
     )
@@ -439,6 +514,8 @@ def run_vivado_partition_backend(
         "timing_summary.rpt",
         "utilization.rpt",
         "implementation_metrics.tsv",
+        "mapped_cells.tsv",
+        "routed_mapped_cells.tsv",
         *(("timing-path-database.json",) if timing_rows else ()),
     )
     artifacts = {}
@@ -515,6 +592,7 @@ def run_vivado_partition_backend(
         "tool": {"executable": vivado, "version": metrics["vivado_version"]},
         "implementation": implementation,
         "timing_export": timing_export,
+        "cell_coverage": cell_coverage,
         "net_map": net_map_report,
         "timing_path_database": timing_database_report,
         "timing_path_validation": timing_database_validation,

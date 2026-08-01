@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.errors import EmuFlowError
+from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
 from emuflow.sta import VIVADO_PATH_DATABASE_TSV_HEADER
@@ -13,6 +13,7 @@ from emuflow.vivado_backend import (
     _run_vivado,
     run_vivado_partition_backend,
     run_vivado_timing_path_database,
+    validate_vivado_cell_coverage,
     vivado_runtime_xdc,
 )
 from emuflow.vivado_netlist import (
@@ -243,6 +244,17 @@ class VivadoBackendTest(unittest.TestCase):
                         + "\n",
                         encoding="utf-8",
                     )
+                    inventory = (
+                        "name\tref_name\n"
+                        "dut\tLUT1\n"
+                        "transport\tLUT1\n"
+                    )
+                    (out / "mapped_cells.tsv").write_text(
+                        inventory, encoding="utf-8"
+                    )
+                    (out / "routed_mapped_cells.tsv").write_text(
+                        inventory, encoding="utf-8"
+                    )
                     for name in (
                         "synthesized.dcp",
                         "placed.dcp",
@@ -308,6 +320,54 @@ class VivadoBackendTest(unittest.TestCase):
         )
         self.assertEqual(result["timing"]["fabric_wns_ns"], 0.25)
         self.assertEqual(report["timing_path_validation"]["paths"], 1)
+        self.assertEqual(report["cell_coverage"]["logical_cells"], 2)
+
+    def test_vivado_cell_coverage_uses_stable_mapped_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            synthesized = root / "mapped.tsv"
+            routed = root / "routed.tsv"
+            value = _ir().to_dict()
+            value["instances"][0]["id"] = r"hier\dut"
+            value["instances"][0]["name"] = r"hier\dut"
+            value["nets"][0]["sinks"][0]["instance"] = r"hier\dut"
+            inventory = (
+                "name\tref_name\n"
+                "hier\\\\dut\tLUT1\n"
+                "transport\tLUT1\n"
+            )
+            synthesized.write_text(inventory, encoding="utf-8")
+            routed.write_text(
+                inventory.replace("hier\\\\dut\tLUT1", "hier\\\\dut\tLUT2"),
+                encoding="utf-8",
+            )
+            report = validate_vivado_cell_coverage(
+                EmuIR(value), synthesized, routed
+            )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["logical_cells"], 2)
+        self.assertEqual(report["reference_type_changes"], 1)
+
+    def test_vivado_cell_coverage_rejects_a_missing_logical_cell(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            synthesized = root / "mapped.tsv"
+            routed = root / "routed.tsv"
+            synthesized.write_text(
+                "name\tref_name\ndut\tLUT1\ntransport\tLUT1\n",
+                encoding="utf-8",
+            )
+            routed.write_text(
+                "name\tref_name\ndut\tLUT1\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "routed logical-cell coverage disagrees"
+            ):
+                validate_vivado_cell_coverage(
+                    _ir(), synthesized, routed
+                )
 
     def test_vivado_timing_produces_the_common_sta_path_database(self):
         with tempfile.TemporaryDirectory() as temporary:
