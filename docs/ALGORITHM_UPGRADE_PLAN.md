@@ -429,11 +429,21 @@ must have separate oracles.
 The in-tree C++ ratio optimizer solves a path-form Lagrangian/KKT continuous
 relaxation and performs critical-path swap refinement. Its discrete stage now
 implements the TODAES 2020 minimum-feasible maximum-displacement search and
-exact total-displacement dynamic program on compact capacity domains. Large
-domains retain the deterministic minimum-wire construction to bound runtime.
+exact total-displacement dynamic program. Interval-cost precomputation reduces
+the exact segmentation to `O(lanes * signals^2)` and raises the exact domain
+limit to 2,048 signals. Still larger domains retain the deterministic
+minimum-wire construction to bound runtime.
 Independent exhaustive Python oracles verify the exact displacement objective
 on small domains and the realized timing optimum of compact single-round
 lane/slot schedules.
+
+Exact ratio displacement is not assumed to imply a better concrete schedule.
+The Phase 5 driver evaluates both the exact-DP and scalable minimum-wire
+legalizations, realizes and checks both lane/slot schedules, and selects
+lexicographically by independently reconstructed worst, p01, and median
+normalized slack, followed by completion slot and analytical slack. This
+guard prevents an improvement in the ratio surrogate from silently degrading
+the realized schedule.
 
 The concrete lane/slot realization remains the ratio-aware deterministic list
 scheduler with independent collision, precedence, round-barrier, and value

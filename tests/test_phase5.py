@@ -301,6 +301,13 @@ class Phase5Test(unittest.TestCase):
                 report["timing_validation"],
                 timing_validation,
             )
+            self.assertEqual(
+                report["candidate_selection"]["selected"],
+                "exact-displacement-dp",
+            )
+            self.assertEqual(
+                len(report["candidate_selection"]["candidates"]), 2
+            )
             self.assertTrue(
                 (root / "phase5" / "ratio_plan.json").is_file()
             )
@@ -455,6 +462,81 @@ class Phase5Test(unittest.TestCase):
                 schedule["metrics"]["completion_slot"],
                 slot_oracle["completion_slot"],
             )
+
+    def test_exact_displacement_dp_scales_beyond_legacy_limit(self) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("a C++17 compiler is required")
+        platform = Platform.from_dict(
+            _platform_value(
+                "large-exact-domain",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [
+                (f"n{index:03d}", "a", ["b"])
+                for index in range(300)
+            ],
+            frame_slots=512,
+        )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 100.0,
+                "negative_slack_scale_ns": 100.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "compression": {
+                "original_paths": 1,
+                "compressed_paths": 1,
+            },
+            "paths": [
+                {
+                    "path": "critical",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": ["n299"],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            executable = (
+                Path(temporary_directory)
+                / "emuflow_tdm_ratio_optimizer"
+            )
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c++17",
+                    "-O2",
+                    str(
+                        ROOT
+                        / "src"
+                        / "native"
+                        / "tdm_ratio_optimizer.cpp"
+                    ),
+                    "-o",
+                    str(executable),
+                ],
+                check=True,
+            )
+            plan = build_tdm_ratio_plan(
+                routes,
+                platform,
+                executable=str(executable),
+                max_ratio=512,
+                post_refinement_iterations=0,
+            )
+        self.assertEqual(plan["metrics"]["dp_legalized_domains"], 1)
+        self.assertEqual(plan["metrics"]["greedy_legalized_domains"], 0)
+        self.assertEqual(
+            validate_tdm_ratio_plan(routes, platform, plan)["status"],
+            "pass",
+        )
 
     def test_schedule_validate_simulate_and_write_artifacts(self) -> None:
         platform = Platform.from_dict(

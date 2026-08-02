@@ -45,6 +45,7 @@ struct Input {
   int max_ratio = 1;
   int ratio_quantum = 8;
   int post_refinement_iterations = 200;
+  int exact_domain_limit = 2048;
   double convergence = 1.0e-8;
   double positive_scale = 1.0;
   double negative_scale = 1.0;
@@ -76,7 +77,7 @@ Input read_input(const std::string& path) {
   }
   std::string line;
   std::getline(stream, line);
-  if (line != "EMUFLOW_TDM_RATIO_INPUT_V1") {
+  if (line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
     throw std::runtime_error("invalid input header");
   }
   Input input;
@@ -90,7 +91,8 @@ Input read_input(const std::string& path) {
     if (kind == "PARAM") {
       record >> input.max_iterations >> input.max_ratio >>
           input.ratio_quantum >> input.post_refinement_iterations >>
-          input.convergence >> input.positive_scale >>
+          input.exact_domain_limit >> input.convergence >>
+          input.positive_scale >>
           input.negative_scale >> input.max_period;
     } else if (kind == "DOMAIN") {
       int index = -1;
@@ -130,6 +132,7 @@ Input read_input(const std::string& path) {
   if (input.domains.empty() || input.hops.empty() || input.paths.empty() ||
       input.max_ratio <= 0 || input.ratio_quantum <= 0 ||
       input.max_iterations <= 0 || input.post_refinement_iterations < 0 ||
+      input.exact_domain_limit < 0 ||
       input.convergence <= 0.0 || input.positive_scale <= 0.0 ||
       input.negative_scale <= 0.0 || input.max_period <= 0.0) {
     throw std::runtime_error("incomplete ratio-optimization input");
@@ -540,18 +543,88 @@ class Optimizer {
         direction.push_back(direction_id);
       }
     }
-    // The TODAES 2020 DP is exact but quadratic in the signal count.  Use it
-    // directly on compact domains, where it is also checked by exhaustive
-    // enumeration, and keep the paper's minimum-wire greedy construction for
-    // industrial-scale domains.
-    constexpr int kExactDomainLimit = 256;
+    // The TODAES 2020 DP is exact.  Precompute the best legal ratio and total
+    // displacement for every contiguous interval, then solve the lane
+    // segmentation in O(lanes * signals^2).  Earlier code enumerated every
+    // ratio and every interval end inside the DP and therefore had to stop at
+    // 256 signals.  The interval formulation keeps exactness while covering
+    // the hundreds-to-low-thousands signal domains seen in real designs.
     if (ordered.empty() ||
-        static_cast<int>(ordered.size()) > kExactDomainLimit) {
+        static_cast<int>(ordered.size()) > input_.exact_domain_limit) {
       return false;
     }
 
     const int count = static_cast<int>(ordered.size());
+    std::vector<double> values;
+    values.reserve(count);
+    for (int hop : ordered) {
+      values.push_back(continuous_[hop]);
+    }
+    std::vector<double> prefix(count + 1, 0.0);
+    for (int index = 0; index < count; ++index) {
+      prefix[index + 1] = prefix[index] + values[index];
+    }
     const double infinity = std::numeric_limits<double>::infinity();
+    std::vector<std::vector<double>> interval_cost(
+        count, std::vector<double>(count + 1, infinity));
+    std::vector<std::vector<int>> interval_ratio(
+        count, std::vector<int>(count + 1, -1));
+    for (int start = 0; start < count; ++start) {
+      for (int end = start + 1; end <= count; ++end) {
+        if (direction[end - 1] != direction[start]) {
+          break;
+        }
+        const int length = end - start;
+        if (length > allowed.back()) {
+          break;
+        }
+        const double lower = std::max(
+            static_cast<double>(length), values[end - 1] - bound);
+        const double upper = values[start] + bound;
+        if (lower > upper + kEps) {
+          continue;
+        }
+        auto first = std::lower_bound(
+            allowed.begin(), allowed.end(), lower - kEps);
+        auto last = std::upper_bound(
+            allowed.begin(), allowed.end(), upper + kEps);
+        if (first == allowed.end() || first >= last) {
+          continue;
+        }
+
+        const double median = values[(start + end - 1) / 2];
+        std::set<int> candidates = {*first, *std::prev(last)};
+        auto near = std::lower_bound(first, last, median);
+        if (near != last) {
+          candidates.insert(*near);
+        }
+        if (near != first) {
+          candidates.insert(*std::prev(near));
+        }
+        for (int ratio : candidates) {
+          const auto split_iterator = std::upper_bound(
+              values.begin() + start, values.begin() + end,
+              static_cast<double>(ratio));
+          const int split = static_cast<int>(
+              split_iterator - values.begin());
+          const double left =
+              ratio * static_cast<double>(split - start) -
+              (prefix[split] - prefix[start]);
+          const double right =
+              (prefix[end] - prefix[split]) -
+              ratio * static_cast<double>(end - split);
+          const double cost = left + right;
+          if (cost + kEps < interval_cost[start][end] ||
+              (std::abs(cost - interval_cost[start][end]) <= kEps &&
+               (interval_ratio[start][end] < 0 ||
+                ratio < interval_ratio[start][end]))) {
+            interval_cost[start][end] = cost;
+            interval_ratio[start][end] = ratio;
+          }
+        }
+      }
+    }
+
     std::vector<std::vector<double>> dp(
         count + 1, std::vector<double>(lane_budget + 1, infinity));
     struct Choice {
@@ -566,31 +639,23 @@ class Optimizer {
         if (!std::isfinite(dp[position][used])) {
           continue;
         }
-        for (int ratio : allowed) {
-          if (std::abs(continuous_[ordered[position]] - ratio) >
-              bound + kEps) {
-            continue;
-          }
-          double displacement = 0.0;
-          const int end_limit = std::min(count, position + ratio);
-          for (int end = position; end < end_limit; ++end) {
-            if (direction[end] != direction[position] ||
-                std::abs(continuous_[ordered[end]] - ratio) >
-                    bound + kEps) {
+        for (int next = position + 1; next <= count; ++next) {
+          const double displacement = interval_cost[position][next];
+          if (!std::isfinite(displacement)) {
+            if (direction[next - 1] != direction[position]) {
               break;
             }
-            displacement +=
-                std::abs(continuous_[ordered[end]] - ratio);
-            const int next = end + 1;
-            const double candidate =
-                dp[position][used] + displacement;
-            const Choice old = parent[next][used + 1];
-            if (candidate + kEps < dp[next][used + 1] ||
-                (std::abs(candidate - dp[next][used + 1]) <= kEps &&
-                 (old.ratio < 0 || ratio < old.ratio))) {
-              dp[next][used + 1] = candidate;
-              parent[next][used + 1] = {position, ratio};
-            }
+            continue;
+          }
+          const int ratio = interval_ratio[position][next];
+          const double candidate =
+              dp[position][used] + displacement;
+          const Choice old = parent[next][used + 1];
+          if (candidate + kEps < dp[next][used + 1] ||
+              (std::abs(candidate - dp[next][used + 1]) <= kEps &&
+               (old.ratio < 0 || ratio < old.ratio))) {
+            dp[next][used + 1] = candidate;
+            parent[next][used + 1] = {position, ratio};
           }
         }
       }

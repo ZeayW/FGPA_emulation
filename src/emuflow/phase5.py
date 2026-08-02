@@ -14,6 +14,7 @@ from .tdm import (
     validate_tdm_schedule,
 )
 from .tdm_ratio import (
+    DEFAULT_EXACT_DOMAIN_LIMIT,
     TDM_RATIO_PROVIDER,
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
@@ -46,36 +47,120 @@ def run_phase5(
         )
     ratio_plan = None
     ratio_validation = None
+    schedule = None
+    validation = None
+    timing_validation = None
+    candidate_selection = None
     if provider == TDM_BASELINE_PROVIDER:
         if ratio_optimizer is not None:
             raise ValueError(
                 "--ratio-optimizer requires the academic Phase 5 provider"
             )
     elif provider == TDM_RATIO_PROVIDER:
-        ratio_plan = build_tdm_ratio_plan(
-            routes,
-            platform,
-            executable=ratio_optimizer,
-            max_iterations=ratio_max_iterations,
-            max_ratio=max_ratio,
-            ratio_quantum=ratio_quantum,
-            post_refinement_iterations=post_refinement_iterations,
-            convergence=convergence,
-        )
-        ratio_validation = validate_tdm_ratio_plan(
-            routes, platform, ratio_plan
-        )
+        candidates = []
+        for strategy, exact_domain_limit in (
+            ("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT),
+            ("scalable-minimum-wire", 0),
+        ):
+            candidate_plan = build_tdm_ratio_plan(
+                routes,
+                platform,
+                executable=ratio_optimizer,
+                max_iterations=ratio_max_iterations,
+                max_ratio=max_ratio,
+                ratio_quantum=ratio_quantum,
+                post_refinement_iterations=post_refinement_iterations,
+                exact_domain_limit=exact_domain_limit,
+                convergence=convergence,
+            )
+            candidate_ratio_validation = validate_tdm_ratio_plan(
+                routes, platform, candidate_plan
+            )
+            candidate_schedule = build_tdm_schedule(
+                routes, platform, candidate_plan
+            )
+            candidate_validation = validate_tdm_schedule(
+                routes,
+                platform,
+                candidate_schedule,
+                candidate_plan,
+            )
+            candidate_timing = reconstruct_tdm_schedule_timing(
+                routes, platform, candidate_schedule
+            )
+            score = (
+                candidate_timing["worst_normalized_slack"],
+                candidate_timing["p01_normalized_slack"],
+                candidate_timing["median_normalized_slack"],
+                -candidate_schedule["metrics"]["completion_slot"],
+                candidate_plan["metrics"][
+                    "discrete_worst_normalized_slack"
+                ],
+                1 if strategy == "exact-displacement-dp" else 0,
+            )
+            candidates.append(
+                {
+                    "strategy": strategy,
+                    "score": score,
+                    "ratio_plan": candidate_plan,
+                    "ratio_validation": candidate_ratio_validation,
+                    "schedule": candidate_schedule,
+                    "validation": candidate_validation,
+                    "timing_validation": candidate_timing,
+                }
+            )
+        selected = max(candidates, key=lambda candidate: candidate["score"])
+        ratio_plan = selected["ratio_plan"]
+        ratio_validation = selected["ratio_validation"]
+        schedule = selected["schedule"]
+        validation = selected["validation"]
+        timing_validation = selected["timing_validation"]
+        candidate_selection = {
+            "objective": (
+                "lexicographic realized worst, p01, and median normalized "
+                "slack; completion slot; analytical discrete slack"
+            ),
+            "selected": selected["strategy"],
+            "candidates": [
+                {
+                    "strategy": candidate["strategy"],
+                    "realized_worst_normalized_slack": candidate[
+                        "timing_validation"
+                    ]["worst_normalized_slack"],
+                    "realized_p01_normalized_slack": candidate[
+                        "timing_validation"
+                    ]["p01_normalized_slack"],
+                    "realized_median_normalized_slack": candidate[
+                        "timing_validation"
+                    ]["median_normalized_slack"],
+                    "completion_slot": candidate["schedule"]["metrics"][
+                        "completion_slot"
+                    ],
+                    "analytical_worst_normalized_slack": candidate[
+                        "ratio_plan"
+                    ]["metrics"]["discrete_worst_normalized_slack"],
+                    "dp_legalized_domains": candidate["ratio_plan"][
+                        "metrics"
+                    ]["dp_legalized_domains"],
+                    "greedy_legalized_domains": candidate["ratio_plan"][
+                        "metrics"
+                    ]["greedy_legalized_domains"],
+                }
+                for candidate in candidates
+            ],
+        }
     else:
         raise ValueError(f"unsupported Phase 5 provider {provider!r}")
-    schedule = build_tdm_schedule(routes, platform, ratio_plan)
-    validation = validate_tdm_schedule(
-        routes, platform, schedule, ratio_plan
-    )
-    timing_validation = (
-        reconstruct_tdm_schedule_timing(routes, platform, schedule)
-        if isinstance(routes.get("timing"), dict)
-        else None
-    )
+    if schedule is None:
+        schedule = build_tdm_schedule(routes, platform, ratio_plan)
+        validation = validate_tdm_schedule(
+            routes, platform, schedule, ratio_plan
+        )
+        timing_validation = (
+            reconstruct_tdm_schedule_timing(routes, platform, schedule)
+            if isinstance(routes.get("timing"), dict)
+            else None
+        )
     simulation = simulate_tdm_schedule(
         routes,
         schedule,
@@ -101,6 +186,11 @@ def run_phase5(
         **(
             {"timing_validation": timing_validation}
             if timing_validation is not None
+            else {}
+        ),
+        **(
+            {"candidate_selection": candidate_selection}
+            if candidate_selection is not None
             else {}
         ),
         "simulation": simulation,

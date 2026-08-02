@@ -21,6 +21,7 @@ from .routing import (
 
 TDM_RATIO_PLAN_SCHEMA = "emuflow.tdm-ratio-plan/v1"
 TDM_RATIO_PROVIDER = "lagrangian-kkt-timing-aware-v1"
+DEFAULT_EXACT_DOMAIN_LIMIT = 2048
 HopKey = Tuple[str, str, str, str]
 
 
@@ -308,14 +309,16 @@ def _write_native_input(
     max_ratio: int,
     ratio_quantum: int,
     post_refinement_iterations: int,
+    exact_domain_limit: int,
     convergence: float,
 ) -> None:
     normalization = model["normalization"]
     lines = [
-        "EMUFLOW_TDM_RATIO_INPUT_V1",
+        "EMUFLOW_TDM_RATIO_INPUT_V2",
         (
             f"PARAM {max_iterations} {max_ratio} {ratio_quantum} "
-            f"{post_refinement_iterations} {convergence:.17g} "
+            f"{post_refinement_iterations} {exact_domain_limit} "
+            f"{convergence:.17g} "
             f"{normalization['positive_slack_scale_ns']:.17g} "
             f"{normalization['negative_slack_scale_ns']:.17g} "
             f"{normalization['max_clock_period_ns']:.17g}"
@@ -813,6 +816,7 @@ def build_tdm_ratio_plan(
     max_ratio: Optional[int] = None,
     ratio_quantum: int = 8,
     post_refinement_iterations: int = 200,
+    exact_domain_limit: int = DEFAULT_EXACT_DOMAIN_LIMIT,
     convergence: float = 1.0e-9,
 ) -> Dict[str, Any]:
     model = _prepare_model(routes, platform)
@@ -841,6 +845,7 @@ def build_tdm_ratio_plan(
             post_refinement_iterations,
             True,
         ),
+        ("exact_domain_limit", exact_domain_limit, True),
     ):
         if (
             isinstance(value, bool)
@@ -878,6 +883,7 @@ def build_tdm_ratio_plan(
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
             post_refinement_iterations=post_refinement_iterations,
+            exact_domain_limit=exact_domain_limit,
             convergence=float(convergence),
         )
         completed = subprocess.run(
@@ -923,6 +929,7 @@ def build_tdm_ratio_plan(
             "max_ratio": max_ratio,
             "ratio_quantum": ratio_quantum,
             "post_refinement_iterations": post_refinement_iterations,
+            "exact_domain_limit": exact_domain_limit,
             "convergence": float(convergence),
         },
         "normalization": model["normalization"],
@@ -1008,6 +1015,7 @@ def validate_tdm_ratio_plan(
         raise ValidationError("ratio plan.configuration: expected an object")
     max_ratio = configuration.get("max_ratio")
     ratio_quantum = configuration.get("ratio_quantum")
+    exact_domain_limit = configuration.get("exact_domain_limit")
     convergence = configuration.get("convergence")
     if (
         isinstance(max_ratio, bool)
@@ -1016,6 +1024,9 @@ def validate_tdm_ratio_plan(
         or isinstance(ratio_quantum, bool)
         or not isinstance(ratio_quantum, int)
         or ratio_quantum <= 0
+        or isinstance(exact_domain_limit, bool)
+        or not isinstance(exact_domain_limit, int)
+        or exact_domain_limit < 0
         or isinstance(convergence, bool)
         or not isinstance(convergence, (int, float))
         or float(convergence) <= 0.0
