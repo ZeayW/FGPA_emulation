@@ -196,8 +196,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
-| System routing | In-tree C++ route/TDM co-optimization kernel plus independent checker | Default academic provider builds and runs repository source |
-| TDM | In-tree C++17 KKT ratio optimizer plus exact scheduler/checker | Default academic provider for timing-annotated routes |
+| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates a shortest-path-tree candidate and a DAC 2025-informed delay-demand-balanced multicast candidate, then applies ASP-DAC 2026-informed timing-path rerouting |
+| TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Exact displacement optimization is used on compact domains; large domains use the scalable minimum-wire construction before critical-path refinement and collision-free lane/slot realization |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |

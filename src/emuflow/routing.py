@@ -208,7 +208,11 @@ def build_directed_graph(
                     ),
                     "capacity_bits": (
                         link.data_lanes_per_direction
-                        * constraints["frame_slots"]
+                        * (
+                            1
+                            if link.id in constraints["sll_links"]
+                            else constraints["frame_slots"]
+                        )
                     ),
                 }
 

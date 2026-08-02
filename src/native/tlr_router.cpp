@@ -78,6 +78,7 @@ struct Objective {
 
 struct Input {
   int node_count = 0;
+  int topology_mode = 0;
   int max_iterations = 20;
   int reroute_rounds = 8;
   double lambda_load = 2.0;
@@ -116,7 +117,7 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
-  if (magic != "EMUFLOW_TLR_INPUT_V2") {
+  if (magic != "EMUFLOW_TLR_INPUT_V3") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
 
@@ -130,7 +131,8 @@ Input read_input(const std::string& path) {
     std::string kind;
     stream >> kind;
     if (kind == "PARAM") {
-      stream >> model.node_count >> model.max_iterations >>
+      stream >> model.node_count >> model.topology_mode >>
+          model.max_iterations >>
           model.reroute_rounds >> model.lambda_load >>
           model.lambda_timing >> model.lambda_history >>
           model.lambda_tdm >> model.ratio_quantum >> model.frame_slots >>
@@ -178,7 +180,9 @@ Input read_input(const std::string& path) {
       throw std::runtime_error("malformed input record: " + line);
     }
   }
-  if (model.node_count <= 0 || model.arcs.empty() || model.demands.empty()) {
+  if (model.node_count <= 0 || model.topology_mode < 0 ||
+      model.topology_mode > 1 || model.arcs.empty() ||
+      model.demands.empty()) {
     throw std::runtime_error("input must contain nodes, arcs, and demands");
   }
   return model;
@@ -219,29 +223,42 @@ class Router {
   void run() {
     lock_shared_directions();
     const std::vector<int> order = timing_aware_order();
-    bool feasible = false;
-    for (int iteration = 1; iteration <= model_.max_iterations; ++iteration) {
-      std::fill(usage_.begin(), usage_.end(), 0);
-      for (int demand : order) {
-        routes_[demand] = shortest_path_tree(demand, {});
-        add_usage(routes_[demand], model_.demands[demand].width);
-      }
-      completed_iterations_ = iteration;
-      feasible = capacity_legal();
-      if (feasible) {
-        break;
-      }
-      for (int domain = 0; domain < static_cast<int>(usage_.size()); ++domain) {
-        const int capacity = capacity_for_domain(domain);
-        if (usage_[domain] > capacity) {
-          history_[domain] += 1.0 +
-              static_cast<double>(usage_[domain] - capacity) / capacity;
-        }
-      }
+    // Generate two independent initial topology candidates.  The first is
+    // the ASP-DAC 2026 source-rooted shortest-path tree.  The second is the
+    // DAC 2025 delay-demand-balanced connection router: sinks are connected
+    // incrementally, already reached tree vertices can be used as Steiner
+    // attachment points, and SLL/cable costs use distinct congestion and TDM
+    // models.  Keeping both candidates is important: a shortest-path tree is
+    // strong for delay while the connection router usually needs fewer
+    // bit-hops for high-fanout nets.
+    const std::vector<double> initial_history = history_;
+    Candidate baseline = route_candidate(order, false);
+    history_ = initial_history;
+    Candidate balanced;
+    if (model_.topology_mode == 1) {
+      balanced = route_candidate(order, true);
     }
-    if (!feasible) {
+    baseline_candidate_feasible_ = baseline.feasible;
+    balanced_candidate_feasible_ = balanced.feasible;
+    if (!baseline.feasible && !balanced.feasible) {
       throw std::runtime_error("routing infeasible after capacity iterations");
     }
+
+    const Candidate* selected = nullptr;
+    if (!baseline.feasible) {
+      selected = &balanced;
+    } else if (!balanced.feasible) {
+      selected = &baseline;
+    } else {
+      selected = better(balanced.objective, baseline.objective)
+          ? &balanced
+          : &baseline;
+    }
+    routes_ = selected->routes;
+    usage_ = selected->usage;
+    history_ = selected->history;
+    completed_iterations_ = selected->iterations;
+    selected_balanced_ = selected == &balanced;
 
     Objective best = objective();
     for (int round = 0; round < model_.reroute_rounds; ++round) {
@@ -271,7 +288,9 @@ class Router {
       bool reroute_ok = true;
       try {
         for (int demand : affected) {
-          routes_[demand] = shortest_path_tree(demand, discouraged);
+          routes_[demand] = selected_balanced_
+              ? delay_demand_balanced_tree(demand, discouraged)
+              : shortest_path_tree(demand, discouraged);
           add_usage(routes_[demand], model_.demands[demand].width);
         }
       } catch (const std::runtime_error&) {
@@ -325,6 +344,12 @@ class Router {
     output << "METRIC iterations " << completed_iterations_ << '\n';
     output << "METRIC accepted_reroutes " << accepted_reroutes_ << '\n';
     output << "METRIC rolled_back_reroutes " << rolled_back_reroutes_ << '\n';
+    output << "METRIC baseline_candidate_feasible "
+           << static_cast<int>(baseline_candidate_feasible_) << '\n';
+    output << "METRIC balanced_candidate_feasible "
+           << static_cast<int>(balanced_candidate_feasible_) << '\n';
+    output << "METRIC selected_delay_demand_balanced "
+           << static_cast<int>(selected_balanced_) << '\n';
     output << "METRIC worst_slack_ns " << final.worst_slack_ns << '\n';
     output << "METRIC worst_normalized_slack "
            << final.worst_normalized_slack << '\n';
@@ -339,6 +364,54 @@ class Router {
   }
 
  private:
+  struct Candidate {
+    bool feasible = false;
+    int iterations = 0;
+    std::vector<Route> routes;
+    std::vector<int> usage;
+    std::vector<double> history;
+    Objective objective;
+  };
+
+  Candidate route_candidate(const std::vector<int>& order,
+                            bool delay_demand_balanced) {
+    Candidate result;
+    for (int iteration = 1; iteration <= model_.max_iterations; ++iteration) {
+      std::fill(usage_.begin(), usage_.end(), 0);
+      bool reachable = true;
+      try {
+        for (int demand : order) {
+          routes_[demand] = delay_demand_balanced
+              ? delay_demand_balanced_tree(demand, {})
+              : shortest_path_tree(demand, {});
+          add_usage(routes_[demand], model_.demands[demand].width);
+        }
+      } catch (const std::runtime_error&) {
+        reachable = false;
+      }
+      result.iterations = iteration;
+      if (reachable && capacity_legal()) {
+        result.feasible = true;
+        result.routes = routes_;
+        result.usage = usage_;
+        result.history = history_;
+        result.objective = objective();
+        return result;
+      }
+      for (int domain = 0; domain < static_cast<int>(usage_.size()); ++domain) {
+        const int capacity = capacity_for_domain(domain);
+        if (usage_[domain] > capacity) {
+          history_[domain] += 1.0 +
+              static_cast<double>(usage_[domain] - capacity) / capacity;
+        }
+      }
+    }
+    result.routes = routes_;
+    result.usage = usage_;
+    result.history = history_;
+    return result;
+  }
+
   int capacity_domain_count() const {
     int result = 0;
     for (const Arc& arc : model_.arcs) {
@@ -384,6 +457,11 @@ class Router {
   }
 
   int estimated_tdm_ratio(int domain, int additional_width = 0) const {
+    for (const Arc& arc : model_.arcs) {
+      if (arc.capacity_domain == domain && arc.is_sll) {
+        return 1;
+      }
+    }
     const int signals = usage_[domain] + additional_width;
     if (signals <= lanes_for_domain(domain)) {
       return 1;
@@ -549,11 +627,13 @@ class Router {
         double edge_cost = timing_weight * arc.delay_ns +
             model_.lambda_load * projected +
             model_.lambda_history * history_[arc.capacity_domain];
-        const int projected_ratio =
-            estimated_tdm_ratio(arc.capacity_domain, demand.width);
-        edge_cost += model_.lambda_tdm *
-            (1.0 + demand_criticality_[demand_index]) *
-            arc.beta_ns * (projected_ratio - 1);
+        if (!arc.is_sll) {
+          const int projected_ratio =
+              estimated_tdm_ratio(arc.capacity_domain, demand.width);
+          edge_cost += model_.lambda_tdm *
+              (1.0 + demand_criticality_[demand_index]) *
+              arc.beta_ns * (projected_ratio - 1);
+        }
         if (discouraged.count(arc_index)) {
           edge_cost += model_.lambda_timing *
               std::max(1.0, arc.delay_ns) *
@@ -595,6 +675,157 @@ class Router {
     Route route;
     route.arcs.assign(tree_arcs.begin(), tree_arcs.end());
     route.max_delay_ns = max_delay;
+    return route;
+  }
+
+  Route delay_demand_balanced_tree(
+      int demand_index, const std::set<int>& discouraged) const {
+    const Demand& demand = model_.demands[demand_index];
+    using QueueItem = std::pair<double, int>;
+
+    // DAC 2025 routes more difficult connections first.  Static all-sink
+    // distances provide the same ordering signal without another all-pairs
+    // matrix per demand.
+    std::vector<double> static_distance(model_.node_count, kInf);
+    std::priority_queue<QueueItem, std::vector<QueueItem>,
+                        std::greater<QueueItem>> static_queue;
+    static_distance[demand.source] = 0.0;
+    static_queue.emplace(0.0, demand.source);
+    while (!static_queue.empty()) {
+      const auto [current, node] = static_queue.top();
+      static_queue.pop();
+      if (current != static_distance[node]) {
+        continue;
+      }
+      for (int arc_index : adjacency_[node]) {
+        if (!direction_allowed(arc_index)) {
+          continue;
+        }
+        const Arc& arc = model_.arcs[arc_index];
+        const double candidate = current + static_arc_cost(arc);
+        if (candidate + kEps < static_distance[arc.to]) {
+          static_distance[arc.to] = candidate;
+          static_queue.emplace(candidate, arc.to);
+        }
+      }
+    }
+    std::vector<int> sinks = demand.sinks;
+    std::stable_sort(sinks.begin(), sinks.end(), [&](int lhs, int rhs) {
+      if (static_distance[lhs] != static_distance[rhs]) {
+        return static_distance[lhs] > static_distance[rhs];
+      }
+      return lhs < rhs;
+    });
+
+    std::vector<bool> in_tree(model_.node_count, false);
+    std::vector<double> tree_delay(model_.node_count, kInf);
+    std::set<int> tree_arcs;
+    in_tree[demand.source] = true;
+    tree_delay[demand.source] = 0.0;
+    const double criticality = demand_criticality_[demand_index];
+    const double timing_weight = 1.0 + model_.lambda_timing * criticality;
+
+    for (int sink : sinks) {
+      if (in_tree[sink]) {
+        continue;
+      }
+      std::vector<double> distance(model_.node_count, kInf);
+      std::vector<int> predecessor(model_.node_count, -1);
+      std::priority_queue<QueueItem, std::vector<QueueItem>,
+                          std::greater<QueueItem>> queue;
+      for (int node = 0; node < model_.node_count; ++node) {
+        if (in_tree[node]) {
+          // Reusing the existing prefix is free in routing-resource cost, but
+          // its physical delay still contributes to the connection delay.
+          distance[node] = timing_weight * tree_delay[node];
+          queue.emplace(distance[node], node);
+        }
+      }
+      while (!queue.empty()) {
+        const auto [current, node] = queue.top();
+        queue.pop();
+        if (current != distance[node]) {
+          continue;
+        }
+        for (int arc_index : adjacency_[node]) {
+          const Arc& arc = model_.arcs[arc_index];
+          if (!direction_allowed(arc_index) || in_tree[arc.to]) {
+            continue;
+          }
+          const double projected =
+              static_cast<double>(
+                  usage_[arc.capacity_domain] + demand.width) /
+              arc.capacity;
+          const int projected_ratio =
+              estimated_tdm_ratio(arc.capacity_domain, demand.width);
+          // Eq. (2) of DAC 2025 separates the fixed cable delay, the
+          // quantized TDM component, and demand/capacity pressure.  SLLs use
+          // fixed delay plus negotiated congestion because they do not TDM.
+          double edge_cost = timing_weight * arc.delay_ns;
+          if (!arc.is_sll) {
+            edge_cost += timing_weight * arc.beta_ns *
+                (projected_ratio - 1);
+          }
+          edge_cost += model_.lambda_load * projected +
+              model_.lambda_history * history_[arc.capacity_domain];
+          if (discouraged.count(arc_index)) {
+            edge_cost += model_.lambda_timing *
+                std::max(1.0, arc.delay_ns) * (1.0 + criticality);
+          }
+          const double candidate = current + edge_cost;
+          if (candidate + kEps < distance[arc.to] ||
+              (std::abs(candidate - distance[arc.to]) <= kEps &&
+               (predecessor[arc.to] < 0 ||
+                arc_index < predecessor[arc.to]))) {
+            distance[arc.to] = candidate;
+            predecessor[arc.to] = arc_index;
+            queue.emplace(candidate, arc.to);
+          }
+        }
+      }
+      if (!std::isfinite(distance[sink])) {
+        throw std::runtime_error(
+            "delay-demand-balanced connection has unreachable sink");
+      }
+      std::vector<int> addition;
+      std::set<int> seen;
+      int node = sink;
+      while (!in_tree[node]) {
+        if (!seen.insert(node).second) {
+          throw std::runtime_error(
+              "delay-demand-balanced predecessor cycle");
+        }
+        const int arc_index = predecessor[node];
+        if (arc_index < 0) {
+          throw std::runtime_error(
+              "broken delay-demand-balanced predecessor");
+        }
+        addition.push_back(arc_index);
+        node = model_.arcs[arc_index].from;
+      }
+      std::reverse(addition.begin(), addition.end());
+      for (int arc_index : addition) {
+        const Arc& arc = model_.arcs[arc_index];
+        if (!in_tree[arc.from] || in_tree[arc.to]) {
+          throw std::runtime_error(
+              "delay-demand-balanced route is not an arborescence");
+        }
+        tree_delay[arc.to] = tree_delay[arc.from] + arc.delay_ns;
+        in_tree[arc.to] = true;
+        tree_arcs.insert(arc_index);
+      }
+    }
+
+    Route route;
+    route.arcs.assign(tree_arcs.begin(), tree_arcs.end());
+    route.max_delay_ns = 0.0;
+    for (int sink : demand.sinks) {
+      if (!in_tree[sink] || !std::isfinite(tree_delay[sink])) {
+        throw std::runtime_error(
+            "delay-demand-balanced tree does not span all sinks");
+      }
+      route.max_delay_ns = std::max(route.max_delay_ns, tree_delay[sink]);
+    }
     return route;
   }
 
@@ -792,6 +1023,9 @@ class Router {
   int completed_iterations_ = 0;
   int accepted_reroutes_ = 0;
   int rolled_back_reroutes_ = 0;
+  bool baseline_candidate_feasible_ = false;
+  bool balanced_candidate_feasible_ = false;
+  bool selected_balanced_ = false;
 };
 
 void usage(const char* executable) {

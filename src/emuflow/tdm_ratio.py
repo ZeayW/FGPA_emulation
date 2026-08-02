@@ -352,6 +352,8 @@ def _parse_native_output(
         "iterations",
         "max_discrete_ratio",
         "post_refinement_swaps",
+        "dp_legalized_domains",
+        "greedy_legalized_domains",
     }
     for line in lines[1:]:
         fields = line.split()
@@ -425,6 +427,8 @@ def _parse_native_output(
         "discrete_worst_normalized_slack",
         "max_discrete_ratio",
         "post_refinement_swaps",
+        "dp_legalized_domains",
+        "greedy_legalized_domains",
     }
     if set(metrics) != expected_metrics:
         raise EmuFlowError(
@@ -1329,6 +1333,22 @@ def validate_tdm_ratio_plan(
             raise ValidationError(
                 f"ratio plan metric {key!r} is inconsistent"
             )
+    legalization_counts = []
+    for key in ("dp_legalized_domains", "greedy_legalized_domains"):
+        value = metrics.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+        ):
+            raise ValidationError(
+                f"ratio plan metric {key!r} is invalid"
+            )
+        legalization_counts.append(value)
+    if sum(legalization_counts) != len(model["domains"]):
+        raise ValidationError(
+            "ratio plan legalization-domain metrics are inconsistent"
+        )
     rebalanced = metrics.get("round_aware_lane_rebalanced_hops")
     if (
         isinstance(rebalanced, bool)

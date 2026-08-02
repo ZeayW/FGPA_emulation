@@ -14,11 +14,14 @@ from emuflow.partition import (
 from emuflow.phase4 import run_phase4
 from emuflow.platform import Platform
 from emuflow.routing import (
+    demands_from_assignment,
     normalize_route_constraints,
     validate_system_routes,
 )
+from emuflow.routing_oracle import exact_route_tree_selection
 from emuflow.timing_routing import (
     NATIVE_ROUTER_PROVIDER,
+    TLR_PROVIDER,
     compress_sta_paths,
     load_sta_paths,
     normalize_sta_paths,
@@ -93,6 +96,177 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_sll_capacity_is_not_multiplied_by_frame_slots(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "sll_capacity",
+                ["a", "b"],
+                [_link("sll", "a", "b", lanes=1)],
+            )
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 64,
+                "sll_links": ["sll"],
+            },
+            platform,
+        )
+        legal_assignment = _assignment(
+            platform, [("n0", "a", ["b"])]
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "sll_path",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 10.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["n0"],
+                        }
+                    ],
+                },
+                demands_from_assignment(legal_assignment, platform),
+            )
+        )
+        routes = route_system_native(
+            legal_assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider="timing-aware-route-tdm-cooptimized-v1",
+        )
+        self.assertEqual(
+            routes["metrics"]["estimated_max_tdm_ratio"], 1
+        )
+        self.assertEqual(
+            validate_native_system_routes(
+                legal_assignment, platform, routes, timing
+            )["status"],
+            "pass",
+        )
+
+        overfull_assignment = _assignment(
+            platform,
+            [("n0", "a", ["b"]), ("n1", "a", ["b"])],
+        )
+        with self.assertRaisesRegex(
+            EmuFlowError, "routing infeasible after capacity iterations"
+        ):
+            route_system_native(
+                overfull_assignment,
+                platform,
+                constraints,
+                timing,
+                executable=str(tlr_router()),
+                provider="timing-aware-route-tdm-cooptimized-v1",
+            )
+
+    def test_hybrid_router_selects_delay_demand_balanced_multicast(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "balanced_multicast",
+                ["a", "b", "c", "d", "e"],
+                [
+                    _link("ab", "a", "b"),
+                    _link("bd", "b", "d"),
+                    _link("be", "b", "e"),
+                    _link("ac", "a", "c"),
+                    _link("ce", "c", "e"),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform, [("multicast", "a", ["d", "e"])]
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "multicast_path",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 10.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["multicast"],
+                        }
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 8,
+                "reroute_rounds": 0,
+                "link_delay_ns": {
+                    "ab": 1.0,
+                    "bd": 1.0,
+                    "be": 1.0,
+                    "ac": 0.995,
+                    "ce": 0.995,
+                },
+            },
+            platform,
+        )
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider="timing-aware-route-tdm-cooptimized-v1",
+        )
+        baseline = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider=TLR_PROVIDER,
+        )
+        self.assertEqual(len(baseline["routes"][0]["tree_edges"]), 4)
+        self.assertNotIn("joint_optimization", baseline)
+        self.assertEqual(
+            routes["joint_optimization"]["candidate_generation"][
+                "selected"
+            ],
+            "delay-demand-balanced",
+        )
+        self.assertEqual(len(routes["routes"][0]["tree_edges"]), 3)
+        oracle = exact_route_tree_selection(
+            assignment, platform, constraints, timing
+        )
+        self.assertEqual(
+            {
+                (edge["link"], edge["from"], edge["to"])
+                for edge in routes["routes"][0]["tree_edges"]
+            },
+            {
+                tuple(edge)
+                for edge in oracle["trees"]["multicast"]
+            },
+        )
+        self.assertGreater(oracle["enumerated_combinations"], 1)
+        self.assertEqual(
+            validate_native_system_routes(
+                assignment, platform, routes, timing
+            )["status"],
+            "pass",
+        )
+
     def test_common_timing_checker_keeps_multiclock_extrema_separate(
         self,
     ) -> None:
@@ -270,7 +444,10 @@ class Phase4Test(unittest.TestCase):
             )
             self.assertEqual(
                 routes["joint_optimization"]["method"],
-                "tdm-contention-aware-rip-up-reroute-v1",
+                (
+                    "dac25-informed-delay-demand-balanced+"
+                    "aspdac26-timing-refinement-v2"
+                ),
             )
             route_by_net = {
                 route["net"]: route for route in routes["routes"]

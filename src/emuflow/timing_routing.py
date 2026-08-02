@@ -501,12 +501,14 @@ def _write_native_input(
     node_count: int,
     model: Mapping[str, Any],
     constraints: Mapping[str, Any],
+    provider: str,
 ) -> None:
     normalization = model["normalization"]
-    lines = ["EMUFLOW_TLR_INPUT_V2"]
+    lines = ["EMUFLOW_TLR_INPUT_V3"]
     lines.append(
         "PARAM "
-        f"{node_count} {constraints['max_iterations']} "
+        f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
+        f"{constraints['max_iterations']} "
         f"{constraints.get('reroute_rounds', 8)} "
         f"{constraints.get('lambda_load', 2.0):.17g} "
         f"{constraints.get('lambda_timing', 4.0):.17g} "
@@ -583,6 +585,9 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                 "iterations",
                 "accepted_reroutes",
                 "rolled_back_reroutes",
+                "baseline_candidate_feasible",
+                "balanced_candidate_feasible",
+                "selected_delay_demand_balanced",
                 "total_link_bit_hops",
                 "estimated_max_tdm_ratio",
             }:
@@ -594,6 +599,25 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
         raise EmuFlowError("TLR router did not return exact demand coverage")
     if len(timing) != len(model["paths"]):
         raise EmuFlowError("TLR router did not return exact timing-path coverage")
+    expected_metrics = {
+        "iterations",
+        "accepted_reroutes",
+        "rolled_back_reroutes",
+        "baseline_candidate_feasible",
+        "balanced_candidate_feasible",
+        "selected_delay_demand_balanced",
+        "worst_slack_ns",
+        "worst_normalized_slack",
+        "estimated_worst_tdm_slack_ns",
+        "estimated_worst_tdm_normalized_slack",
+        "estimated_max_tdm_ratio",
+        "max_utilization",
+        "total_link_bit_hops",
+    }
+    if set(metrics) != expected_metrics:
+        raise EmuFlowError(
+            "TLR router returned incomplete metric coverage"
+        )
     return {
         "routes": routes,
         "direction_locks": locks,
@@ -650,7 +674,9 @@ def route_system_native(
         root = Path(temporary)
         native_input = root / "router.in"
         native_output = root / "router.out"
-        _write_native_input(native_input, len(nodes), model, constraints)
+        _write_native_input(
+            native_input, len(nodes), model, constraints, provider
+        )
         completed = subprocess.run(
             [resolved, str(native_input), str(native_output)],
             capture_output=True,
@@ -757,15 +783,38 @@ def route_system_native(
         **(
             {
                 "joint_optimization": {
-                    "method": "tdm-contention-aware-rip-up-reroute-v1",
+                    "method": (
+                        "dac25-informed-delay-demand-balanced+"
+                        "aspdac26-timing-refinement-v2"
+                    ),
                     "objective": (
                         "lexicographic estimated TDM normalized slack, "
                         "route normalized slack, utilization, bit-hops"
                     ),
                     "ratio_model": "quantized-domain-load-over-lanes",
+                    "candidate_generation": {
+                        "shortest_path_tree": bool(
+                            native["metrics"][
+                                "baseline_candidate_feasible"
+                            ]
+                        ),
+                        "delay_demand_balanced_tree": bool(
+                            native["metrics"][
+                                "balanced_candidate_feasible"
+                            ]
+                        ),
+                        "selected": (
+                            "delay-demand-balanced"
+                            if native["metrics"][
+                                "selected_delay_demand_balanced"
+                            ]
+                            else "shortest-path-tree"
+                        ),
+                    },
                     "reference": (
-                        "DAC 2020 routing-topology/TDM co-optimization and "
-                        "ASP-DAC 2021 hybrid routing/TDM assignment"
+                        "DAC 2025 delay-demand-balanced die-level routing "
+                        "and ASP-DAC 2026 timing-aware load-balanced "
+                        "routing/rip-up-reroute"
                     ),
                 }
             }
@@ -842,7 +891,7 @@ def reconstruct_system_route_timing(
             capacity["link"]
         ].data_lanes_per_direction
         signals = capacity_usage[key]
-        if signals <= lanes:
+        if capacity["link"] in constraints["sll_links"] or signals <= lanes:
             ratio = 1
         else:
             raw = (signals + lanes - 1) // lanes
@@ -871,8 +920,12 @@ def reconstruct_system_route_timing(
                 delay_by_node[sink] = (
                     delay_by_node[node]
                     + _link_delay_ns(platform, link_id, constraints)
-                    + (1000.0 / link.fabric_clock_mhz)
-                    * (ratios[capacity_key] - 1)
+                    + (
+                        0.0
+                        if link_id in constraints["sll_links"]
+                        else (1000.0 / link.fabric_clock_mhz)
+                        * (ratios[capacity_key] - 1)
+                    )
                 )
                 queue.append(sink)
         route_tdm_delay_by_net[route["net"]] = max(
@@ -1013,7 +1066,8 @@ def validate_native_system_routes(
     if routes.get("provider") == ROUTE_TDM_PROVIDER:
         joint = routes.get("joint_optimization")
         if not isinstance(joint, dict) or joint.get("method") != (
-            "tdm-contention-aware-rip-up-reroute-v1"
+            "dac25-informed-delay-demand-balanced+"
+            "aspdac26-timing-refinement-v2"
         ):
             raise ValidationError(
                 "routes.joint_optimization: invalid co-optimization metadata"

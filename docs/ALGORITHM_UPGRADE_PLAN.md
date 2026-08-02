@@ -324,19 +324,37 @@ Lexicographic feasibility first:
 - ALIFRouter, DATE 2021;
 - SPARK, GLSVLSI 2023;
 - MaPart's layered-graph router, TCAD 2024;
-- *Synergistic Die-Level Router for Multi-FPGA System with Time-Division
-  Multiplexing Optimization*, DAC 2025;
-- *Timing-Aware Optimization of Die-Level Routing and TDM Assignment for
-  Multi-FPGA Systems*, ASP-DAC 2026;
+- [*Synergistic Die-Level Router for Multi-FPGA System with Time-Division
+  Multiplexing Optimization*](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf),
+  DAC 2025;
+- [*Timing-Aware Optimization of Die-Level Routing and TDM Assignment for
+  Multi-FPGA Systems*](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf),
+  ASP-DAC 2026;
 - Steiner-tree and shallow-light-tree methods including KMB/Mehlhorn and
   SALT.
 
-### Current gap
+### Implemented milestone
 
-The current C++ router is a useful negotiated-congestion baseline, but its
-candidate topology is generated mainly by weighted shortest paths. This is
-weaker than the routing-topology, Steiner-tree, min-max channel-load, and
-path-slack formulations in the literature.
+The C++ provider now constructs two independently checkable topology
+candidates: the original source-rooted shortest-path tree and a DAC
+2025-informed delay-demand-balanced connection tree. The latter connects
+high-cost sinks incrementally through legal Steiner attachment points and
+uses distinct SLL and cable/TDM congestion costs. The provider selects the
+better complete solution with the ASP-DAC 2026 worst-normalized-slack
+objective before selective critical-path rip-up/reroute. A separate Python
+oracle exhaustively enumerates direction-feasible directed arborescences and
+global tree combinations on small graphs.
+
+For reproducible ablation, `timing-aware-load-balanced-v1` executes only the
+shortest-path/TLR candidate, while
+`timing-aware-route-tdm-cooptimized-v1` enables both candidates and the
+lexicographic selector. They no longer alias the same native execution mode.
+
+This is classified as a **paper-informed extension**, not yet a faithful DAC
+2025 reproduction: the public EmuFlow BoardDB model is more general than the
+contest topology, and paper benchmark/result reproduction is still pending.
+The remaining topology gap is candidate-tree column generation or LNS over a
+larger KMB/Mehlhorn and shallow-light candidate pool.
 
 ### Selected primary route
 
@@ -380,6 +398,9 @@ pressure, total bit-hops, and runtime are secondary objectives.
   direction tests.
 - Improvement survives exact Stage 5 scheduling.
 
+The small multicast exact-oracle gate is implemented. Contest-scale
+reproduction and the larger candidate-pool gate remain open.
+
 ## 9. Stage 5 - TDM ratio, grouping, lane, and slot assignment
 
 ### Core literature
@@ -388,8 +409,8 @@ pressure, total bit-hops, and runtime are secondary objectives.
 - ICCAD 2018 simultaneous partitioning and signal grouping;
 - *An Analytical Approach for Time-Division Multiplexing Optimization in
   Multi-FPGA-Based Systems*, SLIP 2019;
-- *Lagrangian Relaxation-Based Time-Division Multiplexing Optimization for
-  Multi-FPGA Systems*, TODAES 2020;
+- [*Lagrangian Relaxation-Based Time-Division Multiplexing Optimization for
+  Multi-FPGA Systems*](https://cwpui.com/doc/j4.pdf), TODAES 2020;
 - DAC 2020 routing/TDM co-optimization;
 - ASP-DAC 2021 hybrid routing/TDM;
 - *An Integrated Circuit Partitioning and TDM Assignment Optimization
@@ -402,6 +423,24 @@ The literature usually optimizes TDM ratios or signal groups. EmuFlow also
 requires a concrete, collision-free, multi-hop lane/slot schedule. Ratio
 optimization and schedule realization are separate optimization problems and
 must have separate oracles.
+
+### Implemented milestone
+
+The in-tree C++ ratio optimizer solves a path-form Lagrangian/KKT continuous
+relaxation and performs critical-path swap refinement. Its discrete stage now
+implements the TODAES 2020 minimum-feasible maximum-displacement search and
+exact total-displacement dynamic program on compact capacity domains. Large
+domains retain the deterministic minimum-wire construction to bound runtime.
+Independent exhaustive Python oracles verify the exact displacement objective
+on small domains and the realized timing optimum of compact single-round
+lane/slot schedules.
+
+The concrete lane/slot realization remains the ratio-aware deterministic list
+scheduler with independent collision, precedence, round-barrier, and value
+simulation checks. Therefore the ratio/legalization upgrade is implemented,
+while multi-round time-expanded CP-SAT scheduling and scalable schedule LNS
+are still open; the stage is not yet described as a complete faithful
+TODAES/ASP-DAC 2026 reproduction.
 
 ### Selected primary route
 

@@ -22,6 +22,10 @@ from emuflow.tdm_ratio import (
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
+from emuflow.tdm_oracle import (
+    exact_discrete_ratio_legalization,
+    exact_single_round_slot_schedule,
+)
 from emuflow.timing_routing import route_system_native
 from tests.native_build import tlr_router
 
@@ -376,6 +380,33 @@ class Phase5Test(unittest.TestCase):
                 max_ratio=32,
                 post_refinement_iterations=0,
             )
+            self.assertEqual(
+                unrefined["metrics"]["dp_legalized_domains"], 1
+            )
+            continuous = [
+                hop["continuous_ratio"] for hop in unrefined["hops"]
+            ]
+            discrete = [
+                hop["discrete_ratio"] for hop in unrefined["hops"]
+            ]
+            displacement_bound = max(
+                abs(before - after)
+                for before, after in zip(continuous, discrete)
+            )
+            oracle = exact_discrete_ratio_legalization(
+                continuous,
+                [hop["direction"] for hop in unrefined["hops"]],
+                lanes=unrefined["domains"][0]["lanes"],
+                allowed_ratios=[1, 8, 16, 24, 32],
+                displacement_bound=displacement_bound,
+            )
+            self.assertAlmostEqual(
+                sum(
+                    abs(before - after)
+                    for before, after in zip(continuous, discrete)
+                ),
+                oracle["total_displacement"],
+            )
             refined = build_tdm_ratio_plan(
                 routes,
                 platform,
@@ -409,6 +440,20 @@ class Phase5Test(unittest.TestCase):
                     routes, platform, schedule, refined
                 )["status"],
                 "pass",
+            )
+            schedule_timing = reconstruct_tdm_schedule_timing(
+                routes, platform, schedule
+            )
+            slot_oracle = exact_single_round_slot_schedule(
+                routes, platform, refined
+            )
+            self.assertAlmostEqual(
+                schedule_timing["worst_normalized_slack"],
+                slot_oracle["worst_normalized_slack"],
+            )
+            self.assertEqual(
+                schedule["metrics"]["completion_slot"],
+                slot_oracle["completion_slot"],
             )
 
     def test_schedule_validate_simulate_and_write_artifacts(self) -> None:

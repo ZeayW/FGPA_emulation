@@ -238,6 +238,10 @@ class Optimizer {
            << *std::max_element(discrete_.begin(), discrete_.end()) << '\n';
     output << "METRIC post_refinement_swaps "
            << post_refinement_swaps_ << '\n';
+    output << "METRIC dp_legalized_domains "
+           << dp_legalized_domains_ << '\n';
+    output << "METRIC greedy_legalized_domains "
+           << greedy_legalized_domains_ << '\n';
   }
 
  private:
@@ -498,8 +502,7 @@ class Optimizer {
       const double continuous = continuous_[ordered[position]];
       int choice = -1;
       for (int ratio : allowed) {
-        if (ratio + kEps >= continuous &&
-            ratio <= continuous + bound + kEps) {
+        if (std::abs(ratio - continuous) <= bound + kEps) {
           choice = ratio;
         }
       }
@@ -510,8 +513,8 @@ class Optimizer {
           static_cast<int>(ordered.size()), position + choice);
       int compatible_end = position + 1;
       while (compatible_end < end &&
-             continuous_[ordered[compatible_end]] <= choice + kEps &&
-             choice <= continuous_[ordered[compatible_end]] + bound + kEps) {
+             std::abs(continuous_[ordered[compatible_end]] - choice) <=
+                 bound + kEps) {
         ++compatible_end;
       }
       if (assign) {
@@ -524,6 +527,105 @@ class Optimizer {
       ++lane;
     }
     return lane;
+  }
+
+  bool exact_displacement_dp(
+      const std::map<int, std::vector<int>>& ordered_by_direction,
+      const std::vector<int>& allowed, double bound, int lane_budget) {
+    std::vector<int> ordered;
+    std::vector<int> direction;
+    for (const auto& [direction_id, group] : ordered_by_direction) {
+      for (int hop : group) {
+        ordered.push_back(hop);
+        direction.push_back(direction_id);
+      }
+    }
+    // The TODAES 2020 DP is exact but quadratic in the signal count.  Use it
+    // directly on compact domains, where it is also checked by exhaustive
+    // enumeration, and keep the paper's minimum-wire greedy construction for
+    // industrial-scale domains.
+    constexpr int kExactDomainLimit = 256;
+    if (ordered.empty() ||
+        static_cast<int>(ordered.size()) > kExactDomainLimit) {
+      return false;
+    }
+
+    const int count = static_cast<int>(ordered.size());
+    const double infinity = std::numeric_limits<double>::infinity();
+    std::vector<std::vector<double>> dp(
+        count + 1, std::vector<double>(lane_budget + 1, infinity));
+    struct Choice {
+      int previous = -1;
+      int ratio = -1;
+    };
+    std::vector<std::vector<Choice>> parent(
+        count + 1, std::vector<Choice>(lane_budget + 1));
+    dp[0][0] = 0.0;
+    for (int position = 0; position < count; ++position) {
+      for (int used = 0; used < lane_budget; ++used) {
+        if (!std::isfinite(dp[position][used])) {
+          continue;
+        }
+        for (int ratio : allowed) {
+          if (std::abs(continuous_[ordered[position]] - ratio) >
+              bound + kEps) {
+            continue;
+          }
+          double displacement = 0.0;
+          const int end_limit = std::min(count, position + ratio);
+          for (int end = position; end < end_limit; ++end) {
+            if (direction[end] != direction[position] ||
+                std::abs(continuous_[ordered[end]] - ratio) >
+                    bound + kEps) {
+              break;
+            }
+            displacement +=
+                std::abs(continuous_[ordered[end]] - ratio);
+            const int next = end + 1;
+            const double candidate =
+                dp[position][used] + displacement;
+            const Choice old = parent[next][used + 1];
+            if (candidate + kEps < dp[next][used + 1] ||
+                (std::abs(candidate - dp[next][used + 1]) <= kEps &&
+                 (old.ratio < 0 || ratio < old.ratio))) {
+              dp[next][used + 1] = candidate;
+              parent[next][used + 1] = {position, ratio};
+            }
+          }
+        }
+      }
+    }
+    int best_lanes = -1;
+    double best_cost = infinity;
+    for (int used = 1; used <= lane_budget; ++used) {
+      if (dp[count][used] + kEps < best_cost ||
+          (std::abs(dp[count][used] - best_cost) <= kEps &&
+           (best_lanes < 0 || used < best_lanes))) {
+        best_cost = dp[count][used];
+        best_lanes = used;
+      }
+    }
+    if (best_lanes < 0 || !std::isfinite(best_cost)) {
+      return false;
+    }
+
+    int position = count;
+    int used = best_lanes;
+    while (position > 0) {
+      const Choice choice = parent[position][used];
+      if (choice.previous < 0 || choice.ratio < 0) {
+        throw std::runtime_error(
+            "exact displacement DP has a broken parent chain");
+      }
+      for (int index = choice.previous; index < position; ++index) {
+        discrete_[ordered[index]] = choice.ratio;
+        lane_[ordered[index]] = used - 1;
+      }
+      position = choice.previous;
+      --used;
+    }
+    ++dp_legalized_domains_;
+    return true;
   }
 
   void legalize() {
@@ -583,6 +685,12 @@ class Optimizer {
           low = middle;
         }
       }
+      if (exact_displacement_dp(
+              ordered_by_direction, allowed, high + 1.0e-8,
+              input_.domains[domain].lanes)) {
+        continue;
+      }
+      ++greedy_legalized_domains_;
       int lane_offset = 0;
       for (const auto& [direction, ordered] : ordered_by_direction) {
         (void) direction;
@@ -682,6 +790,8 @@ class Optimizer {
   std::vector<std::vector<int>> domain_hops_;
   int completed_iterations_ = 0;
   int post_refinement_swaps_ = 0;
+  int dp_legalized_domains_ = 0;
+  int greedy_legalized_domains_ = 0;
 };
 
 void usage(const char* executable) {
