@@ -123,6 +123,14 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertIn("module VTR_MULTIPLY", text)
         self.assertIn("module VTR_SP_RAM", text)
         self.assertIn("ram_style = \"block\"", text)
+        dp_ram = text.split("module VTR_DP_RAM", 1)[1].split(
+            "endmodule", 1
+        )[0]
+        self.assertEqual(dp_ram.count("always @(posedge clk)"), 2)
+        self.assertNotIn(
+            "if (we1)\n      memory[addr1] <= data1;\n    if (we2)",
+            dp_ram,
+        )
         self.assertIn(".\\ADDR_WIDTH (2)", text)
         self.assertNotIn(".\\ADDR_WIDTH (2'b10)", text)
         self.assertIn("{__emuflow_net_", text)

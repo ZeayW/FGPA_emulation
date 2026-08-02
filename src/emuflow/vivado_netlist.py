@@ -76,9 +76,11 @@ module VTR_DP_RAM #(
   always @(posedge clk) begin
     if (we1)
       memory[addr1] <= data1;
+    out1 <= memory[addr1];
+  end
+  always @(posedge clk) begin
     if (we2)
       memory[addr2] <= data2;
-    out1 <= memory[addr1];
     out2 <= memory[addr2];
   end
 endmodule
