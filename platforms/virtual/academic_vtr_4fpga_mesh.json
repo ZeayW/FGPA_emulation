@@ -3,7 +3,7 @@
   "platform": {
     "name": "academic_vtr_4fpga_mesh",
     "kind": "virtual",
-    "description": "Architecture-open four-FPGA 2x2 mesh using abstract VTR-class capacities"
+    "description": "Architecture-open four-FPGA 2x2 mesh using abstract VTR-class capacities and a conservative 50 MHz fabric clock"
   },
   "fpgas": [
     {
@@ -38,7 +38,7 @@
       "direction": "full_duplex",
       "mode": "abstract",
       "data_lanes_per_direction": 32,
-      "fabric_clock_mhz": 250.0,
+      "fabric_clock_mhz": 50.0,
       "latency_cycles": 2
     },
     {
@@ -47,7 +47,7 @@
       "direction": "full_duplex",
       "mode": "abstract",
       "data_lanes_per_direction": 32,
-      "fabric_clock_mhz": 250.0,
+      "fabric_clock_mhz": 50.0,
       "latency_cycles": 2
     },
     {
@@ -56,7 +56,7 @@
       "direction": "full_duplex",
       "mode": "abstract",
       "data_lanes_per_direction": 32,
-      "fabric_clock_mhz": 250.0,
+      "fabric_clock_mhz": 50.0,
       "latency_cycles": 2
     },
     {
@@ -65,7 +65,7 @@
       "direction": "full_duplex",
       "mode": "abstract",
       "data_lanes_per_direction": 32,
-      "fabric_clock_mhz": 250.0,
+      "fabric_clock_mhz": 50.0,
       "latency_cycles": 2
     }
   ]
