@@ -49,7 +49,6 @@ from ..ops.chain_legalizer import chain_legalizer
 from ..ops.chain_alignment import chain_alignment
 from ..ops.delay_estimation import delay_estimation
 from ..ops.static_timing_analysis import static_timing_analysis
-from ..ops.congestion_prediction import congestion_prediction
 from ..ops.masked_direct_lg import masked_direct_lg
 from ..ops.ssr_abacus_lg import ssr_abacus_lg
 from ..ops.sll import sll
@@ -448,6 +447,11 @@ def build_chain_alignment_op(params, placedb, data_cls):
 
 
 def build_congestion_prediction_op(params, data_cls):
+    # Congestion prediction is optional and pulls in torchvision through its
+    # learned model.  Keep that dependency lazy so placement-only builds do
+    # not require the ML inference stack when the feature is disabled.
+    from ..ops.congestion_prediction import congestion_prediction
+
     return congestion_prediction.Congestion_prediction(
         netpin_start=data_cls.net_pin_map.b_starts,
         flat_netpin=data_cls.net_pin_map.bs,

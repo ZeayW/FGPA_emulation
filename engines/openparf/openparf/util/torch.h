@@ -12,7 +12,8 @@
 #if TORCH_MAJOR_VERSION >= 1
 #include <torch/extension.h>
 
-#if TORCH_MINOR_VERSION >= 3
+#if TORCH_MAJOR_VERSION > 1 || \
+    (TORCH_MAJOR_VERSION == 1 && TORCH_MINOR_VERSION >= 3)
 #define OPENPARF_TENSOR_DATA_PTR(TENSOR, TYPE) TENSOR.data_ptr<TYPE>()
 #define OPENPARF_TENSOR_SCALARTYPE(TENSOR) TENSOR.scalar_type()
 #else
