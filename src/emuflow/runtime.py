@@ -4,7 +4,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 from .errors import ValidationError
 from .platform import Platform
 from .system_timing import build_system_timing
-from .tdm import TDM_SCHEDULE_SCHEMA
+from .tdm import RUNTIME_BARRIER_SLOTS, TDM_SCHEDULE_SCHEMA
 
 
 VIRTUAL_RUNTIME_SCHEMA = "emuflow.virtual-runtime/v1"
@@ -89,7 +89,7 @@ def build_virtual_runtime(
         isinstance(completion_slot, bool)
         or not isinstance(completion_slot, int)
         or completion_slot < 0
-        or completion_slot >= frame_slots - 1
+        or completion_slot >= frame_slots - RUNTIME_BARRIER_SLOTS
     ):
         raise ValidationError(
             "schedule must complete before the runtime barrier release slot"
@@ -108,7 +108,7 @@ def build_virtual_runtime(
 
     fabric_clock_mhz = _common_fabric_clock_mhz(platform)
     fabric_period_ns = 1000.0 / fabric_clock_mhz
-    release_slot = frame_slots - 1
+    release_slot = frame_slots - RUNTIME_BARRIER_SLOTS
     shadow_settle_slots = release_slot - completion_slot
     nominal_virtual_period_ns = frame_slots * fabric_period_ns
     return {

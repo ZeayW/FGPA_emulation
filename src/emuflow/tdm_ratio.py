@@ -17,6 +17,7 @@ from .routing import (
     build_directed_graph,
     normalize_route_constraints,
 )
+from .tdm import RUNTIME_BARRIER_SLOTS
 
 
 TDM_RATIO_PLAN_SCHEMA = "emuflow.tdm-ratio-plan/v1"
@@ -218,6 +219,7 @@ def _prepare_model(
 
     longest_hops_by_net = {}
     longest_sink_by_net = {}
+    hops_by_net_sink = {}
     for net, route in route_by_net.items():
         paths_by_node = {route["source"]: (0.0, [])}
         for _depth, edge in _route_edges_in_tree_order(route):
@@ -237,6 +239,9 @@ def _prepare_model(
         candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
         longest_hops_by_net[net] = candidates[0][1]
         longest_sink_by_net[net] = candidates[0][2]
+        hops_by_net_sink[net] = {
+            sink: list(paths_by_node[sink][1]) for sink in route["sinks"]
+        }
 
     timing_paths = []
     for index, path in enumerate(timing["paths"]):
@@ -254,10 +259,51 @@ def _prepare_model(
             raise ValidationError(
                 f"routes.timing.paths[{index}]: unknown cut nets {unknown}"
             )
+        raw_transitions = path.get("cut_transitions")
+        if raw_transitions is None:
+            transitions = [
+                {
+                    "net": net,
+                    "from": route_by_net[net]["source"],
+                    "to": longest_sink_by_net[net],
+                }
+                for net in raw_cut_nets
+            ]
+        else:
+            if (
+                not isinstance(raw_transitions, list)
+                or len(raw_transitions) != len(raw_cut_nets)
+            ):
+                raise ValidationError(
+                    f"routes.timing.paths[{index}].cut_transitions: invalid"
+                )
+            transitions = []
+            for net, transition in zip(raw_cut_nets, raw_transitions):
+                route = route_by_net[net]
+                if (
+                    not isinstance(transition, dict)
+                    or transition.get("net") != net
+                    or transition.get("from") != route["source"]
+                    or transition.get("to") not in route["sinks"]
+                ):
+                    raise ValidationError(
+                        f"routes.timing.paths[{index}].cut_transitions: "
+                        "invalid member-specific sink"
+                    )
+                transitions.append(dict(transition))
+            if any(
+                transitions[position - 1]["to"]
+                != transitions[position]["from"]
+                for position in range(1, len(transitions))
+            ):
+                raise ValidationError(
+                    f"routes.timing.paths[{index}].cut_transitions: "
+                    "discontinuous member partition chain"
+                )
         path_hops = [
             hop
-            for net in raw_cut_nets
-            for hop in longest_hops_by_net[net]
+            for transition in transitions
+            for hop in hops_by_net_sink[transition["net"]][transition["to"]]
         ]
         if len(path_hops) != len(set(path_hops)):
             raise ValidationError(
@@ -287,18 +333,7 @@ def _prepare_model(
                 "compressed_path_ids": list(
                     path.get("compressed_path_ids", [path["path"]])
                 ),
-                # Phase 4 currently models a multicast cut net by its
-                # longest routed sink. Preserve those logical transitions so
-                # Phase 7C can combine concrete transport delay with the
-                # physical timing of every FPGA logic segment on the path.
-                "cut_transitions": [
-                    {
-                        "net": net,
-                        "from": route_by_net[net]["source"],
-                        "to": longest_sink_by_net[net],
-                    }
-                    for net in raw_cut_nets
-                ],
+                "cut_transitions": transitions,
                 "hops": path_hops,
             }
         )
@@ -562,13 +597,18 @@ def _round_barrier_legalize(
         domain, _direction, ratio = key
         latency = latency_by_domain[domain]
         if len(rounds) == 1:
-            available = frame_slots - latency
+            available = frame_slots - RUNTIME_BARRIER_SLOTS - latency
+            if available <= 0:
+                return frame_slots + 1
             return math.ceil(
                 counts.get(0, 0) / min(ratio, available)
             )
         round_zero_slots = source_ready_slot - latency
         round_one_slots = (
-            frame_slots - latency - source_ready_slot
+            frame_slots
+            - RUNTIME_BARRIER_SLOTS
+            - latency
+            - source_ready_slot
         )
         if round_zero_slots <= 0 or round_one_slots <= 0:
             return frame_slots + 1
@@ -590,7 +630,7 @@ def _round_barrier_legalize(
             minimum_latency = max(latency_by_domain.values())
             source_ready_values = range(
                 minimum_latency + 1,
-                frame_slots - minimum_latency,
+                frame_slots - RUNTIME_BARRIER_SLOTS - minimum_latency,
             )
         best = None
         midpoint = frame_slots // 2
@@ -1220,7 +1260,10 @@ def validate_tdm_ratio_plan(
                     "round 0 exceeds barrier capacity"
                 )
             if counts.get(1, 0) > (
-                frame_slots - latency - source_ready
+                frame_slots
+                - RUNTIME_BARRIER_SLOTS
+                - latency
+                - source_ready
             ):
                 raise ValidationError(
                     f"ratio plan domain {domain} lane {lane}: "

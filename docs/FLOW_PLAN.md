@@ -495,10 +495,11 @@ compressed cross-FPGA path. A complete member is represented by routed
 segments. VPR evaluates these point-to-point paths with routed edge delays, and
 Phase 7C replaces the matching TX interface terms instead of adding a whole
 partition's critical-path maximum. Exact and fallback path counts are part of
-`system-timing/v1`; a multicast member that does not match the currently
-selected routed sink remains conservative. Vivado logic-chain extraction and
-member-specific multicast-sink expansion are the next closure gates, so the
-flow does not yet claim every system path is endpoint-to-endpoint exact.
+`system-timing/v1`; structured TimingPathDB endpoints retain the actual sink
+of each multicast member and remove local fanout of globally cut nets, while
+legacy or unmapped endpoints remain conservative. Vivado routed DUT
+logic-chain extraction is the next closure gate, so the flow does not yet
+claim every system path is endpoint-to-endpoint exact.
 
 Hardware BSP pin binding, source-synchronous board timing, dedicated
 clock-buffer binding, bitstream generation, link training, and a golden

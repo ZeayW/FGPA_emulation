@@ -17,6 +17,7 @@ TDM_ACADEMIC_SCHEDULE_PROVIDER = (
     "lagrangian-kkt-ratio-aware-list-schedule-v1"
 )
 COMBINATIONAL_SETTLE_SLOTS = 1
+RUNTIME_BARRIER_SLOTS = 1
 HopKey = Tuple[str, str, str, str]
 
 
@@ -212,7 +213,14 @@ def build_tdm_schedule(
                 if edge["from"] == route["source"]
                 else arrival_by_node[edge["from"]] + 1
             )
-            latest_exclusive = frame_slots - link.latency_cycles
+            # The final frame slot is reserved for the lockstep runtime
+            # barrier/virtual-clock release.  A transport arrival must be
+            # visible before that slot, not merely before the frame wraps.
+            latest_exclusive = (
+                frame_slots
+                - RUNTIME_BARRIER_SLOTS
+                - link.latency_cycles
+            )
             plan_hop = (
                 planned_hops.get(
                     _hop_key(
@@ -653,9 +661,10 @@ def validate_tdm_schedule(
                 f"schedule.entries[{index}].arrival_slot: expected "
                 f"{expected_arrival}"
             )
-        if expected_arrival >= frame_slots:
+        if expected_arrival >= frame_slots - RUNTIME_BARRIER_SLOTS:
             raise ValidationError(
-                f"schedule.entries[{index}]: arrival exceeds frame"
+                f"schedule.entries[{index}]: arrival reaches reserved "
+                "runtime barrier slot"
             )
     if set(entries_by_hop) != set(expected):
         missing = sorted(set(expected) - set(entries_by_hop))

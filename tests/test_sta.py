@@ -26,6 +26,103 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StaAdapterTest(unittest.TestCase):
+    def test_projection_keeps_member_specific_multicast_sinks(self) -> None:
+        normalization = {
+            "positive_slack_scale_ns": 1.0,
+            "negative_slack_scale_ns": 1.0,
+            "max_clock_period_ns": 10.0,
+        }
+        base = {
+            "clock_domain": "clk",
+            "clock_period_ns": 10.0,
+            "slack_ns": -1.0,
+            "fixed_delay_ns": 11.0,
+            "path_nets": ["cut"],
+            "normalized_slack": -0.1,
+            "startpoint": {
+                "object": "src/Q",
+                "instance": "src",
+                "port": "Q",
+                "bit": 0,
+            },
+        }
+        database = {
+            "schema": STA_PATH_DATABASE_SCHEMA,
+            "design": "multicast",
+            "source": {"provider": "opensta-fpga-path-database-v1"},
+            "normalization": normalization,
+            "paths": [
+                {
+                    **base,
+                    "id": "src/Q->sink_b/D#00000000",
+                    "endpoint": {
+                        "object": "sink_b/D",
+                        "instance": "sink_b",
+                        "port": "D",
+                        "bit": 0,
+                    },
+                },
+                {
+                    **base,
+                    "id": "src/Q->sink_c/D#00000001",
+                    "endpoint": {
+                        "object": "sink_c/D",
+                        "instance": "sink_c",
+                        "port": "D",
+                        "bit": 0,
+                    },
+                },
+                {
+                    **base,
+                    "id": "src/Q->local/D#00000002",
+                    "endpoint": {
+                        "object": "local/D",
+                        "instance": "local",
+                        "port": "D",
+                        "bit": 0,
+                    },
+                },
+            ],
+        }
+        assignment = {
+            "schema": PARTITION_ASSIGNMENT_SCHEMA,
+            "design": "multicast",
+            "platform": "fixture",
+            "instance_assignment": {
+                "src": "a",
+                "sink_b": "b",
+                "sink_c": "c",
+                "local": "a",
+            },
+            "cut_nets": [
+                {
+                    "net": "cut",
+                    "source_fpgas": ["a"],
+                    "sink_fpgas": ["b", "c"],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database_path = root / "database.json"
+            assignment_path = root / "assignment.json"
+            output_path = root / "projected.json"
+            write_json(database_path, database)
+            write_json(assignment_path, assignment)
+            report = project_sta_path_database(
+                database_path, assignment_path, output_path
+            )
+            projected = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["projected_paths"], 2)
+        self.assertEqual(report["compressed_paths"], 2)
+        self.assertEqual(
+            {
+                path["cut_transitions"][0]["to"]
+                for path in projected["paths"]
+            },
+            {"b", "c"},
+        )
+
     def test_partition_independent_database_projects_candidate_cuts(
         self,
     ) -> None:
@@ -58,7 +155,7 @@ class StaAdapterTest(unittest.TestCase):
             )
             rows = [
                 [
-                    "path db 0".encode().hex(),
+                    "q_reg[0]/Q->q_reg[1]/D#00000000".encode().hex(),
                     "clk".encode().hex(),
                     "10.0",
                     "-0.5",
@@ -109,6 +206,14 @@ class StaAdapterTest(unittest.TestCase):
             )
             self.assertEqual(
                 database["paths"][0]["path_nets"], [net_ids[0]]
+            )
+            self.assertEqual(
+                database["paths"][0]["startpoint"]["instance"],
+                "q_reg[0]",
+            )
+            self.assertEqual(
+                database["paths"][0]["endpoint"]["instance"],
+                "q_reg[1]",
             )
             self.assertEqual(
                 database["normalization"],

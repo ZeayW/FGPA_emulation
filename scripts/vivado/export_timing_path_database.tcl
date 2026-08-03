@@ -81,7 +81,12 @@ foreach path $timing_paths {
   foreach net $path_nets {
     lappend path_hex [emuflow_hex_encode $net]
   }
-  set path_id "vivado_path_db_[format %08d $emitted]"
+  set start_name [get_property STARTPOINT_PIN $path]
+  set end_name [get_property ENDPOINT_PIN $path]
+  if {$start_name eq "" || $end_name eq ""} {
+    continue
+  }
+  set path_id "$start_name->$end_name#[format %08d $emitted]"
   set group [get_property GROUP $path]
   set period [get_property REQUIREMENT $path]
   set slack [get_property SLACK $path]

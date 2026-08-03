@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -31,6 +32,125 @@ STA_PATH_DATABASE_TSV_HEADER = (
     "fixed_delay_ns\tpath_nets_hex"
 )
 VIVADO_PATH_DATABASE_TSV_HEADER = STA_PATH_DATABASE_TSV_HEADER
+
+
+def _instance_pin_inventory(ir: EmuIR) -> Dict[str, set[tuple[str, int]]]:
+    result: Dict[str, set[tuple[str, int]]] = {
+        instance["id"]: set() for instance in ir.value["instances"]
+    }
+    for net in ir.value["nets"]:
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                instance = endpoint["instance"]
+                if instance is not None:
+                    result[instance].add((endpoint["port"], endpoint["bit"]))
+    for instance in ir.value["instances"]:
+        for endpoint in instance.get("constant_connections", []):
+            result[instance["id"]].add((endpoint["port"], endpoint["bit"]))
+    return result
+
+
+def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
+    width = max(
+        (
+            candidate_bit + 1
+            for candidate_port, candidate_bit in pins
+            if candidate_port == port
+        ),
+        default=0,
+    )
+    return port if width <= 1 else f"{port}__{bit}"
+
+
+def sta_object_index(ir: EmuIR) -> Dict[str, Dict[str, Any]]:
+    """Map provider object names to stable EmuIR endpoint identities."""
+    pins = _instance_pin_inventory(ir)
+    result: Dict[str, Dict[str, Any]] = {}
+    for instance in ir.value["instances"]:
+        instance_id = instance["id"]
+        for port, bit in pins[instance_id]:
+            name = f"{instance_id}/{_scalar_pin(port, bit, pins[instance_id])}"
+            result[name] = {
+                "object": name,
+                "instance": instance_id,
+                "port": port,
+                "bit": bit,
+            }
+    for port in ir.value["ports"]:
+        for bit in range(port["width"]):
+            names = [port["id"]]
+            if port["width"] > 1:
+                names = [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"]
+            for name in names:
+                result[name] = {
+                    "object": name,
+                    "instance": None,
+                    "port": port["id"],
+                    "bit": bit,
+                }
+    return result
+
+
+def sta_path_endpoints(
+    path: Mapping[str, Any],
+    object_index: Mapping[str, Mapping[str, Any]],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Resolve structured or legacy provider path endpoints."""
+    raw_start = path.get("startpoint")
+    raw_end = path.get("endpoint")
+    if isinstance(raw_start, dict) and isinstance(raw_end, dict):
+        return dict(raw_start), dict(raw_end)
+    path_id = path.get("id")
+    match = (
+        re.fullmatch(r"(.+)->(.+)#\d{8}", path_id)
+        if isinstance(path_id, str)
+        else None
+    )
+    if match is None:
+        raise ValidationError(
+            f"STA path {path_id!r} lacks provider-neutral endpoint identity"
+        )
+    missing = [
+        name for name in match.groups() if name not in object_index
+    ]
+    if missing:
+        raise ValidationError(
+            f"STA path {path_id!r} has unmapped endpoint objects {missing}"
+        )
+    return (
+        dict(object_index[match.group(1)]),
+        dict(object_index[match.group(2)]),
+    )
+
+
+def _validate_endpoint_identity(
+    endpoint: Any,
+    known_instances: set[str],
+    context: str,
+) -> None:
+    if not isinstance(endpoint, dict) or set(endpoint) != {
+        "object",
+        "instance",
+        "port",
+        "bit",
+    }:
+        raise ValidationError(f"{context} is invalid")
+    if (
+        not isinstance(endpoint["object"], str)
+        or not endpoint["object"]
+        or not isinstance(endpoint["port"], str)
+        or not endpoint["port"]
+        or isinstance(endpoint["bit"], bool)
+        or not isinstance(endpoint["bit"], int)
+        or endpoint["bit"] < 0
+    ):
+        raise ValidationError(f"{context} is invalid")
+    instance = endpoint["instance"]
+    if instance is not None and (
+        not isinstance(instance, str)
+        or instance not in known_instances
+    ):
+        raise ValidationError(f"{context}.instance is invalid")
 
 
 def _hex_encode(value: str) -> str:
@@ -206,6 +326,7 @@ def import_sta_path_database_tsv(
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     known_nets = {net["id"] for net in ir.value["nets"]}
+    object_index = sta_object_index(ir)
     lines = input_path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0] != STA_PATH_DATABASE_TSV_HEADER:
         raise ValidationError("STA path database TSV: invalid header")
@@ -280,16 +401,22 @@ def import_sta_path_database_tsv(
                 f"STA path database TSV line {index}: "
                 f"unknown EmuIR nets {unknown}"
             )
-        paths.append(
-            {
-                "id": path_id,
-                "clock_domain": clock_domain,
-                "clock_period_ns": clock_period,
-                "slack_ns": slack,
-                "fixed_delay_ns": fixed_delay,
-                "path_nets": path_nets,
-            }
-        )
+        record = {
+            "id": path_id,
+            "clock_domain": clock_domain,
+            "clock_period_ns": clock_period,
+            "slack_ns": slack,
+            "fixed_delay_ns": fixed_delay,
+            "path_nets": path_nets,
+        }
+        try:
+            startpoint, endpoint = sta_path_endpoints(record, object_index)
+        except ValidationError:
+            pass
+        else:
+            record["startpoint"] = startpoint
+            record["endpoint"] = endpoint
+        paths.append(record)
     if not paths:
         raise ValidationError(
             "STA path database TSV contains no mapped timing paths"
@@ -363,6 +490,9 @@ def validate_sta_path_database(
     if not isinstance(raw_paths, list) or not raw_paths:
         raise ValidationError("STA path database paths are invalid")
     known_nets = {net["id"] for net in ir.value["nets"]}
+    known_instances = {
+        instance["id"] for instance in ir.value["instances"]
+    }
     path_ids = set()
     clock_domains = set()
     path_nets_union = set()
@@ -371,7 +501,7 @@ def validate_sta_path_database(
         context = f"STA path database paths[{index}]"
         if not isinstance(path, dict):
             raise ValidationError(f"{context} is invalid")
-        expected_keys = {
+        required_keys = {
             "id",
             "clock_domain",
             "clock_period_ns",
@@ -380,8 +510,19 @@ def validate_sta_path_database(
             "path_nets",
             "normalized_slack",
         }
-        if set(path) != expected_keys:
+        endpoint_keys = {"startpoint", "endpoint"}
+        if not (
+            set(path) == required_keys
+            or set(path) == required_keys | endpoint_keys
+        ):
             raise ValidationError(f"{context} fields are invalid")
+        if endpoint_keys <= set(path):
+            _validate_endpoint_identity(
+                path["startpoint"], known_instances, f"{context}.startpoint"
+            )
+            _validate_endpoint_identity(
+                path["endpoint"], known_instances, f"{context}.endpoint"
+            )
         path_id = path["id"]
         clock_domain = path["clock_domain"]
         if (
@@ -591,6 +732,55 @@ def project_sta_path_database(
         cut_signature_by_net[net] = (
             f"{','.join(sources)}->{','.join(sinks)}"
         )
+    instance_assignment = assignment.get("instance_assignment")
+    if not isinstance(instance_assignment, dict):
+        instance_assignment = {}
+
+    def path_transitions(
+        path: Mapping[str, Any], candidates: list[str]
+    ) -> tuple[list[str], Optional[list[Dict[str, str]]]]:
+        startpoint = path.get("startpoint")
+        endpoint = path.get("endpoint")
+        if not isinstance(startpoint, dict) or not isinstance(endpoint, dict):
+            return candidates, None
+        end_instance = endpoint.get("instance")
+        end_partition = instance_assignment.get(end_instance)
+        if not isinstance(end_partition, str) or not end_partition:
+            return candidates, None
+        target = end_partition
+        reverse_transitions = []
+        for net in reversed(candidates):
+            raw_sources = cut_by_net[net].get("source_fpgas")
+            raw_sinks = cut_by_net[net].get("sink_fpgas")
+            if not isinstance(raw_sources, list) or len(raw_sources) != 1:
+                return candidates, None
+            source = raw_sources[0]
+            if source == target:
+                # This timing path follows a local fanout of a net whose
+                # other sinks make the net globally cross-partition.
+                continue
+            if not isinstance(raw_sinks, list) or target not in raw_sinks:
+                raise ValidationError(
+                    f"STA path {path['id']!r} partition {target!r} cannot "
+                    f"be reached through cut net {net!r}"
+                )
+            reverse_transitions.append(
+                {"net": net, "from": source, "to": target}
+            )
+            target = source
+        start_instance = startpoint.get("instance")
+        start_partition = instance_assignment.get(start_instance)
+        if (
+            isinstance(start_partition, str)
+            and start_partition != target
+        ):
+            raise ValidationError(
+                f"STA path {path['id']!r} launch/capture partition chain "
+                "is inconsistent"
+            )
+        transitions = list(reversed(reverse_transitions))
+        return [item["net"] for item in transitions], transitions
+
     paths = []
     database_records = []
     covered_cut_nets = set()
@@ -668,26 +858,28 @@ def project_sta_path_database(
                 "slack_ns": float(slack),
             }
         )
-        projected = [net for net in path_nets if net in cut_nets]
+        candidates = [net for net in path_nets if net in cut_nets]
+        projected, transitions = path_transitions(path, candidates)
         if not projected:
             continue
         covered_cut_nets.update(projected)
-        paths.append(
-            {
-                "id": path_id,
-                "clock_domain": clock_domain,
-                "clock_period_ns": float(clock_period),
-                "slack_ns": float(slack),
-                "fixed_delay_ns": float(fixed_delay),
-                "cut_nets": projected,
-                "cut_signature": [
-                    cut_signature_by_net[net]
-                    for net in projected
-                ],
-                "normalized_slack": expected_normalized,
-                "compressed_path_ids": [path_id],
-            }
-        )
+        record = {
+            "id": path_id,
+            "clock_domain": clock_domain,
+            "clock_period_ns": float(clock_period),
+            "slack_ns": float(slack),
+            "fixed_delay_ns": float(fixed_delay),
+            "cut_nets": projected,
+            "cut_signature": [
+                cut_signature_by_net[net]
+                for net in projected
+            ],
+            "normalized_slack": expected_normalized,
+            "compressed_path_ids": [path_id],
+        }
+        if transitions is not None:
+            record["cut_transitions"] = transitions
+        paths.append(record)
     if not paths:
         raise ValidationError(
             "STA path database has no path crossing this partition"

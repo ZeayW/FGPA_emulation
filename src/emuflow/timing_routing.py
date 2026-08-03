@@ -38,6 +38,37 @@ def _number(value: Any, context: str, *, positive: bool = False) -> float:
     return result
 
 
+def _normalize_cut_transitions(
+    value: Any,
+    cut_nets: Sequence[str],
+    demand_by_net: Mapping[str, Mapping[str, Any]],
+    context: str,
+) -> Optional[List[Dict[str, str]]]:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != len(cut_nets):
+        raise ValidationError(f"{context}: expected one transition per cut net")
+    result = []
+    for index, (raw, net) in enumerate(zip(value, cut_nets)):
+        item_context = f"{context}[{index}]"
+        demand = demand_by_net[net]
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"net", "from", "to"}
+            or raw.get("net") != net
+            or raw.get("from") != demand["source"]
+            or raw.get("to") not in demand["sinks"]
+        ):
+            raise ValidationError(f"{item_context}: invalid routed sink")
+        result.append(dict(raw))
+    if any(
+        result[index - 1]["to"] != result[index]["from"]
+        for index in range(1, len(result))
+    ):
+        raise ValidationError(f"{context}: partition chain is discontinuous")
+    return result
+
+
 def normalize_sta_paths(
     value: Mapping[str, Any],
     demands: Sequence[Mapping[str, Any]],
@@ -117,8 +148,7 @@ def normalize_sta_paths(
             raise ValidationError(
                 f"{context}.cut_signature: expected a non-empty string array"
             )
-        paths.append(
-            {
+        path = {
                 "id": path_id,
                 "clock_domain": clock_domain,
                 "clock_period_ns": clock_period,
@@ -127,7 +157,15 @@ def normalize_sta_paths(
                 "cut_nets": list(raw_nets),
                 "cut_signature": list(signature),
             }
+        transitions = _normalize_cut_transitions(
+            raw.get("cut_transitions"),
+            raw_nets,
+            demand_by_net,
+            f"{context}.cut_transitions",
         )
+        if transitions is not None:
+            path["cut_transitions"] = transitions
+        paths.append(path)
 
     positive_scale = max(
         (path["slack_ns"] for path in paths if path["slack_ns"] >= 0.0),
@@ -181,6 +219,10 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
             path["clock_period_ns"],
             tuple(path["cut_signature"]),
             tuple(path["cut_nets"]),
+            tuple(
+                (item["net"], item["from"], item["to"])
+                for item in path.get("cut_transitions", [])
+            ),
         )
         members[signature].append(path["id"])
         current = representatives.get(signature)
@@ -212,7 +254,7 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
             "compressed_paths": len(compressed),
             "lossless_by": (
                 "clock-domain+period+ordered-cut-signature+"
-                "cut-net-sequence/max-fixed-delay"
+                "cut-net-sequence+member-sink-transitions/max-fixed-delay"
             ),
         },
         "paths": compressed,
@@ -256,6 +298,7 @@ def load_sta_paths(
             raise ValidationError(
                 "normalized timing paths: invalid original path count"
             )
+        demand_by_net = {demand["net"]: demand for demand in demands}
         demand_nets = {demand["net"] for demand in demands}
         positive_scale = _number(
             normalization.get("positive_slack_scale_ns"),
@@ -317,6 +360,12 @@ def load_sta_paths(
                 )
             ):
                 raise ValidationError(f"{context}.cut_signature: invalid")
+            _normalize_cut_transitions(
+                item.get("cut_transitions"),
+                nets,
+                demand_by_net,
+                f"{context}.cut_transitions",
+            )
             members = item.get("compressed_path_ids")
             if (
                 not isinstance(members, list)
@@ -746,6 +795,11 @@ def route_system_native(
                 "cut_nets": path["cut_nets"],
                 "cut_signature": path["cut_signature"],
                 "compressed_path_ids": path["compressed_path_ids"],
+                **(
+                    {"cut_transitions": path["cut_transitions"]}
+                    if "cut_transitions" in path
+                    else {}
+                ),
                 **native["timing"][index],
             }
             for index, path in enumerate(timing_paths["paths"])
@@ -1256,6 +1310,13 @@ def validate_native_system_routes(
                     f"routes.timing path {expected['id']!r}.{key}: "
                     "does not match normalized STA input"
                 )
+        if actual.get("cut_transitions") != expected.get(
+            "cut_transitions"
+        ):
+            raise ValidationError(
+                f"routes.timing path {expected['id']!r}.cut_transitions: "
+                "does not match normalized STA input"
+            )
         delay = expected["fixed_delay_ns"] + sum(
             route_delay_by_net[net]
             for net in expected["cut_nets"]

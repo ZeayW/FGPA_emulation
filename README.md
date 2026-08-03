@@ -161,10 +161,12 @@ database are not included in this repository. Phase 7C does not compare the
 local OpenPARF/VPR or Vivado WNS values directly. It combines each scheduled
 hop's routed TX/RX endpoint delays with the same concrete board route and TDM
 schedule. The open backend additionally back-annotates continuous original-STA
-endpoint chains through routed FPGA logic; paths whose compressed multicast
-member cannot yet be identified exactly retain an explicit conservative
-per-partition bound. Both original-target-clock and virtual-runtime-clock
-system slack are reported.
+endpoint chains through routed FPGA logic. TimingPathDB endpoint identities
+let partition projection retain the actual sink of each multicast member and
+discard local fanout of otherwise-global nets; provider inputs without
+resolvable endpoints retain an explicit conservative per-partition bound.
+Both original-target-clock and virtual-runtime-clock system slack are
+reported.
 
 | Route | Current completion boundary |
 | --- | --- |
@@ -206,8 +208,8 @@ boundaries; combinational loops and hard macros remain atomic.
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
-| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates a shortest-path-tree candidate and a DAC 2025-informed delay-demand-balanced multicast candidate, then applies ASP-DAC 2026-informed timing-path rerouting |
-| TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Interval-cost precomputation extends exact displacement optimization through 2,048-signal domains; a guarded exact/scalable portfolio selects by independently reconstructed lane/slot timing before collision and transport checks |
+| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates a shortest-path-tree candidate and a DAC 2025-informed delay-demand-balanced multicast candidate, then applies ASP-DAC 2026-informed timing-path rerouting while preserving each path member's actual multicast sink |
+| TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Interval-cost precomputation extends exact displacement optimization through 2,048-signal domains; a guarded exact/scalable portfolio selects by independently reconstructed member-specific lane/slot timing, reserves the runtime barrier slot, then checks collisions and transport semantics |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |

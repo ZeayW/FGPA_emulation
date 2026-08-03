@@ -15,7 +15,11 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .platform import Platform
-from .sta import STA_PATH_DATABASE_SCHEMA
+from .sta import (
+    STA_PATH_DATABASE_SCHEMA,
+    sta_object_index,
+    sta_path_endpoints,
+)
 from .tdm import reconstruct_tdm_schedule_timing_paths
 
 
@@ -51,66 +55,6 @@ def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
         default=0,
     )
     return port if width <= 1 else f"{port}__{bit}"
-
-
-def _sta_object_index(ir: EmuIR) -> Dict[str, Dict[str, Any]]:
-    pins = _instance_pin_inventory(ir)
-    result: Dict[str, Dict[str, Any]] = {}
-    for instance in ir.value["instances"]:
-        instance_id = instance["id"]
-        for port, bit in pins[instance_id]:
-            name = f"{instance_id}/{_scalar_pin(port, bit, pins[instance_id])}"
-            result[name] = {
-                "instance": instance_id,
-                "port": port,
-                "bit": bit,
-            }
-    for port in ir.value["ports"]:
-        for bit in range(port["width"]):
-            names = [port["id"]]
-            if port["width"] > 1:
-                names = [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"]
-            for name in names:
-                result[name] = {
-                    "instance": None,
-                    "port": port["id"],
-                    "bit": bit,
-                }
-    return result
-
-
-def _legacy_opensta_endpoints(path_id: str) -> tuple[str, str]:
-    match = re.fullmatch(r"(.+)->(.+)#\d{8}", path_id)
-    if match is None:
-        raise ValidationError(
-            f"STA path {path_id!r} lacks provider-neutral endpoint identity"
-        )
-    return match.group(1), match.group(2)
-
-
-def _path_endpoints(
-    path: Mapping[str, Any], object_index: Mapping[str, Mapping[str, Any]]
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    raw_start = path.get("startpoint")
-    raw_end = path.get("endpoint")
-    if isinstance(raw_start, dict) and isinstance(raw_end, dict):
-        start = dict(raw_start)
-        end = dict(raw_end)
-    else:
-        start_name, end_name = _legacy_opensta_endpoints(path["id"])
-        if start_name not in object_index or end_name not in object_index:
-            missing = [
-                name
-                for name in (start_name, end_name)
-                if name not in object_index
-            ]
-            raise ValidationError(
-                f"STA path {path['id']!r} has unmapped endpoint objects "
-                f"{missing}"
-            )
-        start = dict(object_index[start_name])
-        end = dict(object_index[end_name])
-    return start, end
 
 
 def _top_pin(ir: EmuIR, endpoint: Mapping[str, Any]) -> str:
@@ -282,7 +226,7 @@ def write_vpr_logic_segment_query(
     if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
         raise ValidationError("logic segment merged IR target is invalid")
     endpoints, _ = _boundary_maps(boundary_identity)
-    object_index = _sta_object_index(original_ir)
+    object_index = sta_object_index(original_ir)
     database_paths = {item["id"]: item for item in path_database["paths"]}
     route_timing = {
         item["path"]: item for item in routes["timing"]["paths"]
@@ -338,7 +282,7 @@ def write_vpr_logic_segment_query(
                 unsupported[member] = "discontinuous-compressed-partition-chain"
                 continue
             try:
-                start_endpoint, end_endpoint = _path_endpoints(
+                start_endpoint, end_endpoint = sta_path_endpoints(
                     path, object_index
                 )
                 start_instance = start_endpoint["instance"]

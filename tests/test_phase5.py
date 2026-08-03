@@ -19,6 +19,7 @@ from emuflow.tdm import (
     validate_tdm_schedule,
 )
 from emuflow.tdm_ratio import (
+    _prepare_model,
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
@@ -102,6 +103,66 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_ratio_model_uses_member_specific_multicast_sink(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "member_sink",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b"),
+                    _link("ac", "a", "c"),
+                ],
+            )
+        )
+        routes = {
+            "schema": "emuflow.system-routes/v1",
+            "design": "tdm_test",
+            "platform": platform.name,
+            "constraints": {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 8,
+            },
+            "routes": [
+                {
+                    "id": "d0",
+                    "net": "multicast",
+                    "source": "a",
+                    "sinks": ["b", "c"],
+                    "tree_edges": [
+                        {"link": "ab", "from": "a", "to": "b"},
+                        {"link": "ac", "from": "a", "to": "c"},
+                    ],
+                }
+            ],
+            "timing": {
+                "normalization": {
+                    "positive_slack_scale_ns": 1.0,
+                    "negative_slack_scale_ns": 1.0,
+                    "max_clock_period_ns": 10.0,
+                },
+                "paths": [
+                    {
+                        "path": "to-c",
+                        "clock_domain": "clk",
+                        "clock_period_ns": 10.0,
+                        "fixed_delay_ns": 1.0,
+                        "cut_nets": ["multicast"],
+                        "cut_transitions": [
+                            {"net": "multicast", "from": "a", "to": "c"}
+                        ],
+                    }
+                ],
+            },
+        }
+        model = _prepare_model(routes, platform)
+        selected = model["timing_paths"][0]["hops"]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(model["hops"][selected[0]]["to"], "c")
+        self.assertEqual(
+            model["timing_paths"][0]["cut_transitions"][0]["to"],
+            "c",
+        )
+
     def test_academic_ratio_optimizer_drives_lane_and_slot_schedule(
         self,
     ) -> None:
@@ -662,6 +723,22 @@ class Phase5Test(unittest.TestCase):
         routes = _routes(
             platform,
             [("n0", "a", ["b"]), ("n1", "a", ["b"])],
+            frame_slots=2,
+        )
+        with self.assertRaisesRegex(ValidationError, "infeasible"):
+            build_tdm_schedule(routes, platform)
+
+    def test_scheduler_reserves_final_slot_for_runtime_barrier(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "barrier_slot",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=1, latency=1)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [("n0", "a", ["b"])],
             frame_slots=2,
         )
         with self.assertRaisesRegex(ValidationError, "infeasible"):

@@ -96,6 +96,66 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_router_preserves_member_specific_multicast_sink(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "member_sink",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b"),
+                    _link("ac", "a", "c"),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform, [("multicast", "a", ["b", "c"])]
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "to-c",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 10.0,
+                            "slack_ns": 1.0,
+                            "fixed_delay_ns": 9.0,
+                            "cut_nets": ["multicast"],
+                            "cut_transitions": [
+                                {
+                                    "net": "multicast",
+                                    "from": "a",
+                                    "to": "c",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        constraints = normalize_route_constraints(None, platform)
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider="timing-aware-route-tdm-cooptimized-v1",
+        )
+        self.assertEqual(
+            routes["timing"]["paths"][0]["cut_transitions"],
+            [{"net": "multicast", "from": "a", "to": "c"}],
+        )
+        self.assertEqual(
+            validate_native_system_routes(
+                assignment, platform, routes, timing
+            )["status"],
+            "pass",
+        )
+
     def test_sll_capacity_is_not_multiplied_by_frame_slots(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
