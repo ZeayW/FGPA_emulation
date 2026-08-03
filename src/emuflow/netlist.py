@@ -428,6 +428,18 @@ def schedule_routes(schedule: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
     )
 
 
+def transport_endpoint_port(endpoint: Mapping[str, Any]) -> str:
+    """Return the stable physical interface port for one TDM endpoint."""
+    kind = endpoint.get("kind")
+    if kind not in {"tx", "rx"}:
+        raise ValidationError("transport endpoint kind must be tx or rx")
+    link = endpoint.get("link")
+    peer = endpoint.get("peer")
+    if not isinstance(link, str) or not isinstance(peer, str):
+        raise ValidationError("transport endpoint link/peer is invalid")
+    return f"{kind}_{_sv_name(link)}_{_sv_name(peer)}"
+
+
 def transport_to_systemverilog(
     transport: Mapping[str, Any], platform: Platform
 ) -> str:
@@ -456,14 +468,17 @@ def transport_to_systemverilog(
         )
     bus_name: Dict[Tuple[str, str, str], str] = {}
     for link_id, peer in groups:
-        base = f"{_sv_name(link_id)}_{_sv_name(peer)}"
         width = links[link_id].data_lanes_per_direction
         if "rx" in kinds_by_group[(link_id, peer)]:
-            name = f"rx_{base}"
+            name = transport_endpoint_port(
+                {"kind": "rx", "link": link_id, "peer": peer}
+            )
             bus_name[(link_id, peer, "rx")] = name
             ports.append(f"  input  logic [{width - 1}:0] {name}")
         if "tx" in kinds_by_group[(link_id, peer)]:
-            name = f"tx_{base}"
+            name = transport_endpoint_port(
+                {"kind": "tx", "link": link_id, "peer": peer}
+            )
             bus_name[(link_id, peer, "tx")] = name
             ports.append(f"  output logic [{width - 1}:0] {name}")
 

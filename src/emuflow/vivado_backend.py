@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .errors import EmuFlowError, ValidationError
-from .io import write_json
+from .io import read_json, write_json
+from .boundary_timing import (
+    BOUNDARY_IDENTITY_SCHEMA,
+    build_boundary_timing_database,
+    validate_boundary_timing_database,
+)
 from .physical_backend import (
     PHYSICAL_PARTITION_RESULT_SCHEMA,
     validate_physical_partition_result,
@@ -30,6 +35,125 @@ _ROOT = Path(__file__).resolve().parents[2]
 _IMPLEMENT_SCRIPT = _ROOT / "scripts/vivado/implement_partition.tcl"
 _TIMING_ANALYSIS_SCRIPT = _ROOT / "scripts/vivado/analyze_timing.tcl"
 _TIMING_SCRIPT = _ROOT / "scripts/vivado/export_timing_path_database.tcl"
+_BOUNDARY_TIMING_SCRIPT = _ROOT / "scripts/vivado/export_boundary_timing.tcl"
+_BOUNDARY_QUERY_HEADER = (
+    "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\t"
+    "boundary_cell_hex"
+)
+_BOUNDARY_TIMING_HEADER = (
+    "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
+)
+
+
+def _hex(value: str) -> str:
+    return value.encode("utf-8").hex()
+
+
+def _unhex(value: str, context: str) -> str:
+    try:
+        return bytes.fromhex(value).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ValidationError(f"{context} is not valid UTF-8 hex") from error
+
+
+def write_vivado_boundary_timing_query(
+    ir_path: Path,
+    identity_path: Path,
+    output_path: Path,
+) -> Dict[str, Any]:
+    ir = EmuIR.load(ir_path)
+    identities = read_json(identity_path)
+    if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
+        raise ValidationError("Vivado boundary timing identity schema is invalid")
+    net_index = {
+        net["id"]: index for index, net in enumerate(ir.value["nets"])
+    }
+    lines = [_BOUNDARY_QUERY_HEADER]
+    for endpoint in identities.get("endpoints", []):
+        merged = endpoint["merged_ir"]
+        logical_net = merged["logical_net"]
+        if (
+            endpoint["kind"] == "tx"
+            and not merged["boundary_register_instances"]
+            and logical_net not in net_index
+        ):
+            raise ValidationError(
+                f"boundary endpoint {endpoint['id']!r} net is absent"
+            )
+        cells = merged["boundary_register_instances"]
+        if endpoint["kind"] == "rx" and len(cells) != 1:
+            raise ValidationError(
+                f"RX endpoint {endpoint['id']!r} lacks one boundary register"
+            )
+        boundary_cell = _vivado_mapped_name(cells[0]) if cells else ""
+        fields = (
+            _hex(endpoint["id"]),
+            endpoint["kind"],
+            _hex(merged["external_port"]),
+            str(merged["external_port_bit"]),
+            _hex(
+                f"__emuflow_net_{net_index[logical_net]}"
+                if logical_net in net_index
+                else ""
+            ),
+            _hex(boundary_cell),
+        )
+        lines.append("\t".join(fields))
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {
+        "status": "pass",
+        "fpga": identities["fpga"],
+        "endpoints": len(lines) - 1,
+        "output": str(output_path),
+    }
+
+
+def import_vivado_boundary_timing(
+    input_path: Path,
+    identity_path: Path,
+    output_path: Path,
+) -> Dict[str, Any]:
+    identities = read_json(identity_path)
+    lines = input_path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != _BOUNDARY_TIMING_HEADER:
+        raise ValidationError("Vivado boundary timing TSV header is invalid")
+    measurements = {}
+    expected_kind = {
+        item["id"]: item["kind"] for item in identities["endpoints"]
+    }
+    for line_number, line in enumerate(lines[1:], start=2):
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 5:
+            raise ValidationError(
+                f"Vivado boundary timing line {line_number} is malformed"
+            )
+        endpoint = _unhex(fields[0], f"line {line_number} endpoint")
+        if endpoint in measurements or expected_kind.get(endpoint) != fields[1]:
+            raise ValidationError(
+                f"Vivado boundary timing line {line_number} identity disagrees"
+            )
+        try:
+            delay = float(fields[2])
+        except ValueError as error:
+            raise ValidationError(
+                f"Vivado boundary timing line {line_number} delay is invalid"
+            ) from error
+        measurements[endpoint] = {
+            "delay_ns": delay,
+            "start_object": _unhex(fields[3], f"line {line_number} start"),
+            "end_object": _unhex(fields[4], f"line {line_number} end"),
+        }
+    database = build_boundary_timing_database(
+        identities,
+        measurements,
+        provider="vivado-get-timing-paths-endpoint-v1",
+        qualification="routed-device-endpoint-exact",
+    )
+    validation = validate_boundary_timing_database(database, identities)
+    write_json(output_path, database)
+    return {**validation, "output": str(output_path)}
 
 
 def _read_vivado_cell_inventory(path: Path) -> Dict[str, str]:
@@ -383,6 +507,7 @@ def run_vivado_partition_backend(
     original_cells: int,
     transport_cells: int,
     output_dir: Path,
+    boundary_identity_path: Optional[Path] = None,
     executable: Optional[str] = None,
     max_timing_paths: int = 10000,
     place_directive: str = "Default",
@@ -396,6 +521,8 @@ def run_vivado_partition_backend(
         raise ValidationError("Vivado max timing paths must be positive")
     ir_path = ir_path.resolve()
     mapped_verilog_path = mapped_verilog_path.resolve()
+    if boundary_identity_path is not None:
+        boundary_identity_path = boundary_identity_path.resolve()
     for name, path in (("EmuIR", ir_path), ("mapped Verilog", mapped_verilog_path)):
         if not path.is_file() or path.stat().st_size == 0:
             raise EmuFlowError(f"Vivado {name} input is missing: {path}")
@@ -505,6 +632,35 @@ def run_vivado_partition_backend(
         }
         timing_database_validation = dict(timing_database_report)
 
+    boundary_timing_report = None
+    if boundary_identity_path is not None:
+        boundary_query = output_dir / "boundary-timing-query.tsv"
+        query_report = write_vivado_boundary_timing_query(
+            ir_path, boundary_identity_path, boundary_query
+        )
+        boundary_tsv = output_dir / "boundary-timing.tsv"
+        boundary_export = _run_vivado(
+            vivado,
+            _BOUNDARY_TIMING_SCRIPT,
+            [
+                str(output_dir / "routed.dcp"),
+                str(boundary_query),
+                str(boundary_tsv),
+            ],
+            output_dir,
+            "vivado-boundary-timing-export.log",
+        )
+        boundary_database = output_dir / "boundary-timing.json"
+        boundary_import = import_vivado_boundary_timing(
+            boundary_tsv, boundary_identity_path, boundary_database
+        )
+        boundary_timing_report = {
+            "status": "pass",
+            "query": query_report,
+            "export": boundary_export,
+            "import": boundary_import,
+        }
+
     artifact_names = (
         "synthesized.dcp",
         "placed.dcp",
@@ -517,6 +673,7 @@ def run_vivado_partition_backend(
         "mapped_cells.tsv",
         "routed_mapped_cells.tsv",
         *(("timing-path-database.json",) if timing_rows else ()),
+        *(("boundary-timing.json",) if boundary_timing_report else ()),
     )
     artifacts = {}
     for name in artifact_names:
@@ -596,6 +753,11 @@ def run_vivado_partition_backend(
         "net_map": net_map_report,
         "timing_path_database": timing_database_report,
         "timing_path_validation": timing_database_validation,
+        **(
+            {"boundary_timing": boundary_timing_report}
+            if boundary_timing_report is not None
+            else {}
+        ),
         "result": result,
         "validation": validation,
     }

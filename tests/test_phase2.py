@@ -10,6 +10,7 @@ from emuflow.ir import EmuIR
 from emuflow.openparf import (
     _lut_size,
     openparf_instance_names,
+    resolve_openparf_install,
     run_openparf,
 )
 from emuflow.phase2 import run_phase2
@@ -166,6 +167,16 @@ class PlacementTest(unittest.TestCase):
 
 
 class Phase2PipelineTest(unittest.TestCase):
+    def test_openparf_resolver_accepts_monorepo_install_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            prefix = Path(temporary_directory) / "install"
+            package = prefix / "openparf"
+            (package / "openparf").mkdir(parents=True)
+            (package / "openparf.py").write_text("", encoding="utf-8")
+            self.assertEqual(
+                resolve_openparf_install(prefix), package.resolve()
+            )
+
     def test_root_built_openparf_runner_returns_expected_result(
         self,
     ) -> None:

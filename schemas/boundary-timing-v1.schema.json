@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/boundary-timing-v1.schema.json",
+  "title": "EmuFlow endpoint-keyed physical boundary timing database v1",
+  "type": "object",
+  "required": ["schema", "status", "design", "platform", "fpga", "provider", "qualification", "coverage", "endpoints"],
+  "properties": {
+    "schema": {"const": "emuflow.boundary-timing/v1"},
+    "status": {"const": "pass"},
+    "design": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "fpga": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "qualification": {"type": "string", "minLength": 1},
+    "coverage": {
+      "type": "object",
+      "required": ["endpoints", "tx", "rx"],
+      "properties": {
+        "endpoints": {"type": "integer", "minimum": 0},
+        "tx": {"type": "integer", "minimum": 0},
+        "rx": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "schedule_entry", "delay_ns", "start_object", "end_object", "measurement"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["tx", "rx"]},
+          "schedule_entry": {"type": "string", "minLength": 1},
+          "delay_ns": {"type": "number", "minimum": 0},
+          "start_object": {"type": "string", "minLength": 1},
+          "end_object": {"type": "string", "minLength": 1},
+          "measurement": {"enum": ["logical-source-to-tx-port", "rx-port-to-shadow-capture"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

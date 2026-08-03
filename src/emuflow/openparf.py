@@ -40,11 +40,14 @@ def resolve_openparf_install(
     explicit: Optional[Path] = None,
 ) -> Path:
     """Resolve only an explicit or root-build OpenPARF installation."""
-    candidates = (
-        (explicit.expanduser(),)
-        if explicit is not None
-        else tuple(root / "openparf" for root in native_install_roots())
-    )
+    if explicit is not None:
+        root = explicit.expanduser()
+        # Accept both the OpenPARF package directory itself and the monorepo
+        # CMake install prefix that contains it.  The CLI option is named
+        # --openparf-install, so both layouts are natural and unambiguous.
+        candidates = (root, root / "openparf")
+    else:
+        candidates = tuple(root / "openparf" for root in native_install_roots())
     for candidate in candidates:
         resolved = candidate.resolve()
         if (

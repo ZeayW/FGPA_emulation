@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
+from .boundary_timing import validate_boundary_timing_database
 from .errors import ValidationError
 from .platform import Platform
 from .tdm import reconstruct_tdm_schedule_timing_paths
@@ -93,6 +94,33 @@ def _logic_partition_sequence(
     return sequence, discontinuities
 
 
+def _endpoint_delay_database(
+    physical_summary: Mapping[str, Any],
+) -> Optional[Dict[str, float]]:
+    raw_timing = physical_summary.get("boundary_timing")
+    if raw_timing is None:
+        return None
+    identities = physical_summary.get("boundary_identities")
+    if not isinstance(raw_timing, dict) or not isinstance(identities, dict):
+        raise ValidationError("physical boundary timing/identity maps are invalid")
+    if set(raw_timing) != set(identities):
+        raise ValidationError("physical boundary timing FPGA coverage disagrees")
+    result: Dict[str, float] = {}
+    for fpga, database in raw_timing.items():
+        validate_boundary_timing_database(database, identities[fpga])
+        for endpoint in database["endpoints"]:
+            endpoint_id = endpoint["id"]
+            if endpoint_id in result:
+                raise ValidationError(
+                    f"duplicate physical boundary timing endpoint {endpoint_id!r}"
+                )
+            result[endpoint_id] = _finite_number(
+                endpoint["delay_ns"],
+                f"physical boundary endpoint {endpoint_id}",
+            )
+    return result
+
+
 def build_system_timing(
     runtime: Mapping[str, Any],
     routes: Mapping[str, Any],
@@ -104,11 +132,10 @@ def build_system_timing(
     """Compose P&R delay and concrete TDM/link delay on every STA path.
 
     The schedule/link component is path-exact for the Phase-4 routed sink
-    selected by the timing model. The current physical component is a safe
-    partition-level upper bound: it sums the maximum P&R DUT delay for every
-    logical FPGA segment and the maximum P&R clock-crossing delay at both
-    ends of every cut. Endpoint-specific physical back-annotation can later
-    replace this component without changing the public report shape.
+    selected by the timing model. Routed endpoint measurements are used when
+    the physical backend provides complete BoundaryTimingDB coverage. The DUT
+    logic component remains a safe per-partition post-route maximum; backends
+    without endpoint measurements also use a per-hop interface maximum.
     """
     records = reconstruct_tdm_schedule_timing_paths(
         routes, platform, schedule
@@ -132,6 +159,7 @@ def build_system_timing(
             )
 
     delays = _physical_delay_database(physical_summary)
+    endpoint_delays = _endpoint_delay_database(physical_summary)
     expected_fpgas = {fpga.id for fpga in platform.fpgas}
     if set(delays) != expected_fpgas:
         raise ValidationError(
@@ -154,11 +182,33 @@ def build_system_timing(
                 f"{unknown}"
             )
         local_delay = sum(delays[fpga]["dut"] for fpga in partitions)
-        interface_delay = sum(
-            delays[transition["from"]]["cross"]
-            + delays[transition["to"]]["cross"]
-            for transition in transitions
-        )
+        scheduled_hops = record["scheduled_hops"]
+        if endpoint_delays is None:
+            interface_delay = sum(
+                delays[hop["from"]]["cross"]
+                + delays[hop["to"]]["cross"]
+                for hop in scheduled_hops
+            )
+            interface_model = "per-partition-interface-maxima-upper-bound"
+        else:
+            endpoint_ids = [
+                endpoint_id
+                for hop in scheduled_hops
+                for endpoint_id in (
+                    hop["tx_endpoint"],
+                    hop["rx_endpoint"],
+                )
+            ]
+            missing = sorted(set(endpoint_ids) - set(endpoint_delays))
+            if missing:
+                raise ValidationError(
+                    f"system timing path {record['path']} lacks endpoint "
+                    f"timing for {missing[:10]}"
+                )
+            interface_delay = sum(
+                endpoint_delays[endpoint_id] for endpoint_id in endpoint_ids
+            )
+            interface_model = "routed-endpoint-exact"
         physical_delay = local_delay + interface_delay
         total_delay = physical_delay + record["transport_delay_ns"]
         target_period = record["clock_period_ns"]
@@ -176,6 +226,7 @@ def build_system_timing(
                 ],
                 "physical_logic_delay_bound_ns": local_delay,
                 "physical_interface_delay_bound_ns": interface_delay,
+                "physical_interface_model": interface_model,
                 "scheduled_link_tdm_delay_ns": record[
                     "transport_delay_ns"
                 ],
@@ -204,12 +255,20 @@ def build_system_timing(
         "design": runtime["design"],
         "platform": platform.name,
         "qualification": (
-            "conservative-partition-physical-maxima-plus-concrete-link-tdm"
+            "partition-logic-maxima-plus-endpoint-exact-interface-plus-"
+            "concrete-link-tdm"
+            if endpoint_delays is not None
+            else "conservative-partition-physical-maxima-plus-concrete-link-tdm"
         ),
         "path_exactness": {
             "scheduled_link_tdm": True,
-            "physical_boundary_endpoints": False,
-            "physical_model": "per-partition-and-interface-maxima-upper-bound",
+            "physical_boundary_endpoints": endpoint_delays is not None,
+            "physical_logic_segments": False,
+            "physical_model": (
+                "partition-logic-maxima-and-endpoint-exact-interface"
+                if endpoint_delays is not None
+                else "per-partition-and-interface-maxima-upper-bound"
+            ),
             "discontinuous_compressed_paths": discontinuous_paths,
         },
         "physical_source": {

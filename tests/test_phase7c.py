@@ -362,6 +362,88 @@ class Phase7CTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "slower"):
             validate_physical_summary(slower, runtime, self.platform)
 
+    def test_qor_prefers_endpoint_exact_physical_interface_timing(self):
+        physical = self._physical_summary()
+        identities = {}
+        timings = {}
+        for fpga, endpoint_id, kind, delay in (
+            ("fpga0", "__emuflow_tx_s000000", "tx", 0.4),
+            ("fpga1", "__emuflow_rx_s000000", "rx", 0.6),
+        ):
+            identities[fpga] = {
+                "schema": "emuflow.boundary-identity/v1",
+                "status": "pass",
+                "design": "dut",
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "provider": "test",
+                "coverage": {
+                    "endpoints": 1,
+                    "tx": int(kind == "tx"),
+                    "rx": int(kind == "rx"),
+                    "external_port_nets": 1,
+                },
+                "endpoints": [
+                    {
+                        "id": endpoint_id,
+                        "kind": kind,
+                        "schedule_entry": "s000000",
+                    }
+                ],
+            }
+            timings[fpga] = {
+                "schema": "emuflow.boundary-timing/v1",
+                "status": "pass",
+                "design": "dut",
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "provider": "test",
+                "qualification": "endpoint-exact",
+                "coverage": {
+                    "endpoints": 1,
+                    "tx": int(kind == "tx"),
+                    "rx": int(kind == "rx"),
+                },
+                "endpoints": [
+                    {
+                        "id": endpoint_id,
+                        "kind": kind,
+                        "schedule_entry": "s000000",
+                        "delay_ns": delay,
+                        "start_object": "start",
+                        "end_object": "end",
+                        "measurement": (
+                            "logical-source-to-tx-port"
+                            if kind == "tx"
+                            else "rx-port-to-shadow-capture"
+                        ),
+                    }
+                ],
+            }
+        physical["boundary_identities"] = identities
+        physical["boundary_timing"] = timings
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            self.reports["phase5"],
+            self.reports["phase6"],
+            physical,
+            self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
+        )
+        self.assertTrue(
+            qor["timing"]["path_exactness"]["physical_boundary_endpoints"]
+        )
+        self.assertEqual(
+            qor["timing"]["paths"][0][
+                "physical_interface_delay_bound_ns"
+            ],
+            1.0,
+        )
+
     def test_phase7c_writes_generated_then_physically_closed_report(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

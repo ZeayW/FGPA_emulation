@@ -7,6 +7,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from .boundary_timing import (
+    validate_boundary_identity_database,
+    validate_boundary_timing_database,
+)
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .lowering import run_placement_ir_lowering
@@ -133,6 +137,14 @@ def validate_multi_fpga_physical_report(
         ):
             raise ValidationError(f"one or more physical stages for {fpga_id} failed")
         lowering = stages["placement_ir"]
+        boundary = lowering.get("boundary_identity")
+        if (
+            not isinstance(boundary, dict)
+            or boundary.get("validation", {}).get("status") != "pass"
+        ):
+            raise ValidationError(
+                f"physical boundary identities for {fpga_id} are incomplete"
+            )
         if lowering.get("instances") != (
             item.get("original_cells") + item.get("transport_cells")
         ):
@@ -501,6 +513,9 @@ def run_multi_fpga_physical_flow(
                 original_cells=original_cells,
                 transport_cells=transport_cells,
                 output_dir=fpga_root / "vivado",
+                boundary_identity_path=Path(
+                    lowering_report["boundary_identity"]["output"]
+                ),
                 executable=vivado,
                 max_timing_paths=vivado_max_timing_paths,
                 place_directive=vivado_place_directive,
@@ -547,7 +562,45 @@ def run_multi_fpga_physical_flow(
         "qualification": backend_descriptor["qualification"],
         "backend": backend_descriptor,
         "fpgas": physical_fpgas,
+        "boundary_identities": {
+            item["fpga"]: read_json(
+                Path(
+                    item["stages"]["placement_ir"]["boundary_identity"][
+                        "output"
+                    ]
+                )
+            )
+            for item in records
+        },
     }
+    transports_by_fpga = {
+        item["fpga"]: read_json(split_root / item["transport"])
+        for item in manifest["fpgas"]
+    }
+    for fpga_id, database in physical_summary[
+        "boundary_identities"
+    ].items():
+        validate_boundary_identity_database(
+            database, transports_by_fpga[fpga_id]
+        )
+    if backend == "vivado":
+        physical_summary["boundary_timing"] = {
+            item["fpga"]: read_json(
+                Path(
+                    item["stages"]["vivado_implementation"][
+                        "boundary_timing"
+                    ]["import"]["output"]
+                )
+            )
+            for item in records
+        }
+        for fpga_id, database in physical_summary[
+            "boundary_timing"
+        ].items():
+            validate_boundary_timing_database(
+                database,
+                physical_summary["boundary_identities"][fpga_id],
+            )
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )

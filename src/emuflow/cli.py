@@ -288,10 +288,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--partition-repair-balance",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
             "legalize a best-effort assignment against independently "
-            "checked multi-resource balance bounds"
+            "checked multi-resource balance bounds (enabled by default)"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -1285,6 +1286,11 @@ def _build_parser() -> argparse.ArgumentParser:
     lower.add_argument("--transport-ir", type=Path, required=True)
     lower.add_argument("--output", "-o", type=Path, required=True)
     lower.add_argument("--report", type=Path)
+    lower.add_argument(
+        "--boundary-identities",
+        type=Path,
+        help="provider-neutral physical boundary identity database",
+    )
 
     emit_verilog = subparsers.add_parser(
         "emit-mapped-verilog",
@@ -2065,6 +2071,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             transport_ir_path=args.transport_ir,
             output_path=args.output,
             report_path=args.report,
+            boundary_identity_path=args.boundary_identities,
         )
         _print_json(report)
         return 0

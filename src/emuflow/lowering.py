@@ -2,6 +2,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from .boundary_timing import (
+    build_boundary_identity_database,
+    validate_boundary_identity_database,
+)
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EMUIR_SCHEMA, EmuIR
@@ -233,12 +237,26 @@ def run_placement_ir_lowering(
     transport_ir_path: Path,
     output_path: Path,
     report_path: Optional[Path] = None,
+    boundary_identity_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    transport = read_json(transport_path)
     transport_ir = EmuIR.load(transport_ir_path)
     result = build_placement_ir(
-        read_json(netlist_path), read_json(transport_path), transport_ir
+        read_json(netlist_path), transport, transport_ir
     )
     write_json(output_path, result.to_dict())
+    boundary_path = (
+        boundary_identity_path
+        if boundary_identity_path is not None
+        else output_path.with_name("boundary-identities.json")
+    )
+    boundary_database = build_boundary_identity_database(
+        transport, result, transport_ir
+    )
+    boundary_validation = validate_boundary_identity_database(
+        boundary_database, transport
+    )
+    write_json(boundary_path, boundary_database)
     stats = result.stats()
     report = {
         "schema": PLACEMENT_IR_REPORT_SCHEMA,
@@ -252,6 +270,11 @@ def run_placement_ir_lowering(
             for instance in result.value["instances"]
         ),
         "output": str(output_path),
+        "boundary_identity": {
+            "schema": boundary_database["schema"],
+            "output": str(boundary_path),
+            "validation": boundary_validation,
+        },
     }
     if report_path is not None:
         write_json(report_path, report)

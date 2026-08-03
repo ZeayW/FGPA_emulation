@@ -88,7 +88,16 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         "instances": [{"id": f"{fpga}_original"}],
                     },
                 )
-                write_json(fpga_root / "transport.json", {})
+                write_json(
+                    fpga_root / "transport.json",
+                    {
+                        "schema": "emuflow.transport-endpoints/v1",
+                        "design": "design",
+                        "platform": "academic_vtr_2fpga_p2p",
+                        "fpga": fpga,
+                        "endpoints": [],
+                    },
+                )
                 (fpga_root / "transport_schedule.sv").write_text(
                     f"module emuflow_transport_{fpga}; endmodule\n",
                     encoding="utf-8",
@@ -121,6 +130,23 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 fpga = netlist_path.parent.name
                 value = _merged_ir(fpga)
                 write_json(output, value.to_dict())
+                boundary_path = output.with_name("boundary-identities.json")
+                boundary = {
+                    "schema": "emuflow.boundary-identity/v1",
+                    "status": "pass",
+                    "design": "design",
+                    "platform": "academic_vtr_2fpga_p2p",
+                    "fpga": fpga,
+                    "provider": "test",
+                    "coverage": {
+                        "endpoints": 0,
+                        "tx": 0,
+                        "rx": 0,
+                        "external_port_nets": 0,
+                    },
+                    "endpoints": [],
+                }
+                write_json(boundary_path, boundary)
                 result = {
                     "schema": "emuflow.placement-ir-report/v1",
                     "status": "pass",
@@ -130,6 +156,17 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "resource_totals": {"lut": 2},
                     "transport_instances": 1,
                     "output": str(output),
+                    "boundary_identity": {
+                        "schema": "emuflow.boundary-identity/v1",
+                        "output": str(boundary_path),
+                        "validation": {
+                            "status": "pass",
+                            "fpga": fpga,
+                            "endpoints": 0,
+                            "tx": 0,
+                            "rx": 0,
+                        },
+                    },
                 }
                 write_json(report, result)
                 return result

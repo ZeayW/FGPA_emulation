@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/boundary-identity-v1.schema.json",
+  "title": "EmuFlow physical boundary identity database v1",
+  "type": "object",
+  "required": ["schema", "status", "design", "platform", "fpga", "provider", "coverage", "endpoints"],
+  "properties": {
+    "schema": {"const": "emuflow.boundary-identity/v1"},
+    "status": {"const": "pass"},
+    "design": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "fpga": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "coverage": {
+      "type": "object",
+      "required": ["endpoints", "tx", "rx", "external_port_nets"],
+      "properties": {
+        "endpoints": {"type": "integer", "minimum": 0},
+        "tx": {"type": "integer", "minimum": 0},
+        "rx": {"type": "integer", "minimum": 0},
+        "external_port_nets": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "schedule_entry", "demand", "logical_net", "link", "peer", "lane", "logical_lane", "internal_signal", "source_class", "merged_ir"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["tx", "rx"]},
+          "schedule_entry": {"type": "string", "minLength": 1},
+          "demand": {"type": "string", "minLength": 1},
+          "logical_net": {"type": "string", "minLength": 1},
+          "link": {"type": "string", "minLength": 1},
+          "peer": {"type": "string", "minLength": 1},
+          "lane": {"type": "integer", "minimum": 0},
+          "logical_lane": {"type": "integer", "minimum": 0},
+          "internal_signal": {"type": "string", "minLength": 1},
+          "source_class": {"enum": ["dut-net", "forwarded-shadow", "captured-shadow"]},
+          "merged_ir": {
+            "type": "object",
+            "required": ["external_port", "external_port_bit", "external_net", "logical_net", "boundary_register_instances"],
+            "properties": {
+              "external_port": {"type": "string", "minLength": 1},
+              "external_port_bit": {"type": "integer", "minimum": 0},
+              "external_net": {"type": "string", "minLength": 1},
+              "logical_net": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+              "boundary_register_instances": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

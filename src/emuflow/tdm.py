@@ -884,6 +884,7 @@ def reconstruct_tdm_schedule_timing_paths(
     for timing_path in model["timing_paths"]:
         delay_ns = timing_path["fixed_delay_ns"]
         transport_delay_ns = 0.0
+        scheduled_hops = []
         for hop_index in timing_path["hops"]:
             hop = model["hops"][hop_index]
             key = _hop_key(
@@ -910,6 +911,18 @@ def reconstruct_tdm_schedule_timing_paths(
             )
             delay_ns += hop_delay_ns
             transport_delay_ns += hop_delay_ns
+            scheduled_hops.append(
+                {
+                    "schedule_entry": entry["id"],
+                    "demand": hop["demand"],
+                    "link": hop["link"],
+                    "from": hop["from"],
+                    "to": hop["to"],
+                    "tx_endpoint": f"__emuflow_tx_{entry['id']}",
+                    "rx_endpoint": f"__emuflow_rx_{entry['id']}",
+                    "link_tdm_delay_ns": hop_delay_ns,
+                }
+            )
         slack_ns = timing_path["clock_period_ns"] - delay_ns
         normalized_slack = _normalized_slack(
             timing_path["clock_period_ns"],
@@ -934,6 +947,7 @@ def reconstruct_tdm_schedule_timing_paths(
                     for item in timing_path.get("cut_transitions", [])
                 ],
                 "routed_hops": len(timing_path["hops"]),
+                "scheduled_hops": scheduled_hops,
             }
         )
     return records

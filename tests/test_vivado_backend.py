@@ -11,10 +11,12 @@ from emuflow.vtr_netlist import normalize_vtr_hard_block_json
 from emuflow.yosys import import_yosys_json
 from emuflow.vivado_backend import (
     _run_vivado,
+    import_vivado_boundary_timing,
     run_vivado_partition_backend,
     run_vivado_timing_path_database,
     validate_vivado_cell_coverage,
     vivado_runtime_xdc,
+    write_vivado_boundary_timing_query,
 )
 from emuflow.vivado_netlist import (
     emit_vivado_mapped_verilog,
@@ -102,6 +104,90 @@ RUNTIME = {
 
 
 class VivadoBackendTest(unittest.TestCase):
+    def test_vivado_boundary_timing_uses_stable_endpoint_identities(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            identity_path = root / "identity.json"
+            query_path = root / "query.tsv"
+            timing_path = root / "timing.tsv"
+            output_path = root / "timing.json"
+            value = _ir().to_dict()
+            value["design"]["name"] = "partition__fpga0"
+            value["ports"].append(
+                {
+                    "id": "tx_link_fpga1",
+                    "name": "tx_link_fpga1",
+                    "direction": "output",
+                    "width": 1,
+                    "clock": False,
+                }
+            )
+            value["nets"][0]["sinks"].append(
+                {
+                    "instance": None,
+                    "port": "tx_link_fpga1",
+                    "bit": 0,
+                }
+            )
+            value["nets"][0]["fanout"] = 2
+            write_json(ir_path, value)
+            identity = {
+                "schema": "emuflow.boundary-identity/v1",
+                "status": "pass",
+                "design": "partition",
+                "platform": "board",
+                "fpga": "fpga0",
+                "provider": "test",
+                "coverage": {
+                    "endpoints": 1,
+                    "tx": 1,
+                    "rx": 0,
+                    "external_port_nets": 1,
+                },
+                "endpoints": [
+                    {
+                        "id": "tx0",
+                        "kind": "tx",
+                        "schedule_entry": "s0",
+                        "merged_ir": {
+                            "external_port": "tx_link_fpga1",
+                            "external_port_bit": 0,
+                            "external_net": "n0",
+                            "logical_net": "n0",
+                            "boundary_register_instances": [],
+                        },
+                    }
+                ],
+            }
+            write_json(identity_path, identity)
+            query = write_vivado_boundary_timing_query(
+                ir_path, identity_path, query_path
+            )
+            query_text = query_path.read_text(encoding="utf-8")
+            timing_path.write_text(
+                "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\t"
+                "end_object_hex\n"
+                + "\t".join(
+                    (
+                        "tx0".encode().hex(),
+                        "tx",
+                        "1.75",
+                        "__emuflow_net_0".encode().hex(),
+                        "tx_link_fpga1[0]".encode().hex(),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            imported = import_vivado_boundary_timing(
+                timing_path, identity_path, output_path
+            )
+
+        self.assertEqual(query["endpoints"], 1)
+        self.assertIn("__emuflow_net_0".encode().hex(), query_text)
+        self.assertEqual(imported["maximum_delay_ns"], 1.75)
+
     def test_vtr_dsp_and_bram_macros_emit_synthesizable_models(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

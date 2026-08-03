@@ -468,20 +468,24 @@ Applying placements in Vivado is retained only as optional cross-validation,
 not as evidence that the open physical backend is complete.
 
 Phase 7C integrates one lockstep frame controller per transport and closes the
-current pausible-clock timing contract. Its versioned `system-timing/v1`
-artifact reconstructs every timing-aware route from the concrete lane/slot
-schedule, adds routed link delay, and combines that transport delay with the
-selected open or Vivado backend's post-route DUT and clock-interface delays.
-It reports original-target-clock and virtual-runtime-clock slack separately.
+current pausible-clock timing contract. Phase 6 emits a versioned
+`boundary-identity/v1` database that binds every scheduled hop's TX/RX endpoint
+to its external port bit, merged physical net, DUT source, or transport shadow
+register. A physical backend can return `boundary-timing/v1` measurements under
+those stable endpoint IDs. The versioned `system-timing/v1` artifact then
+reconstructs every timing-aware route from the concrete lane/slot schedule and
+combines per-hop routed endpoint delay, board-link/TDM delay, and the post-route
+DUT logic bound. It reports original-target-clock and virtual-runtime-clock
+slack separately.
 
-The current physical composition is deliberately conservative: it sums
-per-partition and per-interface post-route maxima rather than claiming exact
-boundary-register back-annotation. This closes the open physical
-placement/routing/runtime gate with an explicit bound and leaves
-endpoint-specific path extraction as the next accuracy refinement. Hardware
-BSP pin binding, source-synchronous board timing, dedicated clock-buffer
-binding, bitstream generation, link training, and a golden hardware workload
-remain later gates.
+The Vivado provider extracts each routed TX source-to-port and RX
+port-to-shadow-register path and therefore supplies endpoint-exact interface
+delay. The open provider currently uses a conservative post-route interface
+maximum for every scheduled hop. Both routes still use per-partition maxima for
+DUT logic segments, so neither is yet a fully endpoint-to-endpoint exact timing
+trace. Hardware BSP pin binding, source-synchronous board timing, dedicated
+clock-buffer binding, bitstream generation, link training, and a golden
+hardware workload remain later gates.
 
 Phase 7D seals that result with a versioned release manifest. It rehashes the
 pinned RTL and critical artifacts, cross-checks every boundary from partition
