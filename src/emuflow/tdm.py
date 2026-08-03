@@ -820,48 +820,9 @@ def reconstruct_tdm_schedule_timing(
             )
         entries[key] = entry
 
-    records = []
-    for timing_path in model["timing_paths"]:
-        delay_ns = timing_path["fixed_delay_ns"]
-        for hop_index in timing_path["hops"]:
-            hop = model["hops"][hop_index]
-            key = _hop_key(
-                hop["demand"],
-                hop["link"],
-                hop["from"],
-                hop["to"],
-            )
-            if key not in entries:
-                raise ValidationError(
-                    "schedule timing reconstruction is missing routed hop "
-                    f"{key}"
-                )
-            entry = entries[key]
-            wait_slots = entry["slot"] - entry["ready_slot"]
-            if wait_slots < 0:
-                raise ValidationError(
-                    "schedule timing reconstruction found a negative wait "
-                    f"for hop {key}"
-                )
-            delay_ns += (
-                hop["base_delay_ns"]
-                + hop["beta_ns"] * wait_slots
-            )
-        slack_ns = timing_path["clock_period_ns"] - delay_ns
-        normalized_slack = _normalized_slack(
-            timing_path["clock_period_ns"],
-            slack_ns,
-            model["normalization"],
-        )
-        records.append(
-            {
-                "path": timing_path["id"],
-                "delay_ns": delay_ns,
-                "slack_ns": slack_ns,
-                "normalized_slack": normalized_slack,
-            }
-        )
-
+    records = reconstruct_tdm_schedule_timing_paths(
+        routes, platform, schedule, model=model, entries=entries
+    )
     if not records:
         raise ValidationError(
             "schedule timing reconstruction has no timing paths"
@@ -889,6 +850,93 @@ def reconstruct_tdm_schedule_timing(
         "p01_normalized_slack": normalized[len(normalized) // 100],
         "median_normalized_slack": normalized[len(normalized) // 2],
     }
+
+
+def reconstruct_tdm_schedule_timing_paths(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    schedule: Mapping[str, Any],
+    *,
+    model: Optional[Mapping[str, Any]] = None,
+    entries: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Return independently reconstructed, traceable timing-path records."""
+    from .tdm_ratio import _normalized_slack, _prepare_model
+
+    if model is None:
+        model = _prepare_model(routes, platform)
+    if entries is None:
+        entries = {}
+        for entry in schedule["entries"]:
+            key = _hop_key(
+                entry["demand"],
+                entry["link"],
+                entry["from"],
+                entry["to"],
+            )
+            if key in entries:
+                raise ValidationError(
+                    f"schedule timing reconstruction found duplicate hop {key}"
+                )
+            entries[key] = entry
+
+    records: List[Dict[str, Any]] = []
+    for timing_path in model["timing_paths"]:
+        delay_ns = timing_path["fixed_delay_ns"]
+        transport_delay_ns = 0.0
+        for hop_index in timing_path["hops"]:
+            hop = model["hops"][hop_index]
+            key = _hop_key(
+                hop["demand"],
+                hop["link"],
+                hop["from"],
+                hop["to"],
+            )
+            if key not in entries:
+                raise ValidationError(
+                    "schedule timing reconstruction is missing routed hop "
+                    f"{key}"
+                )
+            entry = entries[key]
+            wait_slots = entry["slot"] - entry["ready_slot"]
+            if wait_slots < 0:
+                raise ValidationError(
+                    "schedule timing reconstruction found a negative wait "
+                    f"for hop {key}"
+                )
+            hop_delay_ns = (
+                hop["base_delay_ns"]
+                + hop["beta_ns"] * wait_slots
+            )
+            delay_ns += hop_delay_ns
+            transport_delay_ns += hop_delay_ns
+        slack_ns = timing_path["clock_period_ns"] - delay_ns
+        normalized_slack = _normalized_slack(
+            timing_path["clock_period_ns"],
+            slack_ns,
+            model["normalization"],
+        )
+        records.append(
+            {
+                "path": timing_path["id"],
+                "clock_domain": timing_path["clock_domain"],
+                "clock_period_ns": timing_path["clock_period_ns"],
+                "preplacement_fixed_delay_ns": timing_path[
+                    "fixed_delay_ns"
+                ],
+                "transport_delay_ns": transport_delay_ns,
+                "delay_ns": delay_ns,
+                "slack_ns": slack_ns,
+                "normalized_slack": normalized_slack,
+                "cut_nets": list(timing_path["cut_nets"]),
+                "cut_transitions": [
+                    dict(item)
+                    for item in timing_path.get("cut_transitions", [])
+                ],
+                "routed_hops": len(timing_path["hops"]),
+            }
+        )
+    return records
 
 
 def simulate_tdm_schedule(

@@ -1305,6 +1305,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7c.add_argument("--phase5-report", type=Path, required=True)
     phase7c.add_argument("--phase6-report", type=Path, required=True)
     phase7c.add_argument("--physical-summary", type=Path)
+    phase7c.add_argument(
+        "--routes",
+        type=Path,
+        help="Phase 4 routes.json required for unified physical timing",
+    )
     phase7c.add_argument("--simulation-frames", type=int, default=12)
     phase7c.add_argument("--out", type=Path, required=True)
 
@@ -2082,6 +2087,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             phase5_report_path=args.phase5_report,
             phase6_report_path=args.phase6_report,
             physical_summary_path=args.physical_summary,
+            routes_path=args.routes,
             simulation_frames=args.simulation_frames,
             output_dir=args.out,
         )

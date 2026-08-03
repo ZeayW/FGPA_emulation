@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
 from .runtime import (
@@ -13,7 +14,7 @@ from .runtime import (
 )
 
 
-PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v1"
+PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v2"
 
 
 def run_phase7c(
@@ -25,6 +26,7 @@ def run_phase7c(
     phase6_report_path: Path,
     output_dir: Path,
     physical_summary_path: Optional[Path] = None,
+    routes_path: Optional[Path] = None,
     simulation_frames: int = 12,
 ) -> Dict[str, Any]:
     schedule = read_json(schedule_path)
@@ -36,6 +38,11 @@ def run_phase7c(
         if physical_summary_path is not None
         else None
     )
+    if physical_summary is not None and routes_path is None:
+        raise ValidationError(
+            "physical Phase 7C closure requires the Phase 4 routes artifact"
+        )
+    routes = read_json(routes_path) if routes_path is not None else None
     qor = aggregate_qor(
         runtime,
         read_json(phase3_report_path),
@@ -44,10 +51,14 @@ def run_phase7c(
         read_json(phase6_report_path),
         physical_summary,
         platform,
+        routes=routes,
+        schedule=schedule,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "runtime_contract.json", runtime)
     write_json(output_dir / "qor_report.json", qor)
+    if physical_summary is not None:
+        write_json(output_dir / "system_timing.json", qor["timing"])
     if physical_summary is not None:
         write_json(output_dir / "physical_summary.json", physical_summary)
     (output_dir / "virtual_runtime_controller.sv").write_text(
@@ -69,13 +80,18 @@ def run_phase7c(
     report = {
         "schema": PHASE7C_REPORT_SCHEMA,
         "phase": "7C",
-        "increment": "virtual-runtime-barrier-timing-and-qor",
-        "status": "pass" if qor["status"] == "pass" else "generated",
+        "increment": "unified-physical-link-tdm-system-timing",
+        "status": (
+            "pass"
+            if qor["status"] == "pass"
+            else "generated"
+            if qor["status"] == "pending"
+            else "fail"
+        ),
         "design": runtime["design"],
         "platform": platform.name,
         "provider": runtime["provider"],
         "validation": validation,
-        "runtime_timing": qor["timing"],
         "physical": qor["physical"],
         "artifacts": {
             "runtime_contract": "runtime_contract.json",
@@ -89,6 +105,10 @@ def run_phase7c(
         },
     }
     if physical_summary is not None:
+        report["system_timing"] = qor["timing"]
         report["artifacts"]["physical_summary"] = "physical_summary.json"
+        report["artifacts"]["system_timing"] = "system_timing.json"
+    else:
+        report["runtime_timing"] = qor["timing"]
     write_json(output_dir / "phase7c_report.json", report)
     return report

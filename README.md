@@ -143,23 +143,30 @@ flowchart TD
 
     VROUTE --> PPR["Common PhysicalPartitionResult"]
     XV --> PPR
-    PPR --> PS["Common PhysicalSummary"]
-    PS --> P7C["Phase 7C runtime and timing-closure report"]
+    PPR --> PS["Common per-FPGA PhysicalSummary"]
+    SROUTE --> ST["Unified SystemTimingDB<br/>physical logic + interfaces + links/TDM"]
+    TDM --> ST
+    PS --> ST
+    ST --> P7C["Phase 7C system timing-closure report"]
 ```
 
 The solid main path works without timing-driven optimization; `TimingPathDB`
 adds timing weights to partitioning, system routing, and TDM. On the fully
 open route, the VTR architecture supplies public resource and delay data,
-OpenSTA can supply pre-partition timing, OpenPARF performs placement, and VPR
-performs exact packing, detailed routing, and post-route timing. On the Vivado
-route, Vivado supplies device timing and physical implementation for a
-concrete Xilinx part; Vivado itself and its device database are not included
-in this repository.
+OpenSTA supplies pre-partition optimization timing, OpenPARF performs
+placement, and VPR performs exact packing, detailed routing, and post-route
+timing. On the Vivado route, Vivado supplies device timing and physical
+implementation for a concrete Xilinx part; Vivado itself and its device
+database are not included in this repository. Phase 7C does not compare the
+local OpenPARF/VPR or Vivado WNS values directly. It combines the selected
+backend's per-FPGA post-route delays with the same concrete board route and
+TDM schedule, then reports both original-target-clock and
+virtual-runtime-clock system slack.
 
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
-| Fully open physical route | Implemented and exercised end to end on a large, four-FPGA Koios DLA design using VPR → OpenPARF → VPR |
+| Fully open physical route | Implemented through unified cross-FPGA physical/TDM timing and exercised end to end on a large, four-FPGA Koios DLA design using VPR → OpenPARF → VPR |
 | Vivado physical route | Provider, Tcl handoff, result import, and common contracts are implemented; large-design end-to-end qualification is not yet claimed |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
@@ -425,10 +432,15 @@ lane/slot scheduling, precedence, barrier, collision, and transport checks.
 Every multi-FPGA run also emits the Phase 7C pausible-clock runtime contract;
 its virtual DUT frequency is the fabric frequency divided by the selected
 frame length. Original-clock path slack and emulation runtime frequency are
-reported separately. For timing-annotated runs, the runtime QoR also checks
-the concrete worst scheduled path delay against the selected virtual period;
-this remains an academic pre-placement estimate until physical timing is
-available.
+reported separately. Before physical implementation, timing is explicitly
+qualified as a pre-placement estimate. With `--physical`, Phase 7C replaces
+that estimate with `system-timing/v1`: concrete link/TDM delay is combined per
+path with the chosen backend's post-route DUT and clock-interface delays.
+The current physical component is a conservative partition-level upper bound,
+not endpoint-exact back-annotation; this qualification is recorded in the
+artifact. A physical run passes only if local P&R/DRC and the combined virtual
+runtime-clock slack both close. Original target-clock slack remains a reported
+optimization metric rather than the pausible-clock execution gate.
 
 To validate one FPGA independently with the open physical backend, the
 following command fetches the pinned architecture automatically and enables

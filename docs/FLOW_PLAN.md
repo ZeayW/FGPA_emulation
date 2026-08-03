@@ -467,15 +467,21 @@ Phase 7B emits complete structural primitive Verilog for merged partitions.
 Applying placements in Vivado is retained only as optional cross-validation,
 not as evidence that the open physical backend is complete.
 
-Phase 7C integrates one lockstep frame controller per transport and formalizes
-the current pausible-clock runtime. Existing routed timing measurements are
-proprietary cross-validation results until the open router path is connected.
+Phase 7C integrates one lockstep frame controller per transport and closes the
+current pausible-clock timing contract. Its versioned `system-timing/v1`
+artifact reconstructs every timing-aware route from the concrete lane/slot
+schedule, adds routed link delay, and combines that transport delay with the
+selected open or Vivado backend's post-route DUT and clock-interface delays.
+It reports original-target-clock and virtual-runtime-clock slack separately.
 
-This validates the board-independent logical/runtime contracts for the current
-single-virtual-clock envelope. It does not close the open physical
-placement/routing gate. Hardware BSP pin binding, source-synchronous board
-timing, dedicated clock-buffer binding, bitstream generation, link training,
-and a golden hardware workload remain later gates.
+The current physical composition is deliberately conservative: it sums
+per-partition and per-interface post-route maxima rather than claiming exact
+boundary-register back-annotation. This closes the open physical
+placement/routing/runtime gate with an explicit bound and leaves
+endpoint-specific path extraction as the next accuracy refinement. Hardware
+BSP pin binding, source-synchronous board timing, dedicated clock-buffer
+binding, bitstream generation, link training, and a golden hardware workload
+remain later gates.
 
 Phase 7D seals that result with a versioned release manifest. It rehashes the
 pinned RTL and critical artifacts, cross-checks every boundary from partition

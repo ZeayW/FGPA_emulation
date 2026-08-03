@@ -190,16 +190,21 @@ class Phase7DTest(unittest.TestCase):
             physical_summary, runtime, platform
         )
         phase7c = {
-            "schema": "emuflow.phase7c-report/v1",
+            "schema": "emuflow.phase7c-report/v2",
             "status": "pass",
             "design": "dut",
             "platform": platform.name,
             "physical": physical,
+            "system_timing": {
+                "schema": "emuflow.system-timing/v1",
+                "status": "pass",
+            },
         }
         qor = {
-            "schema": "emuflow.qor-report/v2",
+            "schema": "emuflow.qor-report/v3",
             "status": "pass",
             "physical": physical,
+            "timing": phase7c["system_timing"],
         }
         lowering = {
             "fpga0": {

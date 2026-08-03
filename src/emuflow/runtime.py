@@ -3,12 +3,13 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .errors import ValidationError
 from .platform import Platform
+from .system_timing import build_system_timing
 from .tdm import TDM_SCHEDULE_SCHEMA
 
 
 VIRTUAL_RUNTIME_SCHEMA = "emuflow.virtual-runtime/v1"
 PHYSICAL_SUMMARY_SCHEMA = "emuflow.phase7b-physical-summary/v1"
-QOR_REPORT_SCHEMA = "emuflow.qor-report/v2"
+QOR_REPORT_SCHEMA = "emuflow.qor-report/v3"
 
 
 def virtual_runtime_controller_to_systemverilog() -> str:
@@ -547,6 +548,7 @@ def validate_physical_summary(
         )
     return {
         "status": "pass",
+        "scope": "per-fpga-local-physical-closure",
         "fpgas": len(by_id),
         "original_cells": total_original,
         "transport_cells": total_transport,
@@ -557,6 +559,7 @@ def validate_physical_summary(
         "unrouted_nets": 0,
         "drc_violations": 0,
         "worst_wns_ns": worst_slack,
+        "worst_local_backend_wns_ns": worst_slack,
         "worst_dut_wns_ns": worst_dut_slack,
         "worst_fabric_wns_ns": worst_fabric_slack,
         "worst_fabric_to_dut_wns_ns": worst_cross_slack,
@@ -571,6 +574,8 @@ def aggregate_qor(
     phase6_report: Mapping[str, Any],
     physical_summary: Optional[Mapping[str, Any]],
     platform: Platform,
+    routes: Optional[Mapping[str, Any]] = None,
+    schedule: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     for name, report in (
         ("phase3", phase3_report),
@@ -593,10 +598,35 @@ def aggregate_qor(
         if physical_summary is None
         else validate_physical_summary(physical_summary, runtime, platform)
     )
-    runtime_timing = estimate_runtime_timing(runtime, phase5_report)
+    if physical_summary is None:
+        runtime_timing = estimate_runtime_timing(runtime, phase5_report)
+    else:
+        if routes is None or schedule is None:
+            raise ValidationError(
+                "physical Phase 7C closure requires routes and schedule for "
+                "unified system timing"
+            )
+        runtime_timing = build_system_timing(
+            runtime,
+            routes,
+            schedule,
+            phase5_report,
+            physical_summary,
+            platform,
+        )
+    closed = (
+        physical["status"] == "pass"
+        and runtime_timing.get("status") == "pass"
+    )
     return {
         "schema": QOR_REPORT_SCHEMA,
-        "status": "pass" if physical["status"] == "pass" else "pending",
+        "status": (
+            "pass"
+            if closed
+            else "pending"
+            if physical["status"] == "pending"
+            else "fail"
+        ),
         "design": runtime["design"],
         "platform": platform.name,
         "partition": {

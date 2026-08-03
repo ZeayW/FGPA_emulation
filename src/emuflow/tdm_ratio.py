@@ -217,6 +217,7 @@ def _prepare_model(
         )
 
     longest_hops_by_net = {}
+    longest_sink_by_net = {}
     for net, route in route_by_net.items():
         paths_by_node = {route["source"]: (0.0, [])}
         for _depth, edge in _route_edges_in_tree_order(route):
@@ -230,10 +231,12 @@ def _prepare_model(
                 [*parent_path, index],
             )
         candidates = [
-            paths_by_node[sink] for sink in route["sinks"]
+            (paths_by_node[sink][0], paths_by_node[sink][1], sink)
+            for sink in route["sinks"]
         ]
-        candidates.sort(key=lambda item: (-item[0], item[1]))
+        candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
         longest_hops_by_net[net] = candidates[0][1]
+        longest_sink_by_net[net] = candidates[0][2]
 
     timing_paths = []
     for index, path in enumerate(timing["paths"]):
@@ -281,6 +284,18 @@ def _prepare_model(
                 "clock_period_ns": float(period),
                 "fixed_delay_ns": float(fixed),
                 "cut_nets": list(raw_cut_nets),
+                # Phase 4 currently models a multicast cut net by its
+                # longest routed sink. Preserve those logical transitions so
+                # Phase 7C can combine concrete transport delay with the
+                # physical timing of every FPGA logic segment on the path.
+                "cut_transitions": [
+                    {
+                        "net": net,
+                        "from": route_by_net[net]["source"],
+                        "to": longest_sink_by_net[net],
+                    }
+                    for net in raw_cut_nets
+                ],
                 "hops": path_hops,
             }
         )

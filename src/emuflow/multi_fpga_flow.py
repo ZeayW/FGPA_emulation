@@ -531,7 +531,12 @@ def run_multi_fpga_flow(
         phase6_root / "phase6_report.json",
         runtime_root,
         physical_summary_path=physical_summary_path,
+        routes_path=routes_path if physical_summary_path is not None else None,
     )
+    if physical and runtime_report.get("status") != "pass":
+        raise ValidationError(
+            "full physical flow did not close unified Phase 7C system timing"
+        )
 
     report = {
         "schema": MULTI_FPGA_FLOW_SCHEMA,

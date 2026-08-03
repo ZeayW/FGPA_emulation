@@ -19,6 +19,7 @@ from .runtime import (
     VIRTUAL_RUNTIME_SCHEMA,
     validate_physical_summary,
 )
+from .system_timing import SYSTEM_TIMING_SCHEMA
 from .verilog import MAPPED_VERILOG_REPORT_SCHEMA
 
 
@@ -176,6 +177,15 @@ def build_release_manifest(
     physical = validate_physical_summary(
         physical_summary, runtime, platform
     )
+    system_timing = phase7c.get("system_timing")
+    if (
+        not isinstance(system_timing, dict)
+        or system_timing.get("schema") != SYSTEM_TIMING_SCHEMA
+        or system_timing.get("status") != "pass"
+    ):
+        raise ValidationError("Phase 7C unified system timing did not pass")
+    if qor.get("timing") != system_timing:
+        raise ValidationError("Phase 7C/QoR system timing reports disagree")
 
     p3 = phase3["validation"]
     p4 = phase4["validation"]

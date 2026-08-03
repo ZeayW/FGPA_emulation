@@ -19,6 +19,7 @@ from emuflow.runtime import (
     virtual_runtime_controller_to_systemverilog,
 )
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
+from emuflow.tdm import reconstruct_tdm_schedule_timing
 
 
 class Phase7CTest(unittest.TestCase):
@@ -60,12 +61,63 @@ class Phase7CTest(unittest.TestCase):
             "entries": [
                 {
                     "id": "s000000",
+                    "demand": "d000000",
+                    "net": "n0",
+                    "transport_round": 0,
+                    "hop": 0,
+                    "link": "link",
+                    "from": "fpga0",
+                    "to": "fpga1",
+                    "lane": 0,
+                    "ready_slot": 4,
+                    "slot": 4,
                     "arrival_slot": 6,
                 }
             ],
             "metrics": {
                 "frame_slots": 32,
                 "completion_slot": 6,
+            },
+        }
+        self.routes = {
+            "schema": "emuflow.system-routes/v1",
+            "design": "dut",
+            "platform": self.platform.name,
+            "constraints": {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 32,
+            },
+            "routes": [
+                {
+                    "id": "d000000",
+                    "net": "n0",
+                    "source": "fpga0",
+                    "sinks": ["fpga1"],
+                    "tree_edges": [
+                        {
+                            "link": "link",
+                            "from": "fpga0",
+                            "to": "fpga1",
+                        }
+                    ],
+                }
+            ],
+            "timing": {
+                "schema": "emuflow.sta-paths/v1",
+                "normalization": {
+                    "positive_slack_scale_ns": 20.0,
+                    "negative_slack_scale_ns": 20.0,
+                    "max_clock_period_ns": 20.0,
+                },
+                "paths": [
+                    {
+                        "path": "system-critical",
+                        "clock_domain": "clk",
+                        "clock_period_ns": 20.0,
+                        "fixed_delay_ns": 2.0,
+                        "cut_nets": ["n0"],
+                    }
+                ],
             },
         }
         self.reports = {
@@ -116,6 +168,11 @@ class Phase7CTest(unittest.TestCase):
                 },
             },
         }
+        self.reports["phase5"]["timing_validation"] = (
+            reconstruct_tdm_schedule_timing(
+                self.routes, self.platform, self.schedule
+            )
+        )
 
     def _physical_summary(self):
         return {
@@ -139,6 +196,12 @@ class Phase7CTest(unittest.TestCase):
                         "fabric_wns_ns": 1.25,
                         "fabric_to_dut_wns_ns": 98.0,
                     },
+                    "clock_domain_delays_ns": {
+                        "dut": 8.0,
+                        "fabric": 2.75,
+                        "cross": 2.0,
+                        "overall": 8.0,
+                    },
                     "clocks": {
                         "fabric_period_ns": 4.0,
                         "dut_period_ns": 128.0,
@@ -158,6 +221,12 @@ class Phase7CTest(unittest.TestCase):
                         "dut_wns_ns": 121.0,
                         "fabric_wns_ns": 0.75,
                         "fabric_to_dut_wns_ns": 98.5,
+                    },
+                    "clock_domain_delays_ns": {
+                        "dut": 7.0,
+                        "fabric": 3.25,
+                        "cross": 1.5,
+                        "overall": 7.0,
                     },
                     "clocks": {
                         "fabric_period_ns": 4.0,
@@ -245,8 +314,20 @@ class Phase7CTest(unittest.TestCase):
             self.reports["phase6"],
             physical,
             self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
         )
         self.assertEqual(qor["status"], "pass")
+        self.assertLess(
+            qor["timing"]["target_clock"]["worst_slack_bound_ns"], 0.0
+        )
+        self.assertGreater(
+            qor["timing"]["runtime_clock"]["worst_slack_bound_ns"], 0.0
+        )
+        self.assertEqual(
+            qor["timing"]["qualification"],
+            "conservative-partition-physical-maxima-plus-concrete-link-tdm",
+        )
         broken = copy.deepcopy(physical)
         broken["fpgas"][0]["unrouted_nets"] = 1
         with self.assertRaisesRegex(ValidationError, "route/DRC"):
@@ -290,6 +371,7 @@ class Phase7CTest(unittest.TestCase):
                 **self.reports,
                 "platform": self.platform.to_dict(),
                 "physical": self._physical_summary(),
+                "routes": self.routes,
             }.items():
                 paths[name] = root / f"{name}.json"
                 paths[name].write_text(json.dumps(value), encoding="utf-8")
@@ -303,6 +385,8 @@ class Phase7CTest(unittest.TestCase):
                 root / "generated",
             )
             self.assertEqual(generated["status"], "generated")
+            self.assertIn("runtime_timing", generated)
+            self.assertNotIn("system_timing", generated)
             closed = run_phase7c(
                 paths["schedule"],
                 paths["platform"],
@@ -312,8 +396,10 @@ class Phase7CTest(unittest.TestCase):
                 paths["phase6"],
                 root / "closed",
                 physical_summary_path=paths["physical"],
+                routes_path=paths["routes"],
             )
             self.assertEqual(closed["status"], "pass")
+            self.assertIn("system_timing", closed)
             for filename in closed["artifacts"].values():
                 self.assertTrue((root / "closed" / filename).is_file())
 
