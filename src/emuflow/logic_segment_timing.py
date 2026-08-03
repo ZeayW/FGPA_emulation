@@ -1,0 +1,640 @@
+"""Endpoint-exact physical timing for DUT logic between TDM boundaries."""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import re
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, Mapping, Optional
+
+from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
+from .errors import ValidationError
+from .io import read_json, write_json
+from .ir import EmuIR
+from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .platform import Platform
+from .sta import STA_PATH_DATABASE_SCHEMA
+from .tdm import reconstruct_tdm_schedule_timing_paths
+
+
+LOGIC_SEGMENT_IDENTITY_SCHEMA = "emuflow.logic-segment-identity/v1"
+LOGIC_SEGMENT_TIMING_SCHEMA = "emuflow.logic-segment-timing/v1"
+LOGIC_SEGMENT_QUERY_HEADER = "endpoint\tkind\tstart_pin\tend_pin"
+LOGIC_SEGMENT_TIMING_HEADER = (
+    "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin"
+)
+_FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
+
+
+def _instance_pin_inventory(ir: EmuIR) -> Dict[str, set[tuple[str, int]]]:
+    result: Dict[str, set[tuple[str, int]]] = {
+        instance["id"]: set() for instance in ir.value["instances"]
+    }
+    for net in ir.value["nets"]:
+        for collection in ("drivers", "sinks"):
+            for endpoint in net[collection]:
+                instance = endpoint["instance"]
+                if instance is not None:
+                    result[instance].add((endpoint["port"], endpoint["bit"]))
+    for instance in ir.value["instances"]:
+        for endpoint in instance.get("constant_connections", []):
+            result[instance["id"]].add((endpoint["port"], endpoint["bit"]))
+    return result
+
+
+def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
+    width = max(
+        (candidate_bit + 1 for candidate_port, candidate_bit in pins
+         if candidate_port == port),
+        default=0,
+    )
+    return port if width <= 1 else f"{port}__{bit}"
+
+
+def _sta_object_index(ir: EmuIR) -> Dict[str, Dict[str, Any]]:
+    pins = _instance_pin_inventory(ir)
+    result: Dict[str, Dict[str, Any]] = {}
+    for instance in ir.value["instances"]:
+        instance_id = instance["id"]
+        for port, bit in pins[instance_id]:
+            name = f"{instance_id}/{_scalar_pin(port, bit, pins[instance_id])}"
+            result[name] = {
+                "instance": instance_id,
+                "port": port,
+                "bit": bit,
+            }
+    for port in ir.value["ports"]:
+        for bit in range(port["width"]):
+            names = [port["id"]]
+            if port["width"] > 1:
+                names = [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"]
+            for name in names:
+                result[name] = {
+                    "instance": None,
+                    "port": port["id"],
+                    "bit": bit,
+                }
+    return result
+
+
+def _legacy_opensta_endpoints(path_id: str) -> tuple[str, str]:
+    match = re.fullmatch(r"(.+)->(.+)#\d{8}", path_id)
+    if match is None:
+        raise ValidationError(
+            f"STA path {path_id!r} lacks provider-neutral endpoint identity"
+        )
+    return match.group(1), match.group(2)
+
+
+def _path_endpoints(
+    path: Mapping[str, Any], object_index: Mapping[str, Mapping[str, Any]]
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    raw_start = path.get("startpoint")
+    raw_end = path.get("endpoint")
+    if isinstance(raw_start, dict) and isinstance(raw_end, dict):
+        start = dict(raw_start)
+        end = dict(raw_end)
+    else:
+        start_name, end_name = _legacy_opensta_endpoints(path["id"])
+        if start_name not in object_index or end_name not in object_index:
+            missing = [
+                name
+                for name in (start_name, end_name)
+                if name not in object_index
+            ]
+            raise ValidationError(
+                f"STA path {path['id']!r} has unmapped endpoint objects "
+                f"{missing}"
+            )
+        start = dict(object_index[start_name])
+        end = dict(object_index[end_name])
+    return start, end
+
+
+def _top_pin(ir: EmuIR, endpoint: Mapping[str, Any]) -> str:
+    matches = []
+    for index, net in enumerate(ir.value["nets"]):
+        for collection in ("drivers", "sinks"):
+            if any(
+                item["instance"] is None
+                and item["port"] == endpoint["port"]
+                and item["bit"] == endpoint["bit"]
+                for item in net[collection]
+            ):
+                matches.append((index, collection))
+    if len(matches) != 1:
+        raise ValidationError(
+            f"physical top endpoint {endpoint!r} does not bind one net"
+        )
+    net_index, collection = matches[0]
+    return (
+        f"n{net_index}.inpad[0]"
+        if collection == "drivers"
+        else f"out:n{net_index}.outpad[0]"
+    )
+
+
+def _vpr_atom_pin(
+    ir: EmuIR,
+    instance_index: Mapping[str, int],
+    endpoint: Mapping[str, Any],
+    instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> str:
+    instance_id = endpoint["instance"]
+    if instance_id is None:
+        return _top_pin(ir, endpoint)
+    if instances is None:
+        instances = {
+            instance["id"]: instance for instance in ir.value["instances"]
+        }
+    if instance_id not in instances or instance_id not in instance_index:
+        raise ValidationError(
+            f"physical logic endpoint instance {instance_id!r} is absent"
+        )
+    instance = instances[instance_id]
+    cell_type = instance["type"]
+    port = endpoint["port"]
+    bit = endpoint["bit"]
+    atom = f"i{instance_index[instance_id]}"
+    if cell_type.startswith("LUT"):
+        if port == "O":
+            return f"{atom}.out[0]"
+        match = re.fullmatch(r"I(\d+)", port)
+        if match is not None and bit == 0:
+            return f"{atom}.in[{int(match.group(1))}]"
+    if cell_type in {"$lut", "$_LUT_"}:
+        if port in {"Y", "O"}:
+            return f"{atom}.out[0]"
+        if port in {"A", "I"}:
+            return f"{atom}.in[{bit}]"
+    if cell_type in _FF_TYPES or cell_type.startswith("$_DFF_"):
+        if port in {"D", "Q"} and bit == 0:
+            return f"{atom}.{port}[0]"
+    if cell_type == "VTR_MULTIPLY" and port in {"a", "b", "out"}:
+        return f"{atom}.{port}[{bit}]"
+    if cell_type in {"VTR_SP_RAM", "VTR_DP_RAM"}:
+        data_ports = (
+            {"data", "out"}
+            if cell_type == "VTR_SP_RAM"
+            else {"data1", "data2", "out1", "out2"}
+        )
+        atom_bit = bit if port in data_ports else 0
+        pin_bit = (
+            bit
+            if port in {"addr", "addr1", "addr2"}
+            else 0
+        )
+        return f"{atom}__bit{atom_bit}.{port}[{pin_bit}]"
+    raise ValidationError(
+        f"unsupported physical logic pin {instance_id}.{port}[{bit}] "
+        f"on {cell_type}"
+    )
+
+
+def _boundary_maps(
+    identity: Mapping[str, Any],
+) -> tuple[Dict[str, Mapping[str, Any]], Dict[str, Mapping[str, Any]]]:
+    if identity.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
+        raise ValidationError("logic segment boundary identity is invalid")
+    endpoints = {item["id"]: item for item in identity["endpoints"]}
+    if len(endpoints) != len(identity["endpoints"]):
+        raise ValidationError("logic segment boundary endpoint IDs duplicate")
+    return endpoints, {
+        item["schedule_entry"]: item for item in identity["endpoints"]
+    }
+
+
+def _boundary_tx_port(
+    ir: EmuIR,
+    instance_index: Mapping[str, int],
+    endpoints: Mapping[str, Mapping[str, Any]],
+    endpoint_id: str,
+    net_index: Optional[Mapping[str, int]] = None,
+) -> str:
+    endpoint = endpoints.get(endpoint_id)
+    if endpoint is None or endpoint.get("kind") != "tx":
+        raise ValidationError(f"logic segment TX {endpoint_id!r} is absent")
+    external_net = endpoint["merged_ir"]["external_net"]
+    if net_index is None:
+        net_index = {
+            net["id"]: index for index, net in enumerate(ir.value["nets"])
+        }
+    if external_net not in net_index:
+        raise ValidationError("logic segment TX external net is absent")
+    return f"out:n{net_index[external_net]}.outpad[0]"
+
+
+def _boundary_rx_q(
+    ir: EmuIR,
+    instance_index: Mapping[str, int],
+    endpoints: Mapping[str, Mapping[str, Any]],
+    endpoint_id: str,
+    instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> str:
+    endpoint = endpoints.get(endpoint_id)
+    if endpoint is None or endpoint.get("kind") != "rx":
+        raise ValidationError(f"logic segment RX {endpoint_id!r} is absent")
+    registers = endpoint["merged_ir"]["boundary_register_instances"]
+    if not isinstance(registers, list) or len(registers) != 1:
+        raise ValidationError(f"logic segment RX {endpoint_id!r} is ambiguous")
+    return _vpr_atom_pin(
+        ir,
+        instance_index,
+        {"instance": registers[0], "port": "Q", "bit": 0},
+        instances,
+    )
+
+
+def _segment_id(member: str, cut_index: int, role: str) -> str:
+    digest = hashlib.sha256(
+        f"{member}\0{cut_index}\0{role}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"logic_{digest}_{cut_index}_{role}"
+
+
+def write_vpr_logic_segment_query(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    schedule_path: Path,
+    platform: Platform,
+    merged_ir_path: Path,
+    boundary_identity_path: Path,
+    fpga: str,
+    query_path: Path,
+    identity_path: Path,
+) -> Dict[str, Any]:
+    """Build physical path queries for all exact logical segments on one FPGA."""
+    original_ir = EmuIR.load(original_ir_path)
+    merged_ir = EmuIR.load(merged_ir_path)
+    assignment = read_json(assignment_path)
+    path_database = read_json(path_database_path)
+    routes = read_json(routes_path)
+    schedule = read_json(schedule_path)
+    boundary_identity = read_json(boundary_identity_path)
+    if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
+        raise ValidationError("logic segment assignment schema is invalid")
+    if path_database.get("schema") != STA_PATH_DATABASE_SCHEMA:
+        raise ValidationError("logic segment STA database schema is invalid")
+    if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
+        raise ValidationError("logic segment merged IR target is invalid")
+    endpoints, _ = _boundary_maps(boundary_identity)
+    object_index = _sta_object_index(original_ir)
+    database_paths = {item["id"]: item for item in path_database["paths"]}
+    route_timing = {
+        item["path"]: item for item in routes["timing"]["paths"]
+    }
+    route_by_net = {item["net"]: item for item in routes["routes"]}
+    records = reconstruct_tdm_schedule_timing_paths(
+        routes, platform, schedule
+    )
+    instance_index = {
+        instance["id"]: index
+        for index, instance in enumerate(merged_ir.value["instances"])
+    }
+    merged_instances = {
+        instance["id"]: instance
+        for instance in merged_ir.value["instances"]
+    }
+    merged_net_index = {
+        net["id"]: index for index, net in enumerate(merged_ir.value["nets"])
+    }
+    instance_assignment = assignment["instance_assignment"]
+    segments = []
+    exact_members = 0
+    unsupported: Dict[str, str] = {}
+    for record in records:
+        timing = route_timing[record["path"]]
+        members = timing.get("compressed_path_ids", [record["path"]])
+        transitions = record["cut_transitions"]
+        if len(transitions) != len(record["cut_nets"]):
+            raise ValidationError("logic segment transition coverage is invalid")
+        discontinuity = any(
+            transitions[index - 1]["to"] != transitions[index]["from"]
+            for index in range(1, len(transitions))
+        )
+        hops_by_net = {}
+        for net in record["cut_nets"]:
+            demand = route_by_net[net]["id"]
+            hops = [
+                hop for hop in record["scheduled_hops"]
+                if hop["demand"] == demand
+            ]
+            if not hops:
+                raise ValidationError(
+                    f"logic timing path {record['path']!r} has no hops for {net!r}"
+                )
+            hops_by_net[net] = hops
+        for member in members:
+            path = database_paths.get(member)
+            if path is None:
+                raise ValidationError(
+                    f"logic timing member {member!r} is absent from STA database"
+                )
+            if discontinuity:
+                unsupported[member] = "discontinuous-compressed-partition-chain"
+                continue
+            try:
+                start_endpoint, end_endpoint = _path_endpoints(
+                    path, object_index
+                )
+                start_instance = start_endpoint["instance"]
+                end_instance = end_endpoint["instance"]
+                if (
+                    start_instance is not None
+                    and instance_assignment.get(start_instance)
+                    != transitions[0]["from"]
+                ):
+                    raise ValidationError("launch endpoint partition mismatch")
+                if (
+                    end_instance is not None
+                    and instance_assignment.get(end_instance)
+                    != transitions[-1]["to"]
+                ):
+                    raise ValidationError("capture endpoint partition mismatch")
+            except ValidationError as error:
+                unsupported[member] = str(error)
+                continue
+            exact_members += 1
+            prior_rx: Optional[str] = None
+            for cut_index, (net, transition) in enumerate(
+                zip(record["cut_nets"], transitions)
+            ):
+                hops = hops_by_net[net]
+                first_tx = hops[0]["tx_endpoint"]
+                last_rx = hops[-1]["rx_endpoint"]
+                segment_fpga = transition["from"]
+                role = "launch" if cut_index == 0 else "transition"
+                if segment_fpga == fpga:
+                    start_pin = (
+                        _vpr_atom_pin(
+                            merged_ir,
+                            instance_index,
+                            start_endpoint,
+                            merged_instances,
+                        )
+                        if cut_index == 0
+                        else _boundary_rx_q(
+                            merged_ir,
+                            instance_index,
+                            endpoints,
+                            prior_rx,
+                            merged_instances,
+                        )
+                    )
+                    end_pin = _boundary_tx_port(
+                        merged_ir,
+                        instance_index,
+                        endpoints,
+                        first_tx,
+                        merged_net_index,
+                    )
+                    segments.append(
+                        {
+                            "id": _segment_id(member, cut_index, role),
+                            "kind": role,
+                            "system_path": record["path"],
+                            "member_path": member,
+                            "cut_index": cut_index,
+                            "fpga": fpga,
+                            "replace_tx_endpoint": first_tx,
+                            "start_pin": start_pin,
+                            "end_pin": end_pin,
+                        }
+                    )
+                prior_rx = last_rx
+            capture_fpga = transitions[-1]["to"]
+            if capture_fpga == fpga:
+                segments.append(
+                    {
+                        "id": _segment_id(
+                            member, len(transitions), "capture"
+                        ),
+                        "kind": "capture",
+                        "system_path": record["path"],
+                        "member_path": member,
+                        "cut_index": len(transitions),
+                        "fpga": fpga,
+                        "replace_tx_endpoint": None,
+                        "start_pin": _boundary_rx_q(
+                            merged_ir,
+                            instance_index,
+                            endpoints,
+                            prior_rx,
+                            merged_instances,
+                        ),
+                        "end_pin": _vpr_atom_pin(
+                            merged_ir,
+                            instance_index,
+                            end_endpoint,
+                            merged_instances,
+                        ),
+                    }
+                )
+    segments.sort(key=lambda item: item["id"])
+    identity = {
+        "schema": LOGIC_SEGMENT_IDENTITY_SCHEMA,
+        "status": "pass",
+        "design": assignment["design"],
+        "platform": platform.name,
+        "fpga": fpga,
+        "provider": "sta-endpoint-chain-to-vpr-atoms-v1",
+        "coverage": {
+            "segments": len(segments),
+            "system_paths": len({item["system_path"] for item in segments}),
+            "member_paths": len({item["member_path"] for item in segments}),
+            "unsupported_member_paths": len(unsupported),
+        },
+        "unsupported_member_paths": [
+            {"path": member, "reason": reason}
+            for member, reason in sorted(unsupported.items())
+        ],
+        "segments": segments,
+    }
+    validate_logic_segment_identity(identity)
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(identity_path, identity)
+    query_path.parent.mkdir(parents=True, exist_ok=True)
+    query_path.write_text(
+        "\n".join(
+            [
+                LOGIC_SEGMENT_QUERY_HEADER,
+                *(
+                    "\t".join(
+                        (
+                            item["id"],
+                            item["kind"],
+                            item["start_pin"],
+                            item["end_pin"],
+                        )
+                    )
+                    for item in segments
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "status": "pass",
+        "fpga": fpga,
+        "segments": len(segments),
+        "exact_member_paths": exact_members,
+        "unsupported_member_paths": len(unsupported),
+        "query": str(query_path),
+        "identity": str(identity_path),
+    }
+
+
+def validate_logic_segment_identity(
+    database: Mapping[str, Any],
+) -> Dict[str, Any]:
+    if database.get("schema") != LOGIC_SEGMENT_IDENTITY_SCHEMA:
+        raise ValidationError("logic segment identity schema is invalid")
+    if database.get("status") != "pass":
+        raise ValidationError("logic segment identity did not pass")
+    fpga = database.get("fpga")
+    if not isinstance(fpga, str) or not fpga:
+        raise ValidationError("logic segment identity FPGA is invalid")
+    ids = set()
+    members = set()
+    paths = set()
+    for index, segment in enumerate(database.get("segments", [])):
+        context = f"logic segment identity[{index}]"
+        if not isinstance(segment, dict):
+            raise ValidationError(f"{context} is invalid")
+        segment_id = segment.get("id")
+        if (
+            not isinstance(segment_id, str)
+            or not segment_id
+            or segment_id in ids
+            or segment.get("kind") not in {"launch", "transition", "capture"}
+            or segment.get("fpga") != fpga
+        ):
+            raise ValidationError(f"{context} identity is invalid")
+        ids.add(segment_id)
+        for field in ("system_path", "member_path", "start_pin", "end_pin"):
+            if not isinstance(segment.get(field), str) or not segment[field]:
+                raise ValidationError(f"{context}.{field} is invalid")
+        replacement = segment.get("replace_tx_endpoint")
+        if (segment["kind"] == "capture") != (replacement is None):
+            raise ValidationError(f"{context} replacement is invalid")
+        members.add(segment["member_path"])
+        paths.add(segment["system_path"])
+    return {
+        "status": "pass",
+        "segments": len(ids),
+        "member_paths": len(members),
+        "system_paths": len(paths),
+    }
+
+
+def import_vpr_logic_segment_timing(
+    input_path: Path,
+    identity_path: Path,
+    output_path: Path,
+) -> Dict[str, Any]:
+    identity = read_json(identity_path)
+    validate_logic_segment_identity(identity)
+    expected = {item["id"]: item for item in identity["segments"]}
+    lines = input_path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != LOGIC_SEGMENT_TIMING_HEADER:
+        raise ValidationError("VPR logic segment timing header is invalid")
+    measurements = {}
+    for line_number, line in enumerate(lines[1:], start=2):
+        if not line:
+            continue
+        fields = line.split("\t")
+        segment = expected.get(fields[0]) if len(fields) == 5 else None
+        if (
+            segment is None
+            or fields[0] in measurements
+            or fields[1] != segment["kind"]
+            or fields[3] != segment["start_pin"]
+            or fields[4] != segment["end_pin"]
+        ):
+            raise ValidationError(
+                f"VPR logic segment timing line {line_number} is invalid"
+            )
+        try:
+            delay = float(fields[2])
+        except ValueError as error:
+            raise ValidationError(
+                f"VPR logic segment timing line {line_number} delay is invalid"
+            ) from error
+        if not math.isfinite(delay) or delay < 0.0:
+            raise ValidationError(
+                f"VPR logic segment timing line {line_number} delay is invalid"
+            )
+        measurements[fields[0]] = delay
+    if set(measurements) != set(expected):
+        missing = sorted(set(expected) - set(measurements))
+        raise ValidationError(
+            f"VPR logic segment timing coverage is incomplete: {missing[:10]}"
+        )
+    records = [
+        {
+            **segment,
+            "delay_ns": measurements[segment["id"]],
+        }
+        for segment in identity["segments"]
+    ]
+    database = {
+        "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
+        "status": "pass",
+        "design": identity["design"],
+        "platform": identity["platform"],
+        "fpga": identity["fpga"],
+        "provider": "vpr-tatum-logic-segment-longest-path-v1",
+        "qualification": "routed-academic-architecture-endpoint-chain",
+        "coverage": identity["coverage"],
+        "unsupported_member_paths": identity["unsupported_member_paths"],
+        "segments": records,
+    }
+    validation = validate_logic_segment_timing(database)
+    write_json(output_path, database)
+    return {**validation, "output": str(output_path)}
+
+
+def validate_logic_segment_timing(
+    database: Mapping[str, Any],
+) -> Dict[str, Any]:
+    if database.get("schema") != LOGIC_SEGMENT_TIMING_SCHEMA:
+        raise ValidationError("logic segment timing schema is invalid")
+    if database.get("status") != "pass":
+        raise ValidationError("logic segment timing did not pass")
+    identity = {
+        key: database[key]
+        for key in (
+            "status",
+            "design",
+            "platform",
+            "fpga",
+            "coverage",
+            "unsupported_member_paths",
+            "segments",
+        )
+    }
+    identity["schema"] = LOGIC_SEGMENT_IDENTITY_SCHEMA
+    identity["provider"] = "timing-validation"
+    validate_logic_segment_identity(identity)
+    maximum = 0.0
+    for segment in database["segments"]:
+        delay = segment.get("delay_ns")
+        if (
+            isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or not math.isfinite(float(delay))
+            or float(delay) < 0.0
+        ):
+            raise ValidationError("logic segment timing delay is invalid")
+        maximum = max(maximum, float(delay))
+    return {
+        "status": "pass",
+        "fpga": database["fpga"],
+        "segments": len(database["segments"]),
+        "maximum_delay_ns": maximum,
+    }

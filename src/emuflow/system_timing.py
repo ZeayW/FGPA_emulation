@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from .boundary_timing import validate_boundary_timing_database
 from .errors import ValidationError
+from .logic_segment_timing import validate_logic_segment_timing
 from .platform import Platform
 from .tdm import reconstruct_tdm_schedule_timing_paths
 
@@ -121,6 +122,35 @@ def _endpoint_delay_database(
     return result
 
 
+def _logic_segment_database(
+    physical_summary: Mapping[str, Any],
+) -> Optional[Dict[str, Dict[str, List[Mapping[str, Any]]]]]:
+    raw = physical_summary.get("logic_segment_timing")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValidationError("physical logic segment timing map is invalid")
+    result: Dict[str, Dict[str, List[Mapping[str, Any]]]] = {}
+    segment_ids = set()
+    for fpga, database in raw.items():
+        validation = validate_logic_segment_timing(database)
+        if validation["fpga"] != fpga:
+            raise ValidationError(
+                "physical logic segment timing FPGA identity disagrees"
+            )
+        for segment in database["segments"]:
+            segment_id = segment["id"]
+            if segment_id in segment_ids:
+                raise ValidationError(
+                    f"duplicate physical logic segment {segment_id!r}"
+                )
+            segment_ids.add(segment_id)
+            result.setdefault(segment["system_path"], {}).setdefault(
+                segment["member_path"], []
+            ).append(segment)
+    return result
+
+
 def build_system_timing(
     runtime: Mapping[str, Any],
     routes: Mapping[str, Any],
@@ -160,6 +190,7 @@ def build_system_timing(
 
     delays = _physical_delay_database(physical_summary)
     endpoint_delays = _endpoint_delay_database(physical_summary)
+    logic_segments = _logic_segment_database(physical_summary)
     expected_fpgas = {fpga.id for fpga in platform.fpgas}
     if set(delays) != expected_fpgas:
         raise ValidationError(
@@ -171,6 +202,7 @@ def build_system_timing(
     )
     system_paths = []
     discontinuous_paths = 0
+    exact_logic_paths = 0
     for record in records:
         transitions = record["cut_transitions"]
         partitions, discontinuities = _logic_partition_sequence(transitions)
@@ -209,7 +241,63 @@ def build_system_timing(
                 endpoint_delays[endpoint_id] for endpoint_id in endpoint_ids
             )
             interface_model = "routed-endpoint-exact"
+        logic_model = "per-partition-maximum-upper-bound"
+        selected_member = None
+        logic_exact = False
         physical_delay = local_delay + interface_delay
+        if logic_segments is not None and endpoint_delays is not None:
+            member_ids = record.get(
+                "compressed_path_ids", [record["path"]]
+            )
+            member_segments = logic_segments.get(record["path"], {})
+            candidates = []
+            for member in member_ids:
+                segments = member_segments.get(member, [])
+                roles = [segment["kind"] for segment in segments]
+                cut_indices = [segment["cut_index"] for segment in segments]
+                if (
+                    len(segments) != len(record["cut_nets"]) + 1
+                    or roles.count("launch") != 1
+                    or roles.count("capture") != 1
+                    or roles.count("transition")
+                    != len(record["cut_nets"]) - 1
+                    or sorted(cut_indices)
+                    != list(range(len(record["cut_nets"]) + 1))
+                ):
+                    candidates = []
+                    break
+                replacements = [
+                    segment["replace_tx_endpoint"]
+                    for segment in segments
+                    if segment["replace_tx_endpoint"] is not None
+                ]
+                if (
+                    len(replacements) != len(record["cut_nets"])
+                    or len(replacements) != len(set(replacements))
+                    or any(item not in endpoint_delays for item in replacements)
+                ):
+                    raise ValidationError(
+                        f"system timing path {record['path']} logic segment "
+                        "replacement coverage is invalid"
+                    )
+                composite = (
+                    interface_delay
+                    - sum(endpoint_delays[item] for item in replacements)
+                    + sum(float(segment["delay_ns"]) for segment in segments)
+                )
+                candidates.append((composite, member))
+            if candidates and len(candidates) == len(member_ids):
+                physical_delay, selected_member = max(candidates)
+                local_delay = physical_delay - interface_delay
+                if local_delay < -1.0e-8:
+                    raise ValidationError(
+                        f"system timing path {record['path']} has a negative "
+                        "endpoint-exact logic contribution"
+                    )
+                local_delay = max(0.0, local_delay)
+                logic_model = "routed-endpoint-chain-exact"
+                logic_exact = True
+                exact_logic_paths += 1
         total_delay = physical_delay + record["transport_delay_ns"]
         target_period = record["clock_period_ns"]
         system_paths.append(
@@ -227,6 +315,8 @@ def build_system_timing(
                 "physical_logic_delay_bound_ns": local_delay,
                 "physical_interface_delay_bound_ns": interface_delay,
                 "physical_interface_model": interface_model,
+                "physical_logic_model": logic_model,
+                "physical_logic_member_path": selected_member,
                 "scheduled_link_tdm_delay_ns": record[
                     "transport_delay_ns"
                 ],
@@ -234,6 +324,7 @@ def build_system_timing(
                 "target_clock_slack_bound_ns": target_period - total_delay,
                 "runtime_clock_slack_bound_ns": virtual_period - total_delay,
                 "partition_chain_exact": discontinuities == 0,
+                "physical_logic_segments_exact": logic_exact,
             }
         )
 
@@ -255,20 +346,30 @@ def build_system_timing(
         "design": runtime["design"],
         "platform": platform.name,
         "qualification": (
-            "partition-logic-maxima-plus-endpoint-exact-interface-plus-"
-            "concrete-link-tdm"
-            if endpoint_delays is not None
-            else "conservative-partition-physical-maxima-plus-concrete-link-tdm"
+            "endpoint-chain-physical-plus-concrete-link-tdm"
+            if exact_logic_paths == len(system_paths)
+            else (
+                "partition-logic-maxima-plus-endpoint-exact-interface-plus-"
+                "concrete-link-tdm"
+                if endpoint_delays is not None
+                else "conservative-partition-physical-maxima-plus-concrete-link-tdm"
+            )
         ),
         "path_exactness": {
             "scheduled_link_tdm": True,
             "physical_boundary_endpoints": endpoint_delays is not None,
-            "physical_logic_segments": False,
+            "physical_logic_segments": exact_logic_paths == len(system_paths),
             "physical_model": (
-                "partition-logic-maxima-and-endpoint-exact-interface"
-                if endpoint_delays is not None
-                else "per-partition-and-interface-maxima-upper-bound"
+                "routed-endpoint-chain-exact"
+                if exact_logic_paths == len(system_paths)
+                else (
+                    "partition-logic-maxima-and-endpoint-exact-interface"
+                    if endpoint_delays is not None
+                    else "per-partition-and-interface-maxima-upper-bound"
+                )
             ),
+            "endpoint_exact_logic_paths": exact_logic_paths,
+            "fallback_logic_paths": len(system_paths) - exact_logic_paths,
             "discontinuous_compressed_paths": discontinuous_paths,
         },
         "physical_source": {

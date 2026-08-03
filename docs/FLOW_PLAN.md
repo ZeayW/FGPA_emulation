@@ -487,9 +487,20 @@ The Vivado provider extracts each routed TX source-to-port and RX
 port-to-shadow-register path through Tcl. The open provider resolves the same
 stable endpoints to VPR atom pins and evaluates their longest routed delays in
 the Tatum timing graph. Both therefore supply endpoint-exact interface delay
-through `boundary-timing/v1`. Both routes still use per-partition maxima for
-DUT logic segments, so neither is yet a fully endpoint-to-endpoint exact timing
-trace. Hardware BSP pin binding, source-synchronous board timing, dedicated
+through `boundary-timing/v1`.
+
+For DUT logic, the open provider expands the original STA members behind each
+compressed cross-FPGA path. A complete member is represented by routed
+`launch -> TX`, zero or more `RX -> next TX`, and `final RX -> capture`
+segments. VPR evaluates these point-to-point paths with routed edge delays, and
+Phase 7C replaces the matching TX interface terms instead of adding a whole
+partition's critical-path maximum. Exact and fallback path counts are part of
+`system-timing/v1`; a multicast member that does not match the currently
+selected routed sink remains conservative. Vivado logic-chain extraction and
+member-specific multicast-sink expansion are the next closure gates, so the
+flow does not yet claim every system path is endpoint-to-endpoint exact.
+
+Hardware BSP pin binding, source-synchronous board timing, dedicated
 clock-buffer binding, bitstream generation, link training, and a golden
 hardware workload remain later gates.
 

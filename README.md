@@ -160,8 +160,11 @@ implementation for a concrete Xilinx part; Vivado itself and its device
 database are not included in this repository. Phase 7C does not compare the
 local OpenPARF/VPR or Vivado WNS values directly. It combines each scheduled
 hop's routed TX/RX endpoint delays with the same concrete board route and TDM
-schedule, plus a conservative per-partition DUT-logic bound, then reports both
-original-target-clock and virtual-runtime-clock system slack.
+schedule. The open backend additionally back-annotates continuous original-STA
+endpoint chains through routed FPGA logic; paths whose compressed multicast
+member cannot yet be identified exactly retain an explicit conservative
+per-partition bound. Both original-target-clock and virtual-runtime-clock
+system slack are reported.
 
 | Route | Current completion boundary |
 | --- | --- |
@@ -307,7 +310,9 @@ cmake --preset release \
   -DEMUFLOW_OPENPARF_PYTHON=/absolute/path/to/python
 ```
 
-The selected Python must be the interpreter that can import PyTorch. Set
+The selected Python must be the same interpreter and PyTorch ABI used when
+OpenPARF's C++ operators are compiled; merely being able to import a different
+PyTorch installation is insufficient. Set
 `EMUFLOW_OPENPARF_ENABLE_CUDA=ON` only when that PyTorch installation and the
 CUDA toolkit are compatible. See the upstream links and license information in
 [Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md).
@@ -443,10 +448,13 @@ path with the chosen backend's post-route DUT and interface delays. Phase 6
 records every scheduled TX/RX endpoint in `boundary-identity/v1`. Vivado
 queries those routed interfaces through Tcl, while the open backend evaluates
 the same endpoint queries in VPR's post-route Tatum graph; both emit
-`boundary-timing/v1`. Both providers still bound DUT logic with per-partition
-maxima, and the artifact records these exactness qualifications. A physical
-run passes only if local P&R/DRC and the combined virtual runtime-clock slack
-both close.
+`boundary-timing/v1`. VPR also evaluates `launch -> TX`, `RX -> next TX`, and
+`final RX -> capture` paths in the routed Tatum graph and publishes them as
+`logic-segment-timing/v1`. Phase 7C uses those measurements only when every
+member of a compressed STA path has a complete endpoint chain; otherwise it
+records the fallback and retains the per-partition maximum. Vivado logic-chain
+extraction is not implemented yet. A physical run passes only if local
+P&R/DRC and the combined virtual runtime-clock slack both close.
 Original target-clock slack remains a reported optimization metric rather than
 the pausible-clock execution gate.
 

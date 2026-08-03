@@ -130,6 +130,11 @@ class VprTest(unittest.TestCase):
                 "endpoint\tkind\tstart_pin\tend_pin\n", encoding="utf-8"
             )
             boundary_output = root / "route" / "boundary-timing.tsv"
+            logic_query = root / "logic-query.tsv"
+            logic_query.write_text(
+                "endpoint\tkind\tstart_pin\tend_pin\n", encoding="utf-8"
+            )
+            logic_output = root / "route" / "logic-timing.tsv"
 
             def fake_run(arguments, **kwargs):
                 self.assertEqual(
@@ -140,11 +145,23 @@ class VprTest(unittest.TestCase):
                     kwargs["env"]["EMUFLOW_VPR_BOUNDARY_OUTPUT"],
                     str(boundary_output.resolve()),
                 )
+                self.assertEqual(
+                    kwargs["env"]["EMUFLOW_VPR_LOGIC_QUERY"],
+                    str(logic_query.resolve()),
+                )
+                self.assertEqual(
+                    kwargs["env"]["EMUFLOW_VPR_LOGIC_OUTPUT"],
+                    str(logic_output.resolve()),
+                )
                 route_index = arguments.index("--route_file") + 1
                 Path(arguments[route_index]).write_text(
                     "route", encoding="utf-8"
                 )
                 boundary_output.write_text(
+                    "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
+                    encoding="utf-8",
+                )
+                logic_output.write_text(
                     "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
                     encoding="utf-8",
                 )
@@ -176,6 +193,8 @@ class VprTest(unittest.TestCase):
                     executable="/source-built/vpr",
                     boundary_query=boundary_query,
                     boundary_output=boundary_output,
+                    logic_query=logic_query,
+                    logic_output=logic_output,
                 )
 
         self.assertEqual(report["status"], "pass")
@@ -185,6 +204,7 @@ class VprTest(unittest.TestCase):
         self.assertIn("--write_rr_graph", report["command"])
         self.assertEqual(report["route_check"]["status"], "pass")
         self.assertIn("boundary_timing", report)
+        self.assertIn("logic_segment_timing", report)
 
 
 if __name__ == "__main__":

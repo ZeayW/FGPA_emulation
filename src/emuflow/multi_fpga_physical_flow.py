@@ -13,6 +13,11 @@ from .boundary_timing import (
 )
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
+from .logic_segment_timing import (
+    import_vpr_logic_segment_timing,
+    validate_logic_segment_timing,
+    write_vpr_logic_segment_query,
+)
 from .lowering import run_placement_ir_lowering
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
@@ -256,6 +261,10 @@ def run_multi_fpga_physical_flow(
     vivado_max_timing_paths: int = 10000,
     vivado_place_directive: str = "Default",
     vivado_route_directive: str = "Default",
+    original_ir_path: Optional[Path] = None,
+    assignment_path: Optional[Path] = None,
+    routes_path: Optional[Path] = None,
+    path_database_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     split_root = split_root.resolve()
     manifest_path = split_root / "manifest.json"
@@ -268,6 +277,19 @@ def run_multi_fpga_physical_flow(
     backend_descriptor = physical_backend_descriptor(backend)
     validate_physical_backend_descriptor(backend_descriptor)
     expected_fpgas = [fpga.id for fpga in platform.fpgas]
+    logic_context = (
+        original_ir_path,
+        assignment_path,
+        routes_path,
+        path_database_path,
+    )
+    if any(path is not None for path in logic_context) and not all(
+        path is not None for path in logic_context
+    ):
+        raise ValidationError(
+            "physical logic timing requires original IR, assignment, routes, "
+            "and STA path database together"
+        )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
         raise ValidationError("split manifest does not cover the BoardDB FPGAs")
@@ -437,6 +459,29 @@ def run_multi_fpga_physical_flow(
             boundary_raw_path = (
                 fpga_root / "vpr-route" / "boundary-timing.tsv"
             )
+            logic_query_report = None
+            logic_identity_path = None
+            logic_query_path = None
+            logic_raw_path = None
+            if all(path is not None for path in logic_context):
+                logic_identity_path = fpga_root / "logic-segment-identity.json"
+                logic_query_path = fpga_root / "vpr-logic-segment-query.tsv"
+                logic_query_report = write_vpr_logic_segment_query(
+                    original_ir_path,
+                    assignment_path,
+                    path_database_path,
+                    routes_path,
+                    schedule_path,
+                    platform,
+                    merged_ir,
+                    boundary_identity_path,
+                    fpga_id,
+                    logic_query_path,
+                    logic_identity_path,
+                )
+                logic_raw_path = (
+                    fpga_root / "vpr-route" / "logic-segment-timing.tsv"
+                )
             route_report = run_vpr_route_packed(
                 architecture_path,
                 circuit,
@@ -449,6 +494,8 @@ def run_multi_fpga_physical_flow(
                 route_channel_width=route_channel_width,
                 boundary_query=boundary_query_path,
                 boundary_output=boundary_raw_path,
+                logic_query=logic_query_path,
+                logic_output=logic_raw_path,
             )
             boundary_timing_path = fpga_root / "boundary-timing.json"
             boundary_import_report = import_vpr_boundary_timing(
@@ -457,6 +504,23 @@ def run_multi_fpga_physical_flow(
                 boundary_query_path,
                 boundary_timing_path,
             )
+            logic_timing_stage = None
+            if (
+                logic_query_report is not None
+                and logic_identity_path is not None
+                and logic_raw_path is not None
+            ):
+                logic_timing_path = fpga_root / "logic-segment-timing.json"
+                logic_import_report = import_vpr_logic_segment_timing(
+                    logic_raw_path,
+                    logic_identity_path,
+                    logic_timing_path,
+                )
+                logic_timing_stage = {
+                    "status": "pass",
+                    "query": logic_query_report,
+                    "import": logic_import_report,
+                }
             physical_delays = _physical_clock_delays(
                 route_report, eblif_report
             )
@@ -525,6 +589,11 @@ def run_multi_fpga_physical_flow(
                         "query": boundary_query_report,
                         "import": boundary_import_report,
                     },
+                    **(
+                        {"logic_segment_timing": logic_timing_stage}
+                        if logic_timing_stage is not None
+                        else {}
+                    ),
                 }
             )
             provider_fields["array"] = {"width": width, "height": height}
@@ -635,6 +704,19 @@ def run_multi_fpga_physical_flow(
             database,
             physical_summary["boundary_identities"][fpga_id],
         )
+    if backend == "open" and all(path is not None for path in logic_context):
+        physical_summary["logic_segment_timing"] = {
+            item["fpga"]: read_json(
+                Path(
+                    item["stages"]["logic_segment_timing"]["import"][
+                        "output"
+                    ]
+                )
+            )
+            for item in records
+        }
+        for database in physical_summary["logic_segment_timing"].values():
+            validate_logic_segment_timing(database)
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )

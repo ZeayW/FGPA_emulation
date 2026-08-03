@@ -493,6 +493,8 @@ def run_vpr_route_packed(
     route_channel_width: int = 300,
     boundary_query: Optional[Path] = None,
     boundary_output: Optional[Path] = None,
+    logic_query: Optional[Path] = None,
+    logic_output: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Route an existing VPR packing and OpenPARF cluster placement."""
 
@@ -524,6 +526,20 @@ def run_vpr_route_packed(
             )
         boundary_output_path = boundary_output.resolve()
         boundary_output_path.parent.mkdir(parents=True, exist_ok=True)
+    if (logic_query is None) != (logic_output is None):
+        raise EmuFlowError(
+            "VPR logic segment timing requires both query and output paths"
+        )
+    logic_query_path = None
+    logic_output_path = None
+    if logic_query is not None and logic_output is not None:
+        logic_query_path = logic_query.resolve()
+        if not logic_query_path.is_file():
+            raise EmuFlowError(
+                f"VPR logic segment query does not exist: {logic_query_path}"
+            )
+        logic_output_path = logic_output.resolve()
+        logic_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -553,6 +569,9 @@ def run_vpr_route_packed(
     if boundary_query_path is not None and boundary_output_path is not None:
         environment["EMUFLOW_VPR_BOUNDARY_QUERY"] = str(boundary_query_path)
         environment["EMUFLOW_VPR_BOUNDARY_OUTPUT"] = str(boundary_output_path)
+    if logic_query_path is not None and logic_output_path is not None:
+        environment["EMUFLOW_VPR_LOGIC_QUERY"] = str(logic_query_path)
+        environment["EMUFLOW_VPR_LOGIC_OUTPUT"] = str(logic_output_path)
     completed = subprocess.run(
         arguments,
         cwd=output_dir,
@@ -603,6 +622,22 @@ def run_vpr_route_packed(
                 "sha256": _sha256(boundary_output_path),
             },
         }
+    logic_artifact = None
+    if logic_output_path is not None:
+        if not logic_output_path.is_file() or logic_output_path.stat().st_size == 0:
+            raise ValidationError(
+                "VPR did not emit the requested logic segment timing report"
+            )
+        logic_artifact = {
+            "query": {
+                "path": str(logic_query_path),
+                "sha256": _sha256(logic_query_path),
+            },
+            "output": {
+                "path": str(logic_output_path),
+                "sha256": _sha256(logic_output_path),
+            },
+        }
     report.update(
         {
             name: {"path": str(path), "sha256": _sha256(path)}
@@ -617,5 +652,7 @@ def run_vpr_route_packed(
     report["route_check"] = route_check
     if boundary_artifact is not None:
         report["boundary_timing"] = boundary_artifact
+    if logic_artifact is not None:
+        report["logic_segment_timing"] = logic_artifact
     write_json(output_dir / "vpr-route-report.json", report)
     return report

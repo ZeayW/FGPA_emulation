@@ -942,6 +942,11 @@ def reconstruct_tdm_schedule_timing_paths(
                 "slack_ns": slack_ns,
                 "normalized_slack": normalized_slack,
                 "cut_nets": list(timing_path["cut_nets"]),
+                "compressed_path_ids": list(
+                    timing_path.get(
+                        "compressed_path_ids", [timing_path["id"]]
+                    )
+                ),
                 "cut_transitions": [
                     dict(item)
                     for item in timing_path.get("cut_transitions", [])

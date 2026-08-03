@@ -41,27 +41,32 @@ std::vector<std::string> split_tabs(const std::string& line) {
     return fields;
 }
 
-void write_emuflow_boundary_timing(const AnalysisDelayCalculator& delay_calc) {
-    const char* query_env = std::getenv("EMUFLOW_VPR_BOUNDARY_QUERY");
-    const char* output_env = std::getenv("EMUFLOW_VPR_BOUNDARY_OUTPUT");
+void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
+                                   const char* query_environment,
+                                   const char* output_environment,
+                                   const char* report_name,
+                                   bool logic_segments) {
+    const char* query_env = std::getenv(query_environment);
+    const char* output_env = std::getenv(output_environment);
     if (query_env == nullptr && output_env == nullptr) {
         return;
     }
     if (query_env == nullptr || output_env == nullptr) {
         VPR_THROW(VPR_ERROR_TIMING,
-                  "EmuFlow boundary timing requires both query and output paths");
+                  "EmuFlow %s timing requires both query and output paths",
+                  report_name);
     }
 
     std::ifstream input(query_env);
     if (!input) {
         VPR_THROW(VPR_ERROR_TIMING,
-                  "Cannot open EmuFlow boundary timing query '%s'", query_env);
+                  "Cannot open EmuFlow %s timing query '%s'", report_name, query_env);
     }
     std::string line;
     if (!std::getline(input, line)
         || line != "endpoint\tkind\tstart_pin\tend_pin") {
         VPR_THROW(VPR_ERROR_TIMING,
-                  "Invalid EmuFlow boundary timing query header");
+                  "Invalid EmuFlow %s timing query header", report_name);
     }
 
     const auto& atom_ctx = g_vpr_ctx.atom();
@@ -80,8 +85,15 @@ void write_emuflow_boundary_timing(const AnalysisDelayCalculator& delay_calc) {
             continue;
         }
         auto fields = split_tabs(line);
-        if (fields.size() != 4 || fields[0].empty()
-            || (fields[1] != "tx" && fields[1] != "rx")
+        const bool kind_valid = logic_segments
+                                    ? (fields.size() == 4
+                                       && (fields[1] == "launch"
+                                           || fields[1] == "transition"
+                                           || fields[1] == "capture"))
+                                    : (fields.size() == 4
+                                       && (fields[1] == "tx"
+                                           || fields[1] == "rx"));
+        if (!kind_valid || fields[0].empty()
             || fields[2].empty() || fields[3].empty()) {
             VPR_THROW(VPR_ERROR_TIMING,
                       "Malformed EmuFlow boundary query line %zu", line_number);
@@ -101,7 +113,8 @@ void write_emuflow_boundary_timing(const AnalysisDelayCalculator& delay_calc) {
                       line_number);
         }
         const std::size_t index = queries.size();
-        const std::size_t kind_index = fields[1] == "tx" ? 0 : 1;
+        const std::size_t kind_index =
+            (fields[1] == "rx" || fields[1] == "capture") ? 1 : 0;
         queries.push_back({fields[0], fields[1], fields[2], fields[3],
                            start_node, end_node});
         by_start[kind_index][std::size_t(start_node)].push_back(index);
@@ -193,7 +206,7 @@ void write_emuflow_boundary_timing(const AnalysisDelayCalculator& delay_calc) {
     std::ofstream output(output_env);
     if (!output) {
         VPR_THROW(VPR_ERROR_TIMING,
-                  "Cannot write EmuFlow boundary timing output '%s'", output_env);
+                  "Cannot write EmuFlow %s timing output '%s'", report_name, output_env);
     }
     output << "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n";
     output << std::setprecision(10);
@@ -209,8 +222,8 @@ void write_emuflow_boundary_timing(const AnalysisDelayCalculator& delay_calc) {
                << queries[index].start_pin << '\t'
                << queries[index].end_pin << '\n';
     }
-    VTR_LOG("EmuFlow boundary timing: %zu endpoints, %zu forward and %zu reverse grouped traversals\n",
-            queries.size(), forward_traversals, reverse_traversals);
+    VTR_LOG("EmuFlow %s timing: %zu endpoints, %zu forward and %zu reverse grouped traversals\n",
+            report_name, queries.size(), forward_traversals, reverse_traversals);
 }
 
 } // namespace
@@ -345,7 +358,16 @@ void generate_setup_timing_stats(const std::string& prefix,
 
     timing_reporter.report_timing_setup(prefix + "report_timing.setup.rpt", *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);
 
-    write_emuflow_boundary_timing(delay_calc);
+    write_emuflow_endpoint_timing(delay_calc,
+                                  "EMUFLOW_VPR_BOUNDARY_QUERY",
+                                  "EMUFLOW_VPR_BOUNDARY_OUTPUT",
+                                  "boundary",
+                                  false);
+    write_emuflow_endpoint_timing(delay_calc,
+                                  "EMUFLOW_VPR_LOGIC_QUERY",
+                                  "EMUFLOW_VPR_LOGIC_OUTPUT",
+                                  "logic segment",
+                                  true);
 
     if (analysis_opts.timing_report_skew) {
         timing_reporter.report_skew_setup(prefix + "report_skew.setup.rpt", *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);

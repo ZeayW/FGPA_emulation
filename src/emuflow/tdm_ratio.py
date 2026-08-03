@@ -284,6 +284,9 @@ def _prepare_model(
                 "clock_period_ns": float(period),
                 "fixed_delay_ns": float(fixed),
                 "cut_nets": list(raw_cut_nets),
+                "compressed_path_ids": list(
+                    path.get("compressed_path_ids", [path["path"]])
+                ),
                 # Phase 4 currently models a multicast cut net by its
                 # longest routed sink. Preserve those logical transitions so
                 # Phase 7C can combine concrete transport delay with the

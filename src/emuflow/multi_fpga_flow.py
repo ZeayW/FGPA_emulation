@@ -518,6 +518,12 @@ def run_multi_fpga_flow(
             vivado_max_timing_paths=physical_vivado_max_timing_paths,
             vivado_place_directive=physical_vivado_place_directive,
             vivado_route_directive=physical_vivado_route_directive,
+            original_ir_path=ir_path if timing_driven else None,
+            assignment_path=assignment_path if timing_driven else None,
+            routes_path=routes_path if timing_driven else None,
+            path_database_path=(
+                path_database_path if timing_driven else None
+            ),
         )
         physical_summary_path = output_dir / "physical/physical-summary.json"
 

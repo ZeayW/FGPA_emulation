@@ -413,6 +413,26 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--schedule", type=Path, required=True)
     multi_fpga_physical.add_argument("--out", type=Path, required=True)
     multi_fpga_physical.add_argument(
+        "--original-ir",
+        type=Path,
+        help="original EmuIR used to map routed DUT timing endpoints",
+    )
+    multi_fpga_physical.add_argument(
+        "--assignment",
+        type=Path,
+        help="Phase 3 assignment used to reconstruct DUT timing paths",
+    )
+    multi_fpga_physical.add_argument(
+        "--routes",
+        type=Path,
+        help="Phase 4 routes used to reconstruct DUT timing paths",
+    )
+    multi_fpga_physical.add_argument(
+        "--path-database",
+        type=Path,
+        help="pre-partition STA path database with endpoint identity",
+    )
+    multi_fpga_physical.add_argument(
         "--backend", choices=("open", "vivado"), default="open"
     )
     multi_fpga_physical.add_argument("--architecture", type=Path)
@@ -1657,6 +1677,10 @@ def _dispatch(args: argparse.Namespace) -> int:
                 vivado_max_timing_paths=args.vivado_max_timing_paths,
                 vivado_place_directive=args.vivado_place_directive,
                 vivado_route_directive=args.vivado_route_directive,
+                original_ir_path=args.original_ir,
+                assignment_path=args.assignment,
+                routes_path=args.routes,
+                path_database_path=args.path_database,
             )
             _print_json(report["summary"])
             return 0
