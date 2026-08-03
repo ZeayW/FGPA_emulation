@@ -1,8 +1,14 @@
 #include "timing_reports.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
-
-#include "timing_reports.h"
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <unordered_map>
 
 #include "tatum/TimingReporter.hpp"
 
@@ -13,6 +19,201 @@
 #include "timing_util.h"
 
 #include "VprTimingGraphResolver.h"
+
+namespace {
+
+struct EmuFlowBoundaryQuery {
+    std::string endpoint;
+    std::string kind;
+    std::string start_pin;
+    std::string end_pin;
+    tatum::NodeId start_node;
+    tatum::NodeId end_node;
+};
+
+std::vector<std::string> split_tabs(const std::string& line) {
+    std::vector<std::string> fields;
+    std::stringstream stream(line);
+    std::string field;
+    while (std::getline(stream, field, '\t')) {
+        fields.push_back(field);
+    }
+    return fields;
+}
+
+void write_emuflow_boundary_timing(const AnalysisDelayCalculator& delay_calc) {
+    const char* query_env = std::getenv("EMUFLOW_VPR_BOUNDARY_QUERY");
+    const char* output_env = std::getenv("EMUFLOW_VPR_BOUNDARY_OUTPUT");
+    if (query_env == nullptr && output_env == nullptr) {
+        return;
+    }
+    if (query_env == nullptr || output_env == nullptr) {
+        VPR_THROW(VPR_ERROR_TIMING,
+                  "EmuFlow boundary timing requires both query and output paths");
+    }
+
+    std::ifstream input(query_env);
+    if (!input) {
+        VPR_THROW(VPR_ERROR_TIMING,
+                  "Cannot open EmuFlow boundary timing query '%s'", query_env);
+    }
+    std::string line;
+    if (!std::getline(input, line)
+        || line != "endpoint\tkind\tstart_pin\tend_pin") {
+        VPR_THROW(VPR_ERROR_TIMING,
+                  "Invalid EmuFlow boundary timing query header");
+    }
+
+    const auto& atom_ctx = g_vpr_ctx.atom();
+    const auto& atom_netlist = atom_ctx.netlist();
+    const auto& atom_lookup = atom_ctx.lookup();
+    const auto& timing_graph = *g_vpr_ctx.timing().graph;
+    std::vector<EmuFlowBoundaryQuery> queries;
+    using QueryGroups =
+        std::unordered_map<std::size_t, std::vector<std::size_t>>;
+    std::array<QueryGroups, 2> by_start;
+    std::array<QueryGroups, 2> by_end;
+    std::size_t line_number = 1;
+    while (std::getline(input, line)) {
+        ++line_number;
+        if (line.empty()) {
+            continue;
+        }
+        auto fields = split_tabs(line);
+        if (fields.size() != 4 || fields[0].empty()
+            || (fields[1] != "tx" && fields[1] != "rx")
+            || fields[2].empty() || fields[3].empty()) {
+            VPR_THROW(VPR_ERROR_TIMING,
+                      "Malformed EmuFlow boundary query line %zu", line_number);
+        }
+        AtomPinId start_pin = atom_netlist.find_pin(fields[2]);
+        AtomPinId end_pin = atom_netlist.find_pin(fields[3]);
+        if (!start_pin || !end_pin) {
+            VPR_THROW(VPR_ERROR_TIMING,
+                      "EmuFlow boundary query line %zu references absent pin '%s' or '%s'",
+                      line_number, fields[2].c_str(), fields[3].c_str());
+        }
+        tatum::NodeId start_node = atom_lookup.atom_pin_tnode(start_pin);
+        tatum::NodeId end_node = atom_lookup.atom_pin_tnode(end_pin);
+        if (!start_node || !end_node) {
+            VPR_THROW(VPR_ERROR_TIMING,
+                      "EmuFlow boundary query line %zu has no timing node",
+                      line_number);
+        }
+        const std::size_t index = queries.size();
+        const std::size_t kind_index = fields[1] == "tx" ? 0 : 1;
+        queries.push_back({fields[0], fields[1], fields[2], fields[3],
+                           start_node, end_node});
+        by_start[kind_index][std::size_t(start_node)].push_back(index);
+        by_end[kind_index][std::size_t(end_node)].push_back(index);
+    }
+
+    const float negative_infinity = -std::numeric_limits<float>::infinity();
+    std::vector<float> results(queries.size(), negative_infinity);
+    std::vector<float> distances(timing_graph.nodes().size(),
+                                 negative_infinity);
+    const auto relax_delay = [&](tatum::EdgeId edge) {
+        const float delay = delay_calc.max_edge_delay(timing_graph, edge).value();
+        if (!std::isfinite(delay)) {
+            VPR_THROW(VPR_ERROR_TIMING,
+                      "EmuFlow boundary timing encountered non-finite edge delay");
+        }
+        return delay;
+    };
+    std::vector<tatum::LevelId> levels(timing_graph.levels().begin(),
+                                       timing_graph.levels().end());
+    std::size_t forward_traversals = 0;
+    std::size_t reverse_traversals = 0;
+    for (std::size_t kind_index = 0; kind_index < by_start.size();
+         ++kind_index) {
+        const bool walk_forward =
+            by_start[kind_index].size() <= by_end[kind_index].size();
+        if (walk_forward) {
+            forward_traversals += by_start[kind_index].size();
+            for (const auto& group : by_start[kind_index]) {
+                std::fill(distances.begin(), distances.end(), negative_infinity);
+                distances[group.first] = 0.f;
+                for (tatum::LevelId level : levels) {
+                    for (tatum::NodeId node : timing_graph.level_nodes(level)) {
+                        const float base = distances[std::size_t(node)];
+                        if (!std::isfinite(base)) {
+                            continue;
+                        }
+                        for (tatum::EdgeId edge :
+                             timing_graph.node_out_edges(node)) {
+                            if (timing_graph.edge_disabled(edge)) {
+                                continue;
+                            }
+                            const tatum::NodeId sink =
+                                timing_graph.edge_sink_node(edge);
+                            float& value = distances[std::size_t(sink)];
+                            value = std::max(value, base + relax_delay(edge));
+                        }
+                    }
+                }
+                for (std::size_t query_index : group.second) {
+                    results[query_index] = distances[
+                        std::size_t(queries[query_index].end_node)];
+                }
+            }
+        } else {
+            reverse_traversals += by_end[kind_index].size();
+            for (const auto& group : by_end[kind_index]) {
+                std::fill(distances.begin(), distances.end(), negative_infinity);
+                distances[group.first] = 0.f;
+                for (auto level_iter = levels.rbegin();
+                     level_iter != levels.rend();
+                     ++level_iter) {
+                    for (tatum::NodeId node :
+                         timing_graph.level_nodes(*level_iter)) {
+                        float& value = distances[std::size_t(node)];
+                        for (tatum::EdgeId edge :
+                             timing_graph.node_out_edges(node)) {
+                            if (timing_graph.edge_disabled(edge)) {
+                                continue;
+                            }
+                            const tatum::NodeId sink =
+                                timing_graph.edge_sink_node(edge);
+                            const float suffix = distances[std::size_t(sink)];
+                            if (std::isfinite(suffix)) {
+                                value = std::max(
+                                    value, relax_delay(edge) + suffix);
+                            }
+                        }
+                    }
+                }
+                for (std::size_t query_index : group.second) {
+                    results[query_index] = distances[
+                        std::size_t(queries[query_index].start_node)];
+                }
+            }
+        }
+    }
+
+    std::ofstream output(output_env);
+    if (!output) {
+        VPR_THROW(VPR_ERROR_TIMING,
+                  "Cannot write EmuFlow boundary timing output '%s'", output_env);
+    }
+    output << "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n";
+    output << std::setprecision(10);
+    constexpr double seconds_to_nanoseconds = 1.e9;
+    for (std::size_t index = 0; index < queries.size(); ++index) {
+        if (!std::isfinite(results[index]) || results[index] < 0.f) {
+            VPR_THROW(VPR_ERROR_TIMING,
+                      "No routed timing path for EmuFlow endpoint '%s'",
+                      queries[index].endpoint.c_str());
+        }
+        output << queries[index].endpoint << '\t' << queries[index].kind << '\t'
+               << results[index] * seconds_to_nanoseconds << '\t'
+               << queries[index].start_pin << '\t'
+               << queries[index].end_pin << '\n';
+    }
+    VTR_LOG("EmuFlow boundary timing: %zu endpoints, %zu forward and %zu reverse grouped traversals\n",
+            queries.size(), forward_traversals, reverse_traversals);
+}
+
+} // namespace
 
 /**
  * @brief Get the bounding box of a routed net.
@@ -143,6 +344,8 @@ void generate_setup_timing_stats(const std::string& prefix,
     tatum::TimingReporter timing_reporter(resolver, *timing_ctx.graph, *timing_ctx.constraints);
 
     timing_reporter.report_timing_setup(prefix + "report_timing.setup.rpt", *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);
+
+    write_emuflow_boundary_timing(delay_calc);
 
     if (analysis_opts.timing_report_skew) {
         timing_reporter.report_skew_setup(prefix + "report_skew.setup.rpt", *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);

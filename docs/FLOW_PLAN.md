@@ -478,10 +478,16 @@ combines per-hop routed endpoint delay, board-link/TDM delay, and the post-route
 DUT logic bound. It reports original-target-clock and virtual-runtime-clock
 slack separately.
 
+When the observation-only `shadow_values` top port is removed, Phase 6 keeps
+the shadow-register net's internal sinks. This preserves the registered
+RX-to-next-hop-TX connection on routing-only FPGAs instead of allowing physical
+synthesis to prune a required multi-hop transport register.
+
 The Vivado provider extracts each routed TX source-to-port and RX
-port-to-shadow-register path and therefore supplies endpoint-exact interface
-delay. The open provider currently uses a conservative post-route interface
-maximum for every scheduled hop. Both routes still use per-partition maxima for
+port-to-shadow-register path through Tcl. The open provider resolves the same
+stable endpoints to VPR atom pins and evaluates their longest routed delays in
+the Tatum timing graph. Both therefore supply endpoint-exact interface delay
+through `boundary-timing/v1`. Both routes still use per-partition maxima for
 DUT logic segments, so neither is yet a fully endpoint-to-endpoint exact timing
 trace. Hardware BSP pin binding, source-synchronous board timing, dedicated
 clock-buffer binding, bitstream generation, link training, and a golden

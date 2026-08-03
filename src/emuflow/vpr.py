@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -490,6 +491,8 @@ def run_vpr_route_packed(
     executable: Optional[str] = None,
     route_checker: Optional[str] = None,
     route_channel_width: int = 300,
+    boundary_query: Optional[Path] = None,
+    boundary_output: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Route an existing VPR packing and OpenPARF cluster placement."""
 
@@ -507,6 +510,20 @@ def run_vpr_route_packed(
         raise EmuFlowError(
             "VPR route channel width must be a positive even integer"
         )
+    if (boundary_query is None) != (boundary_output is None):
+        raise EmuFlowError(
+            "VPR boundary timing requires both query and output paths"
+        )
+    boundary_query_path = None
+    boundary_output_path = None
+    if boundary_query is not None and boundary_output is not None:
+        boundary_query_path = boundary_query.resolve()
+        if not boundary_query_path.is_file():
+            raise EmuFlowError(
+                f"VPR boundary timing query does not exist: {boundary_query_path}"
+            )
+        boundary_output_path = boundary_output.resolve()
+        boundary_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -532,9 +549,14 @@ def run_vpr_route_packed(
         "--route_chan_width",
         str(route_channel_width),
     ]
+    environment = os.environ.copy()
+    if boundary_query_path is not None and boundary_output_path is not None:
+        environment["EMUFLOW_VPR_BOUNDARY_QUERY"] = str(boundary_query_path)
+        environment["EMUFLOW_VPR_BOUNDARY_OUTPUT"] = str(boundary_output_path)
     completed = subprocess.run(
         arguments,
         cwd=output_dir,
+        env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -562,6 +584,25 @@ def run_vpr_route_packed(
         output_dir / "vpr-route-check.json",
         executable=route_checker,
     )
+    boundary_artifact = None
+    if boundary_output_path is not None:
+        if (
+            not boundary_output_path.is_file()
+            or boundary_output_path.stat().st_size == 0
+        ):
+            raise ValidationError(
+                "VPR did not emit the requested boundary timing report"
+            )
+        boundary_artifact = {
+            "query": {
+                "path": str(boundary_query_path),
+                "sha256": _sha256(boundary_query_path),
+            },
+            "output": {
+                "path": str(boundary_output_path),
+                "sha256": _sha256(boundary_output_path),
+            },
+        }
     report.update(
         {
             name: {"path": str(path), "sha256": _sha256(path)}
@@ -574,5 +615,7 @@ def run_vpr_route_packed(
     report["command"] = arguments
     report["log"] = str(log_path)
     report["route_check"] = route_check
+    if boundary_artifact is not None:
+        report["boundary_timing"] = boundary_artifact
     write_json(output_dir / "vpr-route-report.json", report)
     return report

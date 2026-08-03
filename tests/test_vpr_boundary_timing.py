@@ -1,0 +1,152 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.io import write_json
+from emuflow.vpr_boundary_timing import (
+    import_vpr_boundary_timing,
+    write_vpr_boundary_timing_query,
+)
+
+
+class VprBoundaryTimingTest(unittest.TestCase):
+    def test_query_maps_emuir_objects_to_vpr_atom_pins(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "placement.json"
+            identity_path = root / "identities.json"
+            query_path = root / "query.tsv"
+            write_json(
+                ir_path,
+                {
+                    "schema": "emuflow.emuir/v1",
+                    "design": {
+                        "name": "dut__fpga0",
+                        "top": "dut__fpga0",
+                        "source_format": "test",
+                    },
+                    "ports": [],
+                    "instances": [
+                        {
+                            "id": "source_lut",
+                            "name": "source_lut",
+                            "type": "$lut",
+                            "resources": {"lut": 1},
+                            "parameters": {"WIDTH": 1, "LUT": "2'b10"},
+                            "attributes": {},
+                            "constant_connections": [],
+                        },
+                        {
+                            "id": "__emuflow_transport__/shadow_ff",
+                            "name": "__emuflow_transport__/shadow_ff",
+                            "type": "$_DFF_P_",
+                            "resources": {"ff": 1},
+                            "parameters": {},
+                            "attributes": {},
+                            "constant_connections": [],
+                        },
+                    ],
+                    "nets": [
+                        {
+                            "id": "logical",
+                            "name": "logical",
+                            "drivers": [
+                                {"instance": "source_lut", "port": "Y", "bit": 0}
+                            ],
+                            "sinks": [],
+                            "fanout": 0,
+                            "cut_class": "combinational",
+                        },
+                        {
+                            "id": "tx-external",
+                            "name": "tx-external",
+                            "drivers": [],
+                            "sinks": [],
+                            "fanout": 0,
+                            "cut_class": "combinational",
+                        },
+                        {
+                            "id": "rx-external",
+                            "name": "rx-external",
+                            "drivers": [],
+                            "sinks": [],
+                            "fanout": 0,
+                            "cut_class": "combinational",
+                        },
+                    ],
+                    "clocks": [],
+                    "warnings": [],
+                },
+            )
+            identities = {
+                "schema": "emuflow.boundary-identity/v1",
+                "status": "pass",
+                "design": "dut",
+                "platform": "board",
+                "fpga": "fpga0",
+                "provider": "test",
+                "coverage": {
+                    "endpoints": 2,
+                    "tx": 1,
+                    "rx": 1,
+                    "external_port_nets": 2,
+                },
+                "endpoints": [
+                    {
+                        "id": "tx0",
+                        "kind": "tx",
+                        "schedule_entry": "s0",
+                        "merged_ir": {
+                            "logical_net": "logical",
+                            "external_net": "tx-external",
+                            "boundary_register_instances": [],
+                        },
+                    },
+                    {
+                        "id": "rx0",
+                        "kind": "rx",
+                        "schedule_entry": "s1",
+                        "merged_ir": {
+                            "logical_net": None,
+                            "external_net": "rx-external",
+                            "boundary_register_instances": [
+                                "__emuflow_transport__/shadow_ff"
+                            ],
+                        },
+                    },
+                ],
+            }
+            write_json(identity_path, identities)
+            report = write_vpr_boundary_timing_query(
+                ir_path, identity_path, query_path
+            )
+            self.assertEqual(report["endpoints"], 2)
+            self.assertEqual(
+                query_path.read_text(encoding="utf-8").splitlines()[1:],
+                [
+                    "tx0\ttx\ti0.out[0]\tout:n1.outpad[0]",
+                    "rx0\trx\tn2.inpad[0]\ti1.D[0]",
+                ],
+            )
+            timing_tsv = root / "timing.tsv"
+            timing_tsv.write_text(
+                "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"
+                "tx0\ttx\t1.25\ti0.out[0]\tout:n1.outpad[0]\n"
+                "rx0\trx\t0.75\tn2.inpad[0]\ti1.D[0]\n",
+                encoding="utf-8",
+            )
+            output = root / "boundary-timing.json"
+            imported = import_vpr_boundary_timing(
+                timing_tsv, identity_path, query_path, output
+            )
+            self.assertEqual(imported["maximum_delay_ns"], 1.25)
+            database = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(
+                database["qualification"],
+                "routed-academic-architecture-endpoint-exact",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

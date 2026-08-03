@@ -158,10 +158,10 @@ placement, and VPR performs exact packing, detailed routing, and post-route
 timing. On the Vivado route, Vivado supplies device timing and physical
 implementation for a concrete Xilinx part; Vivado itself and its device
 database are not included in this repository. Phase 7C does not compare the
-local OpenPARF/VPR or Vivado WNS values directly. It combines the selected
-backend's per-FPGA post-route delays with the same concrete board route and
-TDM schedule, then reports both original-target-clock and
-virtual-runtime-clock system slack.
+local OpenPARF/VPR or Vivado WNS values directly. It combines each scheduled
+hop's routed TX/RX endpoint delays with the same concrete board route and TDM
+schedule, plus a conservative per-partition DUT-logic bound, then reports both
+original-target-clock and virtual-runtime-clock system slack.
 
 | Route | Current completion boundary |
 | --- | --- |
@@ -208,7 +208,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
-| FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs let Vivado return endpoint-keyed interface paths while the open route currently uses checked per-hop interface maxima |
+| FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
 | Hardware BSP | In-tree contract | Pending board selection |
 
@@ -228,9 +228,9 @@ The open heterogeneous OpenPARF-to-VPR placement-and-routing path is
 implemented for the pinned VTR flagship profile: VTR architecture import,
 LUT6/DFF plus multiplier/RAM mapping, exact VPR packing, the checked
 packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
-routing, timing analysis, and independent route/RR-graph verification.
-Additional architecture mapping profiles and endpoint-exact open-backend
-interface timing extraction remain open gates.
+routing, timing analysis, independent route/RR-graph verification, and
+endpoint-keyed interface timing extracted directly from VPR's routed Tatum
+graph. Additional architecture mapping profiles remain open gates.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.
@@ -440,12 +440,13 @@ reported separately. Before physical implementation, timing is explicitly
 qualified as a pre-placement estimate. With `--physical`, Phase 7C replaces
 that estimate with `system-timing/v1`: concrete link/TDM delay is combined per
 path with the chosen backend's post-route DUT and interface delays. Phase 6
-records every scheduled TX/RX endpoint in `boundary-identity/v1`. Vivado can
-back-annotate those exact routed interfaces into `boundary-timing/v1`; the open
-backend currently applies a conservative post-route interface maximum to every
-routed hop. Both providers still bound DUT logic with per-partition maxima, and
-the artifact records these exactness qualifications. A physical run passes
-only if local P&R/DRC and the combined virtual runtime-clock slack both close.
+records every scheduled TX/RX endpoint in `boundary-identity/v1`. Vivado
+queries those routed interfaces through Tcl, while the open backend evaluates
+the same endpoint queries in VPR's post-route Tatum graph; both emit
+`boundary-timing/v1`. Both providers still bound DUT logic with per-partition
+maxima, and the artifact records these exactness qualifications. A physical
+run passes only if local P&R/DRC and the combined virtual runtime-clock slack
+both close.
 Original target-clock slack remains a reported optimization metric rather than
 the pausible-clock execution gate.
 

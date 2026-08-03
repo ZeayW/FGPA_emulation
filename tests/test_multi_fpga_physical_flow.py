@@ -210,6 +210,13 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 }
 
             def fake_route(arch, circuit, *_args, **_kwargs):
+                _kwargs["boundary_output"].parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                _kwargs["boundary_output"].write_text(
+                    "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
+                    encoding="utf-8",
+                )
                 return {
                     "status": "pass",
                     "architecture": {"sha256": _sha256(arch)},

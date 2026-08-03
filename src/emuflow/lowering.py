@@ -75,6 +75,11 @@ def build_placement_ir(
         for endpoint in transport["endpoints"]
         if endpoint["kind"] == "rx"
     }
+    shadow_signal_to_logical_net = {
+        endpoint["signal"]: endpoint["net"]
+        for endpoint in transport["endpoints"]
+        if endpoint["kind"] == "rx"
+    }
     shadow_index = {
         item["signal"]: item["index"] for item in transport["shadow_signals"]
     }
@@ -139,6 +144,7 @@ def build_placement_ir(
             if endpoint["instance"] is not None
         )
 
+    preserved_shadow_nets = set()
     for signal, index in shadow_index.items():
         top_net = _top_net(
             top_net_index,
@@ -146,7 +152,24 @@ def build_placement_ir(
             index,
             "sinks",
         )
-        consumed_transport_nets.add(top_net["id"])
+        internal_sinks = [
+            remap_endpoint(endpoint)
+            for endpoint in top_net["sinks"]
+            if endpoint["instance"] is not None
+        ]
+        logical_net = shadow_signal_to_logical_net.get(signal)
+        if logical_net in local_nets:
+            local_nets[logical_net]["sinks"].extend(internal_sinks)
+            local_nets[logical_net]["fanout"] = len(
+                local_nets[logical_net]["sinks"]
+            )
+            consumed_transport_nets.add(top_net["id"])
+        else:
+            # A routing-only FPGA still needs the captured shadow register to
+            # drive the next-hop TX mux.  Remove only the top-level observation
+            # port below; preserving this internal net is essential to a real
+            # multi-hop physical implementation.
+            preserved_shadow_nets.add(top_net["id"])
 
     # The generated transport RTL keeps each packed interface at width one
     # when a partition has no TX or no RX signals.  Yosys consequently emits
@@ -162,7 +185,8 @@ def build_placement_ir(
             for collection in ("drivers", "sinks")
             for endpoint in net[collection]
         ):
-            consumed_transport_nets.add(net["id"])
+            if net["id"] not in preserved_shadow_nets:
+                consumed_transport_nets.add(net["id"])
 
     transport_nets = []
     for net in transport_ir.value["nets"]:
@@ -172,11 +196,18 @@ def build_placement_ir(
         value["id"] = f"{namespace}{net['id']}"
         value["name"] = f"{namespace}{net['name']}"
         value["drivers"] = [
-            remap_endpoint(endpoint) for endpoint in net["drivers"]
+            remap_endpoint(endpoint)
+            for endpoint in net["drivers"]
+            if endpoint["instance"] is not None
+            or endpoint["port"] not in removed_ports
         ]
         value["sinks"] = [
-            remap_endpoint(endpoint) for endpoint in net["sinks"]
+            remap_endpoint(endpoint)
+            for endpoint in net["sinks"]
+            if endpoint["instance"] is not None
+            or endpoint["port"] not in removed_ports
         ]
+        value["fanout"] = len(value["sinks"])
         transport_nets.append(value)
 
     ports = [deepcopy(port) for port in netlist["ports"]]

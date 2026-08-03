@@ -32,6 +32,10 @@ from .runtime import (
 )
 from .synthesis import run_generic_yosys
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vpr_pack_place, run_vpr_route_packed
+from .vpr_boundary_timing import (
+    import_vpr_boundary_timing,
+    write_vpr_boundary_timing_query,
+)
 from .vtr_architecture import (
     fetch_pinned_vtr_architecture,
     read_vpr_placement_dimensions,
@@ -171,6 +175,7 @@ def validate_multi_fpga_physical_report(
                 "packed_contract",
                 "openparf_placement",
                 "vpr_route",
+                "boundary_timing",
             )
             if any(name not in stages for name in open_required):
                 raise ValidationError(
@@ -420,6 +425,18 @@ def run_multi_fpga_physical_flow(
                 openparf_install=openparf_install,
                 openparf_python=openparf_python,
             )
+            boundary_identity_path = Path(
+                lowering_report["boundary_identity"]["output"]
+            )
+            boundary_query_path = fpga_root / "vpr-boundary-query.tsv"
+            boundary_query_report = write_vpr_boundary_timing_query(
+                merged_ir,
+                boundary_identity_path,
+                boundary_query_path,
+            )
+            boundary_raw_path = (
+                fpga_root / "vpr-route" / "boundary-timing.tsv"
+            )
             route_report = run_vpr_route_packed(
                 architecture_path,
                 circuit,
@@ -430,6 +447,15 @@ def run_multi_fpga_physical_flow(
                 executable=vpr,
                 route_checker=route_checker,
                 route_channel_width=route_channel_width,
+                boundary_query=boundary_query_path,
+                boundary_output=boundary_raw_path,
+            )
+            boundary_timing_path = fpga_root / "boundary-timing.json"
+            boundary_import_report = import_vpr_boundary_timing(
+                boundary_raw_path,
+                boundary_identity_path,
+                boundary_query_path,
+                boundary_timing_path,
             )
             physical_delays = _physical_clock_delays(
                 route_report, eblif_report
@@ -494,6 +520,11 @@ def run_multi_fpga_physical_flow(
                     "packed_contract": packed_report,
                     "openparf_placement": placement_report,
                     "vpr_route": route_report,
+                    "boundary_timing": {
+                        "status": "pass",
+                        "query": boundary_query_report,
+                        "import": boundary_import_report,
+                    },
                 }
             )
             provider_fields["array"] = {"width": width, "height": height}
@@ -583,24 +614,27 @@ def run_multi_fpga_physical_flow(
         validate_boundary_identity_database(
             database, transports_by_fpga[fpga_id]
         )
-    if backend == "vivado":
-        physical_summary["boundary_timing"] = {
-            item["fpga"]: read_json(
-                Path(
+    physical_summary["boundary_timing"] = {
+        item["fpga"]: read_json(
+            Path(
+                (
                     item["stages"]["vivado_implementation"][
                         "boundary_timing"
-                    ]["import"]["output"]
-                )
+                    ]
+                    if backend == "vivado"
+                    else item["stages"]["boundary_timing"]
+                )["import"]["output"]
             )
-            for item in records
-        }
-        for fpga_id, database in physical_summary[
-            "boundary_timing"
-        ].items():
-            validate_boundary_timing_database(
-                database,
-                physical_summary["boundary_identities"][fpga_id],
-            )
+        )
+        for item in records
+    }
+    for fpga_id, database in physical_summary[
+        "boundary_timing"
+    ].items():
+        validate_boundary_timing_database(
+            database,
+            physical_summary["boundary_identities"][fpga_id],
+        )
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )

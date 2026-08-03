@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 
 from emuflow.ir import EmuIR
 from emuflow.lowering import build_placement_ir
@@ -63,6 +64,7 @@ class PlacementIrLoweringTest(unittest.TestCase):
                     "id": "__emuflow_rx_s000000",
                     "kind": "rx",
                     "signal": "shadow:d000000:fpga0",
+                    "net": "cut",
                 }
             ],
         }
@@ -109,7 +111,16 @@ class PlacementIrLoweringTest(unittest.TestCase):
                         "parameters": {"INIT": "0"},
                         "attributes": {},
                         "constant_connections": [],
-                    }
+                    },
+                    {
+                        "id": "forward_mux",
+                        "name": "forward_mux",
+                        "type": "LUT1",
+                        "resources": {"lut": 1},
+                        "parameters": {"INIT": "10"},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
                 ],
                 "nets": [
                     {
@@ -133,6 +144,11 @@ class PlacementIrLoweringTest(unittest.TestCase):
                             {"instance": "shadow_ff", "port": "Q", "bit": 0}
                         ],
                         "sinks": [
+                            {
+                                "instance": "forward_mux",
+                                "port": "I0",
+                                "bit": 0,
+                            },
                             {
                                 "instance": None,
                                 "port": "shadow_values",
@@ -170,13 +186,17 @@ class PlacementIrLoweringTest(unittest.TestCase):
         # requires three full passes, independent of the number of interface
         # bits. A per-bit full-net scan would make large TDM lowering O(P*N).
         self.assertEqual(counting_nets.iterations, 3)
-        self.assertEqual(len(result.value["instances"]), 2)
+        self.assertEqual(len(result.value["instances"]), 3)
         cut = next(net for net in result.value["nets"] if net["id"] == "cut")
         self.assertEqual(
             cut["drivers"][0]["instance"],
             "__emuflow_transport__/shadow_ff",
         )
         self.assertEqual(cut["sinks"][0]["instance"], "u_lut")
+        self.assertIn(
+            "__emuflow_transport__/forward_mux",
+            {sink["instance"] for sink in cut["sinks"]},
+        )
         self.assertNotIn(
             "shadow_values", {port["id"] for port in result.value["ports"]}
         )
@@ -185,6 +205,31 @@ class PlacementIrLoweringTest(unittest.TestCase):
         )
         self.assertNotIn(
             "dummy_source", {net["id"] for net in result.value["nets"]}
+        )
+
+        routing_netlist = deepcopy(netlist)
+        routing_netlist["nets"] = []
+        routing_only = build_placement_ir(
+            routing_netlist, transport, transport_ir
+        )
+        forwarded = next(
+            net
+            for net in routing_only.value["nets"]
+            if net["id"] == "__emuflow_transport__/q"
+        )
+        self.assertEqual(
+            forwarded["drivers"][0]["instance"],
+            "__emuflow_transport__/shadow_ff",
+        )
+        self.assertEqual(
+            forwarded["sinks"][0]["instance"],
+            "__emuflow_transport__/forward_mux",
+        )
+        self.assertTrue(
+            all(
+                endpoint["instance"] is not None
+                for endpoint in forwarded["sinks"]
+            )
         )
 
 

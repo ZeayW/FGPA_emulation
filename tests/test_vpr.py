@@ -125,11 +125,28 @@ class VprTest(unittest.TestCase):
                 placement,
             ):
                 path.write_text(path.name, encoding="utf-8")
+            boundary_query = root / "boundary-query.tsv"
+            boundary_query.write_text(
+                "endpoint\tkind\tstart_pin\tend_pin\n", encoding="utf-8"
+            )
+            boundary_output = root / "route" / "boundary-timing.tsv"
 
-            def fake_run(arguments, **_kwargs):
+            def fake_run(arguments, **kwargs):
+                self.assertEqual(
+                    kwargs["env"]["EMUFLOW_VPR_BOUNDARY_QUERY"],
+                    str(boundary_query.resolve()),
+                )
+                self.assertEqual(
+                    kwargs["env"]["EMUFLOW_VPR_BOUNDARY_OUTPUT"],
+                    str(boundary_output.resolve()),
+                )
                 route_index = arguments.index("--route_file") + 1
                 Path(arguments[route_index]).write_text(
                     "route", encoding="utf-8"
+                )
+                boundary_output.write_text(
+                    "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
+                    encoding="utf-8",
                 )
                 return subprocess.CompletedProcess(
                     arguments,
@@ -157,6 +174,8 @@ class VprTest(unittest.TestCase):
                     placement,
                     root / "route",
                     executable="/source-built/vpr",
+                    boundary_query=boundary_query,
+                    boundary_output=boundary_output,
                 )
 
         self.assertEqual(report["status"], "pass")
@@ -165,6 +184,7 @@ class VprTest(unittest.TestCase):
         self.assertIn("--place_file", report["command"])
         self.assertIn("--write_rr_graph", report["command"])
         self.assertEqual(report["route_check"]["status"], "pass")
+        self.assertIn("boundary_timing", report)
 
 
 if __name__ == "__main__":
