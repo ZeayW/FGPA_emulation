@@ -123,6 +123,73 @@ def sta_path_endpoints(
     )
 
 
+def _vivado_hard_macro_path_endpoints(
+    path: Mapping[str, Any],
+    object_index: Mapping[str, Mapping[str, Any]],
+    instances: Mapping[str, Mapping[str, Any]],
+    nets: Mapping[str, Mapping[str, Any]],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Recover a logical RAM launch hidden behind a Vivado RAMB endpoint.
+
+    Vivado reports a synchronous block-RAM launch at the physical RAMB clock
+    pin (for example ``.../memory_reg_bram_0/CLKBWRCLK``), not at the
+    source-level VTR RAM output.  The stable EmuIR net identities on that path
+    identify the exact logical output bit.  Preserve the physical object for
+    the routed timing query while exposing the logical instance/port/bit to
+    partition projection.
+    """
+    path_id = path.get("id")
+    match = (
+        re.fullmatch(r"(.+)->(.+)#\d{8}", path_id)
+        if isinstance(path_id, str)
+        else None
+    )
+    if match is None:
+        raise ValidationError("Vivado hard-macro path identity is invalid")
+    start_name, end_name = match.groups()
+    if end_name not in object_index:
+        raise ValidationError("Vivado hard-macro capture endpoint is unmapped")
+    marker = "/memory_reg_bram_"
+    if marker not in start_name:
+        raise ValidationError("Vivado hard-macro launch endpoint is unmapped")
+    instance_id = start_name.split(marker, 1)[0]
+    instance = instances.get(instance_id)
+    if instance is None or instance.get("type") not in {
+        "VTR_SP_RAM",
+        "VTR_DP_RAM",
+    }:
+        raise ValidationError("Vivado RAMB launch has no logical RAM instance")
+    candidates = []
+    for net_id in path.get("path_nets", []):
+        net = nets.get(net_id)
+        if net is None:
+            continue
+        candidates.extend(
+            endpoint
+            for endpoint in net["drivers"]
+            if endpoint.get("instance") == instance_id
+            and endpoint.get("port") in {"out", "out1", "out2"}
+        )
+    identities = {
+        (item["instance"], item["port"], item["bit"])
+        for item in candidates
+    }
+    if len(identities) != 1:
+        raise ValidationError(
+            "Vivado RAMB launch does not identify one logical output bit"
+        )
+    _, port, bit = next(iter(identities))
+    return (
+        {
+            "object": start_name,
+            "instance": instance_id,
+            "port": port,
+            "bit": bit,
+        },
+        dict(object_index[end_name]),
+    )
+
+
 def _validate_endpoint_identity(
     endpoint: Any,
     known_instances: set[str],
@@ -327,6 +394,16 @@ def import_sta_path_database_tsv(
     ir = EmuIR.load(ir_path)
     known_nets = {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
+    instances_by_id = (
+        {item["id"]: item for item in ir.value["instances"]}
+        if provider == "vivado-get-timing-path-database-v1"
+        else {}
+    )
+    nets_by_id = (
+        {item["id"]: item for item in ir.value["nets"]}
+        if provider == "vivado-get-timing-path-database-v1"
+        else {}
+    )
     lines = input_path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0] != STA_PATH_DATABASE_TSV_HEADER:
         raise ValidationError("STA path database TSV: invalid header")
@@ -412,7 +489,19 @@ def import_sta_path_database_tsv(
         try:
             startpoint, endpoint = sta_path_endpoints(record, object_index)
         except ValidationError:
-            pass
+            if provider == "vivado-get-timing-path-database-v1":
+                try:
+                    startpoint, endpoint = _vivado_hard_macro_path_endpoints(
+                        record,
+                        object_index,
+                        instances_by_id,
+                        nets_by_id,
+                    )
+                except ValidationError:
+                    pass
+                else:
+                    record["startpoint"] = startpoint
+                    record["endpoint"] = endpoint
         else:
             record["startpoint"] = startpoint
             record["endpoint"] = endpoint
@@ -447,6 +536,9 @@ def import_sta_path_database_tsv(
         "status": "pass",
         "design": artifact["design"],
         "paths": len(paths),
+        "structured_endpoint_paths": sum(
+            "startpoint" in path and "endpoint" in path for path in paths
+        ),
         "unique_path_nets": len(
             {net for path in paths for net in path["path_nets"]}
         ),
@@ -497,6 +589,7 @@ def validate_sta_path_database(
     clock_domains = set()
     path_nets_union = set()
     worst_slack: Optional[float] = None
+    structured_endpoint_paths = 0
     for index, path in enumerate(raw_paths):
         context = f"STA path database paths[{index}]"
         if not isinstance(path, dict):
@@ -517,6 +610,7 @@ def validate_sta_path_database(
         ):
             raise ValidationError(f"{context} fields are invalid")
         if endpoint_keys <= set(path):
+            structured_endpoint_paths += 1
             _validate_endpoint_identity(
                 path["startpoint"], known_instances, f"{context}.startpoint"
             )
@@ -588,6 +682,10 @@ def validate_sta_path_database(
         "design": database["design"],
         "provider": source["provider"],
         "paths": len(raw_paths),
+        "structured_endpoint_paths": structured_endpoint_paths,
+        "unresolved_endpoint_paths": (
+            len(raw_paths) - structured_endpoint_paths
+        ),
         "clock_domains": sorted(clock_domains),
         "unique_path_nets": len(path_nets_union),
         "worst_slack_ns": worst_slack,

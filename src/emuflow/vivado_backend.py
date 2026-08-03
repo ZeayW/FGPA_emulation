@@ -27,6 +27,7 @@ from .sta import (
     write_vivado_net_map,
 )
 from .ir import EmuIR
+from .logic_segment_timing import import_vivado_logic_segment_timing
 from .vivado_netlist import emit_vivado_mapped_verilog
 
 
@@ -36,6 +37,9 @@ _IMPLEMENT_SCRIPT = _ROOT / "scripts/vivado/implement_partition.tcl"
 _TIMING_ANALYSIS_SCRIPT = _ROOT / "scripts/vivado/analyze_timing.tcl"
 _TIMING_SCRIPT = _ROOT / "scripts/vivado/export_timing_path_database.tcl"
 _BOUNDARY_TIMING_SCRIPT = _ROOT / "scripts/vivado/export_boundary_timing.tcl"
+_LOGIC_TIMING_SCRIPT = (
+    _ROOT / "scripts/vivado/export_logic_segment_timing.tcl"
+)
 _BOUNDARY_QUERY_HEADER = (
     "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\t"
     "boundary_cell_hex"
@@ -508,6 +512,8 @@ def run_vivado_partition_backend(
     transport_cells: int,
     output_dir: Path,
     boundary_identity_path: Optional[Path] = None,
+    logic_identity_path: Optional[Path] = None,
+    logic_query_path: Optional[Path] = None,
     executable: Optional[str] = None,
     max_timing_paths: int = 10000,
     place_directive: str = "Default",
@@ -523,8 +529,21 @@ def run_vivado_partition_backend(
     mapped_verilog_path = mapped_verilog_path.resolve()
     if boundary_identity_path is not None:
         boundary_identity_path = boundary_identity_path.resolve()
+    if (logic_identity_path is None) != (logic_query_path is None):
+        raise ValidationError(
+            "Vivado logic timing identity and query must be provided together"
+        )
+    if logic_identity_path is not None and logic_query_path is not None:
+        logic_identity_path = logic_identity_path.resolve()
+        logic_query_path = logic_query_path.resolve()
     for name, path in (("EmuIR", ir_path), ("mapped Verilog", mapped_verilog_path)):
         if not path.is_file() or path.stat().st_size == 0:
+            raise EmuFlowError(f"Vivado {name} input is missing: {path}")
+    for name, path in (
+        ("logic timing identity", logic_identity_path),
+        ("logic timing query", logic_query_path),
+    ):
+        if path is not None and (not path.is_file() or path.stat().st_size == 0):
             raise EmuFlowError(f"Vivado {name} input is missing: {path}")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -661,6 +680,30 @@ def run_vivado_partition_backend(
             "import": boundary_import,
         }
 
+    logic_timing_report = None
+    if logic_identity_path is not None and logic_query_path is not None:
+        logic_tsv = output_dir / "logic-segment-timing.tsv"
+        logic_export = _run_vivado(
+            vivado,
+            _LOGIC_TIMING_SCRIPT,
+            [
+                str(output_dir / "routed.dcp"),
+                str(logic_query_path),
+                str(logic_tsv),
+            ],
+            output_dir,
+            "vivado-logic-segment-timing-export.log",
+        )
+        logic_database = output_dir / "logic-segment-timing.json"
+        logic_import = import_vivado_logic_segment_timing(
+            logic_tsv, logic_identity_path, logic_database
+        )
+        logic_timing_report = {
+            "status": "pass",
+            "export": logic_export,
+            "import": logic_import,
+        }
+
     artifact_names = (
         "synthesized.dcp",
         "placed.dcp",
@@ -674,6 +717,7 @@ def run_vivado_partition_backend(
         "routed_mapped_cells.tsv",
         *(("timing-path-database.json",) if timing_rows else ()),
         *(("boundary-timing.json",) if boundary_timing_report else ()),
+        *(("logic-segment-timing.json",) if logic_timing_report else ()),
     )
     artifacts = {}
     for name in artifact_names:
@@ -756,6 +800,11 @@ def run_vivado_partition_backend(
         **(
             {"boundary_timing": boundary_timing_report}
             if boundary_timing_report is not None
+            else {}
+        ),
+        **(
+            {"logic_segment_timing": logic_timing_report}
+            if logic_timing_report is not None
             else {}
         ),
         "result": result,

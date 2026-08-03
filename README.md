@@ -160,11 +160,12 @@ implementation for a concrete Xilinx part; Vivado itself and its device
 database are not included in this repository. Phase 7C does not compare the
 local OpenPARF/VPR or Vivado WNS values directly. It combines each scheduled
 hop's routed TX/RX endpoint delays with the same concrete board route and TDM
-schedule. The open backend additionally back-annotates continuous original-STA
-endpoint chains through routed FPGA logic. TimingPathDB endpoint identities
-let partition projection retain the actual sink of each multicast member and
-discard local fanout of otherwise-global nets; provider inputs without
-resolvable endpoints retain an explicit conservative per-partition bound.
+schedule. Both physical backends additionally back-annotate continuous
+original-STA endpoint chains through routed FPGA logic. TimingPathDB endpoint
+identities let partition projection retain the actual sink of each multicast
+member and discard local fanout of otherwise-global nets; provider inputs
+without resolvable endpoints retain an explicit conservative per-partition
+bound.
 Both original-target-clock and virtual-runtime-clock system slack are
 reported.
 
@@ -172,7 +173,7 @@ reported.
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
 | Fully open physical route | Implemented through unified cross-FPGA physical/TDM timing and exercised end to end on a large, four-FPGA Koios DLA design using VPR → OpenPARF → VPR |
-| Vivado physical route | Provider, Tcl handoff, result import, and common contracts are implemented; large-design end-to-end qualification is not yet claimed |
+| Vivado physical route | Implemented and exercised end to end on a large, four-FPGA Koios DLA design, including unified cross-FPGA timing, routed DUT logic segments, and stable RAMB endpoint recovery |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
 The flow is board-abstracted. Synthesis, partitioning, routing, TDM, logical
@@ -450,12 +451,17 @@ path with the chosen backend's post-route DUT and interface delays. Phase 6
 records every scheduled TX/RX endpoint in `boundary-identity/v1`. Vivado
 queries those routed interfaces through Tcl, while the open backend evaluates
 the same endpoint queries in VPR's post-route Tatum graph; both emit
-`boundary-timing/v1`. VPR also evaluates `launch -> TX`, `RX -> next TX`, and
-`final RX -> capture` paths in the routed Tatum graph and publishes them as
-`logic-segment-timing/v1`. Phase 7C uses those measurements only when every
-member of a compressed STA path has a complete endpoint chain; otherwise it
-records the fallback and retains the per-partition maximum. Vivado logic-chain
-extraction is not implemented yet. A physical run passes only if local
+`boundary-timing/v1`. VPR and Vivado also evaluate `launch -> TX`,
+`RX -> next TX`, and `final RX -> capture` paths in their routed timing graphs
+and publish them as `logic-segment-timing/v1`. Phase 7C uses those measurements
+only when every member of a compressed STA path has a complete endpoint chain;
+otherwise it records the fallback and retains the per-partition maximum. The
+Vivado adapter resolves LUT/FF/port endpoints directly and preserves the
+physical RAMB clock pin reported for synchronous RAM launches while recovering
+its exact logical RAM output bit from EmuIR net identity. Its boundary adapter
+anchors each TX query at the stable output-port bit, recovers a routed net
+renamed by synthesis, and constrains paths through a combinational driver when
+that pin is not a legal timing startpoint. A physical run passes only if local
 P&R/DRC and the combined virtual runtime-clock slack both close.
 Original target-clock slack remains a reported optimization metric rather than
 the pausible-clock execution gate.

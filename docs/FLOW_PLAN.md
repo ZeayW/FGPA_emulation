@@ -484,22 +484,28 @@ RX-to-next-hop-TX connection on routing-only FPGAs instead of allowing physical
 synthesis to prune a required multi-hop transport register.
 
 The Vivado provider extracts each routed TX source-to-port and RX
-port-to-shadow-register path through Tcl. The open provider resolves the same
-stable endpoints to VPR atom pins and evaluates their longest routed delays in
-the Tatum timing graph. Both therefore supply endpoint-exact interface delay
-through `boundary-timing/v1`.
+port-to-shadow-register path through Tcl. TX lookup is anchored at its stable
+output-port bit: the adapter can recover a routed net renamed by synthesis and
+constrain a path through a combinational driver that is not itself a legal
+timing startpoint. The open provider resolves the same stable endpoints to VPR
+atom pins and evaluates their longest routed delays in the Tatum timing graph.
+Both therefore supply endpoint-exact interface delay through
+`boundary-timing/v1`.
 
-For DUT logic, the open provider expands the original STA members behind each
-compressed cross-FPGA path. A complete member is represented by routed
+For DUT logic, both physical providers expand the original STA members behind
+each compressed cross-FPGA path. A complete member is represented by routed
 `launch -> TX`, zero or more `RX -> next TX`, and `final RX -> capture`
-segments. VPR evaluates these point-to-point paths with routed edge delays, and
-Phase 7C replaces the matching TX interface terms instead of adding a whole
-partition's critical-path maximum. Exact and fallback path counts are part of
-`system-timing/v1`; structured TimingPathDB endpoints retain the actual sink
-of each multicast member and remove local fanout of globally cut nets, while
-legacy or unmapped endpoints remain conservative. Vivado routed DUT
-logic-chain extraction is the next closure gate, so the flow does not yet
-claim every system path is endpoint-to-endpoint exact.
+segments. VPR evaluates these point-to-point paths with routed Tatum edge
+delays; Vivado evaluates the same stable endpoint queries in the routed device
+checkpoint. For inferred synchronous RAM, the Vivado adapter retains the
+physical RAMB clock launch object while recovering the exact logical output
+bit from EmuIR net identity. Phase 7C uses the resulting
+`logic-segment-timing/v1` measurements and replaces the matching TX interface
+terms instead of adding a whole partition's critical-path maximum. Exact and
+fallback path counts are part of `system-timing/v1`; structured TimingPathDB
+endpoints retain the actual sink of each multicast member and remove local
+fanout of globally cut nets, while
+legacy or unmapped endpoints remain conservative.
 
 Hardware BSP pin binding, source-synchronous board timing, dedicated
 clock-buffer binding, bitstream generation, link training, and a golden

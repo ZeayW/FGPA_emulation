@@ -58,8 +58,14 @@ foreach line [lrange $lines 1 end] {
       set start_object [get_property NAME $source_pin]
     } else {
       set net_object [get_nets -quiet -hier [list $logical_net]]
+      # Synthesis can legally merge or rename a DUT net while preserving the
+      # dedicated EmuFlow TX output bit.  Recover the actual routed net from
+      # that stable port instead of depending on the pre-synthesis net name.
       if {[llength $net_object] != 1} {
-        error "TX endpoint [emuflow_hex_decode $endpoint_hex] logical net is absent"
+        set net_object [get_nets -quiet -of_objects $port_object]
+      }
+      if {[llength $net_object] != 1} {
+        error "TX endpoint [emuflow_hex_decode $endpoint_hex] has no unique routed port net"
       }
       set source_pin [get_pins -quiet -leaf -of_objects $net_object \
         -filter {DIRECTION == OUT}]
@@ -72,6 +78,16 @@ foreach line [lrange $lines 1 end] {
       set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
         -from $source_object -to $port_object]
       set start_object [get_property NAME $source_object]
+      # A combinational leaf output is not a legal Vivado timing startpoint.
+      # Constrain the routed path through that unique driver in this case and
+      # report the actual upstream sequential/input startpoint.
+      if {[llength $paths] == 0 && [llength $source_pin] == 1} {
+        set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+          -through $source_pin -to $port_object]
+        if {[llength $paths] == 1} {
+          set start_object [get_property STARTPOINT_PIN [lindex $paths 0]]
+        }
+      }
     }
     set end_object $port_bit
   } elseif {$kind eq "rx"} {

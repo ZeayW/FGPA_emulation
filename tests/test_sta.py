@@ -5,6 +5,7 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
+from emuflow.ir import EmuIR
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.sta import (
     PARTITION_NET_WEIGHTS_SCHEMA,
@@ -26,6 +27,102 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StaAdapterTest(unittest.TestCase):
+    def test_vivado_ramb_clock_launch_recovers_logical_output_bit(self) -> None:
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "ram_path",
+                    "top": "ram_path",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": [
+                    {
+                        "id": "ram",
+                        "name": "ram",
+                        "type": "VTR_DP_RAM",
+                        "resources": {"bram": 1},
+                        "parameters": {
+                            "ADDR_WIDTH": 4,
+                            "DATA_WIDTH": 8,
+                            "DEPTH": 16,
+                        },
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                    {
+                        "id": "capture",
+                        "name": "capture",
+                        "type": "FDRE",
+                        "resources": {"ff": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                ],
+                "nets": [
+                    {
+                        "id": "ram_out",
+                        "name": "ram_out",
+                        "width": 1,
+                        "cut_class": "register_output",
+                        "drivers": [
+                            {"instance": "ram", "port": "out2", "bit": 3}
+                        ],
+                        "sinks": [
+                            {"instance": "capture", "port": "D", "bit": 0}
+                        ],
+                        "attributes": {},
+                    }
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            input_path = root / "paths.tsv"
+            output_path = root / "paths.json"
+            write_json(ir_path, ir.value)
+            path_id = (
+                "ram/memory_reg_bram_0/CLKBWRCLK->capture/D#00000000"
+            )
+            input_path.write_text(
+                VIVADO_PATH_DATABASE_TSV_HEADER
+                + "\n"
+                + "\t".join(
+                    (
+                        path_id.encode().hex(),
+                        "clk".encode().hex(),
+                        "10.0",
+                        "1.0",
+                        "9.0",
+                        "ram_out".encode().hex(),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report = import_vivado_path_database_tsv(
+                input_path, ir_path, output_path
+            )
+            self.assertEqual(report["structured_endpoint_paths"], 1)
+            path = json.loads(output_path.read_text(encoding="utf-8"))[
+                "paths"
+            ][0]
+            self.assertEqual(
+                path["startpoint"],
+                {
+                    "object": "ram/memory_reg_bram_0/CLKBWRCLK",
+                    "instance": "ram",
+                    "port": "out2",
+                    "bit": 3,
+                },
+            )
+            self.assertEqual(path["endpoint"]["instance"], "capture")
+
     def test_projection_keeps_member_specific_multicast_sinks(self) -> None:
         normalization = {
             "positive_slack_scale_ns": 1.0,

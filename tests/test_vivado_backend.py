@@ -298,8 +298,44 @@ class VivadoBackendTest(unittest.TestCase):
             ir_path = root / "ir.json"
             mapped = root / "partition.v"
             output = root / "out"
+            logic_identity = root / "logic-identity.json"
+            logic_query = root / "logic-query.tsv"
             write_json(ir_path, _ir().to_dict())
             mapped.write_text("module partition; endmodule\n", encoding="utf-8")
+            write_json(
+                logic_identity,
+                {
+                    "schema": "emuflow.logic-segment-identity/v1",
+                    "status": "pass",
+                    "design": "partition",
+                    "platform": "board",
+                    "fpga": "fpga0",
+                    "provider": "test",
+                    "coverage": {
+                        "segments": 1,
+                        "system_paths": 1,
+                        "member_paths": 1,
+                        "unsupported_member_paths": 0,
+                    },
+                    "unsupported_member_paths": [],
+                    "segments": [
+                        {
+                            "id": "logic0",
+                            "kind": "launch",
+                            "system_path": "path0",
+                            "member_path": "member0",
+                            "cut_index": 0,
+                            "fpga": "fpga0",
+                            "replace_tx_endpoint": "tx0",
+                            "start_pin": "dut/O",
+                            "end_pin": "tx[0]",
+                            "start_object_kind": "pin",
+                            "end_object_kind": "port",
+                        }
+                    ],
+                },
+            )
+            logic_query.write_text("query\n", encoding="utf-8")
 
             def fake_run(_exe, script, _arguments, out, log_name):
                 out.mkdir(parents=True, exist_ok=True)
@@ -359,6 +395,22 @@ class VivadoBackendTest(unittest.TestCase):
                         "utilization.rpt",
                     ):
                         (out / name).write_text("artifact\n", encoding="utf-8")
+                elif script.name == "export_logic_segment_timing.tcl":
+                    (out / "logic-segment-timing.tsv").write_text(
+                        "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\t"
+                        "end_object_hex\n"
+                        + "\t".join(
+                            (
+                                "logic0".encode().hex(),
+                                "launch",
+                                "2.25",
+                                "dut/O".encode().hex(),
+                                "tx[0]".encode().hex(),
+                            )
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
                 else:
                     (out / "timing-paths.tsv").write_text(
                         VIVADO_PATH_DATABASE_TSV_HEADER
@@ -402,6 +454,8 @@ class VivadoBackendTest(unittest.TestCase):
                     original_cells=1,
                     transport_cells=1,
                     output_dir=output,
+                    logic_identity_path=logic_identity,
+                    logic_query_path=logic_query,
                 )
 
         result = report["result"]
@@ -415,6 +469,10 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertEqual(result["timing"]["fabric_wns_ns"], 0.25)
         self.assertEqual(report["timing_path_validation"]["paths"], 1)
         self.assertEqual(report["cell_coverage"]["logical_cells"], 2)
+        self.assertEqual(
+            report["logic_segment_timing"]["import"]["maximum_delay_ns"],
+            2.25,
+        )
 
     def test_vivado_cell_coverage_uses_stable_mapped_identity(self):
         with tempfile.TemporaryDirectory() as temporary:

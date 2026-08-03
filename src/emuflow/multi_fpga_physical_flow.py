@@ -16,6 +16,7 @@ from .io import read_json, write_json
 from .logic_segment_timing import (
     import_vpr_logic_segment_timing,
     validate_logic_segment_timing,
+    write_vivado_logic_segment_query,
     write_vpr_logic_segment_query,
 )
 from .lowering import run_placement_ir_lowering
@@ -598,6 +599,30 @@ def run_multi_fpga_physical_flow(
             )
             provider_fields["array"] = {"width": width, "height": height}
         else:
+            boundary_identity_path = Path(
+                lowering_report["boundary_identity"]["output"]
+            )
+            logic_identity_path = None
+            logic_query_path = None
+            logic_query_report = None
+            if all(path is not None for path in logic_context):
+                logic_identity_path = (
+                    fpga_root / "logic-segment-identity.json"
+                )
+                logic_query_path = fpga_root / "vivado-logic-segment-query.tsv"
+                logic_query_report = write_vivado_logic_segment_query(
+                    original_ir_path,
+                    assignment_path,
+                    path_database_path,
+                    routes_path,
+                    schedule_path,
+                    platform,
+                    merged_ir,
+                    boundary_identity_path,
+                    fpga_id,
+                    logic_query_path,
+                    logic_identity_path,
+                )
             mapped_verilog = fpga_root / "partition.v"
             mapped_report = emit_vivado_mapped_verilog(
                 merged_ir,
@@ -613,14 +638,18 @@ def run_multi_fpga_physical_flow(
                 original_cells=original_cells,
                 transport_cells=transport_cells,
                 output_dir=fpga_root / "vivado",
-                boundary_identity_path=Path(
-                    lowering_report["boundary_identity"]["output"]
-                ),
+                boundary_identity_path=boundary_identity_path,
+                logic_identity_path=logic_identity_path,
+                logic_query_path=logic_query_path,
                 executable=vivado,
                 max_timing_paths=vivado_max_timing_paths,
                 place_directive=vivado_place_directive,
                 route_directive=vivado_route_directive,
             )
+            if logic_query_report is not None:
+                vivado_report["logic_segment_timing"][
+                    "query"
+                ] = logic_query_report
             physical_result = vivado_report["result"]
             stages.update(
                 {
@@ -704,13 +733,17 @@ def run_multi_fpga_physical_flow(
             database,
             physical_summary["boundary_identities"][fpga_id],
         )
-    if backend == "open" and all(path is not None for path in logic_context):
+    if all(path is not None for path in logic_context):
         physical_summary["logic_segment_timing"] = {
             item["fpga"]: read_json(
                 Path(
-                    item["stages"]["logic_segment_timing"]["import"][
-                        "output"
-                    ]
+                    (
+                        item["stages"]["vivado_implementation"][
+                            "logic_segment_timing"
+                        ]
+                        if backend == "vivado"
+                        else item["stages"]["logic_segment_timing"]
+                    )["import"]["output"]
                 )
             )
             for item in records

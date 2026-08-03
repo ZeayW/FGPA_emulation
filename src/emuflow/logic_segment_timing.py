@@ -14,6 +14,7 @@ from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .placement import _vivado_mapped_name
 from .platform import Platform
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
@@ -28,6 +29,13 @@ LOGIC_SEGMENT_TIMING_SCHEMA = "emuflow.logic-segment-timing/v1"
 LOGIC_SEGMENT_QUERY_HEADER = "endpoint\tkind\tstart_pin\tend_pin"
 LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin"
+)
+VIVADO_LOGIC_SEGMENT_QUERY_HEADER = (
+    "endpoint_hex\tkind\tstart_kind\tstart_object_hex\t"
+    "end_kind\tend_object_hex"
+)
+VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
+    "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 )
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 
@@ -137,6 +145,90 @@ def _vpr_atom_pin(
     )
 
 
+def _vivado_object(
+    ir: EmuIR,
+    endpoint: Mapping[str, Any],
+    pins: Optional[Mapping[str, set[tuple[str, int]]]] = None,
+    instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> tuple[str, str]:
+    """Return an exact routed Vivado object kind/name for an EmuIR pin."""
+    instance_id = endpoint["instance"]
+    port = endpoint["port"]
+    bit = endpoint["bit"]
+    if instance_id is None:
+        ports = {item["id"]: item for item in ir.value["ports"]}
+        if port not in ports or bit >= ports[port]["width"]:
+            raise ValidationError(
+                f"physical top endpoint {port}[{bit}] is absent"
+            )
+        name = port if ports[port]["width"] == 1 else f"{port}[{bit}]"
+        return "port", name
+    if instances is None:
+        instances = {
+            instance["id"]: instance for instance in ir.value["instances"]
+        }
+    if pins is None:
+        pins = _instance_pin_inventory(ir)
+    if instance_id not in instances or (port, bit) not in pins[instance_id]:
+        raise ValidationError(
+            f"physical logic endpoint {instance_id}.{port}[{bit}] is absent"
+        )
+    instance = instances[instance_id]
+    cell_type = instance["type"]
+    provider_object = endpoint.get("object")
+    mapped_prefix = f"{_vivado_mapped_name(instance_id)}/"
+    if (
+        isinstance(provider_object, str)
+        and provider_object.startswith(mapped_prefix)
+        and "/memory_reg_bram_" in provider_object
+    ):
+        return "pin", provider_object
+    physical_port = port
+    physical_bit = bit
+    if cell_type.startswith("LUT"):
+        if port == "O":
+            physical_port, physical_bit = "O", 0
+        elif re.fullmatch(r"I\d+", port) is None or bit != 0:
+            raise ValidationError(
+                f"unsupported Vivado LUT pin {instance_id}.{port}[{bit}]"
+            )
+    elif cell_type in {"$lut", "$_LUT_"}:
+        if port in {"Y", "O"}:
+            physical_port, physical_bit = "O", 0
+        elif port in {"A", "I"}:
+            physical_port, physical_bit = f"I{bit}", 0
+        else:
+            raise ValidationError(
+                f"unsupported Vivado LUT pin {instance_id}.{port}[{bit}]"
+            )
+    elif cell_type in _FF_TYPES or cell_type.startswith("$_DFF_"):
+        if port not in {"C", "D", "Q"} or bit != 0:
+            raise ValidationError(
+                f"unsupported Vivado FF pin {instance_id}.{port}[{bit}]"
+            )
+    elif cell_type not in {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}:
+        raise ValidationError(
+            f"unsupported Vivado physical logic cell {cell_type}"
+        )
+    if cell_type.startswith("LUT") or cell_type in {"$lut", "$_LUT_"}:
+        pin_name = physical_port
+    else:
+        width = max(
+            (
+                candidate_bit + 1
+                for candidate_port, candidate_bit in pins[instance_id]
+                if candidate_port == port
+            ),
+            default=0,
+        )
+        pin_name = (
+            physical_port
+            if physical_bit == 0 and width <= 1
+            else f"{physical_port}[{physical_bit}]"
+        )
+    return "pin", f"{_vivado_mapped_name(instance_id)}/{pin_name}"
+
+
 def _boundary_maps(
     identity: Mapping[str, Any],
 ) -> tuple[Dict[str, Mapping[str, Any]], Dict[str, Mapping[str, Any]]]:
@@ -198,7 +290,7 @@ def _segment_id(member: str, cut_index: int, role: str) -> str:
     return f"logic_{digest}_{cut_index}_{role}"
 
 
-def write_vpr_logic_segment_query(
+def _write_logic_segment_query(
     original_ir_path: Path,
     assignment_path: Path,
     path_database_path: Path,
@@ -210,6 +302,8 @@ def write_vpr_logic_segment_query(
     fpga: str,
     query_path: Path,
     identity_path: Path,
+    *,
+    object_provider: str,
 ) -> Dict[str, Any]:
     """Build physical path queries for all exact logical segments on one FPGA."""
     original_ir = EmuIR.load(original_ir_path)
@@ -246,6 +340,78 @@ def write_vpr_logic_segment_query(
     merged_net_index = {
         net["id"]: index for index, net in enumerate(merged_ir.value["nets"])
     }
+    merged_pins = _instance_pin_inventory(merged_ir)
+    if object_provider not in {"vpr", "vivado"}:
+        raise ValidationError("logic segment object provider is invalid")
+
+    def endpoint_object(endpoint: Mapping[str, Any]) -> tuple[str, str]:
+        if object_provider == "vpr":
+            return (
+                "pin",
+                _vpr_atom_pin(
+                    merged_ir,
+                    instance_index,
+                    endpoint,
+                    merged_instances,
+                ),
+            )
+        return _vivado_object(
+            merged_ir, endpoint, merged_pins, merged_instances
+        )
+
+    def tx_object(endpoint_id: str) -> tuple[str, str]:
+        if object_provider == "vpr":
+            return (
+                "pin",
+                _boundary_tx_port(
+                    merged_ir,
+                    instance_index,
+                    endpoints,
+                    endpoint_id,
+                    merged_net_index,
+                ),
+            )
+        endpoint = endpoints.get(endpoint_id)
+        if endpoint is None or endpoint.get("kind") != "tx":
+            raise ValidationError(f"logic segment TX {endpoint_id!r} is absent")
+        merged = endpoint["merged_ir"]
+        return _vivado_object(
+            merged_ir,
+            {
+                "instance": None,
+                "port": merged["external_port"],
+                "bit": merged["external_port_bit"],
+            },
+            merged_pins,
+            merged_instances,
+        )
+
+    def rx_object(endpoint_id: str) -> tuple[str, str]:
+        if object_provider == "vpr":
+            return (
+                "pin",
+                _boundary_rx_q(
+                    merged_ir,
+                    instance_index,
+                    endpoints,
+                    endpoint_id,
+                    merged_instances,
+                ),
+            )
+        endpoint = endpoints.get(endpoint_id)
+        if endpoint is None or endpoint.get("kind") != "rx":
+            raise ValidationError(f"logic segment RX {endpoint_id!r} is absent")
+        registers = endpoint["merged_ir"]["boundary_register_instances"]
+        if not isinstance(registers, list) or len(registers) != 1:
+            raise ValidationError(
+                f"logic segment RX {endpoint_id!r} is ambiguous"
+            )
+        return _vivado_object(
+            merged_ir,
+            {"instance": registers[0], "port": "Q", "bit": 0},
+            merged_pins,
+            merged_instances,
+        )
     instance_assignment = assignment["instance_assignment"]
     segments = []
     exact_members = 0
@@ -313,71 +479,57 @@ def write_vpr_logic_segment_query(
                 segment_fpga = transition["from"]
                 role = "launch" if cut_index == 0 else "transition"
                 if segment_fpga == fpga:
-                    start_pin = (
-                        _vpr_atom_pin(
-                            merged_ir,
-                            instance_index,
-                            start_endpoint,
-                            merged_instances,
-                        )
+                    start_kind, start_pin = (
+                        endpoint_object(start_endpoint)
                         if cut_index == 0
-                        else _boundary_rx_q(
-                            merged_ir,
-                            instance_index,
-                            endpoints,
-                            prior_rx,
-                            merged_instances,
+                        else rx_object(prior_rx)
+                    )
+                    end_kind, end_pin = tx_object(first_tx)
+                    segment = {
+                        "id": _segment_id(member, cut_index, role),
+                        "kind": role,
+                        "system_path": record["path"],
+                        "member_path": member,
+                        "cut_index": cut_index,
+                        "fpga": fpga,
+                        "replace_tx_endpoint": first_tx,
+                        "start_pin": start_pin,
+                        "end_pin": end_pin,
+                    }
+                    if object_provider == "vivado":
+                        segment.update(
+                            {
+                                "start_object_kind": start_kind,
+                                "end_object_kind": end_kind,
+                            }
                         )
-                    )
-                    end_pin = _boundary_tx_port(
-                        merged_ir,
-                        instance_index,
-                        endpoints,
-                        first_tx,
-                        merged_net_index,
-                    )
-                    segments.append(
-                        {
-                            "id": _segment_id(member, cut_index, role),
-                            "kind": role,
-                            "system_path": record["path"],
-                            "member_path": member,
-                            "cut_index": cut_index,
-                            "fpga": fpga,
-                            "replace_tx_endpoint": first_tx,
-                            "start_pin": start_pin,
-                            "end_pin": end_pin,
-                        }
-                    )
+                    segments.append(segment)
                 prior_rx = last_rx
             capture_fpga = transitions[-1]["to"]
             if capture_fpga == fpga:
-                segments.append(
-                    {
-                        "id": _segment_id(
-                            member, len(transitions), "capture"
-                        ),
-                        "kind": "capture",
-                        "system_path": record["path"],
-                        "member_path": member,
-                        "cut_index": len(transitions),
-                        "fpga": fpga,
-                        "replace_tx_endpoint": None,
-                        "start_pin": _boundary_rx_q(
-                            merged_ir,
-                            instance_index,
-                            endpoints,
-                            prior_rx,
-                            merged_instances,
-                        ),
-                        "end_pin": _vpr_atom_pin(
-                            merged_ir,
-                            instance_index,
-                            end_endpoint,
-                            merged_instances,
-                        ),
-                    }
-                )
+                start_kind, start_pin = rx_object(prior_rx)
+                end_kind, end_pin = endpoint_object(end_endpoint)
+                segment = {
+                    "id": _segment_id(
+                        member, len(transitions), "capture"
+                    ),
+                    "kind": "capture",
+                    "system_path": record["path"],
+                    "member_path": member,
+                    "cut_index": len(transitions),
+                    "fpga": fpga,
+                    "replace_tx_endpoint": None,
+                    "start_pin": start_pin,
+                    "end_pin": end_pin,
+                }
+                if object_provider == "vivado":
+                    segment.update(
+                        {
+                            "start_object_kind": start_kind,
+                            "end_object_kind": end_kind,
+                        }
+                    )
+                segments.append(segment)
     segments.sort(key=lambda item: item["id"])
     identity = {
         "schema": LOGIC_SEGMENT_IDENTITY_SCHEMA,
@@ -385,7 +537,7 @@ def write_vpr_logic_segment_query(
         "design": assignment["design"],
         "platform": platform.name,
         "fpga": fpga,
-        "provider": "sta-endpoint-chain-to-vpr-atoms-v1",
+        "provider": f"sta-endpoint-chain-to-{object_provider}-objects-v1",
         "coverage": {
             "segments": len(segments),
             "system_paths": len({item["system_path"] for item in segments}),
@@ -402,26 +554,39 @@ def write_vpr_logic_segment_query(
     identity_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(identity_path, identity)
     query_path.parent.mkdir(parents=True, exist_ok=True)
-    query_path.write_text(
-        "\n".join(
-            [
-                LOGIC_SEGMENT_QUERY_HEADER,
-                *(
-                    "\t".join(
-                        (
-                            item["id"],
-                            item["kind"],
-                            item["start_pin"],
-                            item["end_pin"],
-                        )
+    if object_provider == "vpr":
+        rows = [
+            LOGIC_SEGMENT_QUERY_HEADER,
+            *(
+                "\t".join(
+                    (
+                        item["id"],
+                        item["kind"],
+                        item["start_pin"],
+                        item["end_pin"],
                     )
-                    for item in segments
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+                )
+                for item in segments
+            ),
+        ]
+    else:
+        rows = [
+            VIVADO_LOGIC_SEGMENT_QUERY_HEADER,
+            *(
+                "\t".join(
+                    (
+                        item["id"].encode("utf-8").hex(),
+                        item["kind"],
+                        item["start_object_kind"],
+                        item["start_pin"].encode("utf-8").hex(),
+                        item["end_object_kind"],
+                        item["end_pin"].encode("utf-8").hex(),
+                    )
+                )
+                for item in segments
+            ),
+        ]
+    query_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     return {
         "status": "pass",
         "fpga": fpga,
@@ -431,6 +596,64 @@ def write_vpr_logic_segment_query(
         "query": str(query_path),
         "identity": str(identity_path),
     }
+
+
+def write_vpr_logic_segment_query(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    schedule_path: Path,
+    platform: Platform,
+    merged_ir_path: Path,
+    boundary_identity_path: Path,
+    fpga: str,
+    query_path: Path,
+    identity_path: Path,
+) -> Dict[str, Any]:
+    return _write_logic_segment_query(
+        original_ir_path,
+        assignment_path,
+        path_database_path,
+        routes_path,
+        schedule_path,
+        platform,
+        merged_ir_path,
+        boundary_identity_path,
+        fpga,
+        query_path,
+        identity_path,
+        object_provider="vpr",
+    )
+
+
+def write_vivado_logic_segment_query(
+    original_ir_path: Path,
+    assignment_path: Path,
+    path_database_path: Path,
+    routes_path: Path,
+    schedule_path: Path,
+    platform: Platform,
+    merged_ir_path: Path,
+    boundary_identity_path: Path,
+    fpga: str,
+    query_path: Path,
+    identity_path: Path,
+) -> Dict[str, Any]:
+    return _write_logic_segment_query(
+        original_ir_path,
+        assignment_path,
+        path_database_path,
+        routes_path,
+        schedule_path,
+        platform,
+        merged_ir_path,
+        boundary_identity_path,
+        fpga,
+        query_path,
+        identity_path,
+        object_provider="vivado",
+    )
 
 
 def validate_logic_segment_identity(
@@ -463,6 +686,14 @@ def validate_logic_segment_identity(
         for field in ("system_path", "member_path", "start_pin", "end_pin"):
             if not isinstance(segment.get(field), str) or not segment[field]:
                 raise ValidationError(f"{context}.{field} is invalid")
+        object_kind_fields = {"start_object_kind", "end_object_kind"}
+        present_object_kinds = object_kind_fields & set(segment)
+        if present_object_kinds and (
+            present_object_kinds != object_kind_fields
+            or segment["start_object_kind"] not in {"pin", "port"}
+            or segment["end_object_kind"] not in {"pin", "port"}
+        ):
+            raise ValidationError(f"{context} object kinds are invalid")
         replacement = segment.get("replace_tx_endpoint")
         if (segment["kind"] == "capture") != (replacement is None):
             raise ValidationError(f"{context} replacement is invalid")
@@ -537,6 +768,78 @@ def import_vpr_logic_segment_timing(
         "coverage": identity["coverage"],
         "unsupported_member_paths": identity["unsupported_member_paths"],
         "segments": records,
+    }
+    validation = validate_logic_segment_timing(database)
+    write_json(output_path, database)
+    return {**validation, "output": str(output_path)}
+
+
+def import_vivado_logic_segment_timing(
+    input_path: Path,
+    identity_path: Path,
+    output_path: Path,
+) -> Dict[str, Any]:
+    identity = read_json(identity_path)
+    validate_logic_segment_identity(identity)
+    expected = {item["id"]: item for item in identity["segments"]}
+    lines = input_path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != VIVADO_LOGIC_SEGMENT_TIMING_HEADER:
+        raise ValidationError("Vivado logic segment timing header is invalid")
+    measurements = {}
+    for line_number, line in enumerate(lines[1:], start=2):
+        if not line:
+            continue
+        fields = line.split("\t")
+        try:
+            segment_id = bytes.fromhex(fields[0]).decode("utf-8")
+            start_object = bytes.fromhex(fields[3]).decode("utf-8")
+            end_object = bytes.fromhex(fields[4]).decode("utf-8")
+        except (IndexError, ValueError, UnicodeDecodeError) as error:
+            raise ValidationError(
+                f"Vivado logic segment timing line {line_number} is invalid"
+            ) from error
+        segment = expected.get(segment_id) if len(fields) == 5 else None
+        if (
+            segment is None
+            or segment_id in measurements
+            or fields[1] != segment["kind"]
+            or start_object != segment["start_pin"]
+            or end_object != segment["end_pin"]
+        ):
+            raise ValidationError(
+                f"Vivado logic segment timing line {line_number} is invalid"
+            )
+        try:
+            delay = float(fields[2])
+        except ValueError as error:
+            raise ValidationError(
+                f"Vivado logic segment timing line {line_number} delay is invalid"
+            ) from error
+        if not math.isfinite(delay) or delay < 0.0:
+            raise ValidationError(
+                f"Vivado logic segment timing line {line_number} delay is invalid"
+            )
+        measurements[segment_id] = delay
+    if set(measurements) != set(expected):
+        missing = sorted(set(expected) - set(measurements))
+        raise ValidationError(
+            "Vivado logic segment timing coverage is incomplete: "
+            f"{missing[:10]}"
+        )
+    database = {
+        "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
+        "status": "pass",
+        "design": identity["design"],
+        "platform": identity["platform"],
+        "fpga": identity["fpga"],
+        "provider": "vivado-routed-logic-segment-datapath-v1",
+        "qualification": "routed-vendor-device-endpoint-chain",
+        "coverage": identity["coverage"],
+        "unsupported_member_paths": identity["unsupported_member_paths"],
+        "segments": [
+            {**segment, "delay_ns": measurements[segment["id"]]}
+            for segment in identity["segments"]
+        ],
     }
     validation = validate_logic_segment_timing(database)
     write_json(output_path, database)
