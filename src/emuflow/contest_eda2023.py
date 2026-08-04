@@ -437,8 +437,8 @@ def _route_model(instance: Mapping[str, Any], routes: Mapping[str, Any]) -> Dict
         raise ValidationError(f"routes.schema: expected {SYSTEM_ROUTES_SCHEMA!r}")
     all_nets = {_net_name(net["id"]): net for net in instance["nets"]}
     net_by_name = {
-        _net_name(net["id"]): net
-        for net in instance["nets"]
+        name: net
+        for name, net in all_nets.items()
         if set(net["sink_dies"]) - {net["source_die"]}
     }
     route_by_name = {route.get("net"): route for route in routes.get("routes", [])}
@@ -532,11 +532,11 @@ def _route_model(instance: Mapping[str, Any], routes: Mapping[str, Any]) -> Dict
     for link_id, used in sll_usage.items():
         if used > link_by_id[link_id]["capacity"]:
             raise ValidationError(f"SLL {link_id}: usage {used} exceeds capacity")
+    routed_nets = len(route_by_name)
     return {
         "links": link_by_id,
         "all_nets": all_nets,
-        "nets": net_by_name,
-        "routes": route_by_name,
+        "routed_nets": routed_nets,
         "hops": cross_hops,
         "paths": paths,
         "route_paths": route_paths,
@@ -555,8 +555,7 @@ def optimize_eda2023_tdm(
     exact_domain_limit: int = 2048,
 ) -> Dict[str, Any]:
     instance = _load_instance(instance_path)
-    routes = read_json(routes_path)
-    model = _route_model(instance, routes)
+    model = _route_model(instance, read_json(routes_path))
     wire_links = [link for link in instance["links"] if link["kind"] == "wire"]
     domain_by_link = {link["id"]: index for index, link in enumerate(wire_links)}
     max_ratio = max(4, 4 * math.ceil(max(1, len(model["hops"])) / 4))
@@ -626,6 +625,7 @@ def optimize_eda2023_tdm(
                         metrics[fields[1]] = float(fields[2])
         if ratio_count != len(model["hops"]):
             raise EmuFlowError("EDA 2023 TDM optimizer omitted hop records")
+    model["paths"].clear()
     plan = {
         "schema": EDA2023_TDM_SCHEMA,
         "instance": instance["name"],
@@ -724,7 +724,7 @@ def _evaluate_eda2023_model(
             "physical_fpgas": len(instance["fpgas"]),
             "dies": len(instance["dies"]),
             "nets": len(instance["nets"]),
-            "routed_nets": len(model["routes"]),
+            "routed_nets": model["routed_nets"],
             "wire_hops": len(model["hops"]),
             "used_wires": used_wires,
             "max_routing_weight": max(net_weights.values(), default=0.0),
@@ -762,46 +762,53 @@ def _write_official_outputs(
 ) -> None:
     weights = evaluation["net_routing_weights"]
     path_weights = evaluation["path_routing_weights"]
-    route_lines = []
     ordered = sorted(
         model["all_nets"],
         key=lambda name: (-weights[name], model["all_nets"][name]["id"]),
     )
-    for name in ordered:
-        net = model["all_nets"][name]
-        route_lines.append(f"[{net['id']}]")
-        path_by_sink = {
-            path["sink"]: path
-            for path in model["route_paths"].get(name, [])
-        }
-        for sink in net["sink_dies"]:
-            path = path_by_sink.get(sink)
-            if path is None:
-                if sink != net["source_die"]:
-                    raise ValidationError(
-                        f"official output: net {name} has no path to {sink}"
-                    )
-                dies = [net["source_die"]]
-                weight = 0.0
-            else:
-                dies = [net["source_die"]] + [
-                    edge[1] for edge in path["edges"]
-                ]
-                weight = path_weights[f"{name}->{path['sink']}"]
-            indices = ",".join(str(_numeric_id(die, _DIE, die)) for die in dies)
-            route_lines.append(f"[{indices}][{_format_weight(weight)}]")
-    (output_dir / "design.route.out").write_text("\n".join(route_lines) + "\n", encoding="utf-8")
+    with (output_dir / "design.route.out").open("w", encoding="utf-8") as stream:
+        for name in ordered:
+            net = model["all_nets"][name]
+            stream.write(f"[{net['id']}]\n")
+            path_by_sink = {
+                path["sink"]: path
+                for path in model["route_paths"].get(name, [])
+            }
+            for sink in net["sink_dies"]:
+                path = path_by_sink.get(sink)
+                if path is None:
+                    if sink != net["source_die"]:
+                        raise ValidationError(
+                            f"official output: net {name} has no path to {sink}"
+                        )
+                    dies = [net["source_die"]]
+                    weight = 0.0
+                else:
+                    dies = [net["source_die"]] + [
+                        edge[1] for edge in path["edges"]
+                    ]
+                    weight = path_weights[f"{name}->{path['sink']}"]
+                indices = ",".join(
+                    str(_numeric_id(die, _DIE, die)) for die in dies
+                )
+                stream.write(f"[{indices}][{_format_weight(weight)}]\n")
     groups: Dict[Tuple[str, int], List[Mapping[str, Any]]] = defaultdict(list)
     for hop in plan["hops"]:
         groups[(hop["link"], hop["lane"])].append(hop)
-    tdm_lines = []
-    for link in (item for item in instance["links"] if item["kind"] == "wire"):
-        left, right = link["endpoints"]
-        tdm_lines.append(f"[{left},{right}]")
-        for lane in range(link["capacity"]):
-            hops = groups.get((link["id"], lane), [])
-            if not hops:
-                continue
-            net_ids = ",".join(str(hop["official_net_id"]) for hop in sorted(hops, key=lambda hop: hop["official_net_id"]))
-            tdm_lines.append(f"[{net_ids}] {hops[0]['ratio']}")
-    (output_dir / "design.tdm.out").write_text("\n".join(tdm_lines) + "\n", encoding="utf-8")
+    with (output_dir / "design.tdm.out").open("w", encoding="utf-8") as stream:
+        for link in (
+            item for item in instance["links"] if item["kind"] == "wire"
+        ):
+            left, right = link["endpoints"]
+            stream.write(f"[{left},{right}]\n")
+            for lane in range(link["capacity"]):
+                hops = groups.get((link["id"], lane), [])
+                if not hops:
+                    continue
+                net_ids = ",".join(
+                    str(hop["official_net_id"])
+                    for hop in sorted(
+                        hops, key=lambda hop: hop["official_net_id"]
+                    )
+                )
+                stream.write(f"[{net_ids}] {hops[0]['ratio']}\n")
