@@ -30,3 +30,10 @@ type name where a mutex instance was required, leaving shared gain queues
 unprotected. EmuFlow adds an explicit mutex member to each refiner and locks
 queue insertion. This removes the data race required for deterministic,
 independently repeatable provider runs.
+
+EmuFlow also recomputes weighted total hop distance from the materialized
+assignment and replicas after each refinement round and at final output.
+RePart's local refiners maintain the objective incrementally; using that
+mutable accumulator as the search baseline or reported result can hide
+gain-update drift. The exact audit follows the paper's definition directly
+and is independent of the local optimization state used to find the solution.

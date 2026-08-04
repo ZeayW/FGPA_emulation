@@ -17,6 +17,7 @@ from .contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
 )
+from .contest_eda2024 import evaluate_eda2024_solution
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -133,6 +134,16 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_subparsers = contest_parser.add_subparsers(
         dest="contest_command", required=True
     )
+    eda2024_evaluate = contest_subparsers.add_parser(
+        "eda2024-evaluate",
+        help="independently check a 2024 logic-replication solution",
+    )
+    eda2024_evaluate.add_argument("--case-dir", type=Path, required=True)
+    eda2024_evaluate.add_argument("--solution", type=Path)
+    eda2024_evaluate.add_argument(
+        "--runtime-seconds", type=float, default=0.0
+    )
+    eda2024_evaluate.add_argument("--output", "-o", type=Path)
     eda2025_import = contest_subparsers.add_parser(
         "eda2025-import",
         help="normalize a 2025 EDA Elite routing benchmark",
@@ -1428,7 +1439,18 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "contest":
-        if args.contest_command == "eda2025-import":
+        if args.contest_command == "eda2024-evaluate":
+            solution = args.solution or args.case_dir / "design.fpga.out"
+            report = evaluate_eda2024_solution(
+                info_path=args.case_dir / "design.info",
+                area_path=args.case_dir / "design.are",
+                net_path=args.case_dir / "design.net",
+                topology_path=args.case_dir / "design.topo",
+                solution_path=solution,
+                runtime_seconds=args.runtime_seconds,
+                output_path=args.output,
+            )
+        elif args.contest_command == "eda2025-import":
             report = import_eda2025_instance(
                 info_path=args.info,
                 net_path=args.net,

@@ -11,6 +11,7 @@
 #include "./datastructure/hypergraph.h"
 #include "./io/hypergraph_readin.h"
 #include "./io/fpga_manager.h"
+#include "./solution_audit.h"
 
 #include "./coarsening/full_coarsener_4thread.h"
 
@@ -153,6 +154,10 @@ int main(int argc, char* argv[]) {
                     replication.Solve(gain_threshold, replication_flag);
                 }
 
+                best_cost_in_this_exploration = recomputeTotalHopDistance(
+                    Hypergraphs[i], fpga_manager
+                );
+
 
                 if(i > 0){
                     updataFormerLayer(Hypergraphs, i);
@@ -187,6 +192,10 @@ int main(int argc, char* argv[]) {
                     replication.Solve(replication_threshold, replication_flag);
                 }
 
+                new_best_cost = recomputeTotalHopDistance(
+                    Hypergraphs[0], fpga_manager
+                );
+
                 if(new_best_cost == best_cost_in_this_exploration){
                     best_cost_in_this_exploration = new_best_cost;
                     break;
@@ -195,7 +204,13 @@ int main(int argc, char* argv[]) {
             }
             std::cout << "Refinement Finished\n";
 
-            std::cout << "Best Cost Temp: " << best_cost_in_this_exploration << std::endl;
+            const long long incremental_cost = best_cost_in_this_exploration;
+            best_cost_in_this_exploration = recomputeTotalHopDistance(
+                Hypergraphs[0], fpga_manager
+            );
+            std::cout << "Best Cost Temp: " << best_cost_in_this_exploration
+                      << " (exact final-solution audit; incremental "
+                      << incremental_cost << ")" << std::endl;
 
             if(best_cost_in_this_exploration < best_cost) {
                 best_cost = best_cost_in_this_exploration;
@@ -231,6 +246,10 @@ int main(int argc, char* argv[]) {
             }
             file << std::endl;
         }
+
+        best_cost = recomputeTotalHopDistance(
+            hypergraph_best_overall, fpga_manager
+        );
 
     }
     else {
@@ -295,6 +314,10 @@ int main(int argc, char* argv[]) {
                 replication.Solve(gain_threshold, replication_flag);
             }
 
+            best_cost = recomputeTotalHopDistance(
+                Hypergraphs[i], fpga_manager
+            );
+
 
             if(i > 0){
                 updataFormerLayer(Hypergraphs, i);
@@ -328,6 +351,10 @@ int main(int argc, char* argv[]) {
                 replication.Solve(replication_threshold, replication_flag);
             }
 
+            new_best_cost = recomputeTotalHopDistance(
+                Hypergraphs[0], fpga_manager
+            );
+
             if(new_best_cost == best_cost){
                 best_cost = new_best_cost;
                 break;
@@ -358,6 +385,11 @@ int main(int argc, char* argv[]) {
             }
             file << std::endl;
         }
+
+        const long long incremental_cost = best_cost;
+        best_cost = recomputeTotalHopDistance(Hypergraphs[0], fpga_manager);
+        std::cout << "Exact final-solution cost audit: " << best_cost
+                  << " (incremental " << incremental_cost << ")" << std::endl;
     }
 
     auto end_time = std::chrono::steady_clock::now();

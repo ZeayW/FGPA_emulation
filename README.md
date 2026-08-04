@@ -84,7 +84,10 @@
 >   [VeeR EH1](https://github.com/chipsalliance/Cores-VeeR-EH1), and
 >   [NVDLA](https://github.com/nvdla/hw)
 > - Public multi-FPGA benchmark specifications:
->   [ICCAD 2019 system-level FPGA routing with TDM](https://www.iccad-contest.org/2019/problems.html)
+>   [ICCAD 2019 system-level FPGA routing with TDM](https://www.iccad-contest.org/2019/problems.html),
+>   [2024 EDA Elite hypergraph partitioning with logic replication](https://edaoss.icisc.cn/file/cacheFile/2024/8/1/8e6b33de567b411d8b159b961ef117aa.pdf),
+>   its fixed-commit public cases in
+>   [RePart](https://github.com/Welement-zyf/RePart/tree/211a9d8fd526576387cad7ac6dd3531354aeb31c/testcase),
 >   and the
 >   [2025 EDA Elite reconfigurable multi-FPGA routing problem](https://edaosss.icisc.cn/file/cacheFile/2025/8/11/1e213a00cbd94e2b91e997740753cb60.pdf)
 > - CI:
@@ -425,6 +428,32 @@ limits, the 30% topology-change bound, exact cut-net coverage, and multicast
 reachability, then reports the published runtime-adjusted score. The generated
 BoardDB remains explicitly `virtual`; it is a reproducible academic benchmark
 architecture, not a claim about package pins or a commercial board.
+
+The 2024 logic-replication cases remain in their exact upstream RePart
+format. Large benchmark data is fetched on demand at a fixed commit and
+verified against the recorded Git blob ids, rather than copied into this
+repository:
+
+```bash
+python3 scripts/fetch_repart_benchmarks.py \
+  --case case03 \
+  --out build/benchmarks/repart/case03
+
+build/install/bin/repart \
+  -t build/benchmarks/repart/case03 \
+  -s build/benchmarks/repart/case03/design.fpga.out \
+  -r 1
+
+emuflow contest eda2024-evaluate \
+  --case-dir build/benchmarks/repart/case03 \
+  --output build/benchmarks/repart/case03/evaluation.json
+```
+
+The checker is independent of RePart. It reparses all four official input
+files and the `*` replica records, then recomputes eight-resource capacity,
+per-FPGA external communication, maximum-hop legality, weighted total hop
+distance, and the runtime-adjusted contest score. This separates provider
+optimization from acceptance and scoring.
 
 Add `--physical` to select the default open physical provider and feed routed
 timing back into Phase 7C:

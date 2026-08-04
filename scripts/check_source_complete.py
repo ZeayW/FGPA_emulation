@@ -46,6 +46,7 @@ REQUIRED_SOURCE_FILES = {
     ),
     "repart": (
         "RePart/partitioner.cpp",
+        "RePart/solution_audit.h",
         "RePart/datastructure/hypergraph.h",
         "LICENSE",
         "EMUFLOW_PROVENANCE.md",
@@ -156,6 +157,9 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/vivado_backend.py",
     "src/emuflow/vivado_netlist.py",
     "src/emuflow/contest_eda2025.py",
+    "src/emuflow/contest_eda2024.py",
+    "schemas/contest-eda2024-evaluation-v1.schema.json",
+    "scripts/fetch_repart_benchmarks.py",
     "schemas/contest-eda2025-instance-v1.schema.json",
     "schemas/contest-eda2025-evaluation-v1.schema.json",
     "schemas/physical-backend-v1.schema.json",
