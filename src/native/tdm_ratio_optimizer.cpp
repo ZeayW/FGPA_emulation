@@ -345,6 +345,27 @@ class Optimizer {
     return worst_normalized_slack(ratios);
   }
 
+  bool lexicographically_improves(
+      const std::map<int, double>& candidate_metrics,
+      const std::vector<double>& current_metrics) const {
+    // Unaffected paths cancel.  At the smallest metric whose multiplicity
+    // changes, a candidate is lexicographically better exactly when it has
+    // fewer paths at that value.  This crosses plateaus with several tied
+    // critical groups without ever worsening the sorted slack vector.
+    std::map<double, int> multiplicity_delta;
+    for (const auto& [path, candidate] : candidate_metrics) {
+      --multiplicity_delta[current_metrics[path]];
+      ++multiplicity_delta[candidate];
+    }
+    for (const auto& [metric, delta] : multiplicity_delta) {
+      (void) metric;
+      if (delta != 0) {
+        return delta < 0;
+      }
+    }
+    return false;
+  }
+
   void initialize_path_multipliers() {
     // A normalized exponential distribution is a feasible dual path flow:
     // mu >= 0 and sum(mu) = 1. It favors initially critical paths.
@@ -887,7 +908,10 @@ class Optimizer {
                     ? metrics[path]
                     : found->second);
           }
-          if (candidate_worst > current_worst + input_.convergence) {
+          if (candidate_worst > current_worst + input_.convergence ||
+              (std::abs(candidate_worst - current_worst) <=
+                   input_.convergence &&
+               lexicographically_improves(candidate_metrics, metrics))) {
             discrete_[hop] = candidate_ratio;
             for (const auto& [path, value] : candidate_metrics) {
               metrics[path] = value;
@@ -936,7 +960,10 @@ class Optimizer {
                     ? metrics[path]
                     : found->second);
           }
-          if (candidate_worst > current_worst + input_.convergence) {
+          if (candidate_worst > current_worst + input_.convergence ||
+              (std::abs(candidate_worst - current_worst) <=
+                   input_.convergence &&
+               lexicographically_improves(candidate_metrics, metrics))) {
             std::swap(discrete_[lhs], discrete_[rhs]);
             std::swap(lane_[lhs], lane_[rhs]);
             for (const auto& [path, value] : candidate_metrics) {

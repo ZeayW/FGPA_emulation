@@ -322,7 +322,7 @@ def optimize_iccad2019_ratios(
     *,
     optimizer: Optional[str] = None,
     max_iterations: int = 500,
-    post_refinement_iterations: int = 500,
+    post_refinement_iterations: int = 20000,
 ) -> Dict[str, Any]:
     """Assign legal even ratios to routed trees with the in-tree C++ KKT core."""
 
@@ -397,7 +397,9 @@ def optimize_iccad2019_ratios(
     evaluation = evaluate_iccad2019_solution(instance_path, output_path)
     return {
         "status": "pass",
-        "provider": "cpp-lagrangian-kkt-exact-harmonic-v1",
+        "provider": (
+            "cpp-lagrangian-kkt-exact-harmonic-lexicographic-v2"
+        ),
         "routed_tree_edges": len(hops),
         "maximum_total_tdm_ratio": evaluation["metrics"][
             "maximum_total_tdm_ratio"

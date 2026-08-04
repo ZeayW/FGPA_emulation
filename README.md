@@ -456,7 +456,9 @@ emuflow contest iccad2019-evaluate \
 
 The routing and ratio computation use the in-tree C++ kernels. Ratio
 assignment uses continuous Lagrangian/KKT optimization, exact upward-even
-harmonic legalization, and capacity-preserving critical-group refinement. An
+harmonic legalization, and capacity-preserving lexicographic critical-group
+refinement. The lexicographic objective can cross tied worst-group plateaus
+without accepting any regression in the sorted group-delay vector. An
 independent parser/checker recomputes multicast connectivity, shared capacity,
 and the official maximum net-group total-ratio objective.
 

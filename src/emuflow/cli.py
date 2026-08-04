@@ -166,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
     iccad2019_optimize.add_argument("--optimizer")
     iccad2019_optimize.add_argument("--max-iterations", type=int, default=500)
     iccad2019_optimize.add_argument(
-        "--post-refinement-iterations", type=int, default=500
+        "--post-refinement-iterations", type=int, default=20000
     )
     iccad2019_evaluate = contest_subparsers.add_parser(
         "iccad2019-evaluate",
