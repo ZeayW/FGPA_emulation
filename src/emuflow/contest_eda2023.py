@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, cast
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
@@ -561,32 +561,36 @@ def optimize_eda2023_tdm(
     domain_by_link = {link["id"]: index for index, link in enumerate(wire_links)}
     max_ratio = max(4, 4 * math.ceil(max(1, len(model["hops"])) / 4))
     period = float(max(1, len(instance["dies"]) - 1) * (max_ratio + 0.5))
-    ratios: Dict[int, Dict[str, Any]] = {}
     metrics: Dict[str, Any] = {}
     if model["hops"]:
-        lines = ["EMUFLOW_TDM_RATIO_INPUT_V3"]
-        lines.append(
-            "PARAM "
-            f"{max_iterations} {max_ratio} 4 4 0 {post_refinement_iterations} "
-            f"{exact_domain_limit} 1e-9 1 1 {period:.17g}"
-        )
-        for link in wire_links:
-            lines.append(f"DOMAIN {domain_by_link[link['id']]} {link['capacity']}")
-        for hop in model["hops"]:
-            lines.append(
-                f"HOP {hop['index']} {domain_by_link[hop['link']]} "
-                f"{hop['direction']} 1.5 1"
-            )
-        for index, path in enumerate(model["paths"]):
-            lines.append(
-                f"PATH {index} {period:.17g} {path['fixed_delay']:.17g} "
-                + ",".join(str(hop) for hop in path["hops"])
-            )
         resolved = resolve_native_executable("emuflow_tdm_ratio_optimizer", optimizer)
         with tempfile.TemporaryDirectory(prefix="emuflow-eda2023-tdm-") as temporary:
             native_input = Path(temporary) / "ratio.in"
             native_output = Path(temporary) / "ratio.out"
-            native_input.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            with native_input.open("w", encoding="utf-8") as stream:
+                stream.write("EMUFLOW_TDM_RATIO_INPUT_V3\n")
+                stream.write(
+                    "PARAM "
+                    f"{max_iterations} {max_ratio} 4 4 0 "
+                    f"{post_refinement_iterations} {exact_domain_limit} "
+                    f"1e-9 1 1 {period:.17g}\n"
+                )
+                for link in wire_links:
+                    stream.write(
+                        f"DOMAIN {domain_by_link[link['id']]} "
+                        f"{link['capacity']}\n"
+                    )
+                for hop in model["hops"]:
+                    stream.write(
+                        f"HOP {hop['index']} {domain_by_link[hop['link']]} "
+                        f"{hop['direction']} 1.5 1\n"
+                    )
+                for index, path in enumerate(model["paths"]):
+                    hop_list = ",".join(str(hop) for hop in path["hops"])
+                    stream.write(
+                        f"PATH {index} {period:.17g} "
+                        f"{path['fixed_delay']:.17g} {hop_list}\n"
+                    )
             completed = subprocess.run(
                 [resolved, str(native_input), str(native_output)],
                 capture_output=True,
@@ -598,31 +602,40 @@ def optimize_eda2023_tdm(
                 raise EmuFlowError(
                     f"EDA 2023 TDM optimizer failed with exit code {completed.returncode}: {detail}"
                 )
-            for line in native_output.read_text(encoding="utf-8").splitlines()[1:]:
-                fields = line.split()
-                if fields[:1] == ["HOP"] and len(fields) == 5:
-                    ratios[int(fields[1])] = {
-                        "continuous_ratio": float(fields[2]),
-                        "ratio": int(fields[3]),
-                        "lane": int(fields[4]),
-                    }
-                elif fields[:1] == ["METRIC"] and len(fields) == 3:
-                    metrics[fields[1]] = float(fields[2])
-        if len(ratios) != len(model["hops"]):
+            ratio_count = 0
+            with native_output.open("r", encoding="utf-8") as stream:
+                if stream.readline().strip() != "EMUFLOW_TDM_RATIO_OUTPUT_V1":
+                    raise EmuFlowError("EDA 2023 TDM optimizer output header is invalid")
+                for line in stream:
+                    fields = line.split()
+                    if fields[:1] == ["HOP"] and len(fields) == 5:
+                        index = int(fields[1])
+                        if index != ratio_count:
+                            raise EmuFlowError(
+                                "EDA 2023 TDM optimizer HOP records are not contiguous"
+                            )
+                        model["hops"][index].update(
+                            {
+                                "continuous_ratio": float(fields[2]),
+                                "ratio": int(fields[3]),
+                                "lane": int(fields[4]),
+                            }
+                        )
+                        ratio_count += 1
+                    elif fields[:1] == ["METRIC"] and len(fields) == 3:
+                        metrics[fields[1]] = float(fields[2])
+        if ratio_count != len(model["hops"]):
             raise EmuFlowError("EDA 2023 TDM optimizer omitted hop records")
     plan = {
         "schema": EDA2023_TDM_SCHEMA,
         "instance": instance["name"],
         "provider": "cpp-lagrangian-kkt-direction-separated-v1",
-        "hops": [
-            {**hop, **ratios[hop["index"]]}
-            for hop in model["hops"]
-        ],
+        "hops": model["hops"],
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     plan_path = output_dir / "tdm_plan.json"
     write_json(plan_path, plan)
-    evaluation = evaluate_eda2023_solution(instance_path, routes_path, plan_path)
+    evaluation = _evaluate_eda2023_model(instance, model, plan)
     _write_official_outputs(output_dir, instance, model, plan, evaluation)
     return {
         "status": "pass",
@@ -639,15 +652,28 @@ def optimize_eda2023_tdm(
     }
 
 
-def _validate_plan(model: Mapping[str, Any], plan: Mapping[str, Any]) -> Dict[int, Mapping[str, Any]]:
+def _validate_plan(
+    model: Mapping[str, Any], plan: Mapping[str, Any]
+) -> Tuple[List[Mapping[str, Any]], int]:
     if plan.get("schema") != EDA2023_TDM_SCHEMA:
         raise ValidationError(f"tdm plan.schema: expected {EDA2023_TDM_SCHEMA!r}")
-    by_index = {hop.get("index"): hop for hop in plan.get("hops", [])}
-    if set(by_index) != set(range(len(model["hops"]))):
+    by_index: List[Optional[Mapping[str, Any]]] = [None] * len(model["hops"])
+    for hop in plan.get("hops", []):
+        index = hop.get("index")
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index < len(by_index)
+            or by_index[index] is not None
+        ):
+            raise ValidationError("tdm plan: hop coverage is not exact")
+        by_index[index] = hop
+    if any(hop is None for hop in by_index):
         raise ValidationError("tdm plan: hop coverage is not exact")
-    groups: Dict[Tuple[str, int], List[Mapping[str, Any]]] = defaultdict(list)
+    groups: Dict[Tuple[str, int], Tuple[int, int, int]] = {}
     for expected in model["hops"]:
         hop = by_index[expected["index"]]
+        assert hop is not None
         for key in ("net", "link", "direction", "from", "to"):
             if hop.get(key) != expected[key]:
                 raise ValidationError(f"tdm hop {expected['index']}: {key} mismatch")
@@ -658,43 +684,35 @@ def _validate_plan(model: Mapping[str, Any], plan: Mapping[str, Any]) -> Dict[in
             or isinstance(lane, bool) or not isinstance(lane, int) or not 0 <= lane < capacity
         ):
             raise ValidationError(f"tdm hop {expected['index']}: illegal ratio or lane")
-        groups[(expected["link"], lane)].append(hop)
-    for key, hops in groups.items():
-        directions = {hop["direction"] for hop in hops}
-        ratios = {hop["ratio"] for hop in hops}
-        if len(directions) != 1 or len(ratios) != 1:
+        key = (expected["link"], lane)
+        old_direction, old_ratio, count = groups.get(
+            key, (expected["direction"], ratio, 0)
+        )
+        if old_direction != expected["direction"] or old_ratio != ratio:
             raise ValidationError(f"Wire {key}: mixed direction or TDM ratio")
-        ratio = next(iter(ratios))
-        if len(hops) > ratio:
-            raise ValidationError(f"Wire {key}: {len(hops)} signals exceed ratio {ratio}")
-    return by_index
+        groups[key] = (old_direction, old_ratio, count + 1)
+    for key, (_, ratio, count) in groups.items():
+        if count > ratio:
+            raise ValidationError(f"Wire {key}: {count} signals exceed ratio {ratio}")
+    return cast(List[Mapping[str, Any]], by_index), len(groups)
 
 
-def evaluate_eda2023_solution(
-    instance_path: Path,
-    routes_path: Path,
-    tdm_plan_path: Path,
+def _evaluate_eda2023_model(
+    instance: Mapping[str, Any],
+    model: Mapping[str, Any],
+    plan: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    instance = _load_instance(instance_path)
-    model = _route_model(instance, read_json(routes_path))
-    plan = read_json(tdm_plan_path)
-    by_index = _validate_plan(model, plan)
+    by_index, used_wires = _validate_plan(model, plan)
     path_weights: Dict[Tuple[str, str], float] = {}
     net_weights: Dict[str, float] = {
         name: 0.0 for name in model["all_nets"]
     }
-    hop_index = {(hop["net"], hop["link"]): hop["index"] for hop in model["hops"]}
     for name, paths in model["route_paths"].items():
         weights = []
         for path in paths:
-            weight = 0.0
-            for _, _, link_id in path["edges"]:
-                link = model["links"][link_id]
-                if link["kind"] == "sll":
-                    weight += 1.0
-                else:
-                    ratio = by_index[hop_index[(name, link_id)]]["ratio"]
-                    weight += 0.5 + ratio
+            weight = path["fixed_delay"] + sum(
+                0.5 + by_index[hop]["ratio"] for hop in path["hops"]
+            )
             path_weights[(name, path["sink"])] = weight
             weights.append(weight)
         net_weights[name] = max(weights, default=0.0)
@@ -708,7 +726,7 @@ def evaluate_eda2023_solution(
             "nets": len(instance["nets"]),
             "routed_nets": len(model["routes"]),
             "wire_hops": len(model["hops"]),
-            "used_wires": len({(hop["link"], hop["lane"]) for hop in plan["hops"]}),
+            "used_wires": used_wires,
             "max_routing_weight": max(net_weights.values(), default=0.0),
             "max_tdm_ratio": max((hop["ratio"] for hop in plan["hops"]), default=1),
             "maximum_sll_usage": max(model["sll_usage"].values(), default=0),
@@ -718,6 +736,17 @@ def evaluate_eda2023_solution(
             f"{net}->{sink}": weight for (net, sink), weight in path_weights.items()
         },
     }
+
+
+def evaluate_eda2023_solution(
+    instance_path: Path,
+    routes_path: Path,
+    tdm_plan_path: Path,
+) -> Dict[str, Any]:
+    instance = _load_instance(instance_path)
+    model = _route_model(instance, read_json(routes_path))
+    plan = read_json(tdm_plan_path)
+    return _evaluate_eda2023_model(instance, model, plan)
 
 
 def _format_weight(value: float) -> str:
