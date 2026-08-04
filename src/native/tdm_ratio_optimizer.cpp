@@ -233,14 +233,18 @@ class Optimizer {
         ++stale;
       }
       completed_iterations_ = iteration + 1;
-      if (stale >= 40) {
+      if (stale >= 100) {
         break;
       }
       update_path_multipliers(iteration);
     }
     continuous_ = best_ratios;
     legalize();
+    select_uniform_minimax_seed();
+    global_budget_minimax_refine();
+    group_minimax_refine();
     post_refine();
+    group_minimax_refine();
   }
 
   void write(const std::string& path) const {
@@ -273,6 +277,12 @@ class Optimizer {
            << dp_legalized_domains_ << '\n';
     output << "METRIC greedy_legalized_domains "
            << greedy_legalized_domains_ << '\n';
+    output << "METRIC group_minimax_improvements "
+           << group_minimax_improvements_ << '\n';
+    output << "METRIC global_minimax_improvements "
+           << global_minimax_improvements_ << '\n';
+    output << "METRIC global_minimax_weight_exponent "
+           << global_minimax_weight_exponent_ << '\n';
   }
 
  private:
@@ -374,16 +384,19 @@ class Optimizer {
     const std::vector<double> unit_ratios(
         input_.hops.size(), static_cast<double>(input_.min_ratio));
     double maximum = -std::numeric_limits<double>::infinity();
+    double minimum = std::numeric_limits<double>::infinity();
     for (const TimingPath& path : input_.paths) {
       const double normalized =
           std::get<2>(path_metrics(path, unit_ratios));
-      const double score = -8.0 * normalized;
+      const double score = -normalized;
       scores.push_back(score);
       maximum = std::max(maximum, score);
+      minimum = std::min(minimum, score);
     }
+    const double range = std::max(1.0, maximum - minimum);
     double total = 0.0;
     for (double& score : scores) {
-      score = std::exp(std::max(-60.0, score - maximum));
+      score = std::exp(std::max(-60.0, 8.0 * (score - maximum) / range));
       total += score;
     }
     for (int index = 0; index < static_cast<int>(scores.size()); ++index) {
@@ -519,17 +532,21 @@ class Optimizer {
   void update_path_multipliers(int iteration) {
     std::vector<double> costs(input_.paths.size());
     double maximum = -std::numeric_limits<double>::infinity();
+    double minimum = std::numeric_limits<double>::infinity();
     for (int path = 0; path < static_cast<int>(input_.paths.size()); ++path) {
       const double normalized =
           std::get<2>(path_metrics(input_.paths[path], continuous_));
       costs[path] = -normalized;
       maximum = std::max(maximum, costs[path]);
+      minimum = std::min(minimum, costs[path]);
     }
     const double rate = 0.2 * std::pow(0.5, 0.01 * iteration);
+    const double range = std::max(1.0, maximum - minimum);
     double total = 0.0;
     for (int path = 0; path < static_cast<int>(costs.size()); ++path) {
       const double exponent =
-          std::clamp(8.0 * rate * (costs[path] - maximum), -60.0, 0.0);
+          std::clamp(
+              8.0 * rate * (costs[path] - maximum) / range, -60.0, 0.0);
       path_mu_[path] *= std::exp(exponent);
       path_mu_[path] = std::max(path_mu_[path], kEps);
       total += path_mu_[path];
@@ -859,6 +876,412 @@ class Optimizer {
     }
   }
 
+  bool build_minimax_groups(int domain, double target, bool assign) {
+    const std::vector<int> allowed = allowed_ratios();
+    std::map<int, std::vector<std::pair<int, int>>> by_direction;
+    for (int hop : domain_hops_[domain]) {
+      int maximum = input_.max_ratio;
+      for (int path_index : hop_paths_[hop]) {
+        const TimingPath& path = input_.paths[path_index];
+        int domain_hops = 0;
+        for (int path_hop : path.hops) {
+          if (input_.hops[path_hop].domain == domain) {
+            ++domain_hops;
+          }
+        }
+        if (domain_hops != 1) {
+          return false;
+        }
+        double other_delay = path.fixed_delay_ns;
+        for (int path_hop : path.hops) {
+          if (path_hop == hop) {
+            continue;
+          }
+          other_delay += input_.hops[path_hop].base_delay_ns +
+              input_.hops[path_hop].beta_ns *
+                  (discrete_[path_hop] - 1.0);
+        }
+        const auto meets_target = [&](int ratio) {
+          const double delay = other_delay + input_.hops[hop].base_delay_ns +
+              input_.hops[hop].beta_ns * (ratio - 1.0);
+          const double slack = path.clock_period_ns - delay;
+          return normalized_slack(path, slack) + input_.convergence >= target;
+        };
+        int low = 0;
+        int high = static_cast<int>(allowed.size());
+        while (low < high) {
+          const int middle = low + (high - low) / 2;
+          if (meets_target(allowed[middle])) {
+            low = middle + 1;
+          } else {
+            high = middle;
+          }
+        }
+        const int path_maximum = low == 0 ? -1 : allowed[low - 1];
+        if (path_maximum < input_.min_ratio) {
+          return false;
+        }
+        maximum = std::min(maximum, path_maximum);
+      }
+      by_direction[input_.hops[hop].direction].emplace_back(maximum, hop);
+    }
+
+    struct Group {
+      int direction = 0;
+      std::vector<std::pair<int, int>> items;
+      int ratio = 0;
+    };
+    const auto minimum_ratio_for_count = [&](int count) {
+      const auto found = std::lower_bound(allowed.begin(), allowed.end(), count);
+      return found == allowed.end() ? input_.max_ratio + 1 : *found;
+    };
+    std::vector<Group> groups;
+    for (auto& [direction, bounded] : by_direction) {
+      std::stable_sort(bounded.begin(), bounded.end());
+      int position = 0;
+      while (position < static_cast<int>(bounded.size())) {
+        const int bound = bounded[position].first;
+        const auto upper = std::upper_bound(
+            allowed.begin(), allowed.end(), bound);
+        if (upper == allowed.begin()) {
+          return false;
+        }
+        const int group_capacity = *std::prev(upper);
+        const int count = std::min(
+            group_capacity,
+            static_cast<int>(bounded.size()) - position);
+        const int ratio = minimum_ratio_for_count(count);
+        if (ratio > bound) {
+          return false;
+        }
+        Group group;
+        group.direction = direction;
+        group.ratio = ratio;
+        group.items.insert(
+            group.items.end(), bounded.begin() + position,
+            bounded.begin() + position + count);
+        groups.push_back(std::move(group));
+        position += count;
+      }
+    }
+    const int lane_budget = input_.domains[domain].lanes;
+    if (static_cast<int>(groups.size()) > lane_budget) {
+      return false;
+    }
+
+    // The initial bounded packing above proves feasibility but deliberately
+    // uses the fewest lanes.  Leaving legal lanes idle can inflate a group's
+    // ratio by hundreds on contest-scale domains.  Repeatedly split the
+    // current worst group so that every available lane contributes to the
+    // minimax objective while retaining each group's direction constraint.
+    while (static_cast<int>(groups.size()) < lane_budget) {
+      int selected = -1;
+      for (int index = 0; index < static_cast<int>(groups.size()); ++index) {
+        if (groups[index].items.size() <= 1) {
+          continue;
+        }
+        if (selected < 0 ||
+            std::make_tuple(groups[index].ratio, groups[index].items.size()) >
+                std::make_tuple(groups[selected].ratio,
+                                groups[selected].items.size())) {
+          selected = index;
+        }
+      }
+      if (selected < 0) {
+        break;
+      }
+      Group right;
+      right.direction = groups[selected].direction;
+      const int middle = static_cast<int>(groups[selected].items.size()) / 2;
+      right.items.insert(
+          right.items.end(), groups[selected].items.begin() + middle,
+          groups[selected].items.end());
+      groups[selected].items.erase(
+          groups[selected].items.begin() + middle,
+          groups[selected].items.end());
+      groups[selected].ratio = minimum_ratio_for_count(
+          static_cast<int>(groups[selected].items.size()));
+      right.ratio = minimum_ratio_for_count(
+          static_cast<int>(right.items.size()));
+      groups.insert(groups.begin() + selected + 1, std::move(right));
+    }
+
+    if (assign) {
+      for (int lane = 0; lane < static_cast<int>(groups.size()); ++lane) {
+        for (const auto& [bound, hop] : groups[lane].items) {
+          if (groups[lane].ratio > bound) {
+            throw std::runtime_error("split minimax group exceeds bound");
+          }
+          discrete_[hop] = groups[lane].ratio;
+          lane_[hop] = lane;
+        }
+      }
+    }
+    return true;
+  }
+
+  double delay_limit_for_normalized_target(
+      const TimingPath& path, double target) const {
+    const double required_slack = target >= 0.0
+        ? target * input_.positive_scale * input_.max_period /
+              path.clock_period_ns
+        : target * input_.negative_scale * path.clock_period_ns;
+    return path.clock_period_ns - required_slack;
+  }
+
+  bool build_global_budget_solution(double target, double weight_exponent) {
+    const std::vector<int> allowed = allowed_ratios();
+    std::vector<int> maximum(input_.hops.size(), input_.max_ratio);
+    for (const TimingPath& path : input_.paths) {
+      double minimum_delay = path.fixed_delay_ns;
+      double total_weight = 0.0;
+      for (int hop : path.hops) {
+        minimum_delay += input_.hops[hop].base_delay_ns +
+            input_.hops[hop].beta_ns * (input_.min_ratio - 1.0);
+        total_weight += std::pow(
+            std::max(1.0, continuous_[hop] - input_.min_ratio + 1.0),
+            weight_exponent);
+      }
+      const double budget =
+          delay_limit_for_normalized_target(path, target) - minimum_delay;
+      if (budget < -input_.convergence) {
+        return false;
+      }
+      if (path.hops.empty()) {
+        continue;
+      }
+      for (int hop : path.hops) {
+        const double weight = std::pow(
+            std::max(1.0, continuous_[hop] - input_.min_ratio + 1.0),
+            weight_exponent);
+        const double raw_bound = input_.min_ratio +
+            std::max(0.0, budget) * weight /
+                (total_weight * input_.hops[hop].beta_ns);
+        const auto upper = std::upper_bound(
+            allowed.begin(), allowed.end(),
+            static_cast<int>(std::floor(raw_bound + input_.convergence)));
+        if (upper == allowed.begin()) {
+          return false;
+        }
+        maximum[hop] = std::min(maximum[hop], *std::prev(upper));
+      }
+    }
+
+    for (int hop = 0; hop < static_cast<int>(input_.hops.size()); ++hop) {
+      discrete_[hop] = maximum[hop];
+    }
+    for (int domain = 0; domain < static_cast<int>(input_.domains.size());
+         ++domain) {
+      if (!build_minimax_groups(domain, target, true)) {
+        return false;
+      }
+    }
+    return worst_normalized_slack_discrete() + input_.convergence >= target;
+  }
+
+  void global_budget_minimax_refine() {
+    if (input_.harmonic_legalization || input_.paths.empty()) {
+      return;
+    }
+    const double before = worst_normalized_slack_discrete();
+    std::vector<int> best_ratio = discrete_;
+    std::vector<int> best_lane = lane_;
+    double best = before;
+
+    std::vector<int> minimum(input_.hops.size(), input_.min_ratio);
+    const double upper = worst_normalized_slack(
+        std::vector<double>(minimum.begin(), minimum.end()));
+    for (double exponent : {-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0}) {
+      discrete_ = best_ratio;
+      lane_ = best_lane;
+      if (!build_global_budget_solution(before, exponent)) {
+        continue;
+      }
+      double low = before;
+      double high = upper;
+      std::vector<int> scheme_ratio = discrete_;
+      std::vector<int> scheme_lane = lane_;
+      for (int iteration = 0; iteration < 28; ++iteration) {
+        const double middle = (low + high) * 0.5;
+        if (build_global_budget_solution(middle, exponent)) {
+          low = middle;
+          scheme_ratio = discrete_;
+          scheme_lane = lane_;
+        } else {
+          high = middle;
+        }
+      }
+      discrete_ = scheme_ratio;
+      lane_ = scheme_lane;
+      const double result = worst_normalized_slack_discrete();
+      if (result > best + input_.convergence) {
+        best = result;
+        best_ratio = discrete_;
+        best_lane = lane_;
+        global_minimax_weight_exponent_ = exponent;
+      }
+    }
+    discrete_ = best_ratio;
+    lane_ = best_lane;
+    if (best > before + input_.convergence) {
+      ++global_minimax_improvements_;
+    }
+  }
+
+  void group_minimax_refine() {
+    if (input_.harmonic_legalization) {
+      return;
+    }
+    for (int round = 0; round < 4; ++round) {
+      bool changed = false;
+      for (int domain = 0; domain < static_cast<int>(input_.domains.size());
+           ++domain) {
+        const double before = worst_normalized_slack_discrete();
+        std::vector<int> saved_ratio;
+        std::vector<int> saved_lane;
+        for (int hop : domain_hops_[domain]) {
+          saved_ratio.push_back(discrete_[hop]);
+          saved_lane.push_back(lane_[hop]);
+        }
+        double upper = std::numeric_limits<double>::infinity();
+        for (int hop : domain_hops_[domain]) {
+          discrete_[hop] = input_.min_ratio;
+        }
+        upper = worst_normalized_slack_discrete();
+        for (int index = 0;
+             index < static_cast<int>(domain_hops_[domain].size()); ++index) {
+          discrete_[domain_hops_[domain][index]] = saved_ratio[index];
+        }
+        if (upper <= before + input_.convergence ||
+            !build_minimax_groups(domain, before, false)) {
+          continue;
+        }
+        double low = before;
+        double high = upper;
+        for (int iteration = 0; iteration < 32; ++iteration) {
+          const double middle = (low + high) * 0.5;
+          if (build_minimax_groups(domain, middle, false)) {
+            low = middle;
+          } else {
+            high = middle;
+          }
+        }
+        if (!build_minimax_groups(domain, low, true)) {
+          throw std::runtime_error("minimax group reconstruction failed");
+        }
+        const double after = worst_normalized_slack_discrete();
+        if (after + input_.convergence < before) {
+          for (int index = 0;
+               index < static_cast<int>(domain_hops_[domain].size()); ++index) {
+            const int hop = domain_hops_[domain][index];
+            discrete_[hop] = saved_ratio[index];
+            lane_[hop] = saved_lane[index];
+          }
+          continue;
+        }
+        if (after > before + input_.convergence) {
+          ++group_minimax_improvements_;
+          changed = true;
+        }
+      }
+      if (!changed) {
+        break;
+      }
+    }
+  }
+
+  int uniform_ratio(int signals, int lanes) const {
+    if (signals <= lanes && input_.min_ratio == 1) {
+      return 1;
+    }
+    const int raw = std::max(
+        input_.min_ratio, (signals + lanes - 1) / lanes);
+    return ((raw + input_.ratio_quantum - 1) /
+            input_.ratio_quantum) * input_.ratio_quantum;
+  }
+
+  bool assign_uniform_minimax_domain(int domain) {
+    std::map<int, std::vector<int>> by_direction;
+    for (int hop : domain_hops_[domain]) {
+      by_direction[input_.hops[hop].direction].push_back(hop);
+    }
+    if (by_direction.empty() || by_direction.size() > 2) {
+      return by_direction.empty();
+    }
+    std::vector<std::pair<int, std::vector<int>>> groups(
+        by_direction.begin(), by_direction.end());
+    const int budget = input_.domains[domain].lanes;
+    std::vector<int> lane_budget(groups.size(), budget);
+    if (groups.size() == 2) {
+      std::tuple<int, int, int> best{
+          std::numeric_limits<int>::max(),
+          std::numeric_limits<int>::max(), -1};
+      for (int first = 1; first < budget; ++first) {
+        const int second = budget - first;
+        const int first_ratio = uniform_ratio(
+            static_cast<int>(groups[0].second.size()), first);
+        const int second_ratio = uniform_ratio(
+            static_cast<int>(groups[1].second.size()), second);
+        if (first_ratio > input_.max_ratio ||
+            second_ratio > input_.max_ratio) {
+          continue;
+        }
+        const std::tuple<int, int, int> score{
+            std::max(first_ratio, second_ratio),
+            first_ratio + second_ratio, first};
+        if (score < best) {
+          best = score;
+        }
+      }
+      if (std::get<2>(best) < 0) {
+        return false;
+      }
+      lane_budget = {std::get<2>(best), budget - std::get<2>(best)};
+    }
+    int lane = 0;
+    for (int index = 0; index < static_cast<int>(groups.size()); ++index) {
+      std::vector<int>& hops = groups[index].second;
+      std::sort(hops.begin(), hops.end());
+      const int ratio = uniform_ratio(
+          static_cast<int>(hops.size()), lane_budget[index]);
+      if (ratio > input_.max_ratio) {
+        return false;
+      }
+      for (int position = 0; position < static_cast<int>(hops.size());) {
+        const int end = std::min(
+            static_cast<int>(hops.size()), position + ratio);
+        for (int item = position; item < end; ++item) {
+          discrete_[hops[item]] = ratio;
+          lane_[hops[item]] = lane;
+        }
+        position = end;
+        ++lane;
+      }
+    }
+    return lane <= budget;
+  }
+
+  void select_uniform_minimax_seed() {
+    if (input_.harmonic_legalization) {
+      return;
+    }
+    const std::vector<int> saved_ratio = discrete_;
+    const std::vector<int> saved_lane = lane_;
+    const double before = worst_normalized_slack_discrete();
+    for (int domain = 0; domain < static_cast<int>(input_.domains.size());
+         ++domain) {
+      if (!assign_uniform_minimax_domain(domain)) {
+        discrete_ = saved_ratio;
+        lane_ = saved_lane;
+        return;
+      }
+    }
+    if (worst_normalized_slack_discrete() + input_.convergence < before) {
+      discrete_ = saved_ratio;
+      lane_ = saved_lane;
+    }
+  }
+
   void post_refine() {
     std::vector<double> metrics(input_.paths.size());
     std::set<std::pair<double, int>> ordered_metrics;
@@ -1005,6 +1428,9 @@ class Optimizer {
   int post_refinement_swaps_ = 0;
   int dp_legalized_domains_ = 0;
   int greedy_legalized_domains_ = 0;
+  int group_minimax_improvements_ = 0;
+  int global_minimax_improvements_ = 0;
+  double global_minimax_weight_exponent_ = 0.0;
 };
 
 void usage(const char* executable) {

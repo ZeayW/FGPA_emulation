@@ -92,6 +92,7 @@ struct Input {
   double slack_negative_scale = 1.0;
   double max_clock_period_ns = 1.0;
   bool tree_edge_sum_tdm = false;
+  bool hard_sll_capacity = false;
   std::vector<Arc> arcs;
   std::vector<Demand> demands;
   std::vector<TimingPath> paths;
@@ -119,9 +120,11 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
+  const bool input_v6 = magic == "EMUFLOW_TLR_INPUT_V6";
   const bool input_v5 = magic == "EMUFLOW_TLR_INPUT_V5";
   const bool input_v4 = magic == "EMUFLOW_TLR_INPUT_V4";
-  if (!input_v5 && !input_v4 && magic != "EMUFLOW_TLR_INPUT_V3") {
+  if (!input_v6 && !input_v5 && !input_v4 &&
+      magic != "EMUFLOW_TLR_INPUT_V3") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
 
@@ -142,7 +145,7 @@ Input read_input(const std::string& path) {
           model.lambda_tdm >> model.ratio_quantum >> model.frame_slots >>
           model.slack_positive_scale >> model.slack_negative_scale >>
           model.max_clock_period_ns;
-      if (input_v4 || input_v5) {
+      if (input_v4 || input_v5 || input_v6) {
         int tree_edge_sum_tdm = 0;
         stream >> tree_edge_sum_tdm;
         if (tree_edge_sum_tdm != 0 && tree_edge_sum_tdm != 1) {
@@ -151,8 +154,17 @@ Input read_input(const std::string& path) {
         }
         model.tree_edge_sum_tdm = tree_edge_sum_tdm != 0;
       }
-      if (input_v5) {
+      if (input_v5 || input_v6) {
         stream >> model.min_ratio;
+      }
+      if (input_v6) {
+        int hard_sll_capacity = 0;
+        stream >> hard_sll_capacity;
+        if (hard_sll_capacity != 0 && hard_sll_capacity != 1) {
+          throw std::runtime_error(
+              "hard SLL capacity flag must be zero or one");
+        }
+        model.hard_sll_capacity = hard_sll_capacity != 0;
       }
     } else if (kind == "ARC") {
       int index = -1;
@@ -644,19 +656,29 @@ class Router {
         if (!direction_allowed(arc_index)) {
           continue;
         }
+        if (model_.hard_sll_capacity && arc.is_sll &&
+            usage_[arc.capacity_domain] + demand.width > arc.capacity) {
+          continue;
+        }
         const double projected =
             static_cast<double>(usage_[arc.capacity_domain] + demand.width) /
             arc.capacity;
         const double timing_weight =
             1.0 + model_.lambda_timing * demand_criticality_[demand_index];
+        // Below 10% utilization, SLL occupancy is too sparse to be a useful
+        // topology discriminator.  The dead zone preserves shortest routes
+        // on small instances; above it, rescale to [0, 1] so the load term
+        // progressively balances scarce, non-TDM SLL capacity.
+        const double load_pressure = model_.hard_sll_capacity
+            ? std::max(0.0, (projected - 0.1) / 0.9)
+            : projected;
         double edge_cost = timing_weight * arc.delay_ns +
-            model_.lambda_load * projected +
+            model_.lambda_load * load_pressure +
             model_.lambda_history * history_[arc.capacity_domain];
         if (!arc.is_sll) {
           const int projected_ratio =
               estimated_tdm_ratio(arc.capacity_domain, demand.width);
-          edge_cost += model_.lambda_tdm *
-              (1.0 + demand_criticality_[demand_index]) *
+          edge_cost += model_.lambda_tdm * timing_weight *
               arc.beta_ns * (projected_ratio - 1);
         }
         if (discouraged.count(arc_index)) {
@@ -777,6 +799,10 @@ class Router {
           if (!direction_allowed(arc_index) || in_tree[arc.to]) {
             continue;
           }
+          if (model_.hard_sll_capacity && arc.is_sll &&
+              usage_[arc.capacity_domain] + demand.width > arc.capacity) {
+            continue;
+          }
           const double projected =
               static_cast<double>(
                   usage_[arc.capacity_domain] + demand.width) /
@@ -788,10 +814,15 @@ class Router {
           // fixed delay plus negotiated congestion because they do not TDM.
           double edge_cost = timing_weight * arc.delay_ns;
           if (!arc.is_sll) {
-            edge_cost += timing_weight * arc.beta_ns *
+            edge_cost += model_.lambda_tdm * timing_weight * arc.beta_ns *
                 (projected_ratio - 1);
           }
-          edge_cost += model_.lambda_load * projected +
+          // Keep the same sparse-load dead zone in both shortest-path and
+          // multicast-tree construction so their cost models agree.
+          const double load_pressure = model_.hard_sll_capacity
+              ? std::max(0.0, (projected - 0.1) / 0.9)
+              : projected;
+          edge_cost += model_.lambda_load * load_pressure +
               model_.lambda_history * history_[arc.capacity_domain];
           if (discouraged.count(arc_index)) {
             edge_cost += model_.lambda_timing *

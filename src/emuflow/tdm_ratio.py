@@ -410,6 +410,8 @@ def _parse_native_output(
         "post_refinement_swaps",
         "dp_legalized_domains",
         "greedy_legalized_domains",
+        "group_minimax_improvements",
+        "global_minimax_improvements",
     }
     for line in lines[1:]:
         fields = line.split()
@@ -485,6 +487,9 @@ def _parse_native_output(
         "post_refinement_swaps",
         "dp_legalized_domains",
         "greedy_legalized_domains",
+        "group_minimax_improvements",
+        "global_minimax_improvements",
+        "global_minimax_weight_exponent",
     }
     if set(metrics) != expected_metrics:
         raise EmuFlowError(

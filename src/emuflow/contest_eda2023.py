@@ -329,19 +329,23 @@ def import_eda2023_case(case_dir: Path, output_dir: Path, name: str) -> Dict[str
     constraints = {
         "schema": "emuflow.system-route-constraints/v1",
         "frame_slots": max_ratio,
-        "max_iterations": 20,
+        "max_iterations": 50,
         "unavailable_links": [],
         "link_delay_ns": link_delays,
         "sll_links": [link["id"] for link in sll_links],
         "shared_capacity_links": [link["id"] for link in instance["links"]],
         "tree_edge_sum_tdm": False,
         "reroute_rounds": 8,
-        "lambda_load": 2.0,
-        "lambda_timing": 4.0,
+        # Contest paths have equal criticality.  Use the TLR load term as the
+        # die-cut penalty directly instead of multiplying every edge by the
+        # generic STA criticality factor.
+        "lambda_load": 68.0,
+        "lambda_timing": 0.0,
         "lambda_history": 1.0,
-        "lambda_tdm": 0.1,
+        "lambda_tdm": 1.0,
         "tdm_ratio_quantum": 4,
         "tdm_min_ratio": 4,
+        "hard_sll_capacity": True,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     artifacts = {
@@ -512,7 +516,7 @@ def optimize_eda2023_tdm(
     domain_by_link = {link["id"]: index for index, link in enumerate(wire_links)}
     max_ratio = max(4, 4 * math.ceil(max(1, len(model["hops"])) / 4))
     period = float(max(1, len(instance["dies"]) - 1) * (max_ratio + 0.5))
-    ratios: Dict[int, Dict[str, int]] = {}
+    ratios: Dict[int, Dict[str, Any]] = {}
     metrics: Dict[str, Any] = {}
     if model["hops"]:
         lines = ["EMUFLOW_TDM_RATIO_INPUT_V3"]
@@ -526,7 +530,7 @@ def optimize_eda2023_tdm(
         for hop in model["hops"]:
             lines.append(
                 f"HOP {hop['index']} {domain_by_link[hop['link']]} "
-                f"{hop['direction']} 0.5 1"
+                f"{hop['direction']} 1.5 1"
             )
         for index, path in enumerate(model["paths"]):
             lines.append(
@@ -553,6 +557,7 @@ def optimize_eda2023_tdm(
                 fields = line.split()
                 if fields[:1] == ["HOP"] and len(fields) == 5:
                     ratios[int(fields[1])] = {
+                        "continuous_ratio": float(fields[2]),
                         "ratio": int(fields[3]),
                         "lane": int(fields[4]),
                     }

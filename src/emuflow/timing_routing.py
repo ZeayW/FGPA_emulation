@@ -558,7 +558,7 @@ def _write_native_input(
     provider: str,
 ) -> None:
     normalization = model["normalization"]
-    lines = ["EMUFLOW_TLR_INPUT_V5"]
+    lines = ["EMUFLOW_TLR_INPUT_V6"]
     lines.append(
         "PARAM "
         f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
@@ -574,7 +574,8 @@ def _write_native_input(
         f"{normalization['negative_slack_scale_ns']:.17g} "
         f"{normalization['max_clock_period_ns']:.17g} "
         f"{int(constraints.get('tree_edge_sum_tdm', False))} "
-        f"{constraints.get('tdm_min_ratio', 1)}"
+        f"{constraints.get('tdm_min_ratio', 1)} "
+        f"{int(constraints.get('hard_sll_capacity', False))}"
     )
     for arc in model["arcs"]:
         lines.append(

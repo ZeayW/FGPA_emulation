@@ -67,6 +67,10 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             self.assertEqual(imported["routed_nets"], 3)
             constraints = read_json(normalized / "route_constraints.json")
             self.assertEqual(constraints["tdm_min_ratio"], 4)
+            self.assertEqual(constraints["lambda_load"], 68.0)
+            self.assertEqual(constraints["lambda_timing"], 0.0)
+            self.assertEqual(constraints["lambda_tdm"], 1.0)
+            self.assertTrue(constraints["hard_sll_capacity"])
             self.assertEqual(len(constraints["sll_links"]), 2)
 
             routed = root / "routed"
@@ -89,6 +93,12 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             )
             self.assertEqual(optimized["status"], "pass")
             self.assertEqual(optimized["max_routing_weight"], 6.5)
+            self.assertIn(
+                "global_minimax_improvements", optimized["native_metrics"]
+            )
+            self.assertIn(
+                "global_minimax_weight_exponent", optimized["native_metrics"]
+            )
             evaluation = evaluate_eda2023_solution(
                 normalized / "contest_instance.json",
                 routed / "routes.json",

@@ -163,6 +163,11 @@ def normalize_route_constraints(
         raise ValidationError(
             "route constraints.tree_edge_sum_tdm: expected a boolean"
         )
+    hard_sll_capacity = raw.get("hard_sll_capacity", False)
+    if not isinstance(hard_sll_capacity, bool):
+        raise ValidationError(
+            "route constraints.hard_sll_capacity: expected a boolean"
+        )
 
     return {
         "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
@@ -173,6 +178,7 @@ def normalize_route_constraints(
         "sll_links": sorted(set(raw_sll_links)),
         "shared_capacity_links": sorted(set(raw_shared_links)),
         "tree_edge_sum_tdm": tree_edge_sum_tdm,
+        "hard_sll_capacity": hard_sll_capacity,
         **optimization_values,
     }
 
