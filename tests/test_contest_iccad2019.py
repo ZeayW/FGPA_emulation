@@ -1,0 +1,154 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.contest_iccad2019 import (
+    evaluate_iccad2019_solution,
+    import_iccad2019_instance,
+    optimize_iccad2019_ratios,
+)
+from emuflow.errors import ValidationError
+from emuflow.io import read_json
+from emuflow.phase4 import run_phase4
+from tests.native_build import tdm_ratio_optimizer, tlr_router
+
+
+SAMPLE_INPUT = """\
+8 11 5 3
+0 1
+0 4
+0 6
+1 2
+1 5
+1 6
+2 7
+3 7
+4 5
+5 6
+6 7
+0 1
+1 5
+5 6
+0 4 5 6
+5 7
+0 1 2
+3
+4
+"""
+
+SAMPLE_OUTPUT = """\
+1
+0 2
+1
+4 2
+1
+9 2
+3
+1 2
+8 2
+9 4
+2
+9 4
+10 2
+"""
+
+
+class Iccad2019ContestAdapterTest(unittest.TestCase):
+    def _files(self, root: Path):
+        source = root / "SampleInput"
+        solution = root / "SampleOutput"
+        source.write_text(SAMPLE_INPUT, encoding="utf-8")
+        solution.write_text(SAMPLE_OUTPUT, encoding="utf-8")
+        normalized = root / "normalized"
+        report = import_iccad2019_instance(source, normalized, "sample")
+        return report, normalized, solution
+
+    def test_official_sample_imports_and_evaluates_exactly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report, normalized, solution = self._files(Path(temporary))
+            self.assertEqual(report["fpgas"], 8)
+            self.assertEqual(report["edges"], 11)
+            self.assertEqual(report["nets"], 5)
+            self.assertEqual(report["net_groups"], 3)
+            evaluation = evaluate_iccad2019_solution(
+                normalized / "contest_instance.json", solution
+            )
+            self.assertEqual(evaluation["status"], "pass")
+            self.assertEqual(
+                evaluation["metrics"]["maximum_total_tdm_ratio"], 8
+            )
+            self.assertEqual(
+                evaluation["metrics"]["maximum_edge_harmonic_use"], 1.0
+            )
+
+    def test_normalized_board_uses_bidirectional_shared_domains(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, normalized, _ = self._files(Path(temporary))
+            board = read_json(normalized / "boarddb.json")
+            constraints = read_json(normalized / "route_constraints.json")
+            self.assertEqual(board["platform"]["kind"], "virtual")
+            self.assertEqual(len(board["links"]), 11)
+            self.assertEqual(
+                constraints["shared_capacity_links"],
+                [link["id"] for link in board["links"]],
+            )
+            self.assertEqual(constraints["tdm_ratio_quantum"], 2)
+
+    def test_official_sample_runs_through_cpp_router_and_ratio_optimizer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized, _ = self._files(root)
+            routed = root / "routed"
+            phase4 = run_phase4(
+                assignment_path=normalized / "partition_assignment.json",
+                platform_path=normalized / "boarddb.json",
+                output_dir=routed,
+                constraints_path=normalized / "route_constraints.json",
+                timing_paths_path=normalized / "contest_timing_paths.json",
+                router=str(tlr_router()),
+            )
+            self.assertEqual(phase4["status"], "pass")
+            solution = root / "cpp-solution.out"
+            optimized = optimize_iccad2019_ratios(
+                normalized / "contest_instance.json",
+                routed / "routes.json",
+                solution,
+                optimizer=str(tdm_ratio_optimizer()),
+            )
+            self.assertEqual(optimized["status"], "pass")
+            self.assertEqual(optimized["maximum_total_tdm_ratio"], 8)
+            self.assertLessEqual(optimized["maximum_edge_harmonic_use"], 1.0)
+            checked = evaluate_iccad2019_solution(
+                normalized / "contest_instance.json", solution
+            )
+            self.assertEqual(checked["status"], "pass")
+
+    def test_checker_rejects_combined_bidirectional_overload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized, solution = self._files(root)
+            text = solution.read_text(encoding="utf-8")
+            # Edge 9 carries three nets in the official sample.  Changing both
+            # ratio-4 records to ratio 2 makes the exact use 3/2.
+            solution.write_text(text.replace("9 4", "9 2"), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "exceeds capacity"):
+                evaluate_iccad2019_solution(
+                    normalized / "contest_instance.json", solution
+                )
+
+    def test_checker_rejects_disconnected_multicast_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized, solution = self._files(root)
+            lines = solution.read_text(encoding="utf-8").splitlines()
+            # Net 3 needs F0 -> {F4,F5,F6}; removing two tree edges leaves sinks.
+            lines[6:10] = ["1", "1 2"]
+            solution.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "misses sinks"):
+                evaluate_iccad2019_solution(
+                    normalized / "contest_instance.json", solution
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -44,6 +44,8 @@ struct Input {
   int max_iterations = 500;
   int max_ratio = 1;
   int ratio_quantum = 8;
+  int min_ratio = 1;
+  bool harmonic_legalization = false;
   int post_refinement_iterations = 200;
   int exact_domain_limit = 2048;
   double convergence = 1.0e-8;
@@ -77,7 +79,8 @@ Input read_input(const std::string& path) {
   }
   std::string line;
   std::getline(stream, line);
-  if (line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
+  const bool input_v3 = line == "EMUFLOW_TDM_RATIO_INPUT_V3";
+  if (!input_v3 && line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
     throw std::runtime_error("invalid input header");
   }
   Input input;
@@ -89,11 +92,25 @@ Input read_input(const std::string& path) {
     std::string kind;
     record >> kind;
     if (kind == "PARAM") {
-      record >> input.max_iterations >> input.max_ratio >>
-          input.ratio_quantum >> input.post_refinement_iterations >>
-          input.exact_domain_limit >> input.convergence >>
-          input.positive_scale >>
-          input.negative_scale >> input.max_period;
+      if (input_v3) {
+        int harmonic_legalization = 0;
+        record >> input.max_iterations >> input.max_ratio >>
+            input.ratio_quantum >> input.min_ratio >>
+            harmonic_legalization >> input.post_refinement_iterations >>
+            input.exact_domain_limit >> input.convergence >>
+            input.positive_scale >> input.negative_scale >> input.max_period;
+        if (harmonic_legalization != 0 && harmonic_legalization != 1) {
+          throw std::runtime_error(
+              "harmonic legalization flag must be zero or one");
+        }
+        input.harmonic_legalization = harmonic_legalization != 0;
+      } else {
+        record >> input.max_iterations >> input.max_ratio >>
+            input.ratio_quantum >> input.post_refinement_iterations >>
+            input.exact_domain_limit >> input.convergence >>
+            input.positive_scale >>
+            input.negative_scale >> input.max_period;
+      }
     } else if (kind == "DOMAIN") {
       int index = -1;
       Domain domain;
@@ -131,11 +148,22 @@ Input read_input(const std::string& path) {
   }
   if (input.domains.empty() || input.hops.empty() || input.paths.empty() ||
       input.max_ratio <= 0 || input.ratio_quantum <= 0 ||
+      input.min_ratio <= 0 || input.min_ratio > input.max_ratio ||
       input.max_iterations <= 0 || input.post_refinement_iterations < 0 ||
       input.exact_domain_limit < 0 ||
       input.convergence <= 0.0 || input.positive_scale <= 0.0 ||
       input.negative_scale <= 0.0 || input.max_period <= 0.0) {
     throw std::runtime_error("incomplete ratio-optimization input");
+  }
+  if (input.max_ratio != 1 &&
+      input.max_ratio % input.ratio_quantum != 0) {
+    throw std::runtime_error(
+        "maximum ratio must be one or a ratio-quantum multiple");
+  }
+  if (input.min_ratio != 1 &&
+      input.min_ratio % input.ratio_quantum != 0) {
+    throw std::runtime_error(
+        "minimum ratio must be one or a ratio-quantum multiple");
   }
   for (const Domain& domain : input.domains) {
     if (domain.lanes <= 0) {
@@ -171,8 +199,8 @@ class Optimizer {
  public:
   explicit Optimizer(Input input)
       : input_(std::move(input)),
-        continuous_(input_.hops.size(), input_.max_ratio),
-        discrete_(input_.hops.size(), input_.max_ratio),
+        continuous_(input_.hops.size(), input_.min_ratio),
+        discrete_(input_.hops.size(), input_.min_ratio),
         lane_(input_.hops.size(), -1),
         path_mu_(input_.paths.size(), 0.0),
         edge_mu_(input_.hops.size(), 0.0),
@@ -322,7 +350,8 @@ class Optimizer {
     // mu >= 0 and sum(mu) = 1. It favors initially critical paths.
     std::vector<double> scores;
     scores.reserve(input_.paths.size());
-    const std::vector<double> unit_ratios(input_.hops.size(), 1.0);
+    const std::vector<double> unit_ratios(
+        input_.hops.size(), static_cast<double>(input_.min_ratio));
     double maximum = -std::numeric_limits<double>::infinity();
     for (const TimingPath& path : input_.paths) {
       const double normalized =
@@ -358,10 +387,10 @@ class Optimizer {
     for (int domain = 0; domain < static_cast<int>(input_.domains.size());
          ++domain) {
       const std::vector<int>& domain_hops = domain_hops_[domain];
-      if (static_cast<int>(domain_hops.size()) <=
-          input_.domains[domain].lanes) {
+      if (static_cast<double>(domain_hops.size()) / input_.min_ratio <=
+          input_.domains[domain].lanes + kEps) {
         for (int hop : domain_hops) {
-          continuous_[hop] = 1.0;
+          continuous_[hop] = input_.min_ratio;
         }
         continue;
       }
@@ -381,7 +410,8 @@ class Optimizer {
         double usage = 0.0;
         for (double root_weight : root_weights) {
           const double ratio = std::clamp(
-              root_lambda / root_weight, 1.0,
+              root_lambda / root_weight,
+              static_cast<double>(input_.min_ratio),
               static_cast<double>(input_.max_ratio));
           usage += 1.0 / ratio;
         }
@@ -400,9 +430,9 @@ class Optimizer {
         for (int index = 0; index < static_cast<int>(domain_hops.size());
              ++index) {
           const double ratio = root_lambda / root_weights[index];
-          if (ratio <= 1.0) {
+          if (ratio <= input_.min_ratio) {
             status[index] = -1;
-            fixed_usage += 1.0;
+            fixed_usage += 1.0 / input_.min_ratio;
           } else if (ratio >= input_.max_ratio) {
             status[index] = 1;
             fixed_usage += 1.0 / input_.max_ratio;
@@ -458,7 +488,8 @@ class Optimizer {
            ++index) {
         const int hop = domain_hops[index];
         continuous_[hop] = std::clamp(
-            root_lambda / root_weights[index], 1.0,
+            root_lambda / root_weights[index],
+            static_cast<double>(input_.min_ratio),
             static_cast<double>(input_.max_ratio));
       }
     }
@@ -488,12 +519,46 @@ class Optimizer {
   }
 
   std::vector<int> allowed_ratios() const {
-    std::vector<int> result = {1};
-    for (int ratio = input_.ratio_quantum; ratio <= input_.max_ratio;
+    std::vector<int> result;
+    if (input_.min_ratio == 1) {
+      result.push_back(1);
+    }
+    const int first = input_.min_ratio == 1
+        ? input_.ratio_quantum
+        : input_.min_ratio;
+    for (int ratio = first; ratio <= input_.max_ratio;
          ratio += input_.ratio_quantum) {
       result.push_back(ratio);
     }
     return result;
+  }
+
+  double harmonic_usage(int domain, int changed_hop = -1,
+                        int changed_ratio = -1) const {
+    double usage = 0.0;
+    for (int hop : domain_hops_[domain]) {
+      const int ratio = hop == changed_hop ? changed_ratio : discrete_[hop];
+      usage += 1.0 / static_cast<double>(ratio);
+    }
+    return usage;
+  }
+
+  void legalize_harmonic() {
+    for (int domain = 0; domain < static_cast<int>(input_.domains.size());
+         ++domain) {
+      for (int hop : domain_hops_[domain]) {
+        int ratio = static_cast<int>(std::ceil(
+            continuous_[hop] / input_.ratio_quantum - kEps)) *
+            input_.ratio_quantum;
+        ratio = std::clamp(ratio, input_.min_ratio, input_.max_ratio);
+        discrete_[hop] = ratio;
+        lane_[hop] = 0;
+      }
+      if (harmonic_usage(domain) > input_.domains[domain].lanes + 1.0e-9) {
+        throw std::runtime_error(
+            "harmonic discrete legalization exceeded domain capacity");
+      }
+    }
   }
 
   int groups_for_bound(const std::vector<int>& ordered,
@@ -694,6 +759,10 @@ class Optimizer {
   }
 
   void legalize() {
+    if (input_.harmonic_legalization) {
+      legalize_harmonic();
+      return;
+    }
     const std::vector<int> allowed = allowed_ratios();
     if (allowed.back() != input_.max_ratio) {
       throw std::runtime_error(
@@ -789,6 +858,49 @@ class Optimizer {
             return lhs < rhs;
           });
       bool improved = false;
+      if (input_.harmonic_legalization) {
+        for (int hop : critical_hops) {
+          const int candidate_ratio =
+              discrete_[hop] - input_.ratio_quantum;
+          if (candidate_ratio < input_.min_ratio ||
+              harmonic_usage(
+                  input_.hops[hop].domain, hop, candidate_ratio) >
+                  input_.domains[input_.hops[hop].domain].lanes + 1.0e-9) {
+            continue;
+          }
+          std::set<int> affected(
+              hop_paths_[hop].begin(), hop_paths_[hop].end());
+          std::map<int, double> candidate_metrics;
+          const int previous_ratio = discrete_[hop];
+          discrete_[hop] = candidate_ratio;
+          for (int path : affected) {
+            candidate_metrics[path] = std::get<2>(
+                path_metrics_discrete(input_.paths[path]));
+          }
+          discrete_[hop] = previous_ratio;
+          double candidate_worst = std::numeric_limits<double>::infinity();
+          for (int path = 0; path < static_cast<int>(metrics.size()); ++path) {
+            const auto found = candidate_metrics.find(path);
+            candidate_worst = std::min(
+                candidate_worst,
+                found == candidate_metrics.end()
+                    ? metrics[path]
+                    : found->second);
+          }
+          if (candidate_worst > current_worst + input_.convergence) {
+            discrete_[hop] = candidate_ratio;
+            for (const auto& [path, value] : candidate_metrics) {
+              metrics[path] = value;
+            }
+            ++post_refinement_swaps_;
+            improved = true;
+            break;
+          }
+        }
+      }
+      if (improved) {
+        continue;
+      }
       for (int lhs : critical_hops) {
         std::vector<int> candidates;
         for (int rhs = 0; rhs < static_cast<int>(input_.hops.size()); ++rhs) {

@@ -429,6 +429,37 @@ reachability, then reports the published runtime-adjusted score. The generated
 BoardDB remains explicitly `virtual`; it is a reproducible academic benchmark
 architecture, not a claim about package pins or a commercial board.
 
+ICCAD 2019 Problem B is supported in its official text format. The adapter
+preserves the undirected, bidirectionally shared edge capacity and the exact
+harmonic constraint `sum(1 / ratio) <= 1`:
+
+```bash
+emuflow contest iccad2019-import \
+  --input SampleInput --name iccad2019-sample --out build/iccad2019
+
+emuflow phase4 \
+  --assignment build/iccad2019/partition_assignment.json \
+  --platform build/iccad2019/boarddb.json \
+  --constraints build/iccad2019/route_constraints.json \
+  --timing-paths build/iccad2019/contest_timing_paths.json \
+  --out build/iccad2019/routed
+
+emuflow contest iccad2019-optimize \
+  --instance build/iccad2019/contest_instance.json \
+  --routes build/iccad2019/routed/routes.json \
+  --output build/iccad2019/SampleOutput
+
+emuflow contest iccad2019-evaluate \
+  --instance build/iccad2019/contest_instance.json \
+  --solution build/iccad2019/SampleOutput
+```
+
+The routing and ratio computation use the in-tree C++ kernels. Ratio
+assignment uses continuous Lagrangian/KKT optimization, exact upward-even
+harmonic legalization, and capacity-preserving critical-group refinement. An
+independent parser/checker recomputes multicast connectivity, shared capacity,
+and the official maximum net-group total-ratio objective.
+
 The 2024 logic-replication cases remain in their exact upstream RePart
 format. Large benchmark data is fetched on demand at a fixed commit and
 verified against the recorded Git blob ids, rather than copied into this

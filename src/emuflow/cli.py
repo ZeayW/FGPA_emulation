@@ -18,6 +18,11 @@ from .contest_eda2025 import (
     import_eda2025_instance,
 )
 from .contest_eda2024 import evaluate_eda2024_solution
+from .contest_iccad2019 import (
+    evaluate_iccad2019_solution,
+    import_iccad2019_instance,
+    optimize_iccad2019_ratios,
+)
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -144,6 +149,33 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime-seconds", type=float, default=0.0
     )
     eda2024_evaluate.add_argument("--output", "-o", type=Path)
+    iccad2019_import = contest_subparsers.add_parser(
+        "iccad2019-import",
+        help="normalize an official ICCAD 2019 Problem B instance",
+    )
+    iccad2019_import.add_argument("--input", type=Path, required=True)
+    iccad2019_import.add_argument("--name", required=True)
+    iccad2019_import.add_argument("--out", type=Path, required=True)
+    iccad2019_optimize = contest_subparsers.add_parser(
+        "iccad2019-optimize",
+        help="assign exact-harmonic TDM ratios to EmuFlow routes",
+    )
+    iccad2019_optimize.add_argument("--instance", type=Path, required=True)
+    iccad2019_optimize.add_argument("--routes", type=Path, required=True)
+    iccad2019_optimize.add_argument("--output", "-o", type=Path, required=True)
+    iccad2019_optimize.add_argument("--optimizer")
+    iccad2019_optimize.add_argument("--max-iterations", type=int, default=500)
+    iccad2019_optimize.add_argument(
+        "--post-refinement-iterations", type=int, default=500
+    )
+    iccad2019_evaluate = contest_subparsers.add_parser(
+        "iccad2019-evaluate",
+        help="independently check an official-format ICCAD 2019 solution",
+    )
+    iccad2019_evaluate.add_argument("--instance", type=Path, required=True)
+    iccad2019_evaluate.add_argument("--solution", type=Path, required=True)
+    iccad2019_evaluate.add_argument("--runtime-seconds", type=float)
+    iccad2019_evaluate.add_argument("--median-runtime-seconds", type=float)
     eda2025_import = contest_subparsers.add_parser(
         "eda2025-import",
         help="normalize a 2025 EDA Elite routing benchmark",
@@ -1449,6 +1481,28 @@ def _dispatch(args: argparse.Namespace) -> int:
                 solution_path=solution,
                 runtime_seconds=args.runtime_seconds,
                 output_path=args.output,
+            )
+        elif args.contest_command == "iccad2019-import":
+            report = import_iccad2019_instance(
+                input_path=args.input,
+                output_dir=args.out,
+                name=args.name,
+            )
+        elif args.contest_command == "iccad2019-optimize":
+            report = optimize_iccad2019_ratios(
+                instance_path=args.instance,
+                routes_path=args.routes,
+                output_path=args.output,
+                optimizer=args.optimizer,
+                max_iterations=args.max_iterations,
+                post_refinement_iterations=args.post_refinement_iterations,
+            )
+        elif args.contest_command == "iccad2019-evaluate":
+            report = evaluate_iccad2019_solution(
+                instance_path=args.instance,
+                solution_path=args.solution,
+                runtime_seconds=args.runtime_seconds,
+                median_runtime_seconds=args.median_runtime_seconds,
             )
         elif args.contest_command == "eda2025-import":
             report = import_eda2025_instance(

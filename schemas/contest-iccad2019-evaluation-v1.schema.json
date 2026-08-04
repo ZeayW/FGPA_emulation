@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ZeayW/FGPA_emulation/schemas/contest-iccad2019-evaluation-v1.schema.json",
+  "title": "EmuFlow ICCAD 2019 Problem B evaluation",
+  "type": "object",
+  "required": ["schema", "status", "instance", "metrics"],
+  "properties": {
+    "schema": {"const": "emuflow.contest-iccad2019-evaluation/v1"},
+    "status": {"const": "pass"},
+    "instance": {"type": "string", "minLength": 1},
+    "metrics": {
+      "type": "object",
+      "required": ["maximum_total_tdm_ratio", "maximum_edge_harmonic_use"],
+      "properties": {
+        "maximum_total_tdm_ratio": {"type": "integer", "minimum": 0},
+        "maximum_edge_harmonic_use": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

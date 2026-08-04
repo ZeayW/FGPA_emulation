@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ZeayW/FGPA_emulation/schemas/contest-iccad2019-instance-v1.schema.json",
+  "title": "EmuFlow normalized ICCAD 2019 Problem B instance",
+  "type": "object",
+  "required": [
+    "schema",
+    "name",
+    "source",
+    "fpga_count",
+    "edges",
+    "nets",
+    "net_groups"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.contest-iccad2019-instance/v1"},
+    "name": {"type": "string", "minLength": 1},
+    "source": {"type": "object"},
+    "fpga_count": {"type": "integer", "minimum": 1, "maximum": 500},
+    "edges": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "endpoints"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "endpoints": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": "integer", "minimum": 0}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "nets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "sinks"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "source": {"type": "integer", "minimum": 0},
+          "sinks": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "integer", "minimum": 0}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "net_groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "nets"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "nets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "integer", "minimum": 0}
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
