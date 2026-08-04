@@ -142,6 +142,11 @@ def normalize_route_constraints(
         raise ValidationError(
             "route constraints.tdm_ratio_quantum: expected a positive integer"
         )
+    tree_edge_sum_tdm = raw.get("tree_edge_sum_tdm", False)
+    if not isinstance(tree_edge_sum_tdm, bool):
+        raise ValidationError(
+            "route constraints.tree_edge_sum_tdm: expected a boolean"
+        )
 
     return {
         "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
@@ -151,6 +156,7 @@ def normalize_route_constraints(
         "link_delay_ns": dict(sorted(link_delays.items())),
         "sll_links": sorted(set(raw_sll_links)),
         "shared_capacity_links": sorted(set(raw_shared_links)),
+        "tree_edge_sum_tdm": tree_edge_sum_tdm,
         **optimization_values,
     }
 

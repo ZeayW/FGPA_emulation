@@ -557,7 +557,7 @@ def _write_native_input(
     provider: str,
 ) -> None:
     normalization = model["normalization"]
-    lines = ["EMUFLOW_TLR_INPUT_V3"]
+    lines = ["EMUFLOW_TLR_INPUT_V4"]
     lines.append(
         "PARAM "
         f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
@@ -571,7 +571,8 @@ def _write_native_input(
         f"{constraints['frame_slots']} "
         f"{normalization['positive_slack_scale_ns']:.17g} "
         f"{normalization['negative_slack_scale_ns']:.17g} "
-        f"{normalization['max_clock_period_ns']:.17g}"
+        f"{normalization['max_clock_period_ns']:.17g} "
+        f"{int(constraints.get('tree_edge_sum_tdm', False))}"
     )
     for arc in model["arcs"]:
         lines.append(
@@ -986,9 +987,32 @@ def reconstruct_system_route_timing(
                     )
                 )
                 queue.append(sink)
-        route_tdm_delay_by_net[route["net"]] = max(
-            delay_by_node[sink] for sink in route["sinks"]
-        )
+        if constraints.get("tree_edge_sum_tdm", False):
+            route_tdm_delay_by_net[route["net"]] = sum(
+                _link_delay_ns(platform, edge["link"], constraints)
+                + (
+                    0.0
+                    if edge["link"] in constraints["sll_links"]
+                    else (
+                        1000.0 / link_by_id[edge["link"]].fabric_clock_mhz
+                    )
+                    * (
+                        ratios[
+                            arcs[
+                                _arc_key(
+                                    edge["link"], edge["from"], edge["to"]
+                                )
+                            ]["capacity_key"]
+                        ]
+                        - 1
+                    )
+                )
+                for edge in route["tree_edges"]
+            )
+        else:
+            route_tdm_delay_by_net[route["net"]] = max(
+                delay_by_node[sink] for sink in route["sinks"]
+            )
 
     normalization = timing_paths["normalization"]
     path_records = []
@@ -1271,9 +1295,32 @@ def validate_native_system_routes(
                     * (ratios[capacity_key] - 1)
                 )
                 queue.append(sink)
-        route_tdm_delay_by_net[net] = max(
-            delay_by_node[sink] for sink in route["sinks"]
-        )
+        if constraints.get("tree_edge_sum_tdm", False):
+            route_tdm_delay_by_net[net] = sum(
+                _link_delay_ns(platform, edge["link"], constraints)
+                + (
+                    0.0
+                    if edge["link"] in constraints["sll_links"]
+                    else (
+                        1000.0 / link_by_id[edge["link"]].fabric_clock_mhz
+                    )
+                    * (
+                        ratios[
+                            arcs[
+                                _arc_key(
+                                    edge["link"], edge["from"], edge["to"]
+                                )
+                            ]["capacity_key"]
+                        ]
+                        - 1
+                    )
+                )
+                for edge in route["tree_edges"]
+            )
+        else:
+            route_tdm_delay_by_net[net] = max(
+                delay_by_node[sink] for sink in route["sinks"]
+            )
 
     timing = routes.get("timing")
     if not isinstance(timing, dict) or timing.get("schema") != STA_PATHS_SCHEMA:

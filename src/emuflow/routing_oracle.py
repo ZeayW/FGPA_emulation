@@ -249,9 +249,14 @@ def exact_route_tree_selection(
                 route_delay[demand["net"]] = max(
                     distances[sink] for sink in demand["sinks"]
                 )
-                route_tdm_delay[demand["net"]] = max(
-                    tdm_distances[sink] for sink in demand["sinks"]
-                )
+                if constraints.get("tree_edge_sum_tdm", False):
+                    route_tdm_delay[demand["net"]] = sum(
+                        tdm_edge_delay[edge] for edge in tree
+                    )
+                else:
+                    route_tdm_delay[demand["net"]] = max(
+                        tdm_distances[sink] for sink in demand["sinks"]
+                    )
 
             worst_route = float("inf")
             worst_tdm = float("inf")

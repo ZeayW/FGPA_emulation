@@ -96,6 +96,81 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_tree_edge_sum_tdm_counts_each_multicast_edge_once(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "tree_edge_sum",
+                ["a", "b", "c", "d"],
+                [
+                    _link("ab", "a", "b"),
+                    _link("bc", "b", "c"),
+                    _link("bd", "b", "d"),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform, [("multicast", "a", ["c", "d"])]
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "multicast_path",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 10.0,
+                            "slack_ns": 10.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["multicast"],
+                        }
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        base_value = {
+            "schema": "emuflow.system-route-constraints/v1",
+            "frame_slots": 8,
+            "reroute_rounds": 0,
+            "link_delay_ns": {"ab": 1.0, "bc": 1.0, "bd": 1.0},
+        }
+        longest_sink = route_system_native(
+            assignment,
+            platform,
+            normalize_route_constraints(base_value, platform),
+            timing,
+            executable=str(tlr_router()),
+            provider="timing-aware-route-tdm-cooptimized-v1",
+        )
+        edge_sum_value = {**base_value, "tree_edge_sum_tdm": True}
+        edge_sum = route_system_native(
+            assignment,
+            platform,
+            normalize_route_constraints(edge_sum_value, platform),
+            timing,
+            executable=str(tlr_router()),
+            provider="timing-aware-route-tdm-cooptimized-v1",
+        )
+
+        self.assertEqual(len(edge_sum["routes"][0]["tree_edges"]), 3)
+        self.assertAlmostEqual(
+            longest_sink["metrics"]["estimated_worst_tdm_slack_ns"],
+            8.0,
+        )
+        self.assertAlmostEqual(
+            edge_sum["metrics"]["estimated_worst_tdm_slack_ns"],
+            7.0,
+        )
+        checked = validate_native_system_routes(
+            assignment, platform, edge_sum, timing
+        )
+        self.assertEqual(checked["status"], "pass")
+        self.assertAlmostEqual(
+            checked["estimated_worst_tdm_slack_ns"], 7.0
+        )
+
     def test_router_preserves_member_specific_multicast_sink(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

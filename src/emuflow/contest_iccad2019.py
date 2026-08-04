@@ -244,6 +244,7 @@ def import_iccad2019_instance(
         "link_delay_ns": {link["id"]: 1.0 for link in links},
         "sll_links": [],
         "shared_capacity_links": [link["id"] for link in links],
+        "tree_edge_sum_tdm": True,
         "reroute_rounds": 8,
         "lambda_load": 2.0,
         "lambda_timing": 4.0,

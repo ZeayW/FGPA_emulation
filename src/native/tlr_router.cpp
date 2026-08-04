@@ -90,6 +90,7 @@ struct Input {
   double slack_positive_scale = 1.0;
   double slack_negative_scale = 1.0;
   double max_clock_period_ns = 1.0;
+  bool tree_edge_sum_tdm = false;
   std::vector<Arc> arcs;
   std::vector<Demand> demands;
   std::vector<TimingPath> paths;
@@ -117,7 +118,8 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
-  if (magic != "EMUFLOW_TLR_INPUT_V3") {
+  const bool input_v4 = magic == "EMUFLOW_TLR_INPUT_V4";
+  if (!input_v4 && magic != "EMUFLOW_TLR_INPUT_V3") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
 
@@ -138,6 +140,15 @@ Input read_input(const std::string& path) {
           model.lambda_tdm >> model.ratio_quantum >> model.frame_slots >>
           model.slack_positive_scale >> model.slack_negative_scale >>
           model.max_clock_period_ns;
+      if (input_v4) {
+        int tree_edge_sum_tdm = 0;
+        stream >> tree_edge_sum_tdm;
+        if (tree_edge_sum_tdm != 0 && tree_edge_sum_tdm != 1) {
+          throw std::runtime_error(
+              "tree-edge-sum TDM flag must be zero or one");
+        }
+        model.tree_edge_sum_tdm = tree_edge_sum_tdm != 0;
+      }
     } else if (kind == "ARC") {
       int index = -1;
       Arc arc;
@@ -878,6 +889,15 @@ class Router {
 
   double demand_tdm_delay(int demand_index) const {
     const Demand& demand = model_.demands[demand_index];
+    if (model_.tree_edge_sum_tdm) {
+      double result = 0.0;
+      for (int arc_index : routes_[demand_index].arcs) {
+        const Arc& arc = model_.arcs[arc_index];
+        result += arc.delay_ns + arc.beta_ns *
+            (estimated_tdm_ratio(arc.capacity_domain) - 1);
+      }
+      return result;
+    }
     std::vector<std::vector<int>> tree(model_.node_count);
     for (int arc_index : routes_[demand_index].arcs) {
       tree[model_.arcs[arc_index].from].push_back(arc_index);

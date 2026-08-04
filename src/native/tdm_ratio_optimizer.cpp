@@ -861,14 +861,43 @@ class Optimizer {
 
   void post_refine() {
     std::vector<double> metrics(input_.paths.size());
+    std::set<std::pair<double, int>> ordered_metrics;
     for (int path = 0; path < static_cast<int>(input_.paths.size()); ++path) {
       metrics[path] =
           std::get<2>(path_metrics_discrete(input_.paths[path]));
+      ordered_metrics.emplace(metrics[path], path);
     }
+    const auto candidate_worst = [&](const std::map<int, double>& candidate) {
+      double result = std::numeric_limits<double>::infinity();
+      auto unaffected = ordered_metrics.begin();
+      while (unaffected != ordered_metrics.end() &&
+             candidate.find(unaffected->second) != candidate.end()) {
+        ++unaffected;
+      }
+      if (unaffected != ordered_metrics.end()) {
+        result = unaffected->first;
+      }
+      for (const auto& [path, value] : candidate) {
+        (void) path;
+        result = std::min(result, value);
+      }
+      return result;
+    };
+    const auto accept_metrics = [&](const std::map<int, double>& candidate) {
+      for (const auto& [path, value] : candidate) {
+        const std::size_t erased =
+            ordered_metrics.erase({metrics[path], path});
+        if (erased != 1) {
+          throw std::runtime_error(
+              "post-refinement metric index lost path identity");
+        }
+        metrics[path] = value;
+        ordered_metrics.emplace(value, path);
+      }
+    };
     for (int iteration = 0;
          iteration < input_.post_refinement_iterations; ++iteration) {
-      const int critical_path = static_cast<int>(
-          std::min_element(metrics.begin(), metrics.end()) - metrics.begin());
+      const int critical_path = ordered_metrics.begin()->second;
       const double current_worst = metrics[critical_path];
       std::vector<int> critical_hops = input_.paths[critical_path].hops;
       std::stable_sort(
@@ -899,23 +928,13 @@ class Optimizer {
                 path_metrics_discrete(input_.paths[path]));
           }
           discrete_[hop] = previous_ratio;
-          double candidate_worst = std::numeric_limits<double>::infinity();
-          for (int path = 0; path < static_cast<int>(metrics.size()); ++path) {
-            const auto found = candidate_metrics.find(path);
-            candidate_worst = std::min(
-                candidate_worst,
-                found == candidate_metrics.end()
-                    ? metrics[path]
-                    : found->second);
-          }
-          if (candidate_worst > current_worst + input_.convergence ||
-              (std::abs(candidate_worst - current_worst) <=
+          const double worst = candidate_worst(candidate_metrics);
+          if (worst > current_worst + input_.convergence ||
+              (std::abs(worst - current_worst) <=
                    input_.convergence &&
                lexicographically_improves(candidate_metrics, metrics))) {
             discrete_[hop] = candidate_ratio;
-            for (const auto& [path, value] : candidate_metrics) {
-              metrics[path] = value;
-            }
+            accept_metrics(candidate_metrics);
             ++post_refinement_swaps_;
             improved = true;
             break;
@@ -951,24 +970,14 @@ class Optimizer {
             candidate_metrics[path] = std::get<2>(
                 path_metrics_swapped(input_.paths[path], lhs, rhs));
           }
-          double candidate_worst = std::numeric_limits<double>::infinity();
-          for (int path = 0; path < static_cast<int>(metrics.size()); ++path) {
-            const auto found = candidate_metrics.find(path);
-            candidate_worst = std::min(
-                candidate_worst,
-                found == candidate_metrics.end()
-                    ? metrics[path]
-                    : found->second);
-          }
-          if (candidate_worst > current_worst + input_.convergence ||
-              (std::abs(candidate_worst - current_worst) <=
+          const double worst = candidate_worst(candidate_metrics);
+          if (worst > current_worst + input_.convergence ||
+              (std::abs(worst - current_worst) <=
                    input_.convergence &&
                lexicographically_improves(candidate_metrics, metrics))) {
             std::swap(discrete_[lhs], discrete_[rhs]);
             std::swap(lane_[lhs], lane_[rhs]);
-            for (const auto& [path, value] : candidate_metrics) {
-              metrics[path] = value;
-            }
+            accept_metrics(candidate_metrics);
             ++post_refinement_swaps_;
             improved = true;
             break;

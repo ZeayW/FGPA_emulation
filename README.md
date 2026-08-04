@@ -459,6 +459,9 @@ assignment uses continuous Lagrangian/KKT optimization, exact upward-even
 harmonic legalization, and capacity-preserving lexicographic critical-group
 refinement. The lexicographic objective can cross tied worst-group plateaus
 without accepting any regression in the sorted group-delay vector. An
+ICCAD-specific routing mode evaluates each multicast net as the sum of its
+unique routed tree-edge ratios, matching the published group objective while
+leaving the normal source-to-sink timing model unchanged. An
 independent parser/checker recomputes multicast connectivity, shared capacity,
 and the official maximum net-group total-ratio objective.
 

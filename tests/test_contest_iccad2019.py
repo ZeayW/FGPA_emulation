@@ -93,6 +93,7 @@ class Iccad2019ContestAdapterTest(unittest.TestCase):
                 [link["id"] for link in board["links"]],
             )
             self.assertEqual(constraints["tdm_ratio_quantum"], 2)
+            self.assertTrue(constraints["tree_edge_sum_tdm"])
 
     def test_official_sample_runs_through_cpp_router_and_ratio_optimizer(self):
         with tempfile.TemporaryDirectory() as temporary:
