@@ -220,7 +220,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
-| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; a sparse-load dead zone and scaled utilization pressure balance scarce inter-die links without distorting small cases |
+| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
 | TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Range-normalized KKT updates avoid numeric collapse on large timing scales. Exact/scalable legalization uses every physical lane, then global path-budget and per-domain minimax refinement cross quantization plateaus; concrete scheduling and independent checks enforce direction, ratio, collision, barrier, and transport semantics |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
@@ -426,7 +426,10 @@ emuflow contest eda2023-evaluate \
 
 The in-tree C++ router operates on dies, enforces hard SLL capacity during
 search, and combines multicast delay with load pressure and the contest's
-exact Wire TDM-delay model. The C++ Lagrangian/KKT ratio optimizer uses
+exact Wire TDM-delay model. Its initial timing weight is normalized from the
+physical-FPGA graph diameter so capacity balance dominates short platforms
+while accumulated TDM delay dominates long multi-hop platforms. The C++
+Lagrangian/KKT ratio optimizer uses
 range-normalized path multipliers, lane-budget-aware grouping, and global plus
 per-domain minimax refinement to legalize signals into physical Wires with one
 direction and one ratio per Wire. The independent checker recomputes multicast

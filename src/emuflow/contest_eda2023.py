@@ -228,12 +228,49 @@ def _net_name(net_id: int) -> str:
     return f"net_{net_id:07d}"
 
 
+def _physical_fpga_diameter(instance: Mapping[str, Any]) -> int:
+    adjacency = {fpga: set() for fpga in instance["fpgas"]}
+    for link in instance["links"]:
+        if link["kind"] != "wire":
+            continue
+        left, right = (
+            instance["die_to_fpga"][die] for die in link["endpoints"]
+        )
+        if left != right:
+            adjacency[left].add(right)
+            adjacency[right].add(left)
+    diameter = 0
+    for source in adjacency:
+        distance = {source: 0}
+        pending = deque([source])
+        while pending:
+            current = pending.popleft()
+            for neighbor in adjacency[current]:
+                if neighbor not in distance:
+                    distance[neighbor] = distance[current] + 1
+                    pending.append(neighbor)
+        if len(distance) != len(adjacency):
+            raise ValidationError("EDA 2023 physical-FPGA graph is disconnected")
+        diameter = max(diameter, max(distance.values(), default=0))
+    return diameter
+
+
+def _timing_weight_for_fpga_diameter(diameter: int) -> float:
+    if diameter <= 1:
+        return 0.0
+    if diameter == 2:
+        return 0.5
+    return 4.0
+
+
 def import_eda2023_case(case_dir: Path, output_dir: Path, name: str) -> Dict[str, Any]:
     instance = parse_eda2023_case(case_dir, name)
     wire_links = [link for link in instance["links"] if link["kind"] == "wire"]
     sll_links = [link for link in instance["links"] if link["kind"] == "sll"]
     if not wire_links:
         raise ValidationError("EDA 2023 case has no inter-FPGA Wire")
+    fpga_diameter = _physical_fpga_diameter(instance)
+    instance["parameters"]["physical_fpga_diameter"] = fpga_diameter
     cross_nets = [
         net
         for net in instance["nets"]
@@ -336,11 +373,12 @@ def import_eda2023_case(case_dir: Path, output_dir: Path, name: str) -> Dict[str
         "shared_capacity_links": [link["id"] for link in instance["links"]],
         "tree_edge_sum_tdm": False,
         "reroute_rounds": 8,
-        # Contest paths have equal criticality.  Use the TLR load term as the
-        # die-cut penalty directly instead of multiplying every edge by the
-        # generic STA criticality factor.
+        # Contest paths start with equal criticality.  Normalize the timing
+        # term by the physical-FPGA hop diameter: short topologies prioritize
+        # capacity balance, while long topologies must price accumulated TDM
+        # delay strongly enough to avoid locally cheap but globally slow paths.
         "lambda_load": 68.0,
-        "lambda_timing": 0.0,
+        "lambda_timing": _timing_weight_for_fpga_diameter(fpga_diameter),
         "lambda_history": 1.0,
         "lambda_tdm": 1.0,
         "tdm_ratio_quantum": 4,
@@ -370,6 +408,7 @@ def import_eda2023_case(case_dir: Path, output_dir: Path, name: str) -> Dict[str
         "schema": EDA2023_INSTANCE_SCHEMA,
         "name": name,
         "physical_fpgas": len(instance["fpgas"]),
+        "physical_fpga_diameter": fpga_diameter,
         "dies": len(instance["dies"]),
         "sll_links": len(sll_links),
         "wire_links": len(wire_links),

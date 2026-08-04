@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.contest_eda2023 import (
+    _timing_weight_for_fpga_diameter,
     evaluate_eda2023_solution,
     import_eda2023_case,
     optimize_eda2023_tdm,
@@ -44,6 +45,12 @@ g0 l
 
 
 class Eda2023ContestAdapterTest(unittest.TestCase):
+    def test_timing_weight_scales_with_physical_fpga_diameter(self):
+        self.assertEqual(_timing_weight_for_fpga_diameter(1), 0.0)
+        self.assertEqual(_timing_weight_for_fpga_diameter(2), 0.5)
+        self.assertEqual(_timing_weight_for_fpga_diameter(3), 4.0)
+        self.assertEqual(_timing_weight_for_fpga_diameter(5), 4.0)
+
     def _import(self, root: Path):
         case = root / "case"
         case.mkdir()
@@ -63,9 +70,14 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             root = Path(temporary)
             imported, normalized = self._import(root)
             self.assertEqual(imported["physical_fpgas"], 2)
+            self.assertEqual(imported["physical_fpga_diameter"], 1)
             self.assertEqual(imported["dies"], 4)
             self.assertEqual(imported["routed_nets"], 3)
             constraints = read_json(normalized / "route_constraints.json")
+            instance = read_json(normalized / "contest_instance.json")
+            self.assertEqual(
+                instance["parameters"]["physical_fpga_diameter"], 1
+            )
             self.assertEqual(constraints["tdm_min_ratio"], 4)
             self.assertEqual(constraints["lambda_load"], 68.0)
             self.assertEqual(constraints["lambda_timing"], 0.0)
