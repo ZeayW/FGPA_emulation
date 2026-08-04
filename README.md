@@ -85,6 +85,10 @@
 >   [NVDLA](https://github.com/nvdla/hw)
 > - Public multi-FPGA benchmark specifications:
 >   [ICCAD 2019 system-level FPGA routing with TDM](https://www.iccad-contest.org/2019/problems.html),
+>   [2023 EDA Elite FPGA die-level system routing](https://eda.icisc.cn/file/cacheFile/4f769715b1704172935438d418702f80.pdf),
+>   with public benchmark data mirrored at a fixed revision in
+>   [FPGA-Die-Routing](https://github.com/heyiWF/FPGA-Die-Routing/tree/1f05cfd366b9565eb604380f5feed38b25baaff7/TestCase20231027)
+>   (benchmark files only; participant source is not incorporated),
 >   [2024 EDA Elite hypergraph partitioning with logic replication](https://edaoss.icisc.cn/file/cacheFile/2024/8/1/8e6b33de567b411d8b159b961ef117aa.pdf),
 >   its fixed-commit public cases in
 >   [RePart](https://github.com/Welement-zyf/RePart/tree/211a9d8fd526576387cad7ac6dd3531354aeb31c/testcase),
@@ -389,7 +393,45 @@ partition artifact and is checked independently.
 ### Public contest compatibility
 
 EmuFlow keeps a contest's exact abstract machine model separate from BoardDB
-instead of presenting it as a physical board. The 2025 EDA Elite adapter reads
+instead of presenting it as a physical board. The 2023 EDA Elite adapter reads
+the official `design.fpga.die`, `design.die.position`,
+`design.die.network`, and `design.net` files, preserving the physical-FPGA to
+die hierarchy, absolute SLL capacity, per-Wire direction, and ratio-4 TDM:
+
+```bash
+python3 scripts/fetch_eda2023_benchmarks.py \
+  --case case1 --out build/benchmarks/eda2023/case1
+
+emuflow contest eda2023-import \
+  --case-dir build/benchmarks/eda2023/case1 \
+  --name eda2023-case1 --out build/eda2023
+
+emuflow phase4 \
+  --assignment build/eda2023/partition_assignment.json \
+  --platform build/eda2023/boarddb.json \
+  --constraints build/eda2023/route_constraints.json \
+  --timing-paths build/eda2023/contest_timing_paths.json \
+  --out build/eda2023/routed
+
+emuflow contest eda2023-optimize \
+  --instance build/eda2023/contest_instance.json \
+  --routes build/eda2023/routed/routes.json \
+  --out build/eda2023/solution
+
+emuflow contest eda2023-evaluate \
+  --instance build/eda2023/contest_instance.json \
+  --routes build/eda2023/routed/routes.json \
+  --tdm-plan build/eda2023/solution/tdm_plan.json
+```
+
+The in-tree C++ router operates on dies, while the C++ Lagrangian/KKT ratio
+optimizer legalizes signals into physical Wires with one direction and one
+ratio per Wire. The independent checker recomputes multicast paths, SLL
+capacity, Wire direction/ratio legality, and the published maximum
+`RoutingWeight`; the optimizer also writes official `design.route.out` and
+`design.tdm.out` files.
+
+The 2025 EDA Elite adapter reads
 the published `design.info`, `design.net`, `design.topo`, and
 `design.fpga.out` formats and emits both a normalized contest instance and the
 BoardDB/partition/route-constraint artifacts consumed by the C++ system

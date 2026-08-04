@@ -18,6 +18,7 @@ from .routing import (
     _arc_key,
     build_directed_graph,
     demands_from_assignment,
+    estimate_tdm_ratio,
     normalize_route_constraints,
     validate_system_routes,
 )
@@ -557,7 +558,7 @@ def _write_native_input(
     provider: str,
 ) -> None:
     normalization = model["normalization"]
-    lines = ["EMUFLOW_TLR_INPUT_V4"]
+    lines = ["EMUFLOW_TLR_INPUT_V5"]
     lines.append(
         "PARAM "
         f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
@@ -572,7 +573,8 @@ def _write_native_input(
         f"{normalization['positive_slack_scale_ns']:.17g} "
         f"{normalization['negative_slack_scale_ns']:.17g} "
         f"{normalization['max_clock_period_ns']:.17g} "
-        f"{int(constraints.get('tree_edge_sum_tdm', False))}"
+        f"{int(constraints.get('tree_edge_sum_tdm', False))} "
+        f"{constraints.get('tdm_min_ratio', 1)}"
     )
     for arc in model["arcs"]:
         lines.append(
@@ -944,19 +946,17 @@ def reconstruct_system_route_timing(
         )
 
     ratios = {}
-    quantum = constraints["tdm_ratio_quantum"]
     for key, capacity in capacities.items():
         lanes = link_by_id[
             capacity["link"]
         ].data_lanes_per_direction
         signals = capacity_usage[key]
-        if capacity["link"] in constraints["sll_links"] or signals <= lanes:
-            ratio = 1
-        else:
-            raw = (signals + lanes - 1) // lanes
-            ratio = ((raw + quantum - 1) // quantum) * quantum
-            ratio = min(constraints["frame_slots"], ratio)
-        ratios[key] = ratio
+        ratios[key] = estimate_tdm_ratio(
+            signals,
+            lanes,
+            constraints,
+            is_sll=capacity["link"] in constraints["sll_links"],
+        )
 
     route_tdm_delay_by_net = {}
     for route in routes["routes"]:
@@ -1263,17 +1263,15 @@ def validate_native_system_routes(
             capacity_usage[arcs[key]["capacity_key"]] += width
     link_by_id = {link.id: link for link in platform.links}
     ratios = {}
-    quantum = constraints["tdm_ratio_quantum"]
     for key, capacity in capacities.items():
         lanes = link_by_id[capacity["link"]].data_lanes_per_direction
         signals = capacity_usage[key]
-        if signals <= lanes:
-            ratio = 1
-        else:
-            raw = (signals + lanes - 1) // lanes
-            ratio = ((raw + quantum - 1) // quantum) * quantum
-            ratio = min(constraints["frame_slots"], ratio)
-        ratios[key] = ratio
+        ratios[key] = estimate_tdm_ratio(
+            signals,
+            lanes,
+            constraints,
+            is_sll=capacity["link"] in constraints["sll_links"],
+        )
     route_tdm_delay_by_net = {}
     for net, route in route_by_net.items():
         graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)

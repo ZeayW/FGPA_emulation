@@ -86,6 +86,7 @@ struct Input {
   double lambda_history = 1.0;
   double lambda_tdm = 0.1;
   int ratio_quantum = 8;
+  int min_ratio = 1;
   int frame_slots = 1;
   double slack_positive_scale = 1.0;
   double slack_negative_scale = 1.0;
@@ -118,8 +119,9 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
+  const bool input_v5 = magic == "EMUFLOW_TLR_INPUT_V5";
   const bool input_v4 = magic == "EMUFLOW_TLR_INPUT_V4";
-  if (!input_v4 && magic != "EMUFLOW_TLR_INPUT_V3") {
+  if (!input_v5 && !input_v4 && magic != "EMUFLOW_TLR_INPUT_V3") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
 
@@ -140,7 +142,7 @@ Input read_input(const std::string& path) {
           model.lambda_tdm >> model.ratio_quantum >> model.frame_slots >>
           model.slack_positive_scale >> model.slack_negative_scale >>
           model.max_clock_period_ns;
-      if (input_v4) {
+      if (input_v4 || input_v5) {
         int tree_edge_sum_tdm = 0;
         stream >> tree_edge_sum_tdm;
         if (tree_edge_sum_tdm != 0 && tree_edge_sum_tdm != 1) {
@@ -148,6 +150,9 @@ Input read_input(const std::string& path) {
               "tree-edge-sum TDM flag must be zero or one");
         }
         model.tree_edge_sum_tdm = tree_edge_sum_tdm != 0;
+      }
+      if (input_v5) {
+        stream >> model.min_ratio;
       }
     } else if (kind == "ARC") {
       int index = -1;
@@ -214,6 +219,10 @@ class Router {
           arc.to < 0 || arc.to >= model_.node_count ||
           arc.capacity <= 0 || arc.lanes <= 0 || arc.delay_ns < 0.0 ||
           arc.beta_ns <= 0.0 || model_.ratio_quantum <= 0 ||
+          model_.min_ratio <= 0 ||
+          (model_.min_ratio != 1 &&
+           model_.min_ratio % model_.ratio_quantum != 0) ||
+          model_.min_ratio > model_.frame_slots ||
           model_.frame_slots <= 0 || model_.lambda_tdm < 0.0) {
         throw std::runtime_error("invalid arc");
       }
@@ -474,11 +483,16 @@ class Router {
       }
     }
     const int signals = usage_[domain] + additional_width;
-    if (signals <= lanes_for_domain(domain)) {
+    if (signals <= 0) {
       return 1;
     }
-    const int raw =
-        (signals + lanes_for_domain(domain) - 1) / lanes_for_domain(domain);
+    const int raw = std::max(
+        model_.min_ratio,
+        (signals + lanes_for_domain(domain) - 1) /
+            lanes_for_domain(domain));
+    if (raw == 1) {
+      return 1;
+    }
     const int quantized =
         ((raw + model_.ratio_quantum - 1) / model_.ratio_quantum) *
         model_.ratio_quantum;

@@ -20,6 +20,7 @@ from .routing import (
     ArcKey,
     build_directed_graph,
     demands_from_assignment,
+    estimate_tdm_ratio,
     normalize_route_constraints,
 )
 
@@ -213,19 +214,12 @@ def exact_route_tree_selection(
             for key, capacity in capacities.items():
                 link = link_by_id[capacity["link"]]
                 signals = usage[key]
-                if capacity["link"] in sll_links or (
-                    signals <= link.data_lanes_per_direction
-                ):
-                    ratios[key] = 1
-                else:
-                    raw = math.ceil(
-                        signals / link.data_lanes_per_direction
-                    )
-                    quantum = constraints["tdm_ratio_quantum"]
-                    ratios[key] = min(
-                        constraints["frame_slots"],
-                        math.ceil(raw / quantum) * quantum,
-                    )
+                ratios[key] = estimate_tdm_ratio(
+                    signals,
+                    link.data_lanes_per_direction,
+                    constraints,
+                    is_sll=capacity["link"] in sll_links,
+                )
 
             route_delay = {}
             route_tdm_delay = {}

@@ -18,6 +18,11 @@ from .contest_eda2025 import (
     import_eda2025_instance,
 )
 from .contest_eda2024 import evaluate_eda2024_solution
+from .contest_eda2023 import (
+    evaluate_eda2023_solution,
+    import_eda2023_case,
+    optimize_eda2023_tdm,
+)
 from .contest_iccad2019 import (
     evaluate_iccad2019_solution,
     import_iccad2019_instance,
@@ -149,6 +154,34 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime-seconds", type=float, default=0.0
     )
     eda2024_evaluate.add_argument("--output", "-o", type=Path)
+    eda2023_import = contest_subparsers.add_parser(
+        "eda2023-import",
+        help="normalize an official 2023 die-level routing case",
+    )
+    eda2023_import.add_argument("--case-dir", type=Path, required=True)
+    eda2023_import.add_argument("--name", required=True)
+    eda2023_import.add_argument("--out", type=Path, required=True)
+    eda2023_optimize = contest_subparsers.add_parser(
+        "eda2023-optimize",
+        help="assign legal per-Wire TDM ratios to routed die trees",
+    )
+    eda2023_optimize.add_argument("--instance", type=Path, required=True)
+    eda2023_optimize.add_argument("--routes", type=Path, required=True)
+    eda2023_optimize.add_argument("--out", type=Path, required=True)
+    eda2023_optimize.add_argument("--optimizer")
+    eda2023_optimize.add_argument("--max-iterations", type=int, default=500)
+    eda2023_optimize.add_argument(
+        "--post-refinement-iterations", type=int, default=2000
+    )
+    eda2023_optimize.add_argument("--exact-domain-limit", type=int, default=2048)
+    eda2023_evaluate = contest_subparsers.add_parser(
+        "eda2023-evaluate",
+        help="independently check routed trees and a per-Wire TDM plan",
+    )
+    eda2023_evaluate.add_argument("--instance", type=Path, required=True)
+    eda2023_evaluate.add_argument("--routes", type=Path, required=True)
+    eda2023_evaluate.add_argument("--tdm-plan", type=Path, required=True)
+    eda2023_evaluate.add_argument("--output", "-o", type=Path)
     iccad2019_import = contest_subparsers.add_parser(
         "iccad2019-import",
         help="normalize an official ICCAD 2019 Problem B instance",
@@ -1471,7 +1504,31 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "contest":
-        if args.contest_command == "eda2024-evaluate":
+        if args.contest_command == "eda2023-import":
+            report = import_eda2023_case(
+                case_dir=args.case_dir,
+                output_dir=args.out,
+                name=args.name,
+            )
+        elif args.contest_command == "eda2023-optimize":
+            report = optimize_eda2023_tdm(
+                instance_path=args.instance,
+                routes_path=args.routes,
+                output_dir=args.out,
+                optimizer=args.optimizer,
+                max_iterations=args.max_iterations,
+                post_refinement_iterations=args.post_refinement_iterations,
+                exact_domain_limit=args.exact_domain_limit,
+            )
+        elif args.contest_command == "eda2023-evaluate":
+            report = evaluate_eda2023_solution(
+                instance_path=args.instance,
+                routes_path=args.routes,
+                tdm_plan_path=args.tdm_plan,
+            )
+            if args.output is not None:
+                write_json(args.output, report)
+        elif args.contest_command == "eda2024-evaluate":
             solution = args.solution or args.case_dir / "design.fpga.out"
             report = evaluate_eda2024_solution(
                 info_path=args.case_dir / "design.info",
@@ -1518,7 +1575,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 max_ratio=args.max_ratio,
                 topology_change_fraction=args.topology_change_fraction,
             )
-        else:
+        elif args.contest_command == "eda2025-evaluate":
             report = evaluate_eda2025_routes(
                 instance_path=args.instance,
                 routes_path=args.routes,
@@ -1526,6 +1583,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 new_topology_path=args.new_topology,
                 runtime_seconds=args.runtime_seconds,
             )
+        else:
+            raise AssertionError(f"unhandled contest command {args.contest_command!r}")
         _print_json(report)
         return 0
 

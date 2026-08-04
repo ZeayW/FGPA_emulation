@@ -125,6 +125,7 @@ def normalize_route_constraints(
         ("lambda_history", 1.0, False),
         ("lambda_tdm", 0.1, False),
         ("tdm_ratio_quantum", 8, True),
+        ("tdm_min_ratio", 1, True),
     ):
         value = raw.get(key, default)
         valid = (
@@ -141,6 +142,21 @@ def normalize_route_constraints(
     if optimization_values["tdm_ratio_quantum"] <= 0:
         raise ValidationError(
             "route constraints.tdm_ratio_quantum: expected a positive integer"
+        )
+    minimum_ratio = optimization_values["tdm_min_ratio"]
+    ratio_quantum = optimization_values["tdm_ratio_quantum"]
+    if minimum_ratio <= 0:
+        raise ValidationError(
+            "route constraints.tdm_min_ratio: expected a positive integer"
+        )
+    if minimum_ratio != 1 and minimum_ratio % ratio_quantum:
+        raise ValidationError(
+            "route constraints.tdm_min_ratio: expected 1 or a multiple of "
+            "tdm_ratio_quantum"
+        )
+    if minimum_ratio > raw_frame_slots:
+        raise ValidationError(
+            "route constraints.tdm_min_ratio: cannot exceed frame_slots"
         )
     tree_edge_sum_tdm = raw.get("tree_edge_sum_tdm", False)
     if not isinstance(tree_edge_sum_tdm, bool):
@@ -178,6 +194,27 @@ def load_route_constraints(
 
 def _arc_key(link_id: str, source: str, sink: str) -> ArcKey:
     return (link_id, source, sink)
+
+
+def estimate_tdm_ratio(
+    signals: int,
+    lanes: int,
+    constraints: Mapping[str, Any],
+    *,
+    is_sll: bool = False,
+) -> int:
+    """Return the route/TDM proxy ratio for one capacity domain."""
+    if is_sll or signals <= 0:
+        return 1
+    minimum = int(constraints.get("tdm_min_ratio", 1))
+    raw = max(minimum, (signals + lanes - 1) // lanes)
+    if raw == 1:
+        return 1
+    quantum = int(constraints["tdm_ratio_quantum"])
+    return min(
+        int(constraints["frame_slots"]),
+        ((raw + quantum - 1) // quantum) * quantum,
+    )
 
 
 def _capacity_key(
