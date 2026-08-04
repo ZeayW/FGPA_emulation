@@ -83,6 +83,10 @@
 >   [VTR/Koios](https://github.com/verilog-to-routing/vtr-verilog-to-routing),
 >   [VeeR EH1](https://github.com/chipsalliance/Cores-VeeR-EH1), and
 >   [NVDLA](https://github.com/nvdla/hw)
+> - Public multi-FPGA benchmark specifications:
+>   [ICCAD 2019 system-level FPGA routing with TDM](https://www.iccad-contest.org/2019/problems.html)
+>   and the
+>   [2025 EDA Elite reconfigurable multi-FPGA routing problem](https://edaosss.icisc.cn/file/cacheFile/2025/8/11/1e213a00cbd94e2b91e997740753cb60.pdf)
 > - CI:
 >   [actions/checkout](https://github.com/actions/checkout) and
 >   [actions/setup-python](https://github.com/actions/setup-python)
@@ -378,6 +382,49 @@ cells/LUT/FF/BRAM/DSP balance bounds by default; pass
 For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.
+
+### Public contest compatibility
+
+EmuFlow keeps a contest's exact abstract machine model separate from BoardDB
+instead of presenting it as a physical board. The 2025 EDA Elite adapter reads
+the published `design.info`, `design.net`, `design.topo`, and
+`design.fpga.out` formats and emits both a normalized contest instance and the
+BoardDB/partition/route-constraint artifacts consumed by the C++ system
+router:
+
+```bash
+emuflow contest eda2025-import \
+  --info design.info \
+  --net design.net \
+  --topology design.topo \
+  --assignment design.fpga.out \
+  --name public-case \
+  --out build/public-case
+
+emuflow phase4 \
+  --assignment build/public-case/partition_assignment.json \
+  --platform build/public-case/boarddb.json \
+  --constraints build/public-case/route_constraints.json \
+  --timing-paths build/public-case/contest_timing_paths.json \
+  --out build/public-case/phase4
+
+emuflow contest eda2025-evaluate \
+  --instance build/public-case/contest_instance.json \
+  --routes build/public-case/phase4/routes.json \
+  --runtime-seconds 0 \
+  --output build/public-case/contest_evaluation.json
+```
+
+The generated contest timing paths make the C++ route/TDM-co-optimized
+provider minimize the contest's maximum source-to-sink delay rather than a
+generic untimed route metric. The independent evaluator recomputes unique
+routed-net load per FPGA pair,
+quantizes the TDM ratio to eight, applies the published
+`beta + alpha * ratio` hop delay, checks `Rmax`, per-FPGA external-channel
+limits, the 30% topology-change bound, exact cut-net coverage, and multicast
+reachability, then reports the published runtime-adjusted score. The generated
+BoardDB remains explicitly `virtual`; it is a reproducible academic benchmark
+architecture, not a claim about package pins or a commercial board.
 
 Add `--physical` to select the default open physical provider and feed routed
 timing back into Phase 7C:

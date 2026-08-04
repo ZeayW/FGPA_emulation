@@ -102,6 +102,21 @@ def normalize_route_constraints(
             f"route constraints.sll_links: unknown links {unknown_sll}"
         )
 
+    raw_shared_links = raw.get("shared_capacity_links", [])
+    if not isinstance(raw_shared_links, list) or not all(
+        isinstance(link_id, str) for link_id in raw_shared_links
+    ):
+        raise ValidationError(
+            "route constraints.shared_capacity_links: expected an array "
+            "of strings"
+        )
+    unknown_shared = sorted(set(raw_shared_links) - link_ids)
+    if unknown_shared:
+        raise ValidationError(
+            "route constraints.shared_capacity_links: unknown links "
+            f"{unknown_shared}"
+        )
+
     optimization_values = {}
     for key, default, integer in (
         ("reroute_rounds", 8, True),
@@ -135,6 +150,7 @@ def normalize_route_constraints(
         "unavailable_links": sorted(set(raw_unavailable)),
         "link_delay_ns": dict(sorted(link_delays.items())),
         "sll_links": sorted(set(raw_sll_links)),
+        "shared_capacity_links": sorted(set(raw_shared_links)),
         **optimization_values,
     }
 
@@ -158,8 +174,13 @@ def _arc_key(link_id: str, source: str, sink: str) -> ArcKey:
     return (link_id, source, sink)
 
 
-def _capacity_key(link: BoardLink, source: str, sink: str) -> str:
-    if link.direction == "half_duplex":
+def _capacity_key(
+    link: BoardLink,
+    source: str,
+    sink: str,
+    shared_capacity_links: Set[str],
+) -> str:
+    if link.direction == "half_duplex" or link.id in shared_capacity_links:
         return f"{link.id}:shared"
     return f"{link.id}:{source}->{sink}"
 
@@ -173,6 +194,7 @@ def build_directed_graph(
     Dict[str, Dict[str, Any]],
 ]:
     unavailable = set(constraints["unavailable_links"])
+    shared_capacity_links = set(constraints.get("shared_capacity_links", []))
     adjacency: Dict[str, List[Dict[str, Any]]] = {
         fpga.id: [] for fpga in platform.fpgas
     }
@@ -187,7 +209,9 @@ def build_directed_graph(
         if link.direction in {"full_duplex", "half_duplex"}:
             directions.append((right, left))
         for source, sink in directions:
-            capacity_key = _capacity_key(link, source, sink)
+            capacity_key = _capacity_key(
+                link, source, sink, shared_capacity_links
+            )
             arc = {
                 "link": link.id,
                 "from": source,
@@ -203,7 +227,10 @@ def build_directed_graph(
                     "link": link.id,
                     "direction": (
                         "shared"
-                        if link.direction == "half_duplex"
+                        if (
+                            link.direction == "half_duplex"
+                            or link.id in shared_capacity_links
+                        )
                         else f"{source}->{sink}"
                     ),
                     "capacity_bits": (

@@ -13,6 +13,10 @@ from .cross_stage import (
     validate_cross_stage_candidate,
     validate_cross_stage_report,
 )
+from .contest_eda2025 import (
+    evaluate_eda2025_routes,
+    import_eda2025_instance,
+)
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -122,6 +126,39 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_validate.add_argument("path", type=Path)
     platform_validate.add_argument("--normalized-out", type=Path)
+
+    contest_parser = subparsers.add_parser(
+        "contest", help="public multi-FPGA contest format adapters"
+    )
+    contest_subparsers = contest_parser.add_subparsers(
+        dest="contest_command", required=True
+    )
+    eda2025_import = contest_subparsers.add_parser(
+        "eda2025-import",
+        help="normalize a 2025 EDA Elite routing benchmark",
+    )
+    eda2025_import.add_argument("--info", type=Path, required=True)
+    eda2025_import.add_argument("--net", type=Path, required=True)
+    eda2025_import.add_argument("--topology", type=Path, required=True)
+    eda2025_import.add_argument("--assignment", type=Path, required=True)
+    eda2025_import.add_argument("--name", required=True)
+    eda2025_import.add_argument("--out", type=Path, required=True)
+    eda2025_import.add_argument("--alpha-ns", type=float, default=0.7)
+    eda2025_import.add_argument("--beta-ns", type=float, default=30.0)
+    eda2025_import.add_argument("--ratio-quantum", type=int, default=8)
+    eda2025_import.add_argument("--max-ratio", type=int, default=32)
+    eda2025_import.add_argument(
+        "--topology-change-fraction", type=float, default=0.3
+    )
+    eda2025_evaluate = contest_subparsers.add_parser(
+        "eda2025-evaluate",
+        help="independently score EmuFlow routes with the 2025 model",
+    )
+    eda2025_evaluate.add_argument("--instance", type=Path, required=True)
+    eda2025_evaluate.add_argument("--routes", type=Path, required=True)
+    eda2025_evaluate.add_argument("--new-topology", type=Path)
+    eda2025_evaluate.add_argument("--runtime-seconds", type=float, default=0.0)
+    eda2025_evaluate.add_argument("--output", "-o", type=Path)
 
     ir_parser = subparsers.add_parser("ir", help="EmuIR operations")
     ir_subparsers = ir_parser.add_subparsers(dest="ir_command", required=True)
@@ -1388,6 +1425,32 @@ def _dispatch(args: argparse.Namespace) -> int:
         if args.normalized_out is not None:
             write_json(args.normalized_out, platform.to_dict())
         _print_json(platform.summary())
+        return 0
+
+    if args.command == "contest":
+        if args.contest_command == "eda2025-import":
+            report = import_eda2025_instance(
+                info_path=args.info,
+                net_path=args.net,
+                topology_path=args.topology,
+                assignment_path=args.assignment,
+                output_dir=args.out,
+                name=args.name,
+                alpha_ns=args.alpha_ns,
+                beta_ns=args.beta_ns,
+                ratio_quantum=args.ratio_quantum,
+                max_ratio=args.max_ratio,
+                topology_change_fraction=args.topology_change_fraction,
+            )
+        else:
+            report = evaluate_eda2025_routes(
+                instance_path=args.instance,
+                routes_path=args.routes,
+                output_path=args.output,
+                new_topology_path=args.new_topology,
+                runtime_seconds=args.runtime_seconds,
+            )
+        _print_json(report)
         return 0
 
     if args.command == "ir":

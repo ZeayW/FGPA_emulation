@@ -155,6 +155,9 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/physical_backend.py",
     "src/emuflow/vivado_backend.py",
     "src/emuflow/vivado_netlist.py",
+    "src/emuflow/contest_eda2025.py",
+    "schemas/contest-eda2025-instance-v1.schema.json",
+    "schemas/contest-eda2025-evaluation-v1.schema.json",
     "schemas/physical-backend-v1.schema.json",
     "schemas/physical-partition-result-v1.schema.json",
 )

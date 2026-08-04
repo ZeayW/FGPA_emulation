@@ -171,6 +171,10 @@ def normalize_sta_paths(
         (path["slack_ns"] for path in paths if path["slack_ns"] >= 0.0),
         default=1.0,
     )
+    # A path exactly on its timing boundary is valid.  Keep its normalized
+    # slack at zero without dividing by an all-zero positive scale.
+    if positive_scale == 0.0:
+        positive_scale = 1.0
     negative_scale = abs(
         min(
             (path["slack_ns"] for path in paths if path["slack_ns"] < 0.0),
