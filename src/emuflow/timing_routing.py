@@ -420,20 +420,25 @@ def _static_predicted_delay(
     adjacency: Mapping[str, Sequence[Mapping[str, Any]]],
     platform: Platform,
     constraints: Mapping[str, Any],
+    distance_cache: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> float:
-    distance = {source: 0.0}
-    queue = [(0.0, source)]
-    while queue:
-        current, node = heapq.heappop(queue)
-        if current != distance.get(node):
-            continue
-        for arc in adjacency.get(node, []):
-            candidate = current + _link_delay_ns(
-                platform, arc["link"], constraints
-            )
-            if candidate < distance.get(arc["to"], float("inf")):
-                distance[arc["to"]] = candidate
-                heapq.heappush(queue, (candidate, arc["to"]))
+    distance = None if distance_cache is None else distance_cache.get(source)
+    if distance is None:
+        distance = {source: 0.0}
+        queue = [(0.0, source)]
+        while queue:
+            current, node = heapq.heappop(queue)
+            if current != distance.get(node):
+                continue
+            for arc in adjacency.get(node, []):
+                candidate = current + _link_delay_ns(
+                    platform, arc["link"], constraints
+                )
+                if candidate < distance.get(arc["to"], float("inf")):
+                    distance[arc["to"]] = candidate
+                    heapq.heappush(queue, (candidate, arc["to"]))
+        if distance_cache is not None:
+            distance_cache[source] = distance
     missing = sorted(set(sinks) - set(distance))
     if missing:
         raise ValidationError(
@@ -506,6 +511,7 @@ def _prepare_native_model(
             path_by_net[net].append(path)
     native_demands = []
     demand_index = {demand["net"]: index for index, demand in enumerate(demands)}
+    static_distance_cache: Dict[str, Dict[str, float]] = {}
     for index, demand in enumerate(demands):
         related = path_by_net.get(demand["net"], [])
         normalized_slack = min(
@@ -524,6 +530,7 @@ def _prepare_native_model(
                     adjacency,
                     platform,
                     constraints,
+                    static_distance_cache,
                 ),
             }
         )
@@ -558,100 +565,100 @@ def _write_native_input(
     provider: str,
 ) -> None:
     normalization = model["normalization"]
-    lines = ["EMUFLOW_TLR_INPUT_V6"]
-    lines.append(
-        "PARAM "
-        f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
-        f"{constraints['max_iterations']} "
-        f"{constraints.get('reroute_rounds', 8)} "
-        f"{constraints.get('lambda_load', 2.0):.17g} "
-        f"{constraints.get('lambda_timing', 4.0):.17g} "
-        f"{constraints.get('lambda_history', 1.0):.17g} "
-        f"{constraints.get('lambda_tdm', 0.1):.17g} "
-        f"{constraints.get('tdm_ratio_quantum', 8)} "
-        f"{constraints['frame_slots']} "
-        f"{normalization['positive_slack_scale_ns']:.17g} "
-        f"{normalization['negative_slack_scale_ns']:.17g} "
-        f"{normalization['max_clock_period_ns']:.17g} "
-        f"{int(constraints.get('tree_edge_sum_tdm', False))} "
-        f"{constraints.get('tdm_min_ratio', 1)} "
-        f"{int(constraints.get('hard_sll_capacity', False))}"
-    )
-    for arc in model["arcs"]:
-        lines.append(
-            "ARC "
-            f"{arc['index']} {arc['link_index']} {arc['from']} {arc['to']} "
-            f"{arc['capacity_domain']} {arc['direction_group']} "
-            f"{arc['opposite_arc']} {arc['capacity']} "
-            f"{arc['lanes']} {arc['delay_ns']:.17g} "
-            f"{arc['beta_ns']:.17g} {int(arc['is_sll'])}"
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write("EMUFLOW_TLR_INPUT_V6\n")
+        stream.write(
+            "PARAM "
+            f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
+            f"{constraints['max_iterations']} "
+            f"{constraints.get('reroute_rounds', 8)} "
+            f"{constraints.get('lambda_load', 2.0):.17g} "
+            f"{constraints.get('lambda_timing', 4.0):.17g} "
+            f"{constraints.get('lambda_history', 1.0):.17g} "
+            f"{constraints.get('lambda_tdm', 0.1):.17g} "
+            f"{constraints.get('tdm_ratio_quantum', 8)} "
+            f"{constraints['frame_slots']} "
+            f"{normalization['positive_slack_scale_ns']:.17g} "
+            f"{normalization['negative_slack_scale_ns']:.17g} "
+            f"{normalization['max_clock_period_ns']:.17g} "
+            f"{int(constraints.get('tree_edge_sum_tdm', False))} "
+            f"{constraints.get('tdm_min_ratio', 1)} "
+            f"{int(constraints.get('hard_sll_capacity', False))}\n"
         )
-    for demand in model["native_demands"]:
-        sinks = ",".join(str(sink) for sink in demand["sinks"])
-        lines.append(
-            "DEMAND "
-            f"{demand['index']} {demand['source']} {sinks} "
-            f"{demand['width']} {demand['normalized_slack']:.17g} "
-            f"{demand['predicted_delay_ns']:.17g}"
-        )
-    for timing_path in model["paths"]:
-        demands = ",".join(str(item) for item in timing_path["demands"])
-        lines.append(
-            "PATH "
-            f"{timing_path['index']} "
-            f"{timing_path['clock_period_ns']:.17g} "
-            f"{timing_path['baseline_slack_ns']:.17g} "
-            f"{timing_path['fixed_delay_ns']:.17g} {demands}"
-        )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for arc in model["arcs"]:
+            stream.write(
+                "ARC "
+                f"{arc['index']} {arc['link_index']} {arc['from']} {arc['to']} "
+                f"{arc['capacity_domain']} {arc['direction_group']} "
+                f"{arc['opposite_arc']} {arc['capacity']} "
+                f"{arc['lanes']} {arc['delay_ns']:.17g} "
+                f"{arc['beta_ns']:.17g} {int(arc['is_sll'])}\n"
+            )
+        for demand in model["native_demands"]:
+            sinks = ",".join(str(sink) for sink in demand["sinks"])
+            stream.write(
+                "DEMAND "
+                f"{demand['index']} {demand['source']} {sinks} "
+                f"{demand['width']} {demand['normalized_slack']:.17g} "
+                f"{demand['predicted_delay_ns']:.17g}\n"
+            )
+        for timing_path in model["paths"]:
+            demands = ",".join(str(item) for item in timing_path["demands"])
+            stream.write(
+                "PATH "
+                f"{timing_path['index']} "
+                f"{timing_path['clock_period_ns']:.17g} "
+                f"{timing_path['baseline_slack_ns']:.17g} "
+                f"{timing_path['fixed_delay_ns']:.17g} {demands}\n"
+            )
 
 
 def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_TLR_OUTPUT_V1":
-        raise EmuFlowError("TLR router returned an invalid output header")
     routes = {}
     locks = {}
     timing = {}
     metrics: Dict[str, Any] = {}
-    for line in lines[1:]:
-        fields = line.split()
-        if not fields:
-            continue
-        if fields[0] == "LOCK" and len(fields) == 3:
-            locks[int(fields[1])] = int(fields[2])
-        elif fields[0] == "ROUTE" and len(fields) == 4:
-            routes[int(fields[1])] = {
-                "max_delay_ns": float(fields[2]),
-                "arcs": (
-                    []
-                    if fields[3] == "-"
-                    else [int(item) for item in fields[3].split(",")]
-                ),
-            }
-        elif fields[0] == "PATH" and len(fields) == 6:
-            timing[int(fields[1])] = {
-                "delay_ns": float(fields[2]),
-                "slack_ns": float(fields[3]),
-                "normalized_slack": float(fields[4]),
-                "route_signature": fields[5],
-            }
-        elif fields[0] == "METRIC" and len(fields) == 3:
-            value: Any = float(fields[2])
-            if fields[1] in {
-                "iterations",
-                "accepted_reroutes",
-                "rolled_back_reroutes",
-                "baseline_candidate_feasible",
-                "balanced_candidate_feasible",
-                "selected_delay_demand_balanced",
-                "total_link_bit_hops",
-                "estimated_max_tdm_ratio",
-            }:
-                value = int(value)
-            metrics[fields[1]] = value
-        else:
-            raise EmuFlowError(f"TLR router returned malformed record: {line}")
+    with path.open("r", encoding="utf-8") as stream:
+        if stream.readline().strip() != "EMUFLOW_TLR_OUTPUT_V1":
+            raise EmuFlowError("TLR router returned an invalid output header")
+        for line in stream:
+            fields = line.split()
+            if not fields:
+                continue
+            if fields[0] == "LOCK" and len(fields) == 3:
+                locks[int(fields[1])] = int(fields[2])
+            elif fields[0] == "ROUTE" and len(fields) == 4:
+                routes[int(fields[1])] = {
+                    "max_delay_ns": float(fields[2]),
+                    "arcs": (
+                        []
+                        if fields[3] == "-"
+                        else [int(item) for item in fields[3].split(",")]
+                    ),
+                }
+            elif fields[0] == "PATH" and len(fields) == 6:
+                timing[int(fields[1])] = {
+                    "delay_ns": float(fields[2]),
+                    "slack_ns": float(fields[3]),
+                    "normalized_slack": float(fields[4]),
+                    "route_signature": fields[5],
+                }
+            elif fields[0] == "METRIC" and len(fields) == 3:
+                value: Any = float(fields[2])
+                if fields[1] in {
+                    "iterations",
+                    "accepted_reroutes",
+                    "rolled_back_reroutes",
+                    "baseline_candidate_feasible",
+                    "balanced_candidate_feasible",
+                    "selected_delay_demand_balanced",
+                    "total_link_bit_hops",
+                    "estimated_max_tdm_ratio",
+                }:
+                    value = int(value)
+                metrics[fields[1]] = value
+            else:
+                raise EmuFlowError(f"TLR router returned malformed record: {line}")
     if len(routes) != len(model["demands"]):
         raise EmuFlowError("TLR router did not return exact demand coverage")
     if len(timing) != len(model["paths"]):
@@ -748,11 +755,15 @@ def route_system_native(
             )
         native = _parse_native_output(native_output, model)
 
+    # The native-only records are no longer needed after output parsing.  On
+    # multi-million-demand cases, releasing them before materializing the
+    # public route schema avoids retaining two complete demand views.
+    model["native_demands"].clear()
     _, arcs, capacities = build_directed_graph(platform, constraints)
     routes = []
     usage = {key: 0 for key in capacities}
     for demand_index, demand in enumerate(model["demands"]):
-        native_route = native["routes"][demand_index]
+        native_route = native["routes"].pop(demand_index)
         edge_keys = [
             model["arc_keys"][index] for index in native_route["arcs"]
         ]
@@ -793,28 +804,27 @@ def route_system_native(
                 "to": key[2],
             }
         )
-    timing_records = (
-        [
-            {
-                "path": path["id"],
-                "clock_domain": path["clock_domain"],
-                "clock_period_ns": path["clock_period_ns"],
-                "fixed_delay_ns": path["fixed_delay_ns"],
-                "cut_nets": path["cut_nets"],
-                "cut_signature": path["cut_signature"],
-                "compressed_path_ids": path["compressed_path_ids"],
-                **(
-                    {"cut_transitions": path["cut_transitions"]}
-                    if "cut_transitions" in path
-                    else {}
-                ),
-                **native["timing"][index],
-            }
-            for index, path in enumerate(timing_paths["paths"])
-        ]
-        if timing_paths is not None
-        else []
-    )
+    timing_records = []
+    if timing_paths is not None:
+        for index, path in enumerate(timing_paths["paths"]):
+            timing_records.append(
+                {
+                    "path": path["id"],
+                    "clock_domain": path["clock_domain"],
+                    "clock_period_ns": path["clock_period_ns"],
+                    "fixed_delay_ns": path["fixed_delay_ns"],
+                    "cut_nets": path["cut_nets"],
+                    "cut_signature": path["cut_signature"],
+                    "compressed_path_ids": path["compressed_path_ids"],
+                    **(
+                        {"cut_transitions": path["cut_transitions"]}
+                        if "cut_transitions" in path
+                        else {}
+                    ),
+                    **native["timing"].pop(index),
+                }
+            )
+    model["paths"].clear()
     result = {
         "schema": "emuflow.system-routes/v1",
         "design": assignment.get("design"),
