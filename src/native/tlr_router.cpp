@@ -40,7 +40,7 @@ struct Arc {
   int capacity_domain = -1;
   int direction_group = -1;
   int opposite_arc = -1;
-  int capacity = 0;
+  long long capacity = 0;
   int lanes = 0;
   double delay_ns = 0.0;
   double beta_ns = 0.0;
@@ -309,7 +309,7 @@ class Router {
       }
 
       const std::vector<Route> route_backup = routes_;
-      const std::vector<int> usage_backup = usage_;
+      const std::vector<long long> usage_backup = usage_;
       std::set<int> discouraged;
       for (int demand : affected) {
         for (int arc : routes_[demand].arcs) {
@@ -400,7 +400,7 @@ class Router {
     bool feasible = false;
     int iterations = 0;
     std::vector<Route> routes;
-    std::vector<int> usage;
+    std::vector<long long> usage;
     std::vector<double> history;
     Objective objective;
   };
@@ -431,7 +431,7 @@ class Router {
         return result;
       }
       for (int domain = 0; domain < static_cast<int>(usage_.size()); ++domain) {
-        const int capacity = capacity_for_domain(domain);
+        const long long capacity = capacity_for_domain(domain);
         if (usage_[domain] > capacity) {
           history_[domain] += 1.0 +
               static_cast<double>(usage_[domain] - capacity) / capacity;
@@ -470,7 +470,7 @@ class Router {
     return {minimum, maximum};
   }
 
-  int capacity_for_domain(int domain) const {
+  long long capacity_for_domain(int domain) const {
     for (const Arc& arc : model_.arcs) {
       if (arc.capacity_domain == domain) {
         return arc.capacity;
@@ -494,21 +494,22 @@ class Router {
         return 1;
       }
     }
-    const int signals = usage_[domain] + additional_width;
+    const long long signals = usage_[domain] + additional_width;
     if (signals <= 0) {
       return 1;
     }
-    const int raw = std::max(
-        model_.min_ratio,
+    const long long raw = std::max(
+        static_cast<long long>(model_.min_ratio),
         (signals + lanes_for_domain(domain) - 1) /
             lanes_for_domain(domain));
     if (raw == 1) {
       return 1;
     }
-    const int quantized =
+    const long long quantized =
         ((raw + model_.ratio_quantum - 1) / model_.ratio_quantum) *
         model_.ratio_quantum;
-    return std::min(model_.frame_slots, quantized);
+    return static_cast<int>(std::min(
+        static_cast<long long>(model_.frame_slots), quantized));
   }
 
   int estimated_max_tdm_ratio() const {
@@ -1080,7 +1081,7 @@ class Router {
 
   Input model_;
   std::vector<std::vector<int>> adjacency_;
-  std::vector<int> usage_;
+  std::vector<long long> usage_;
   std::vector<double> history_;
   std::vector<int> direction_lock_;
   std::vector<Route> routes_;

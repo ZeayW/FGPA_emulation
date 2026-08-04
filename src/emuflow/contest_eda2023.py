@@ -128,6 +128,7 @@ def _parse_network(path: Path, count: int) -> List[List[int]]:
 def _parse_nets(path: Path, positions: Mapping[str, str]) -> List[Dict[str, Any]]:
     nets: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
+    current_sink_nodes = set()
     with path.open("r", encoding="utf-8") as stream:
         for zero_based_line, raw in enumerate(stream):
             line = raw.strip()
@@ -150,11 +151,16 @@ def _parse_nets(path: Path, positions: Mapping[str, str]) -> List[Dict[str, Any]
                     "sink_dies": [],
                 }
                 nets.append(current)
+                current_sink_nodes = set()
             else:
                 if len(fields) != 2 or current is None:
                     raise ValidationError(f"{path}:{zero_based_line + 1}: load has no source")
-                if node == current["source_node"] or node in current["sink_nodes"]:
+                # A high-fanout contest net can contain hundreds of thousands
+                # of loads.  List membership made parsing quadratic; retain
+                # ordered output in the list while checking uniqueness in O(1).
+                if node == current["source_node"] or node in current_sink_nodes:
                     raise ValidationError(f"{path}:{zero_based_line + 1}: duplicate net endpoint")
+                current_sink_nodes.add(node)
                 current["sink_nodes"].append(node)
                 current["sink_dies"].append(positions[node])
     if not nets or any(not net["sink_nodes"] for net in nets):
@@ -544,7 +550,7 @@ def optimize_eda2023_tdm(
     output_dir: Path,
     *,
     optimizer: Optional[str] = None,
-    max_iterations: int = 500,
+    max_iterations: int = 100,
     post_refinement_iterations: int = 2000,
     exact_domain_limit: int = 2048,
 ) -> Dict[str, Any]:

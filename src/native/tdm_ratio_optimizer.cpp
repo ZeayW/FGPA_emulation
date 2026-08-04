@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -214,10 +215,12 @@ class Optimizer {
         hop_paths_[hop].push_back(path);
       }
     }
+    allowed_ratios_ = build_allowed_ratios();
     initialize_path_multipliers();
   }
 
   void run() {
+    progress("lagrangian:start");
     double best_objective = -std::numeric_limits<double>::infinity();
     std::vector<double> best_ratios = continuous_;
     int stale = 0;
@@ -238,13 +241,20 @@ class Optimizer {
       }
       update_path_multipliers(iteration);
     }
+    progress("lagrangian:done");
     continuous_ = best_ratios;
     legalize();
+    progress("legalization:done");
     select_uniform_minimax_seed();
+    progress("uniform-minimax:done");
     global_budget_minimax_refine();
+    progress("global-minimax:done");
     group_minimax_refine();
+    progress("group-minimax-1:done");
     post_refine();
+    progress("post-refinement:done");
     group_minimax_refine();
+    progress("group-minimax-2:done");
   }
 
   void write(const std::string& path) const {
@@ -286,6 +296,12 @@ class Optimizer {
   }
 
  private:
+  void progress(const char* stage) const {
+    if (std::getenv("EMUFLOW_TDM_PROGRESS") != nullptr) {
+      std::cerr << "emuflow_tdm_ratio_optimizer: " << stage << '\n';
+    }
+  }
+
   double normalized_slack(const TimingPath& path, double slack) const {
     if (slack >= 0.0) {
       return slack * path.clock_period_ns /
@@ -556,7 +572,7 @@ class Optimizer {
     }
   }
 
-  std::vector<int> allowed_ratios() const {
+  std::vector<int> build_allowed_ratios() const {
     std::vector<int> result;
     if (input_.min_ratio == 1) {
       result.push_back(1);
@@ -569,6 +585,35 @@ class Optimizer {
       result.push_back(ratio);
     }
     return result;
+  }
+
+  static void stable_radix_sort_bounds(
+      std::vector<std::pair<int, int>>& values) {
+    if (values.size() < 4096) {
+      std::stable_sort(values.begin(), values.end());
+      return;
+    }
+    constexpr int kRadixBits = 16;
+    constexpr int kRadixSize = 1 << kRadixBits;
+    constexpr int kRadixMask = kRadixSize - 1;
+    std::vector<std::pair<int, int>> scratch(values.size());
+    std::vector<std::size_t> offsets(kRadixSize);
+    for (int shift : {0, kRadixBits}) {
+      std::fill(offsets.begin(), offsets.end(), 0);
+      for (const auto& value : values) {
+        ++offsets[(value.first >> shift) & kRadixMask];
+      }
+      std::size_t prefix = 0;
+      for (std::size_t& offset : offsets) {
+        const std::size_t count = offset;
+        offset = prefix;
+        prefix += count;
+      }
+      for (const auto& value : values) {
+        scratch[offsets[(value.first >> shift) & kRadixMask]++] = value;
+      }
+      values.swap(scratch);
+    }
   }
 
   double harmonic_usage(int domain, int changed_hop = -1,
@@ -607,9 +652,12 @@ class Optimizer {
     while (position < static_cast<int>(ordered.size())) {
       const double continuous = continuous_[ordered[position]];
       int choice = -1;
-      for (int ratio : allowed) {
-        if (std::abs(ratio - continuous) <= bound + kEps) {
-          choice = ratio;
+      const auto upper = std::upper_bound(
+          allowed.begin(), allowed.end(), continuous + bound + kEps);
+      if (upper != allowed.begin()) {
+        const int candidate = *std::prev(upper);
+        if (std::abs(candidate - continuous) <= bound + kEps) {
+          choice = candidate;
         }
       }
       if (choice < 0) {
@@ -801,7 +849,7 @@ class Optimizer {
       legalize_harmonic();
       return;
     }
-    const std::vector<int> allowed = allowed_ratios();
+    const std::vector<int>& allowed = allowed_ratios_;
     if (allowed.back() != input_.max_ratio) {
       throw std::runtime_error(
           "maximum ratio must be 1 or a multiple of ratio quantum");
@@ -809,10 +857,8 @@ class Optimizer {
     for (int domain = 0; domain < static_cast<int>(input_.domains.size());
          ++domain) {
       std::map<int, std::vector<int>> ordered_by_direction;
-      for (int hop = 0; hop < static_cast<int>(input_.hops.size()); ++hop) {
-        if (input_.hops[hop].domain == domain) {
-          ordered_by_direction[input_.hops[hop].direction].push_back(hop);
-        }
+      for (int hop : domain_hops_[domain]) {
+        ordered_by_direction[input_.hops[hop].direction].push_back(hop);
       }
       int total_hops = 0;
       for (auto& [direction, ordered] : ordered_by_direction) {
@@ -826,8 +872,9 @@ class Optimizer {
               return lhs < rhs;
             });
       }
-      if (total_hops >
-          input_.domains[domain].lanes * input_.max_ratio) {
+      if (static_cast<long long>(total_hops) >
+          static_cast<long long>(input_.domains[domain].lanes) *
+              input_.max_ratio) {
         throw std::runtime_error("domain cannot fit within maximum ratio");
       }
       auto group_count = [&](double bound) {
@@ -877,7 +924,7 @@ class Optimizer {
   }
 
   bool build_minimax_groups(int domain, double target, bool assign) {
-    const std::vector<int> allowed = allowed_ratios();
+    const std::vector<int>& allowed = allowed_ratios_;
     std::map<int, std::vector<std::pair<int, int>>> by_direction;
     for (int hop : domain_hops_[domain]) {
       int maximum = input_.max_ratio;
@@ -937,7 +984,7 @@ class Optimizer {
     };
     std::vector<Group> groups;
     for (auto& [direction, bounded] : by_direction) {
-      std::stable_sort(bounded.begin(), bounded.end());
+      stable_radix_sort_bounds(bounded);
       int position = 0;
       while (position < static_cast<int>(bounded.size())) {
         const int bound = bounded[position].first;
@@ -1030,7 +1077,7 @@ class Optimizer {
   }
 
   bool build_global_budget_solution(double target, double weight_exponent) {
-    const std::vector<int> allowed = allowed_ratios();
+    const std::vector<int>& allowed = allowed_ratios_;
     std::vector<int> maximum(input_.hops.size(), input_.max_ratio);
     for (const TimingPath& path : input_.paths) {
       double minimum_delay = path.fixed_delay_ns;
@@ -1285,6 +1332,13 @@ class Optimizer {
   void post_refine() {
     std::vector<double> metrics(input_.paths.size());
     std::set<std::pair<double, int>> ordered_metrics;
+    using DomainDirection = std::pair<int, int>;
+    using RatioHop = std::pair<int, int>;
+    std::map<DomainDirection, std::set<RatioHop>> ratio_hops;
+    for (int hop = 0; hop < static_cast<int>(input_.hops.size()); ++hop) {
+      ratio_hops[{input_.hops[hop].domain, input_.hops[hop].direction}]
+          .emplace(discrete_[hop], hop);
+    }
     for (int path = 0; path < static_cast<int>(input_.paths.size()); ++path) {
       metrics[path] =
           std::get<2>(path_metrics_discrete(input_.paths[path]));
@@ -1356,6 +1410,10 @@ class Optimizer {
               (std::abs(worst - current_worst) <=
                    input_.convergence &&
                lexicographically_improves(candidate_metrics, metrics))) {
+            auto& ordered = ratio_hops[
+                {input_.hops[hop].domain, input_.hops[hop].direction}];
+            ordered.erase({previous_ratio, hop});
+            ordered.emplace(candidate_ratio, hop);
             discrete_[hop] = candidate_ratio;
             accept_metrics(candidate_metrics);
             ++post_refinement_swaps_;
@@ -1368,23 +1426,12 @@ class Optimizer {
         continue;
       }
       for (int lhs : critical_hops) {
-        std::vector<int> candidates;
-        for (int rhs = 0; rhs < static_cast<int>(input_.hops.size()); ++rhs) {
-          if (input_.hops[rhs].domain == input_.hops[lhs].domain &&
-              input_.hops[rhs].direction == input_.hops[lhs].direction &&
-              discrete_[rhs] < discrete_[lhs]) {
-            candidates.push_back(rhs);
-          }
-        }
-        std::stable_sort(
-            candidates.begin(), candidates.end(), [&](int lhs_candidate,
-                                                       int rhs_candidate) {
-              if (discrete_[lhs_candidate] != discrete_[rhs_candidate]) {
-                return discrete_[lhs_candidate] < discrete_[rhs_candidate];
-              }
-              return lhs_candidate < rhs_candidate;
-            });
-        for (int rhs : candidates) {
+        auto& ordered = ratio_hops[
+            {input_.hops[lhs].domain, input_.hops[lhs].direction}];
+        const auto candidate_end = ordered.lower_bound({discrete_[lhs], -1});
+        for (auto candidate = ordered.begin(); candidate != candidate_end;
+             ++candidate) {
+          const int rhs = candidate->second;
           std::set<int> affected(
               hop_paths_[lhs].begin(), hop_paths_[lhs].end());
           affected.insert(hop_paths_[rhs].begin(), hop_paths_[rhs].end());
@@ -1398,6 +1445,12 @@ class Optimizer {
               (std::abs(worst - current_worst) <=
                    input_.convergence &&
                lexicographically_improves(candidate_metrics, metrics))) {
+            const int lhs_ratio = discrete_[lhs];
+            const int rhs_ratio = discrete_[rhs];
+            ordered.erase({lhs_ratio, lhs});
+            ordered.erase({rhs_ratio, rhs});
+            ordered.emplace(rhs_ratio, lhs);
+            ordered.emplace(lhs_ratio, rhs);
             std::swap(discrete_[lhs], discrete_[rhs]);
             std::swap(lane_[lhs], lane_[rhs]);
             accept_metrics(candidate_metrics);
@@ -1424,6 +1477,7 @@ class Optimizer {
   std::vector<double> edge_mu_;
   std::vector<std::vector<int>> hop_paths_;
   std::vector<std::vector<int>> domain_hops_;
+  std::vector<int> allowed_ratios_;
   int completed_iterations_ = 0;
   int post_refinement_swaps_ = 0;
   int dp_legalized_domains_ = 0;

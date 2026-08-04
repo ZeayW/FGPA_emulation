@@ -105,6 +105,7 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             )
             self.assertEqual(optimized["status"], "pass")
             self.assertEqual(optimized["max_routing_weight"], 6.5)
+            self.assertEqual(optimized["native_metrics"]["iterations"], 100)
             self.assertIn(
                 "global_minimax_improvements", optimized["native_metrics"]
             )
@@ -167,6 +168,22 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             ):
                 (case / name).write_text(value, encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "symmetric"):
+                import_eda2023_case(case, root / "out", "bad")
+
+    def test_import_rejects_duplicate_sink_endpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            case = root / "case"
+            case.mkdir()
+            duplicate_nets = NETS.replace("g2 l\n", "g2 l\ng2 l\n", 1)
+            for name, value in (
+                ("design.fpga.die", FPGA_DIE),
+                ("design.die.position", DIE_POSITION),
+                ("design.die.network", DIE_NETWORK),
+                ("design.net", duplicate_nets),
+            ):
+                (case / name).write_text(value, encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "duplicate net endpoint"):
                 import_eda2023_case(case, root / "out", "bad")
 
 

@@ -303,6 +303,37 @@ class Phase4Test(unittest.TestCase):
                 provider="timing-aware-route-tdm-cooptimized-v1",
             )
 
+    def test_native_router_accepts_capacity_above_signed_32_bit(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "wide_tdm_capacity",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=5000)],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 837876,
+            },
+            platform,
+        )
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+            provider=NATIVE_ROUTER_PROVIDER,
+        )
+        self.assertEqual(routes["metrics"]["total_link_bit_hops"], 1)
+        self.assertEqual(
+            validate_native_system_routes(
+                assignment, platform, routes
+            )["status"],
+            "pass",
+        )
+
     def test_hybrid_router_selects_delay_demand_balanced_multicast(
         self,
     ) -> None:

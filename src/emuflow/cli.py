@@ -169,7 +169,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2023_optimize.add_argument("--routes", type=Path, required=True)
     eda2023_optimize.add_argument("--out", type=Path, required=True)
     eda2023_optimize.add_argument("--optimizer")
-    eda2023_optimize.add_argument("--max-iterations", type=int, default=500)
+    eda2023_optimize.add_argument("--max-iterations", type=int, default=100)
     eda2023_optimize.add_argument(
         "--post-refinement-iterations", type=int, default=2000
     )

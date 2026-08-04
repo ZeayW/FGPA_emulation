@@ -28,7 +28,7 @@ from emuflow.tdm_oracle import (
     exact_single_round_slot_schedule,
 )
 from emuflow.timing_routing import route_system_native
-from tests.native_build import tlr_router
+from tests.native_build import tdm_ratio_optimizer, tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +103,75 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_native_ratio_capacity_product_uses_64_bit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            native_input = root / "ratio.in"
+            native_output = root / "ratio.out"
+            native_input.write_text(
+                "\n".join(
+                    [
+                        "EMUFLOW_TDM_RATIO_INPUT_V3",
+                        "PARAM 1 500000 4 4 0 0 0 1e-9 1 1 1000000",
+                        "DOMAIN 0 5000",
+                        "HOP 0 0 0 1.5 1",
+                        "PATH 0 1000000 0 0",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [
+                    str(tdm_ratio_optimizer()),
+                    str(native_input),
+                    str(native_output),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue(
+                native_output.read_text(encoding="utf-8").startswith(
+                    "EMUFLOW_TDM_RATIO_OUTPUT_V1\n"
+                )
+            )
+
+    def test_native_ratio_large_domain_radix_legalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            native_input = root / "ratio.in"
+            native_output = root / "ratio.out"
+            records = [
+                "EMUFLOW_TDM_RATIO_INPUT_V3",
+                "PARAM 1 64 4 4 0 0 0 1e-9 1 1 10000",
+                "DOMAIN 0 100",
+            ]
+            records.extend(
+                f"HOP {index} 0 0 1.5 0.5" for index in range(5000)
+            )
+            records.extend(
+                f"PATH {index} 10000 0 {index}" for index in range(5000)
+            )
+            native_input.write_text(
+                "\n".join(records) + "\n", encoding="utf-8"
+            )
+            completed = subprocess.run(
+                [
+                    str(tdm_ratio_optimizer()),
+                    str(native_input),
+                    str(native_output),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            output = native_output.read_text(encoding="utf-8")
+            self.assertIn("METRIC greedy_legalized_domains 1\n", output)
+            self.assertIn("METRIC max_discrete_ratio 52\n", output)
+
     def test_ratio_model_uses_member_specific_multicast_sink(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
