@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, cast
 
+from .contest_boarddb import materialize_homogeneous_boarddb
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
@@ -21,6 +22,9 @@ EDA2023_INSTANCE_SCHEMA = "emuflow.contest-eda2023-instance/v1"
 EDA2023_HIERARCHY_SCHEMA = "emuflow.die-hierarchy/v1"
 EDA2023_TDM_SCHEMA = "emuflow.contest-eda2023-tdm/v1"
 EDA2023_EVALUATION_SCHEMA = "emuflow.contest-eda2023-evaluation/v1"
+EDA2023_BOARDDB_MATERIALIZATION_SCHEMA = (
+    "emuflow.contest-eda2023-boarddb-materialization/v1"
+)
 EDA2023_SOURCE_URL = (
     "https://eda.icisc.cn/file/cacheFile/"
     "4f769715b1704172935438d418702f80.pdf"
@@ -430,6 +434,113 @@ def _load_instance(path: Path) -> Dict[str, Any]:
     if instance.get("schema") != EDA2023_INSTANCE_SCHEMA:
         raise ValidationError(f"instance.schema: expected {EDA2023_INSTANCE_SCHEMA!r}")
     return instance
+
+
+def materialize_eda2023_rtl_boarddb(
+    instance_path: Path,
+    device_template_path: Path,
+    output_path: Path,
+    *,
+    name: str,
+    template_fpga_id: Optional[str] = None,
+    lane_scale: int = 1,
+    fabric_clock_mhz: float = 50.0,
+    latency_cycles: int = 2,
+    link_mode: str = "abstract",
+) -> Dict[str, Any]:
+    """Project public die-level Wire banks onto physical FPGA vertices."""
+    if (
+        isinstance(lane_scale, bool)
+        or not isinstance(lane_scale, int)
+        or lane_scale <= 0
+    ):
+        raise ValidationError("lane_scale: expected a positive integer")
+    if (
+        isinstance(fabric_clock_mhz, bool)
+        or not isinstance(fabric_clock_mhz, (int, float))
+        or fabric_clock_mhz <= 0
+    ):
+        raise ValidationError("fabric_clock_mhz: expected a positive number")
+    if (
+        isinstance(latency_cycles, bool)
+        or not isinstance(latency_cycles, int)
+        or latency_cycles < 0
+    ):
+        raise ValidationError("latency_cycles: expected a non-negative integer")
+    if link_mode not in {"abstract", "parallel", "serial", "source_synchronous"}:
+        raise ValidationError("link_mode: unsupported BoardDB link mode")
+
+    instance = _load_instance(instance_path)
+    wire_links = [link for link in instance["links"] if link["kind"] == "wire"]
+    sll_links = [link for link in instance["links"] if link["kind"] == "sll"]
+    if not wire_links:
+        raise ValidationError("EDA 2023 instance has no inter-FPGA Wire bank")
+
+    links = []
+    for link in wire_links:
+        left_die, right_die = link["endpoints"]
+        endpoints = [
+            instance["die_to_fpga"][left_die],
+            instance["die_to_fpga"][right_die],
+        ]
+        if endpoints[0] == endpoints[1]:
+            raise ValidationError(
+                f"Wire bank {link['id']!r} is not inter-FPGA"
+            )
+        links.append(
+            {
+                "id": f"eda2023_{link['id']}",
+                "endpoints": endpoints,
+                "direction": "full_duplex",
+                "capacity_sharing": "shared_bidirectional",
+                "mode": link_mode,
+                "data_lanes_per_direction": link["capacity"] * lane_scale,
+                "fabric_clock_mhz": float(fabric_clock_mhz),
+                "latency_cycles": latency_cycles,
+            }
+        )
+
+    validated, template_platform, selected = materialize_homogeneous_boarddb(
+        output_path=output_path,
+        name=name,
+        description=(
+            "2023 EDA Elite public die topology projected onto physical FPGA "
+            "vertices with every inter-FPGA Wire bank preserved"
+        ),
+        fpga_ids=instance["fpgas"],
+        links=links,
+        device_template_path=device_template_path,
+        template_fpga_id=template_fpga_id,
+        provenance={
+            "interconnect": {
+                "schema": instance["schema"],
+                "instance": instance["name"],
+                "specification_url": instance["source"]["specification_url"],
+                "projection": "physical-fpga-wire-bank",
+                "capacity_semantics": (
+                    "fixed-direction-lane-groups-shared-bank"
+                ),
+                "collapsed_sll_links": len(sll_links),
+            }
+        },
+    )
+    return {
+        "schema": EDA2023_BOARDDB_MATERIALIZATION_SCHEMA,
+        "status": "pass",
+        "platform": validated.name,
+        "contest_instance": instance["name"],
+        "device_template": template_platform.name,
+        "template_fpga": selected["id"],
+        "physical_fpgas": len(validated.fpgas),
+        "dies": len(instance["dies"]),
+        "wire_banks": len(validated.links),
+        "collapsed_sll_links": len(sll_links),
+        "data_lanes": sum(
+            link.data_lanes_per_direction for link in validated.links
+        ),
+        "capacity_semantics": "fixed-direction-lane-groups-shared-bank",
+        "output": str(output_path),
+    }
 
 
 def _route_model(instance: Mapping[str, Any], routes: Mapping[str, Any]) -> Dict[str, Any]:

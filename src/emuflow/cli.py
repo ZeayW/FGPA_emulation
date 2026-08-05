@@ -24,6 +24,7 @@ from .contest_eda2024 import evaluate_eda2024_solution
 from .contest_eda2023 import (
     evaluate_eda2023_solution,
     import_eda2023_case,
+    materialize_eda2023_rtl_boarddb,
     optimize_eda2023_tdm,
 )
 from .contest_iccad2019 import (
@@ -165,6 +166,23 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2023_import.add_argument("--case-dir", type=Path, required=True)
     eda2023_import.add_argument("--name", required=True)
     eda2023_import.add_argument("--out", type=Path, required=True)
+    eda2023_boarddb = contest_subparsers.add_parser(
+        "eda2023-materialize-boarddb",
+        help="project public die Wire banks onto RTL-capable physical FPGAs",
+    )
+    eda2023_boarddb.add_argument("--instance", type=Path, required=True)
+    eda2023_boarddb.add_argument("--device-template", type=Path, required=True)
+    eda2023_boarddb.add_argument("--output", "-o", type=Path, required=True)
+    eda2023_boarddb.add_argument("--name", required=True)
+    eda2023_boarddb.add_argument("--template-fpga")
+    eda2023_boarddb.add_argument("--lane-scale", type=int, default=1)
+    eda2023_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
+    eda2023_boarddb.add_argument("--latency-cycles", type=int, default=2)
+    eda2023_boarddb.add_argument(
+        "--link-mode",
+        choices=("abstract", "parallel", "serial", "source_synchronous"),
+        default="abstract",
+    )
     eda2023_optimize = contest_subparsers.add_parser(
         "eda2023-optimize",
         help="assign legal per-Wire TDM ratios to routed die trees",
@@ -1586,6 +1604,18 @@ def _dispatch(args: argparse.Namespace) -> int:
                 case_dir=args.case_dir,
                 output_dir=args.out,
                 name=args.name,
+            )
+        elif args.contest_command == "eda2023-materialize-boarddb":
+            report = materialize_eda2023_rtl_boarddb(
+                instance_path=args.instance,
+                device_template_path=args.device_template,
+                output_path=args.output,
+                name=args.name,
+                template_fpga_id=args.template_fpga,
+                lane_scale=args.lane_scale,
+                fabric_clock_mhz=args.fabric_clock_mhz,
+                latency_cycles=args.latency_cycles,
+                link_mode=args.link_mode,
             )
         elif args.contest_command == "eda2023-optimize":
             report = optimize_eda2023_tdm(

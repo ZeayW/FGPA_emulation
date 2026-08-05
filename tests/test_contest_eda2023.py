@@ -7,6 +7,7 @@ from emuflow.contest_eda2023 import (
     _timing_weight_for_fpga_diameter,
     evaluate_eda2023_solution,
     import_eda2023_case,
+    materialize_eda2023_rtl_boarddb,
     optimize_eda2023_tdm,
 )
 from emuflow.errors import ValidationError
@@ -121,6 +122,62 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             self.assertEqual(evaluation["metrics"]["used_wires"], 2)
             self.assertTrue((root / "solution" / "design.route.out").is_file())
             self.assertTrue((root / "solution" / "design.tdm.out").is_file())
+
+    def test_physical_fpga_projection_preserves_wire_banks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized = self._import(root)
+            output = root / "rtl-boarddb.json"
+            repository = Path(__file__).resolve().parents[1]
+            report = materialize_eda2023_rtl_boarddb(
+                instance_path=normalized / "contest_instance.json",
+                device_template_path=(
+                    repository / "platforms/virtual/academic_vtr_4fpga_mesh.json"
+                ),
+                output_path=output,
+                name="eda2023_sample_academic_rtl",
+                lane_scale=2,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["physical_fpgas"], 2)
+            self.assertEqual(report["dies"], 4)
+            self.assertEqual(report["wire_banks"], 1)
+            self.assertEqual(report["collapsed_sll_links"], 2)
+            self.assertEqual(report["data_lanes"], 4)
+            boarddb = read_json(output)
+            self.assertEqual(
+                [fpga["id"] for fpga in boarddb["fpgas"]],
+                ["FPGA0", "FPGA1"],
+            )
+            self.assertEqual(
+                boarddb["links"][0]["endpoints"], ["FPGA0", "FPGA1"]
+            )
+            self.assertEqual(
+                boarddb["links"][0]["data_lanes_per_direction"], 4
+            )
+            self.assertEqual(
+                boarddb["links"][0]["capacity_sharing"],
+                "shared_bidirectional",
+            )
+            provenance = boarddb["platform"]["provenance"]["interconnect"]
+            self.assertEqual(provenance["projection"], "physical-fpga-wire-bank")
+            self.assertEqual(provenance["collapsed_sll_links"], 2)
+
+    def test_physical_fpga_projection_rejects_invalid_lane_scale(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized = self._import(root)
+            with self.assertRaisesRegex(ValidationError, "lane_scale"):
+                materialize_eda2023_rtl_boarddb(
+                    instance_path=normalized / "contest_instance.json",
+                    device_template_path=(
+                        Path(__file__).resolve().parents[1]
+                        / "platforms/virtual/academic_vtr_4fpga_mesh.json"
+                    ),
+                    output_path=root / "bad.json",
+                    name="bad",
+                    lane_scale=0,
+                )
 
     def test_checker_rejects_opposing_signals_on_one_wire(self):
         with tempfile.TemporaryDirectory() as temporary:

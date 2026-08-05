@@ -445,6 +445,24 @@ paths, SLL capacity, Wire direction/ratio legality, and the published maximum
 `RoutingWeight`; the optimizer also writes official `design.route.out` and
 `design.tdm.out` files.
 
+The normalized die hierarchy can also become an RTL-capable physical-FPGA
+BoardDB. In this projection, intra-FPGA SLLs are absorbed into the device and
+every inter-FPGA Wire bank remains a separate parallel shared-capacity link:
+
+```bash
+emuflow contest eda2023-materialize-boarddb \
+  --instance build/eda2023/contest_instance.json \
+  --device-template platforms/virtual/academic_vtr_4fpga_mesh.json \
+  --name eda2023-case1-academic-rtl \
+  --output build/eda2023/rtl-boarddb.json
+```
+
+The published Wire-bank capacity becomes the abstract lane count; optional
+`--lane-scale` changes it explicitly. BoardDB provenance records the source
+instance, collapsed SLL count, device template, and fixed-direction lane-group
+semantics. This remains a reproducible academic architecture rather than a
+claim about package pins or measured board wiring.
+
 The 2025 EDA Elite adapter reads
 the published `design.info`, `design.net`, `design.topo`, and
 `design.fpga.out` formats and emits both a normalized contest instance and the
