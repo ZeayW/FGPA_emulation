@@ -6,11 +6,12 @@ from pathlib import Path
 from emuflow.contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
+    optimize_eda2025_topology,
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4
-from tests.native_build import tlr_router
+from tests.native_build import eda2025_topology_optimizer, tlr_router
 
 
 INFO = """\
@@ -211,6 +212,79 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                     routed / "routes.json",
                     new_topology_path=changed,
                 )
+
+    def test_cpp_topology_refinement_emits_rerouting_ready_contracts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "design.info").write_text(INFO, encoding="utf-8")
+            (source / "design.topo").write_text(TOPOLOGY, encoding="utf-8")
+            nets = "".join(f"s{index} 1 t{index}\n" for index in range(9))
+            (source / "design.net").write_text(nets, encoding="utf-8")
+            (source / "design.fpga.out").write_text(
+                "F1: " + " ".join(f"s{index}" for index in range(9)) + "\n"
+                "F2: " + " ".join(f"t{index}" for index in range(9)) + "\n"
+                "F3:\nF4:\n",
+                encoding="utf-8",
+            )
+            normalized = root / "normalized"
+            import_eda2025_instance(
+                info_path=source / "design.info",
+                net_path=source / "design.net",
+                topology_path=source / "design.topo",
+                assignment_path=source / "design.fpga.out",
+                output_dir=normalized,
+                name="topology_refinement",
+            )
+            initial_routed = root / "initial-routed"
+            run_phase4(
+                assignment_path=normalized / "partition_assignment.json",
+                platform_path=normalized / "boarddb.json",
+                output_dir=initial_routed,
+                constraints_path=normalized / "route_constraints.json",
+                timing_paths_path=normalized / "contest_timing_paths.json",
+                router=str(tlr_router()),
+            )
+            optimized = root / "optimized"
+            report = optimize_eda2025_topology(
+                instance_path=normalized / "contest_instance.json",
+                routes_path=initial_routed / "routes.json",
+                output_dir=optimized,
+                executable=str(eda2025_topology_optimizer()),
+            )
+            self.assertEqual(report["metrics"]["changed_channels"], 1)
+            self.assertAlmostEqual(
+                report["metrics"]["initial_worst_path_delay_ns"], 41.2
+            )
+            self.assertAlmostEqual(
+                report["metrics"]["predicted_worst_path_delay_ns"], 35.6
+            )
+            rerouted = root / "rerouted"
+            run_phase4(
+                assignment_path=optimized / "normalized" / "partition_assignment.json",
+                platform_path=optimized / "normalized" / "boarddb.json",
+                output_dir=rerouted,
+                constraints_path=optimized / "normalized" / "route_constraints.json",
+                timing_paths_path=optimized / "normalized" / "contest_timing_paths.json",
+                router=str(tlr_router()),
+            )
+            checked = evaluate_eda2025_routes(
+                normalized / "contest_instance.json",
+                rerouted / "routes.json",
+                new_topology_path=optimized / "design.newtopo",
+            )
+            self.assertAlmostEqual(checked["metrics"]["worst_path_delay_ns"], 35.6)
+            second = optimize_eda2025_topology(
+                instance_path=normalized / "contest_instance.json",
+                routes_path=rerouted / "routes.json",
+                output_dir=root / "second",
+                executable=str(eda2025_topology_optimizer()),
+                current_topology_path=optimized / "design.newtopo",
+            )
+            self.assertEqual(second["metrics"]["input_changed_channels"], 1)
+            self.assertEqual(second["metrics"]["iteration_changed_channels"], 0)
+            self.assertEqual(second["metrics"]["changed_channels"], 1)
 
     def test_normalized_artifacts_are_self_describing(self):
         with tempfile.TemporaryDirectory() as temporary:

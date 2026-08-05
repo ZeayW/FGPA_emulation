@@ -6,18 +6,24 @@ the normalized contest instance remains the source of truth for scoring.
 """
 
 import math
+import subprocess
+import tempfile
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from .errors import ValidationError
+from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
+from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .routing import SYSTEM_ROUTES_SCHEMA
 
 
 EDA2025_INSTANCE_SCHEMA = "emuflow.contest-eda2025-instance/v1"
 EDA2025_EVALUATION_SCHEMA = "emuflow.contest-eda2025-evaluation/v1"
+EDA2025_TOPOLOGY_OPTIMIZATION_SCHEMA = (
+    "emuflow.contest-eda2025-topology-optimization/v1"
+)
 EDA2025_SOURCE_URL = (
     "https://edaoss.icisc.cn/file/cacheFile/2025/8/11/"
     "1e213a00cbd94e2b91e997740753cb60.pdf"
@@ -298,127 +304,19 @@ def import_eda2025_instance(
         "node_assignment": dict(sorted(node_assignment.items())),
     }
 
-    boarddb = {
-        "schema": "emuflow.boarddb/v1",
-        "platform": {
-            "name": name,
-            "kind": "virtual",
-            "description": (
-                "2025 EDA Elite abstract multi-FPGA topology; exact contest "
-                "timing is evaluated from the normalized contest instance"
-            ),
-        },
-        "fpgas": [
-            {
-                "id": fpga_id,
-                "part": "eda-elite-2025-abstract",
-                "utilization_limit": 1.0,
-                "capacity": {"lut": 1},
-            }
-            for fpga_id in fpga_ids
-        ],
-        "links": [
-            {
-                "id": f"contest_link_{left:03d}_{right:03d}",
-                "endpoints": [fpga_ids[left], fpga_ids[right]],
-                "direction": "full_duplex",
-                "mode": "abstract",
-                "data_lanes_per_direction": topology[left][right],
-                # One TDM slot is alpha ns; the exact contest base term is
-                # represented by the separately emitted link-delay override.
-                "fabric_clock_mhz": 1000.0 / float(alpha_ns),
-                "latency_cycles": 0,
-            }
-            for left in range(len(fpga_ids))
-            for right in range(left + 1, len(fpga_ids))
-            if topology[left][right] > 0
-        ],
-    }
-
-    cut_nets = []
-    for net in nets:
-        source_fpga = node_assignment[net["source_node"]]
-        sink_fpgas = sorted(
-            {
-                node_assignment[node]
-                for node in net["sink_nodes"]
-                if node_assignment[node] != source_fpga
-            }
+    artifacts = _write_execution_adapter(instance, topology, output_dir)
+    cut_net_count = sum(
+        any(
+            node_assignment[node] != node_assignment[net["source_node"]]
+            for node in net["sink_nodes"]
         )
-        if sink_fpgas:
-            cut_nets.append(
-                {
-                    "net": net["id"],
-                    "cut_class": "register_output",
-                    "source_fpgas": [source_fpga],
-                    "sink_fpgas": sink_fpgas,
-                    "sink_endpoints": sum(
-                        node_assignment[node] != source_fpga
-                        for node in net["sink_nodes"]
-                    ),
-                }
-            )
-    assignment = {
-        "schema": PARTITION_ASSIGNMENT_SCHEMA,
-        "design": name,
-        "platform": name,
-        "cut_nets": cut_nets,
-    }
-    contest_period = max(
-        1.0,
-        (len(fpga_ids) - 1) * (beta_ns + alpha_ns * max_ratio),
+        for net in nets
     )
-    timing_paths = {
-        "schema": "emuflow.sta-paths/v1",
-        "design": name,
-        "paths": [
-            {
-                "id": f"contest_path_{cut['net']}_{sink}",
-                "clock_domain": "contest_max_path_delay",
-                "clock_period_ns": contest_period,
-                "slack_ns": 0.0,
-                "fixed_delay_ns": 0.0,
-                "cut_nets": [cut["net"]],
-                "cut_transitions": [
-                    {
-                        "net": cut["net"],
-                        "from": cut["source_fpgas"][0],
-                        "to": sink,
-                    }
-                ],
-            }
-            for cut in cut_nets
-            for sink in cut["sink_fpgas"]
-        ],
-    }
-    # The native kernel reconstructs a TDM hop as
-    # ``delay_ns + slot_ns * (ratio - 1)``.  Supplying beta + alpha as
-    # the base therefore makes its optimization objective exactly equal to
-    # the contest's ``beta + alpha * ratio`` expression.
-    link_delay = {
-        link["id"]: float(beta_ns + alpha_ns) for link in boarddb["links"]
-    }
-    constraints = {
-        "schema": "emuflow.system-route-constraints/v1",
-        "frame_slots": max_ratio,
-        "max_iterations": 20,
-        "unavailable_links": [],
-        "link_delay_ns": link_delay,
-        "sll_links": [],
-        "shared_capacity_links": [link["id"] for link in boarddb["links"]],
-        "reroute_rounds": 8,
-        "lambda_load": 2.0,
-        "lambda_timing": 4.0,
-        "lambda_history": 1.0,
-        "lambda_tdm": 0.1,
-        "tdm_ratio_quantum": ratio_quantum,
-    }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dir / "contest_instance.json", instance)
-    write_json(output_dir / "boarddb.json", boarddb)
-    write_json(output_dir / "partition_assignment.json", assignment)
-    write_json(output_dir / "route_constraints.json", constraints)
-    write_json(output_dir / "contest_timing_paths.json", timing_paths)
+    physical_pair_count = sum(
+        topology[left][right] > 0
+        for left in range(len(fpga_ids))
+        for right in range(left + 1, len(fpga_ids))
+    )
     return {
         "status": "pass",
         "schema": EDA2025_INSTANCE_SCHEMA,
@@ -426,15 +324,9 @@ def import_eda2025_instance(
         "fpgas": len(fpga_ids),
         "logical_nodes": len(node_assignment),
         "nets": len(nets),
-        "cut_nets": len(cut_nets),
-        "physical_channel_pairs": len(boarddb["links"]),
-        "artifacts": {
-            "instance": str(output_dir / "contest_instance.json"),
-            "boarddb": str(output_dir / "boarddb.json"),
-            "assignment": str(output_dir / "partition_assignment.json"),
-            "route_constraints": str(output_dir / "route_constraints.json"),
-            "timing_paths": str(output_dir / "contest_timing_paths.json"),
-        },
+        "cut_nets": cut_net_count,
+        "physical_channel_pairs": physical_pair_count,
+        "artifacts": artifacts,
     }
 
 
@@ -665,6 +557,373 @@ def _write_official_solution(
     (output_dir / "design.newtopo").write_text(
         "\n".join(topology_lines) + "\n", encoding="utf-8"
     )
+
+
+def _write_topology_text(
+    path: Path,
+    fpga_ids: Sequence[str],
+    topology: Sequence[Sequence[int]],
+) -> None:
+    path.write_text(
+        "\n".join(
+            f"{fpga_id}: {','.join(str(channel) for channel in topology[index])}"
+            for index, fpga_id in enumerate(fpga_ids)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_execution_adapter(
+    instance: Mapping[str, Any],
+    topology: Sequence[Sequence[int]],
+    output_dir: Path,
+) -> Dict[str, str]:
+    """Materialize the generic Phase 4 contracts for a contest topology."""
+    fpga_ids = instance["fpga_ids"]
+    parameters = instance["parameters"]
+    alpha_ns = parameters["alpha_ns"]
+    beta_ns = parameters["beta_ns"]
+    max_ratio = parameters["max_ratio"]
+    node_assignment = instance["node_assignment"]
+    links = [
+        {
+            "id": f"contest_link_{left:03d}_{right:03d}",
+            "endpoints": [fpga_ids[left], fpga_ids[right]],
+            "direction": "full_duplex",
+            "mode": "abstract",
+            "data_lanes_per_direction": topology[left][right],
+            "fabric_clock_mhz": 1000.0 / float(alpha_ns),
+            "latency_cycles": 0,
+        }
+        for left in range(len(fpga_ids))
+        for right in range(left + 1, len(fpga_ids))
+        if topology[left][right] > 0
+    ]
+    boarddb = {
+        "schema": "emuflow.boarddb/v1",
+        "platform": {
+            "name": instance["name"],
+            "kind": "virtual",
+            "description": (
+                "2025 EDA Elite abstract multi-FPGA topology; exact contest "
+                "timing is evaluated from the normalized contest instance"
+            ),
+        },
+        "fpgas": [
+            {
+                "id": fpga_id,
+                "part": "eda-elite-2025-abstract",
+                "utilization_limit": 1.0,
+                "capacity": {"lut": 1},
+            }
+            for fpga_id in fpga_ids
+        ],
+        "links": links,
+    }
+    cut_nets = []
+    for net in instance["nets"]:
+        source_fpga = node_assignment[net["source_node"]]
+        sink_fpgas = sorted(
+            {
+                node_assignment[node]
+                for node in net["sink_nodes"]
+                if node_assignment[node] != source_fpga
+            }
+        )
+        if sink_fpgas:
+            cut_nets.append(
+                {
+                    "net": net["id"],
+                    "cut_class": "register_output",
+                    "source_fpgas": [source_fpga],
+                    "sink_fpgas": sink_fpgas,
+                    "sink_endpoints": sum(
+                        node_assignment[node] != source_fpga
+                        for node in net["sink_nodes"]
+                    ),
+                }
+            )
+    assignment = {
+        "schema": PARTITION_ASSIGNMENT_SCHEMA,
+        "design": instance["name"],
+        "platform": instance["name"],
+        "cut_nets": cut_nets,
+    }
+    contest_period = max(
+        1.0,
+        (len(fpga_ids) - 1) * (beta_ns + alpha_ns * max_ratio),
+    )
+    timing_paths = {
+        "schema": "emuflow.sta-paths/v1",
+        "design": instance["name"],
+        "paths": [
+            {
+                "id": f"contest_path_{cut['net']}_{sink}",
+                "clock_domain": "contest_max_path_delay",
+                "clock_period_ns": contest_period,
+                "slack_ns": 0.0,
+                "fixed_delay_ns": 0.0,
+                "cut_nets": [cut["net"]],
+                "cut_transitions": [
+                    {
+                        "net": cut["net"],
+                        "from": cut["source_fpgas"][0],
+                        "to": sink,
+                    }
+                ],
+            }
+            for cut in cut_nets
+            for sink in cut["sink_fpgas"]
+        ],
+    }
+    constraints = {
+        "schema": "emuflow.system-route-constraints/v1",
+        "frame_slots": max_ratio,
+        "max_iterations": 20,
+        "unavailable_links": [],
+        "link_delay_ns": {
+            link["id"]: float(beta_ns + alpha_ns) for link in links
+        },
+        "sll_links": [],
+        "shared_capacity_links": [link["id"] for link in links],
+        "reroute_rounds": 8,
+        "lambda_load": 2.0,
+        "lambda_timing": 4.0,
+        "lambda_history": 1.0,
+        "lambda_tdm": 0.1,
+        "tdm_ratio_quantum": parameters["ratio_quantum"],
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_json(output_dir / "contest_instance.json", dict(instance))
+    write_json(output_dir / "boarddb.json", boarddb)
+    write_json(output_dir / "partition_assignment.json", assignment)
+    write_json(output_dir / "route_constraints.json", constraints)
+    write_json(output_dir / "contest_timing_paths.json", timing_paths)
+    return {
+        "instance": str(output_dir / "contest_instance.json"),
+        "boarddb": str(output_dir / "boarddb.json"),
+        "assignment": str(output_dir / "partition_assignment.json"),
+        "route_constraints": str(output_dir / "route_constraints.json"),
+        "timing_paths": str(output_dir / "contest_timing_paths.json"),
+    }
+
+
+def _write_topology_optimizer_input(
+    path: Path,
+    instance: Mapping[str, Any],
+    topology: Sequence[Sequence[int]],
+    routes: Mapping[str, Any],
+    evaluation: Mapping[str, Any],
+    change_budget: int,
+) -> None:
+    fpga_ids = instance["fpga_ids"]
+    fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
+    pair_records = evaluation["pair_utilization"]
+    pairs = [tuple(record["fpgas"]) for record in pair_records]
+    pair_index = {pair: index for index, pair in enumerate(pairs)}
+    pair_delays = {
+        pair: record["hop_delay_ns"]
+        for pair, record in zip(pairs, pair_records)
+    }
+    paths = []
+    for route in routes["routes"]:
+        for nodes, _ in _route_sink_paths(route, pair_delays).values():
+            paths.append(
+                [
+                    pair_index[tuple(sorted((left, right)))]
+                    for left, right in zip(nodes, nodes[1:])
+                ]
+            )
+    parameters = instance["parameters"]
+    lines = [
+        "EMUFLOW_EDA2025_TOPOLOGY_V1",
+        " ".join(
+            str(value)
+            for value in (
+                len(fpga_ids),
+                len(pairs),
+                change_budget,
+                parameters["ratio_quantum"],
+                parameters["max_ratio"],
+                parameters["alpha_ns"],
+                parameters["beta_ns"],
+            )
+        ),
+        " ".join(
+            str(instance["max_external_channels"][fpga_id])
+            for fpga_id in fpga_ids
+        ),
+        *(" ".join(str(channel) for channel in row) for row in topology),
+        *(
+            f"{min(fpga_index[pair[0]], fpga_index[pair[1]])} "
+            f"{max(fpga_index[pair[0]], fpga_index[pair[1]])} "
+            f"{pair_records[index]['routed_nets']}"
+            for index, pair in enumerate(pairs)
+        ),
+        str(len(paths)),
+        *(f"{len(edges)} {' '.join(str(edge) for edge in edges)}" for edges in paths),
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _parse_topology_optimizer_output(
+    path: Path, fpga_count: int
+) -> Tuple[Dict[str, float], List[Dict[str, int]], List[List[int]]]:
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    if not lines or lines.pop(0) != "EMUFLOW_EDA2025_TOPOLOGY_RESULT_V1":
+        raise EmuFlowError("topology optimizer returned an invalid schema")
+    metrics: Dict[str, float] = {}
+    while lines and lines[0].startswith("METRIC "):
+        _, name, value = lines.pop(0).split()
+        metrics[name] = float(value)
+    if not lines or not lines[0].startswith("PAIR_CHANGES "):
+        raise EmuFlowError("topology optimizer omitted pair changes")
+    change_count = int(lines.pop(0).split()[1])
+    changes = []
+    for _ in range(change_count):
+        left, right, initial, optimized, load = map(int, lines.pop(0).split())
+        changes.append(
+            {
+                "left": left,
+                "right": right,
+                "initial_channels": initial,
+                "optimized_channels": optimized,
+                "routed_nets": load,
+            }
+        )
+    if not lines or lines.pop(0) != f"TOPOLOGY {fpga_count}":
+        raise EmuFlowError("topology optimizer omitted the topology matrix")
+    topology = [list(map(int, lines.pop(0).split())) for _ in range(fpga_count)]
+    if any(len(row) != fpga_count for row in topology) or lines:
+        raise EmuFlowError("topology optimizer returned a malformed matrix")
+    required_metrics = {
+        "initial_worst_path_delay_ns",
+        "optimized_worst_path_delay_ns",
+        "changed_channels",
+        "iterations",
+    }
+    if set(metrics) != required_metrics:
+        raise EmuFlowError("topology optimizer returned incomplete metrics")
+    return metrics, changes, topology
+
+
+def optimize_eda2025_topology(
+    instance_path: Path,
+    routes_path: Path,
+    output_dir: Path,
+    executable: Optional[str] = None,
+    max_changes: Optional[int] = None,
+    current_topology_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Refine physical channel counts, then emit rerouting-ready contracts."""
+    instance = read_json(instance_path)
+    _validate_instance(instance)
+    routes = read_json(routes_path)
+    baseline = evaluate_eda2025_routes(
+        instance_path,
+        routes_path,
+        new_topology_path=current_topology_path,
+    )
+    topology = (
+        parse_topology(current_topology_path, instance["fpga_ids"])
+        if current_topology_path is not None
+        else instance["initial_topology"]
+    )
+    allowed = baseline["topology"]["allowed_changed_channels"]
+    already_changed = baseline["topology"]["changed_channels"]
+    remaining = allowed - already_changed
+    if max_changes is None:
+        budget = remaining
+    elif isinstance(max_changes, bool) or not isinstance(max_changes, int) or max_changes < 0:
+        raise ValidationError("max_changes: expected a non-negative integer")
+    else:
+        budget = min(max_changes, remaining)
+
+    resolved = resolve_native_executable(
+        "emuflow_eda2025_topology_optimizer", executable
+    )
+    with tempfile.TemporaryDirectory(prefix="emuflow-eda2025-topology-") as temporary:
+        root = Path(temporary)
+        native_input = root / "topology.in"
+        native_output = root / "topology.out"
+        _write_topology_optimizer_input(
+            native_input, instance, topology, routes, baseline, budget
+        )
+        completed = subprocess.run(
+            [resolved, str(native_input), str(native_output)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise EmuFlowError(
+                "in-tree EDA 2025 topology optimizer failed with exit code "
+                f"{completed.returncode}: {detail}"
+            )
+        metrics, raw_changes, optimized = _parse_topology_optimizer_output(
+            native_output, len(instance["fpga_ids"])
+        )
+
+    _check_io_limits(
+        optimized,
+        instance["fpga_ids"],
+        instance["max_external_channels"],
+        "optimized topology",
+    )
+    _, iteration_changes = _topology_change(topology, optimized)
+    initial_channels, changed_channels = _topology_change(
+        instance["initial_topology"], optimized
+    )
+    if changed_channels > allowed:
+        raise EmuFlowError("topology optimizer exceeded the contest change budget")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    topology_path = output_dir / "design.newtopo"
+    _write_topology_text(topology_path, instance["fpga_ids"], optimized)
+    artifacts = _write_execution_adapter(instance, optimized, output_dir / "normalized")
+    changes = [
+        {
+            "fpgas": [
+                instance["fpga_ids"][change["left"]],
+                instance["fpga_ids"][change["right"]],
+            ],
+            "previous_channels": change["initial_channels"],
+            "optimized_channels": change["optimized_channels"],
+            "routed_nets": change["routed_nets"],
+        }
+        for change in raw_changes
+    ]
+    report = {
+        "schema": EDA2025_TOPOLOGY_OPTIMIZATION_SCHEMA,
+        "status": "pass",
+        "provider": "quantized-minimax-topology-refinement-v1",
+        "method": {
+            "objective": "exact fixed-route quantized maximum path delay",
+            "move": "minimum channel addition crossing a TDM quantum boundary",
+            "selection": "critical-window minimax with smooth pressure tie-break",
+            "routing_closure": "rerun Phase 4 on emitted normalized contracts",
+        },
+        "metrics": {
+            "initial_worst_path_delay_ns": metrics[
+                "initial_worst_path_delay_ns"
+            ],
+            "predicted_worst_path_delay_ns": metrics[
+                "optimized_worst_path_delay_ns"
+            ],
+            "iteration_changed_channels": iteration_changes,
+            "changed_channels": changed_channels,
+            "input_changed_channels": already_changed,
+            "allowed_changed_channels": allowed,
+            "initial_channels": initial_channels,
+            "iterations": int(metrics["iterations"]),
+            "changed_pairs": len(changes),
+        },
+        "changes": changes,
+        "artifacts": {"topology": str(topology_path), **artifacts},
+    }
+    write_json(output_dir / "topology_optimization.json", report)
+    return report
 
 
 def evaluate_eda2025_routes(

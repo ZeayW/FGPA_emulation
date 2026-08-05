@@ -60,6 +60,30 @@ def tdm_ratio_optimizer() -> Path:
 
 
 @lru_cache(maxsize=1)
+def eda2025_topology_optimizer() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError("a C++17 compiler is required for topology tests")
+    executable = Path(_BUILD_ROOT.name) / "emuflow_eda2025_topology_optimizer"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            str(ROOT / "src/native/eda2025_topology_optimizer.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
 def vtr_architecture_importer() -> Path:
     compiler = (
         shutil.which("c++")

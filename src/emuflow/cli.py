@@ -16,6 +16,7 @@ from .cross_stage import (
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
+    optimize_eda2025_topology,
 )
 from .contest_eda2024 import evaluate_eda2024_solution
 from .contest_eda2023 import (
@@ -239,6 +240,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--official-out",
         type=Path,
         help="also write design.route.out and design.newtopo",
+    )
+    eda2025_topology = contest_subparsers.add_parser(
+        "eda2025-optimize-topology",
+        help="optimize channel counts and emit Phase 4 rerouting contracts",
+    )
+    eda2025_topology.add_argument("--instance", type=Path, required=True)
+    eda2025_topology.add_argument("--routes", type=Path, required=True)
+    eda2025_topology.add_argument("--out", type=Path, required=True)
+    eda2025_topology.add_argument("--optimizer")
+    eda2025_topology.add_argument("--max-changes", type=int)
+    eda2025_topology.add_argument(
+        "--topology",
+        type=Path,
+        help="current design.newtopo for a subsequent optimization round",
     )
 
     ir_parser = subparsers.add_parser("ir", help="EmuIR operations")
@@ -1588,6 +1603,15 @@ def _dispatch(args: argparse.Namespace) -> int:
                 new_topology_path=args.new_topology,
                 runtime_seconds=args.runtime_seconds,
                 official_output_dir=args.official_out,
+            )
+        elif args.contest_command == "eda2025-optimize-topology":
+            report = optimize_eda2025_topology(
+                instance_path=args.instance,
+                routes_path=args.routes,
+                output_dir=args.out,
+                executable=args.optimizer,
+                max_changes=args.max_changes,
+                current_topology_path=args.topology,
             )
         else:
             raise AssertionError(f"unhandled contest command {args.contest_command!r}")

@@ -36,6 +36,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER
+  "Build the in-tree quantized-delay topology optimizer"
+  ON
+)
+option(
   EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK
   "Build the in-tree channel-usage partition feedback optimizer"
   ON
@@ -342,6 +347,20 @@ if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
   target_compile_options(emuflow_tdm_ratio_optimizer PRIVATE -O3)
   set_target_properties(
     emuflow_tdm_ratio_optimizer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
+  add_executable(
+    emuflow_eda2025_topology_optimizer
+    "${CMAKE_SOURCE_DIR}/src/native/eda2025_topology_optimizer.cpp"
+  )
+  target_compile_features(emuflow_eda2025_topology_optimizer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_eda2025_topology_optimizer PRIVATE -O3)
+  set_target_properties(
+    emuflow_eda2025_topology_optimizer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -829,6 +848,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_tdm_ratio_optimizer_cli
       COMMAND "$<TARGET_FILE:emuflow_tdm_ratio_optimizer>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
+    add_test(
+      NAME emuflow_eda2025_topology_optimizer_cli
+      COMMAND "$<TARGET_FILE:emuflow_eda2025_topology_optimizer>" --help
     )
   endif()
 
