@@ -13,11 +13,15 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+from .contest_boarddb import materialize_homogeneous_boarddb
 from .errors import ValidationError
 from .io import write_json
 
 
 EDA2024_EVALUATION_SCHEMA = "emuflow.contest-eda2024-evaluation/v1"
+EDA2024_BOARDDB_MATERIALIZATION_SCHEMA = (
+    "emuflow.contest-eda2024-boarddb-materialization/v1"
+)
 EDA2024_SOURCE_URL = (
     "https://edaoss.icisc.cn/file/cacheFile/2024/8/1/"
     "8e6b33de567b411d8b159b961ef117aa.pdf"
@@ -139,6 +143,117 @@ def parse_topology(
             )
         distances[source] = distance
     return max_hop, sorted(edges), distances
+
+
+def materialize_eda2024_rtl_boarddb(
+    case_dir: Path,
+    device_template_path: Path,
+    output_path: Path,
+    *,
+    name: str,
+    lanes_per_edge: int,
+    template_fpga_id: Optional[str] = None,
+    fabric_clock_mhz: float = 50.0,
+    latency_cycles: int = 2,
+    link_mode: str = "abstract",
+) -> Dict[str, Any]:
+    """Populate a 2024 contest topology with an RTL-capable device template.
+
+    The contest topology is unweighted.  ``lanes_per_edge`` is consequently
+    an explicit projection parameter, not a value inferred from the contest's
+    per-FPGA external-communication constraint.
+    """
+    if (
+        isinstance(lanes_per_edge, bool)
+        or not isinstance(lanes_per_edge, int)
+        or lanes_per_edge <= 0
+    ):
+        raise ValidationError("lanes_per_edge: expected a positive integer")
+    if (
+        isinstance(fabric_clock_mhz, bool)
+        or not isinstance(fabric_clock_mhz, (int, float))
+        or fabric_clock_mhz <= 0
+    ):
+        raise ValidationError("fabric_clock_mhz: expected a positive number")
+    if (
+        isinstance(latency_cycles, bool)
+        or not isinstance(latency_cycles, int)
+        or latency_cycles < 0
+    ):
+        raise ValidationError("latency_cycles: expected a non-negative integer")
+    if link_mode not in {"abstract", "parallel", "serial", "source_synchronous"}:
+        raise ValidationError("link_mode: unsupported BoardDB link mode")
+
+    info_path = case_dir / "design.info"
+    topology_path = case_dir / "design.topo"
+    fpga_ids, external_limits, contest_capacities = parse_design_info(info_path)
+    max_hop, edges, _ = parse_topology(topology_path, fpga_ids)
+    if not edges:
+        raise ValidationError("EDA 2024 topology has no inter-FPGA edge")
+
+    links = [
+        {
+            "id": f"eda2024_link_{index:03d}",
+            "endpoints": [left, right],
+            "direction": "full_duplex",
+            "capacity_sharing": "shared_bidirectional",
+            "mode": link_mode,
+            "data_lanes_per_direction": lanes_per_edge,
+            "fabric_clock_mhz": float(fabric_clock_mhz),
+            "latency_cycles": latency_cycles,
+        }
+        for index, (left, right) in enumerate(edges)
+    ]
+    validated, template_platform, selected = materialize_homogeneous_boarddb(
+        output_path=output_path,
+        name=name,
+        description=(
+            "2024 EDA Elite public unweighted multi-FPGA graph populated with "
+            "a homogeneous FPGA device template and explicit abstract lanes"
+        ),
+        fpga_ids=fpga_ids,
+        links=links,
+        device_template_path=device_template_path,
+        template_fpga_id=template_fpga_id,
+        provenance={
+            "interconnect": {
+                "specification_url": EDA2024_SOURCE_URL,
+                "benchmark_repository": REPART_SOURCE_URL,
+                "benchmark_commit": REPART_BENCHMARK_COMMIT,
+                "case_directory": str(case_dir),
+                "projection": "unweighted-topology-with-configured-lanes",
+                "capacity_semantics": "not-specified-by-contest",
+                "configured_lanes_per_edge": lanes_per_edge,
+                "maximum_legal_hop_distance": max_hop,
+                "external_communication_limits": dict(sorted(external_limits.items())),
+                "contest_resource_capacities": {
+                    fpga_id: {
+                        resource: capacity
+                        for resource, capacity in zip(
+                            RESOURCE_NAMES, contest_capacities[fpga_id]
+                        )
+                    }
+                    for fpga_id in fpga_ids
+                },
+            }
+        },
+    )
+    return {
+        "schema": EDA2024_BOARDDB_MATERIALIZATION_SCHEMA,
+        "status": "pass",
+        "platform": validated.name,
+        "device_template": template_platform.name,
+        "template_fpga": selected["id"],
+        "fpgas": len(validated.fpgas),
+        "links": len(validated.links),
+        "configured_lanes_per_edge": lanes_per_edge,
+        "data_lanes": sum(
+            link.data_lanes_per_direction for link in validated.links
+        ),
+        "maximum_legal_hop_distance": max_hop,
+        "capacity_semantics": "not-specified-by-contest",
+        "output": str(output_path),
+    }
 
 
 def parse_solution(

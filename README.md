@@ -614,7 +614,7 @@ but does not claim package pins, electrical width, or a measured board
 implementation.
 
 The 2024 logic-replication cases remain in their exact upstream RePart
-format. Large benchmark data is fetched on demand at a fixed commit and
+format. Selected benchmark data is fetched on demand at a fixed commit and
 verified against the recorded Git blob ids, rather than copied into this
 repository:
 
@@ -638,6 +638,32 @@ files and the `*` replica records, then recomputes eight-resource capacity,
 per-FPGA external communication, maximum-hop legality, weighted total hop
 distance, and the runtime-adjusted contest score. This separates provider
 optimization from acceptance and scoring.
+
+The same public graph can drive a real RTL flow. The 2024 contest specifies
+an unweighted topology and per-FPGA external-communication limits, but it does
+not specify physical bandwidth per edge. Consequently the materializer
+requires an explicit abstract lane count instead of silently treating either
+contest quantity as board wiring:
+
+```bash
+python3 scripts/fetch_repart_benchmarks.py \
+  --case case05 \
+  --out build/benchmarks/repart/case05
+
+emuflow contest eda2024-materialize-boarddb \
+  --case-dir build/benchmarks/repart/case05 \
+  --device-template platforms/virtual/academic_vtr_4fpga_mesh.json \
+  --name eda2024-case05-academic-rtl \
+  --lanes-per-edge 16 \
+  --output build/benchmarks/repart/case05/rtl-boarddb.json
+```
+
+The output preserves the official vertices, edges, maximum-hop constraint,
+external limits, and eight-resource records as provenance. Device capacity
+comes from the selected FPGA template; `--lanes-per-edge` remains visibly
+qualified as a configured academic parameter. Use at least two lanes when an
+arbitrary RTL workload must carry both directions on an edge, because each
+scheduled lane group has one fixed direction.
 
 Add `--physical` to select the default open physical provider and feed routed
 timing back into Phase 7C:

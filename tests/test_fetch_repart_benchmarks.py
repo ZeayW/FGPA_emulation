@@ -5,6 +5,10 @@ from scripts.fetch_repart_benchmarks import CASES, git_blob_id
 
 
 class RePartBenchmarkFetcherTest(unittest.TestCase):
+    def test_small_and_large_four_fpga_cases_are_pinned(self):
+        self.assertIn("case01", CASES)
+        self.assertIn("case05", CASES)
+
     def test_every_pinned_git_blob_id_is_complete_hex(self):
         for case, files in CASES.items():
             for filename, (blob_id, size) in files.items():

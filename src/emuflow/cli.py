@@ -20,7 +20,10 @@ from .contest_eda2025 import (
     optimize_eda2025_routing,
     optimize_eda2025_topology,
 )
-from .contest_eda2024 import evaluate_eda2024_solution
+from .contest_eda2024 import (
+    evaluate_eda2024_solution,
+    materialize_eda2024_rtl_boarddb,
+)
 from .contest_eda2023 import (
     evaluate_eda2023_solution,
     import_eda2023_case,
@@ -159,6 +162,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime-seconds", type=float, default=0.0
     )
     eda2024_evaluate.add_argument("--output", "-o", type=Path)
+    eda2024_boarddb = contest_subparsers.add_parser(
+        "eda2024-materialize-boarddb",
+        help="project a public unweighted topology using explicit abstract lanes",
+    )
+    eda2024_boarddb.add_argument("--case-dir", type=Path, required=True)
+    eda2024_boarddb.add_argument("--device-template", type=Path, required=True)
+    eda2024_boarddb.add_argument("--output", "-o", type=Path, required=True)
+    eda2024_boarddb.add_argument("--name", required=True)
+    eda2024_boarddb.add_argument("--lanes-per-edge", type=int, required=True)
+    eda2024_boarddb.add_argument("--template-fpga")
+    eda2024_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
+    eda2024_boarddb.add_argument("--latency-cycles", type=int, default=2)
+    eda2024_boarddb.add_argument(
+        "--link-mode",
+        choices=("abstract", "parallel", "serial", "source_synchronous"),
+        default="abstract",
+    )
     eda2023_import = contest_subparsers.add_parser(
         "eda2023-import",
         help="normalize an official 2023 die-level routing case",
@@ -1645,6 +1665,18 @@ def _dispatch(args: argparse.Namespace) -> int:
                 solution_path=solution,
                 runtime_seconds=args.runtime_seconds,
                 output_path=args.output,
+            )
+        elif args.contest_command == "eda2024-materialize-boarddb":
+            report = materialize_eda2024_rtl_boarddb(
+                case_dir=args.case_dir,
+                device_template_path=args.device_template,
+                output_path=args.output,
+                name=args.name,
+                lanes_per_edge=args.lanes_per_edge,
+                template_fpga_id=args.template_fpga,
+                fabric_clock_mhz=args.fabric_clock_mhz,
+                latency_cycles=args.latency_cycles,
+                link_mode=args.link_mode,
             )
         elif args.contest_command == "iccad2019-import":
             report = import_iccad2019_instance(

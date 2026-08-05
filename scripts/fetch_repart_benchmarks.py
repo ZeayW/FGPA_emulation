@@ -17,6 +17,12 @@ RAW_ROOT = f"https://raw.githubusercontent.com/Welement-zyf/RePart/{COMMIT}"
 # Git blob ids and byte sizes come from the fixed upstream commit.  Verifying
 # the Git object hash detects both truncated downloads and changed contents.
 CASES = {
+    "case01": {
+        "design.are": ("ae6a13034d0eeb250602a00463bf257b0c75d037", 315),
+        "design.info": ("4e151d5fa699cb81cbf0a8ec1cfe4f2b9e3d1fa9", 107),
+        "design.net": ("05570814cc36c15ead016377239bdcbc7b12399e", 163),
+        "design.topo": ("7978b223bc05b93b420ce60340baf28f21c4f76c", 37),
+    },
     "case03": {
         "design.are": ("a27d8747512686dc9d14a2024a2ea9f72b1740bc", 254412),
         "design.info": ("a35c7ec373d44a568a5bf25dc46c8cfd0b754fb7", 1079),
@@ -28,6 +34,12 @@ CASES = {
         "design.info": ("fda75f162af7d724811002f64b6e555fe113dc64", 2359),
         "design.net": ("4d526c3d0ddcbcb3ed2e8154e0c88545678512a9", 29224302),
         "design.topo": ("bc6b5c03b72494990547e1514b397662731fe8fa", 2384),
+    },
+    "case05": {
+        "design.are": ("087aae6a88f9f5c6f638540d97623c612cda4ffc", 35256),
+        "design.info": ("69ac55cf0411ca4077f0f8e6d241f15e82fa4b8d", 132),
+        "design.net": ("3fd0a6d76ff1fc42552b3f4b387542975eb4e539", 57775),
+        "design.topo": ("e930ca5b8f4c4331749bcdaecc59bb4692b0f66e", 38),
     },
 }
 

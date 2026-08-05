@@ -2,8 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.contest_eda2024 import evaluate_eda2024_solution
+from emuflow.contest_eda2024 import (
+    evaluate_eda2024_solution,
+    materialize_eda2024_rtl_boarddb,
+)
 from emuflow.errors import ValidationError
+from emuflow.io import read_json
 
 
 INFO = """\
@@ -103,6 +107,69 @@ class Eda2024ContestCheckerTest(unittest.TestCase):
                 for record in report["communication"]
             }
             self.assertEqual(usage, {"F1": 2, "F2": 0, "F3": 2})
+
+    def test_rtl_projection_preserves_unweighted_topology_and_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_case(root)
+            output = root / "rtl-boarddb.json"
+            repository = Path(__file__).resolve().parents[1]
+            report = materialize_eda2024_rtl_boarddb(
+                case_dir=root,
+                device_template_path=(
+                    repository / "platforms/virtual/academic_vtr_4fpga_mesh.json"
+                ),
+                output_path=output,
+                name="eda2024_fixture_academic_rtl",
+                lanes_per_edge=4,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["fpgas"], 3)
+            self.assertEqual(report["links"], 2)
+            self.assertEqual(report["data_lanes"], 8)
+            self.assertEqual(report["maximum_legal_hop_distance"], 2)
+
+            boarddb = read_json(output)
+            self.assertEqual(
+                [fpga["id"] for fpga in boarddb["fpgas"]],
+                ["F1", "F2", "F3"],
+            )
+            self.assertEqual(
+                [link["endpoints"] for link in boarddb["links"]],
+                [["F1", "F2"], ["F2", "F3"]],
+            )
+            self.assertTrue(
+                all(
+                    link["capacity_sharing"] == "shared_bidirectional"
+                    and link["data_lanes_per_direction"] == 4
+                    for link in boarddb["links"]
+                )
+            )
+            provenance = boarddb["platform"]["provenance"]["interconnect"]
+            self.assertEqual(
+                provenance["capacity_semantics"], "not-specified-by-contest"
+            )
+            self.assertEqual(provenance["configured_lanes_per_edge"], 4)
+            self.assertEqual(
+                provenance["external_communication_limits"],
+                {"F1": 10, "F2": 10, "F3": 10},
+            )
+
+    def test_rtl_projection_rejects_invalid_lane_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_case(root)
+            with self.assertRaisesRegex(ValidationError, "lanes_per_edge"):
+                materialize_eda2024_rtl_boarddb(
+                    case_dir=root,
+                    device_template_path=(
+                        Path(__file__).resolve().parents[1]
+                        / "platforms/virtual/academic_vtr_4fpga_mesh.json"
+                    ),
+                    output_path=root / "bad.json",
+                    name="bad",
+                    lanes_per_edge=0,
+                )
 
     def test_checker_rejects_maximum_hop_violation(self):
         with tempfile.TemporaryDirectory() as temporary:
