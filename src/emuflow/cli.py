@@ -67,7 +67,12 @@ from .packed_netlist import (
 )
 from .packed_placement import run_packed_openparf_placement
 from .partition_feedback import run_partition_feedback
-from .physical_pins import run_phase6b, validate_package_pin_binding
+from .physical_pins import (
+    SERIAL_TRANSCEIVER_PROVIDER,
+    run_phase6b,
+    validate_package_pin_binding,
+    validate_serial_transceiver_binding,
+)
 from .physical_regions import (
     run_physical_region_merge,
     validate_fpga_interchange_architecture_regions,
@@ -1509,12 +1514,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase6b.add_argument("--schedule", type=Path, required=True)
     phase6b.add_argument("--platform", type=Path, required=True)
-    phase6b.add_argument("--position-hints", type=Path, required=True)
-    phase6b.add_argument("--pin-plan", type=Path, required=True)
+    phase6b.add_argument(
+        "--position-hints",
+        type=Path,
+        help="required with --pin-plan or for a parallel-I/O BSP",
+    )
+    phase6b.add_argument(
+        "--pin-plan",
+        type=Path,
+        help="required with --position-hints or for a parallel-I/O BSP",
+    )
     phase6b.add_argument(
         "--anchor", action="append", default=[], metavar="FPGA=PATH"
     )
-    phase6b.add_argument("--bsp", type=Path, required=True)
+    phase6b.add_argument(
+        "--bsp",
+        type=Path,
+        help=(
+            "parallel-I/O hardware BSP; omit for source-backed serial "
+            "endpoint bindings embedded in BoardDB"
+        ),
+    )
     phase6b.add_argument("--solver")
     phase6b.add_argument("--iostandard", default="LVCMOS18")
     phase6b.add_argument("--placement-weight", type=float, default=1.0)
@@ -1535,14 +1555,12 @@ def _build_parser() -> argparse.ArgumentParser:
     package_pin_validate.add_argument("binding", type=Path)
     package_pin_validate.add_argument("--schedule", type=Path, required=True)
     package_pin_validate.add_argument("--platform", type=Path, required=True)
-    package_pin_validate.add_argument(
-        "--position-hints", type=Path, required=True
-    )
-    package_pin_validate.add_argument("--pin-plan", type=Path, required=True)
+    package_pin_validate.add_argument("--position-hints", type=Path)
+    package_pin_validate.add_argument("--pin-plan", type=Path)
     package_pin_validate.add_argument(
         "--anchor", action="append", default=[], metavar="FPGA=PATH"
     )
-    package_pin_validate.add_argument("--bsp", type=Path, required=True)
+    package_pin_validate.add_argument("--bsp", type=Path)
 
     lower = subparsers.add_parser(
         "lower-placement-ir",
@@ -2487,20 +2505,43 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "package-pin":
         platform = Platform.load(args.platform)
-        report = validate_package_pin_binding(
-            read_json(args.schedule),
-            platform,
-            read_json(args.position_hints),
-            read_json(args.pin_plan),
-            {
-                fpga: read_json(path)
-                for fpga, path in _keyed_paths(
-                    args.anchor, "--anchor"
-                ).items()
-            },
-            read_json(args.bsp),
-            read_json(args.binding),
+        schedule = read_json(args.schedule)
+        positions = (
+            read_json(args.position_hints)
+            if args.position_hints is not None
+            else None
         )
+        plan = read_json(args.pin_plan) if args.pin_plan is not None else None
+        anchors = {
+            fpga: read_json(path)
+            for fpga, path in _keyed_paths(
+                args.anchor, "--anchor"
+            ).items()
+        }
+        binding = read_json(args.binding)
+        if binding.get("provider") == SERIAL_TRANSCEIVER_PROVIDER:
+            if args.bsp is not None:
+                parser.error(
+                    "--bsp must be omitted for a BoardDB serial binding"
+                )
+            report = validate_serial_transceiver_binding(
+                schedule, platform, positions, plan, anchors, binding
+            )
+        else:
+            if args.bsp is None or positions is None or plan is None:
+                parser.error(
+                    "--bsp, --position-hints, and --pin-plan are required "
+                    "for a parallel package-pin binding"
+                )
+            report = validate_package_pin_binding(
+                schedule,
+                platform,
+                positions,
+                plan,
+                anchors,
+                read_json(args.bsp),
+                binding,
+            )
         _print_json(report)
         return 0
 

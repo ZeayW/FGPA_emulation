@@ -5,14 +5,20 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.board_arm_mps4 import materialize_arm_mps4_boarddb
+from emuflow.netlist import _build_virtual_anchors
 from emuflow.physical_pins import (
     PACKAGE_PIN_PROVIDER,
+    SERIAL_TRANSCEIVER_PROVIDER,
     binding_to_xdc,
     build_package_pin_binding,
+    build_serial_transceiver_binding,
+    run_phase6b,
     validate_hardware_bsp,
     validate_package_pin_binding,
+    validate_serial_transceiver_binding,
 )
-from emuflow.io import read_json
+from emuflow.io import read_json, write_json
 from emuflow.pin_planning import build_pin_plan
 from emuflow.platform import Platform
 
@@ -321,6 +327,188 @@ class PhysicalPinBindingTest(unittest.TestCase):
         self.assertEqual(validation["pins"], 512)
         self.assertEqual(validation["channels"], 256)
         self.assertEqual(validation["domains"], 8)
+
+    def test_source_backed_mps4_gty_binding_projects_user_bits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            boarddb = Path(temporary_directory) / "mps4.json"
+            materialize_arm_mps4_boarddb(
+                boarddb,
+                name="mps4_serial_binding_fixture",
+                fabric_clock_mhz=50.0,
+                payload_bits_per_lane_per_cycle=64,
+                latency_cycles=4,
+            )
+            platform = Platform.load(boarddb)
+        schedule = {
+            "design": "mps4_serial_binding_fixture",
+            "platform": platform.name,
+            "entries": [
+                {
+                    "id": f"serial-entry-{index}",
+                    "link": "mps4_b2b_1",
+                    "from": "mps4_1",
+                    "to": "mps4_2",
+                    "tdm_ratio": 4,
+                    "slot": index,
+                    "lane": index,
+                }
+                for index in range(4)
+            ],
+        }
+        positions = {
+            "schema": "emuflow.signal-position-hints/v1",
+            "design": schedule["design"],
+            "platform": platform.name,
+            "provider": "openparf-lookahead-centroid-v1",
+            "region_count": 1,
+            "metrics": {"signals": 4, "endpoint_centroid_fallbacks": 0},
+            "entries": [
+                {
+                    "schedule_entry": entry["id"],
+                    "source_y": 0.5,
+                    "sink_y": 0.5,
+                    "source_region": 0,
+                    "sink_region": 0,
+                    "source_fallback": False,
+                    "sink_fallback": False,
+                }
+                for entry in schedule["entries"]
+            ],
+        }
+        plan = build_pin_plan(
+            schedule,
+            platform,
+            positions,
+            executable=str(self.pin_planner),
+            refinement_iterations=4,
+        )
+        endpoints = {fpga.id: [] for fpga in platform.fpgas}
+        for item in plan["entries"]:
+            logical_lane = item["physical_lane"]
+            for fpga, peer, kind in (
+                ("mps4_1", "mps4_2", "tx"),
+                ("mps4_2", "mps4_1", "rx"),
+            ):
+                endpoints[fpga].append(
+                    {
+                        "id": (
+                            f"__emuflow_{kind}_{item['schedule_entry']}"
+                        ),
+                        "link": "mps4_b2b_1",
+                        "peer": peer,
+                        "kind": kind,
+                        "lane": logical_lane,
+                        "slot": next(
+                            entry["slot"]
+                            for entry in schedule["entries"]
+                            if entry["id"] == item["schedule_entry"]
+                        ),
+                    }
+                )
+        anchors = {
+            fpga.id: _build_virtual_anchors(
+                fpga.id, platform, endpoints[fpga.id]
+            )
+            for fpga in platform.fpgas
+        }
+        binding = build_serial_transceiver_binding(
+            schedule, platform, positions, plan, anchors
+        )
+        self.assertEqual(binding["provider"], SERIAL_TRANSCEIVER_PROVIDER)
+        self.assertLessEqual(
+            binding["metrics"]["directed_transceiver_channels"], 12
+        )
+        self.assertEqual(binding["metrics"]["logical_bindings"], 1)
+        entry = binding["entries"][0]
+        lane = entry["physical_lane"]
+        source = platform.links[0].endpoint_binding("mps4_1")
+        sink = platform.links[0].endpoint_binding("mps4_2")
+        self.assertEqual(
+            entry["source_package_pins"]["p"],
+            source.lanes[lane].tx_package_pin_p,
+        )
+        self.assertEqual(
+            entry["sink_package_pins"]["p"],
+            sink.lanes[lane].rx_package_pin_p,
+        )
+        validation = validate_serial_transceiver_binding(
+            schedule, platform, positions, plan, anchors, binding
+        )
+        self.assertEqual(validation["status"], "pass")
+        xdc = binding_to_xdc(binding, "mps4_1")
+        self.assertIn("gty_txp_mps4_b2b_1_mps4_2", xdc)
+        self.assertNotIn("set_property IOSTANDARD", xdc)
+        corrupted = copy.deepcopy(binding)
+        corrupted["entries"][0]["source_package_pins"]["p"] = "WRONG"
+        with self.assertRaisesRegex(ValidationError, "independently agree"):
+            validate_serial_transceiver_binding(
+                schedule, platform, positions, plan, anchors, corrupted
+            )
+        default_endpoints = {fpga.id: [] for fpga in platform.fpgas}
+        for entry in schedule["entries"]:
+            for fpga, peer, kind in (
+                ("mps4_1", "mps4_2", "tx"),
+                ("mps4_2", "mps4_1", "rx"),
+            ):
+                default_endpoints[fpga].append(
+                    {
+                        "id": f"__emuflow_{kind}_{entry['id']}",
+                        "link": entry["link"],
+                        "peer": peer,
+                        "kind": kind,
+                        "lane": entry["lane"],
+                        "slot": entry["slot"],
+                    }
+                )
+        default_anchors = {
+            fpga.id: _build_virtual_anchors(
+                fpga.id, platform, default_endpoints[fpga.id]
+            )
+            for fpga in platform.fpgas
+        }
+        fixed_binding = build_serial_transceiver_binding(
+            schedule, platform, None, None, default_anchors
+        )
+        self.assertEqual(fixed_binding["metrics"]["logical_bindings"], 4)
+        self.assertEqual(
+            fixed_binding["metrics"]["directed_transceiver_channels"], 1
+        )
+        self.assertEqual(
+            fixed_binding["metrics"]["active_transceiver_sites"], 2
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            paths = {
+                "schedule": root / "schedule.json",
+                "platform": root / "platform.json",
+                "positions": root / "positions.json",
+                "plan": root / "pin_plan.json",
+            }
+            for key, document in (
+                ("schedule", schedule),
+                ("platform", platform.to_dict()),
+            ):
+                write_json(paths[key], document)
+            anchor_paths = {}
+            for fpga, document in default_anchors.items():
+                path = root / f"{fpga}.anchors.json"
+                write_json(path, document)
+                anchor_paths[fpga] = path
+            output = root / "phase6b"
+            report = run_phase6b(
+                schedule_path=paths["schedule"],
+                platform_path=paths["platform"],
+                positions_path=None,
+                pin_plan_path=None,
+                anchor_paths=anchor_paths,
+                bsp_path=None,
+                output_dir=output,
+            )
+            self.assertEqual(report["provider"], SERIAL_TRANSCEIVER_PROVIDER)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                read_json(output / "package_pin_binding.json"), fixed_binding
+            )
 
 
 if __name__ == "__main__":

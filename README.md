@@ -238,7 +238,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
 | TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Range-normalized KKT updates avoid numeric collapse on large timing scales. Exact/scalable legalization uses every physical lane, then global path-budget and per-domain minimax refinement cross quantization plateaus; concrete scheduling and independent checks enforce direction, ratio, collision, barrier, and transport semantics |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
-| Pin planning | In-tree C++17 grouping plus sparse min-cost-flow package-pin binding | Virtual planning and synthetic-BSP validation work; real board sign-off awaits a BSP |
+| Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins without pretending that its still-unknown transceiver sites or protocol wrapper are complete |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
@@ -781,7 +781,16 @@ user-side word width, or measured latency. The example uses the open backend's
 20-ns common fabric period: 64 user-side bits per lane at 50 MHz, or 3.2 Gbps
 per lane before encoding/protocol overhead. Routing and TDM use the resulting
 768 user-side bits per link cycle, while BSP requirements retain twelve
-physical differential transceiver lanes. A 390.625-MHz profile would reach the
+physical differential transceiver lanes. The normalized BoardDB preserves the
+J48/J49, MGT0/MGT1, and TXP/TXN/RXP/RXN package-pin records. Phase 6B projects
+each logical user bit to `(physical GTY lane, bit within the user word)`,
+deduplicates physical channels, and emits differential package-pin XDC directly
+from those source-backed records. It deliberately leaves the exact
+`GTYE4_CHANNEL_X*Y*` site unresolved because the cited manual does not specify
+that Vivado site mapping. For this fixed serial provider, `phase6b` consumes
+the Phase 5 schedule and Phase 6 per-FPGA anchor files directly; `--bsp`,
+`--position-hints`, and `--pin-plan` are only needed by the optimized parallel
+I/O provider. A 390.625-MHz profile would reach the
 documented 25-Gbps raw ceiling, but requires that implementation to close a
 2.56-ns common clock or a future protocol wrapper with a separate GTY clock
 domain. In either case the model provenance remains
@@ -1029,14 +1038,19 @@ reconstructs group capacity, slot collisions, objective values, and split
 netlists. Its validation report includes the reconstructed logical-lane
 baseline and objective, crossing-bit, and pin-distance improvements.
 
-Phase 6B is also source-complete: `src/native/bsp_pin_solver.cpp` implements
-exact sparse minimum-cost bipartite flow over electrically legal physical
-channels. The checker independently enforces pin uniqueness, directed
-connectivity, bank capacity, bank/pin IOSTANDARD support, reserved pins,
-frequency limits, and binding cost before emitting per-FPGA XDC. The checked-in
-explicit VU9P mesh BSP is deliberately synthetic and is only an algorithm
-validation target; a real board still requires revision-controlled pin data
-and vendor DRC/timing sign-off.
+Phase 6B has two explicit electrical providers. For parallel I/O,
+`src/native/bsp_pin_solver.cpp` implements exact sparse minimum-cost bipartite
+flow over electrically legal physical channels. Its checker independently
+enforces pin uniqueness, directed connectivity, bank capacity, bank/pin
+IOSTANDARD support, reserved pins, frequency limits, and binding cost before
+emitting per-FPGA XDC. The checked-in VU9P mesh BSP is deliberately synthetic
+and is only an algorithm-validation target. For source-backed serial BoardDB
+links, Phase 6B instead uses the immutable endpoint/lane records: every logical
+TDM anchor is independently projected onto a physical transceiver lane, and
+the corresponding source TX and sink RX differential pairs are emitted once.
+No LVCMOS IOSTANDARD or undocumented transceiver site is invented. The MPS4
+path therefore has documented package-pin binding, while protocol IP, clocks,
+vendor DRC/timing sign-off, and hardware qualification remain later BSP gates.
 
 FPGA placement follows the same rule. The default Phase 2/7 path launches the
 OpenPARF Python, C++, and PyTorch-operator source compiled by the root CMake

@@ -1,3 +1,4 @@
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,6 +76,23 @@ class ArmMps4BoardTest(unittest.TestCase):
             document["provenance"]["transport_profile"]["qualification"],
             "configured_model_not_hardware_measured",
         )
+        normalized = platform.to_dict()
+        self.assertEqual(
+            normalized["links"][0]["endpoint_bindings"],
+            document["links"][0]["endpoint_bindings"],
+        )
+        self.assertEqual(
+            Platform.from_dict(normalized).links[0].endpoint_binding("mps4_1")
+            .lanes[0]
+            .tx_package_pin_p,
+            "BD42",
+        )
+        corrupted = copy.deepcopy(document)
+        corrupted["links"][0]["endpoint_bindings"][0]["lanes"][1][
+            "tx_package_pins"
+        ]["p"] = "BD42"
+        with self.assertRaisesRegex(ValidationError, "package pin is already used"):
+            Platform.from_dict(corrupted)
         physical_lanes = _physical_data_lanes(platform)
         self.assertEqual(len(physical_lanes), 3 * 12 * 4)
         self.assertTrue(
@@ -92,11 +110,35 @@ class ArmMps4BoardTest(unittest.TestCase):
                 for item in physical_lanes
             )
         )
+        bound_tx = next(
+            item
+            for item in physical_lanes
+            if item["id"] == "mps4_b2b_1:mps4_1:tx:0"
+        )
+        self.assertEqual(bound_tx["binding_status"], "partially_bound")
+        self.assertEqual(bound_tx["connector"], "J49")
+        self.assertEqual(bound_tx["mgt_group"], "MGT0")
+        self.assertEqual(bound_tx["package_pin_p"], "BD42")
+        self.assertEqual(bound_tx["package_pin_n"], "BD43")
+        self.assertEqual(
+            bound_tx["unresolved_binding_fields"], ["transceiver_site"]
+        )
         channels = _link_channels(platform)
         self.assertEqual(len(channels), 6)
         self.assertTrue(
-            all("transceiver_profile" in item["required_binding_fields"] for item in channels)
+            all(
+                "transceiver_profile" in item["required_binding_fields"]
+                for item in channels
+            )
         )
+        first_channel = next(
+            item
+            for item in channels
+            if item["id"] == "mps4_b2b_1:mps4_1-to-mps4_2"
+        )
+        self.assertEqual(first_channel["source_connector"], "J49")
+        self.assertEqual(first_channel["sink_connector"], "J48")
+        self.assertEqual(first_channel["configured_line_rate_gbps_per_lane"], 25.0)
         anchors = _build_virtual_anchors(
             "mps4_1",
             platform,

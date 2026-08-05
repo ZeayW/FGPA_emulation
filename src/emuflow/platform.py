@@ -52,6 +52,44 @@ class FpgaNode:
 
 
 @dataclass(frozen=True)
+class SerialLaneBinding:
+    lane: int
+    tx_package_pin_p: str
+    tx_package_pin_n: str
+    rx_package_pin_p: str
+    rx_package_pin_n: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "lane": self.lane,
+            "tx_package_pins": {
+                "p": self.tx_package_pin_p,
+                "n": self.tx_package_pin_n,
+            },
+            "rx_package_pins": {
+                "p": self.rx_package_pin_p,
+                "n": self.rx_package_pin_n,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class LinkEndpointBinding:
+    fpga: str
+    connector: str
+    mgt: str
+    lanes: Tuple[SerialLaneBinding, ...]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fpga": self.fpga,
+            "connector": self.connector,
+            "mgt": self.mgt,
+            "lanes": [lane.to_dict() for lane in self.lanes],
+        }
+
+
+@dataclass(frozen=True)
 class BoardLink:
     id: str
     endpoints: Tuple[str, str]
@@ -63,6 +101,7 @@ class BoardLink:
     capacity_sharing: str = "per_direction"
     payload_bits_per_lane_per_cycle: int = 1
     max_line_rate_gbps_per_lane: Optional[float] = None
+    endpoint_bindings: Tuple[LinkEndpointBinding, ...] = ()
 
     @property
     def transport_bits_per_cycle_per_direction(self) -> int:
@@ -110,7 +149,21 @@ class BoardLink:
             result["max_line_rate_gbps_per_lane"] = (
                 self.max_line_rate_gbps_per_lane
             )
+        if self.endpoint_bindings:
+            result["endpoint_bindings"] = [
+                binding.to_dict() for binding in self.endpoint_bindings
+            ]
         return result
+
+    def endpoint_binding(self, fpga: str) -> Optional[LinkEndpointBinding]:
+        return next(
+            (
+                binding
+                for binding in self.endpoint_bindings
+                if binding.fpga == fpga
+            ),
+            None,
+        )
 
 
 @dataclass(frozen=True)
@@ -201,6 +254,8 @@ class Platform:
             raise ValidationError("platform.links: expected an array")
         links: List[BoardLink] = []
         link_ids = set()
+        used_serial_connectors = set()
+        used_serial_package_pins = set()
         for index, raw in enumerate(raw_links):
             item = _require_mapping(raw, f"links[{index}]")
             link_id = _require_nonempty_string(item.get("id"), f"links[{index}].id")
@@ -319,6 +374,141 @@ class Platform:
                         f"{configured_rate:g} Gbps/lane exceeds maximum "
                         f"line rate {float(line_rate):g} Gbps/lane"
                     )
+            raw_endpoint_bindings = item.get("endpoint_bindings", [])
+            if not isinstance(raw_endpoint_bindings, list):
+                raise ValidationError(
+                    f"links[{index}].endpoint_bindings: expected an array"
+                )
+            if raw_endpoint_bindings and mode != "serial":
+                raise ValidationError(
+                    f"links[{index}].endpoint_bindings: require serial mode"
+                )
+            endpoint_bindings: List[LinkEndpointBinding] = []
+            bound_fpgas = set()
+            for binding_index, raw_binding in enumerate(raw_endpoint_bindings):
+                binding_context = (
+                    f"links[{index}].endpoint_bindings[{binding_index}]"
+                )
+                binding = _require_mapping(
+                    raw_binding,
+                    binding_context,
+                )
+                fpga = _require_nonempty_string(
+                    binding.get("fpga"),
+                    f"{binding_context}.fpga",
+                )
+                connector = _require_nonempty_string(
+                    binding.get("connector"),
+                    f"{binding_context}.connector",
+                )
+                mgt = _require_nonempty_string(
+                    binding.get("mgt"),
+                    f"{binding_context}.mgt",
+                )
+                if fpga not in endpoints or fpga in bound_fpgas:
+                    raise ValidationError(
+                        f"{binding_context}: "
+                        "FPGA must cover one link endpoint exactly once"
+                    )
+                connector_key = (fpga, connector)
+                if connector_key in used_serial_connectors:
+                    raise ValidationError(
+                        f"{binding_context}: "
+                        "connector is already used by another link"
+                    )
+                raw_lane_bindings = binding.get("lanes")
+                if not isinstance(raw_lane_bindings, list):
+                    raise ValidationError(
+                        f"{binding_context}.lanes: "
+                        "expected an array"
+                    )
+                lane_bindings: List[SerialLaneBinding] = []
+                lane_ids = set()
+                binding_package_pins = set()
+                for lane_index, raw_lane in enumerate(raw_lane_bindings):
+                    lane_context = f"{binding_context}.lanes[{lane_index}]"
+                    lane = _require_mapping(
+                        raw_lane,
+                        lane_context,
+                    )
+                    lane_id = lane.get("lane")
+                    if (
+                        isinstance(lane_id, bool)
+                        or not isinstance(lane_id, int)
+                        or lane_id < 0
+                        or lane_id in lane_ids
+                    ):
+                        raise ValidationError(
+                            f"{lane_context}.lane: "
+                            "expected a unique non-negative integer"
+                        )
+                    tx = _require_mapping(
+                        lane.get("tx_package_pins"),
+                        f"{lane_context}.tx_package_pins",
+                    )
+                    rx = _require_mapping(
+                        lane.get("rx_package_pins"),
+                        f"{lane_context}.rx_package_pins",
+                    )
+                    pins = tuple(
+                        _require_nonempty_string(
+                            pair.get(polarity),
+                            f"{lane_context}.{direction}_package_pins."
+                            f"{polarity}",
+                        )
+                        for direction, pair in (("tx", tx), ("rx", rx))
+                        for polarity in ("p", "n")
+                    )
+                    if len(set(pins)) != len(pins):
+                        raise ValidationError(
+                            f"{lane_context}: "
+                            "differential package pins must be distinct"
+                        )
+                    package_keys = {(fpga, pin) for pin in pins}
+                    if (
+                        package_keys & used_serial_package_pins
+                        or set(pins) & binding_package_pins
+                    ):
+                        raise ValidationError(
+                            f"{lane_context}: "
+                            "package pin is already used"
+                        )
+                    lane_ids.add(lane_id)
+                    binding_package_pins.update(pins)
+                    lane_bindings.append(
+                        SerialLaneBinding(
+                            lane=lane_id,
+                            tx_package_pin_p=pins[0],
+                            tx_package_pin_n=pins[1],
+                            rx_package_pin_p=pins[2],
+                            rx_package_pin_n=pins[3],
+                        )
+                    )
+                if lane_ids != set(range(lanes)):
+                    raise ValidationError(
+                        f"{binding_context}.lanes: "
+                        "must cover every physical lane exactly once"
+                    )
+                bound_fpgas.add(fpga)
+                used_serial_connectors.add(connector_key)
+                used_serial_package_pins.update(
+                    (fpga, pin) for pin in binding_package_pins
+                )
+                endpoint_bindings.append(
+                    LinkEndpointBinding(
+                        fpga=fpga,
+                        connector=connector,
+                        mgt=mgt,
+                        lanes=tuple(
+                            sorted(lane_bindings, key=lambda entry: entry.lane)
+                        ),
+                    )
+                )
+            if endpoint_bindings and bound_fpgas != set(endpoints):
+                raise ValidationError(
+                    f"links[{index}].endpoint_bindings: "
+                    "must cover both link endpoints exactly"
+                )
             links.append(
                 BoardLink(
                     id=link_id,
@@ -332,6 +522,9 @@ class Platform:
                     payload_bits_per_lane_per_cycle=payload_width,
                     max_line_rate_gbps_per_lane=(
                         None if line_rate is None else float(line_rate)
+                    ),
+                    endpoint_bindings=tuple(
+                        sorted(endpoint_bindings, key=lambda entry: entry.fpga)
                     ),
                 )
             )

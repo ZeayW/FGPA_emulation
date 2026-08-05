@@ -43,8 +43,10 @@ def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
                 for lane in range(link.data_lanes_per_direction):
                     if link.mode == "serial":
                         required_fields = [
-                            "package_pin_p",
-                            "package_pin_n",
+                            "tx_package_pin_p",
+                            "tx_package_pin_n",
+                            "rx_package_pin_p",
+                            "rx_package_pin_n",
                             "connector",
                             "transceiver_site",
                         ]
@@ -57,20 +59,15 @@ def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
                         ]
                         lane_kind = "parallel_data"
                     records.append(
-                        {
-                            "id": f"{link.id}:{fpga}:inout:{lane}",
-                            "link": link.id,
-                            "fpga": fpga,
-                            "peer": peer,
-                            "direction": "inout",
-                            "logical_lane": lane,
-                            "physical_lane": lane,
-                            "lane_kind": lane_kind,
-                            "payload_bits_per_lane_per_cycle": (
-                                link.payload_bits_per_lane_per_cycle
-                            ),
-                            "required_binding_fields": required_fields,
-                        }
+                        _physical_lane_record(
+                            link,
+                            fpga,
+                            peer,
+                            "inout",
+                            lane,
+                            required_fields,
+                            lane_kind,
+                        )
                     )
             continue
         for source, sink in _link_directions(link):
@@ -95,22 +92,85 @@ def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
                         ]
                         lane_kind = "parallel_data"
                     records.append(
-                        {
-                            "id": f"{link.id}:{fpga}:{direction}:{lane}",
-                            "link": link.id,
-                            "fpga": fpga,
-                            "peer": peer,
-                            "direction": direction,
-                            "logical_lane": lane,
-                            "physical_lane": lane,
-                            "lane_kind": lane_kind,
-                            "payload_bits_per_lane_per_cycle": (
-                                link.payload_bits_per_lane_per_cycle
-                            ),
-                            "required_binding_fields": required_fields,
-                        }
+                        _physical_lane_record(
+                            link,
+                            fpga,
+                            peer,
+                            direction,
+                            lane,
+                            required_fields,
+                            lane_kind,
+                        )
                     )
     return sorted(records, key=lambda item: item["id"])
+
+
+def _physical_lane_record(
+    link: BoardLink,
+    fpga: str,
+    peer: str,
+    direction: str,
+    lane: int,
+    required_fields: Sequence[str],
+    lane_kind: str,
+) -> Dict[str, Any]:
+    record: Dict[str, Any] = {
+        "id": f"{link.id}:{fpga}:{direction}:{lane}",
+        "link": link.id,
+        "fpga": fpga,
+        "peer": peer,
+        "direction": direction,
+        "logical_lane": lane,
+        "physical_lane": lane,
+        "lane_kind": lane_kind,
+        "payload_bits_per_lane_per_cycle": (
+            link.payload_bits_per_lane_per_cycle
+        ),
+        "required_binding_fields": list(required_fields),
+    }
+    if link.mode != "serial":
+        record["binding_status"] = "unbound"
+        return record
+    endpoint = link.endpoint_binding(fpga)
+    if endpoint is None:
+        record["binding_status"] = "unbound"
+        record["unresolved_binding_fields"] = list(required_fields)
+        return record
+    serial_lane = endpoint.lanes[lane]
+    if direction == "rx":
+        package_pin_p = serial_lane.rx_package_pin_p
+        package_pin_n = serial_lane.rx_package_pin_n
+    elif direction == "tx":
+        package_pin_p = serial_lane.tx_package_pin_p
+        package_pin_n = serial_lane.tx_package_pin_n
+    else:
+        record["tx_package_pin_p"] = serial_lane.tx_package_pin_p
+        record["tx_package_pin_n"] = serial_lane.tx_package_pin_n
+        record["rx_package_pin_p"] = serial_lane.rx_package_pin_p
+        record["rx_package_pin_n"] = serial_lane.rx_package_pin_n
+        package_pin_p = None
+        package_pin_n = None
+        resolved_pin_fields = [
+            "tx_package_pin_p",
+            "tx_package_pin_n",
+            "rx_package_pin_p",
+            "rx_package_pin_n",
+        ]
+    if direction in {"tx", "rx"}:
+        resolved_pin_fields = ["package_pin_p", "package_pin_n"]
+    record.update(
+        {
+            "binding_status": "partially_bound",
+            "connector": endpoint.connector,
+            "mgt_group": endpoint.mgt,
+            "resolved_binding_fields": [*resolved_pin_fields, "connector"],
+            "unresolved_binding_fields": ["transceiver_site"],
+        }
+    )
+    if package_pin_p is not None:
+        record["package_pin_p"] = package_pin_p
+        record["package_pin_n"] = package_pin_n
+    return record
 
 
 def _link_channels(platform: Platform) -> List[Dict[str, Any]]:
@@ -121,6 +181,8 @@ def _link_channels(platform: Platform) -> List[Dict[str, Any]]:
             directions = (link.endpoints,)
         for source, sink in directions:
             channel = f"{source}-to-{sink}"
+            source_binding = link.endpoint_binding(source)
+            sink_binding = link.endpoint_binding(sink)
             if link.mode == "serial":
                 required_fields = [
                     "connector",
@@ -138,8 +200,7 @@ def _link_channels(platform: Platform) -> List[Dict[str, Any]]:
                     "electrical_standard",
                     "training_protocol",
                 ]
-            records.append(
-                {
+            record = {
                     "id": f"{link.id}:{channel}",
                     "link": link.id,
                     "source": source,
@@ -154,8 +215,41 @@ def _link_channels(platform: Platform) -> List[Dict[str, Any]]:
                     ),
                     "fabric_clock_mhz": link.fabric_clock_mhz,
                     "required_binding_fields": required_fields,
-                }
-            )
+            }
+            if (
+                link.mode == "serial"
+                and source_binding is not None
+                and sink_binding is not None
+            ):
+                record.update(
+                    {
+                        "binding_status": "partially_bound",
+                        "source_connector": source_binding.connector,
+                        "sink_connector": sink_binding.connector,
+                        "source_mgt_group": source_binding.mgt,
+                        "sink_mgt_group": sink_binding.mgt,
+                        "configured_line_rate_gbps_per_lane": (
+                            link.fabric_clock_mhz
+                            * link.payload_bits_per_lane_per_cycle
+                            / 1000.0
+                        ),
+                        "maximum_line_rate_gbps_per_lane": (
+                            link.max_line_rate_gbps_per_lane
+                        ),
+                        "resolved_binding_fields": [
+                            "connector",
+                            "line_rate_gbps_per_lane",
+                        ],
+                        "unresolved_binding_fields": [
+                            "transceiver_profile",
+                            "encoding",
+                            "training_protocol",
+                        ],
+                    }
+                )
+            else:
+                record["binding_status"] = "unbound"
+            records.append(record)
     return sorted(records, key=lambda item: item["id"])
 
 

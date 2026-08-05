@@ -19,6 +19,7 @@ from .platform import Platform
 HARDWARE_BSP_SCHEMA = "emuflow.hardware-bsp/v1"
 PACKAGE_PIN_BINDING_SCHEMA = "emuflow.package-pin-binding/v1"
 PACKAGE_PIN_PROVIDER = "chimew-package-pin-min-cost-flow-v1"
+SERIAL_TRANSCEIVER_PROVIDER = "boarddb-fixed-serial-transceiver-v1"
 PHASE6B_REPORT_SCHEMA = "emuflow.phase6b-report/v1"
 _COST_SCALE = 1_000_000
 _IOSTANDARD_VOLTAGES = {
@@ -50,6 +51,321 @@ def _port(
 ) -> str:
     del fpga
     return f"{direction}_{_sv_name(link)}_{_sv_name(peer)}[{lane}]"
+
+
+def _serial_port(
+    link: str, peer: str, direction: str, polarity: str, lane: int
+) -> str:
+    return (
+        f"gty_{direction}{polarity}_{_sv_name(link)}_"
+        f"{_sv_name(peer)}[{lane}]"
+    )
+
+
+def _serial_logical_demands(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    positions: Optional[Mapping[str, Any]],
+    plan: Optional[Mapping[str, Any]],
+    anchor_documents: Mapping[str, Mapping[str, Any]],
+) -> list[Dict[str, Any]]:
+    if (positions is None) != (plan is None):
+        raise ValidationError(
+            "serial binding requires both position hints and pin plan, or neither"
+        )
+    plan_by_schedule = None
+    if positions is not None and plan is not None:
+        validate_pin_plan(schedule, platform, positions, plan)
+        plan_by_schedule = {
+            item["schedule_entry"]: item for item in plan["entries"]
+        }
+    anchor_by_id = _anchor_index(anchor_documents, platform)
+    links = {link.id: link for link in platform.links}
+    anchor_by_endpoint = {}
+    for anchor in anchor_by_id.values():
+        endpoint_ids = anchor.get("endpoint_ids")
+        if not isinstance(endpoint_ids, list) or any(
+            not isinstance(endpoint, str) or not endpoint
+            for endpoint in endpoint_ids
+        ):
+            raise ValidationError(
+                f"serial virtual anchor {anchor['id']!r} has invalid endpoint IDs"
+            )
+        for endpoint in endpoint_ids:
+            if endpoint in anchor_by_endpoint:
+                raise ValidationError(
+                    f"serial transport endpoint {endpoint!r} is duplicated"
+                )
+            anchor_by_endpoint[endpoint] = anchor
+    grouped: Dict[
+        Tuple[str, str, str, int], list[Mapping[str, Any]]
+    ] = defaultdict(list)
+    used_anchors = set()
+    used_endpoints = set()
+    for entry in sorted(schedule["entries"], key=lambda item: item["id"]):
+        link_id, source, sink = _domain(entry)
+        link = links.get(link_id)
+        if (
+            link is None
+            or link.mode != "serial"
+            or link.endpoint_binding(source) is None
+            or link.endpoint_binding(sink) is None
+        ):
+            raise ValidationError(
+                f"serial schedule entry {entry['id']} lacks BoardDB endpoint bindings"
+            )
+        tx_endpoint = f"__emuflow_tx_{entry['id']}"
+        rx_endpoint = f"__emuflow_rx_{entry['id']}"
+        source_record = anchor_by_endpoint.get(tx_endpoint)
+        sink_record = anchor_by_endpoint.get(rx_endpoint)
+        if source_record is None or sink_record is None:
+            raise ValidationError(
+                f"serial schedule entry {entry['id']} lacks Phase 6 anchors"
+            )
+        logical_lane = source_record.get("logical_lane")
+        if plan_by_schedule is not None:
+            expected_lane = plan_by_schedule[entry["id"]]["physical_lane"]
+        else:
+            expected_lane = entry["lane"]
+        if (
+            isinstance(logical_lane, bool)
+            or not isinstance(logical_lane, int)
+            or logical_lane != sink_record.get("logical_lane")
+            or logical_lane != expected_lane
+            or source_record.get("link") != link_id
+            or sink_record.get("link") != link_id
+            or source_record.get("peer") != sink
+            or sink_record.get("peer") != source
+            or source_record.get("direction") != "tx"
+            or sink_record.get("direction") != "rx"
+        ):
+            raise ValidationError(
+                f"serial schedule entry {entry['id']} disagrees with Phase 6 anchors"
+            )
+        physical_lane = (
+            logical_lane // link.payload_bits_per_lane_per_cycle
+        )
+        bit_within_lane = (
+            logical_lane % link.payload_bits_per_lane_per_cycle
+        )
+        if any(
+            anchor.get("physical_lane") != physical_lane
+            or anchor.get("bit_within_physical_lane") != bit_within_lane
+            for anchor in (source_record, sink_record)
+        ):
+            raise ValidationError(
+                f"serial schedule entry {entry['id']} has invalid lane projection"
+            )
+        used_anchors.update((source_record["id"], sink_record["id"]))
+        used_endpoints.update((tx_endpoint, rx_endpoint))
+        grouped[(link_id, source, sink, logical_lane)].append(entry)
+    demands = []
+    for (link_id, source, sink, logical_lane), entries in sorted(
+        grouped.items()
+    ):
+        link = links[link_id]
+        physical_lane = logical_lane // link.payload_bits_per_lane_per_cycle
+        bit_within_lane = logical_lane % link.payload_bits_per_lane_per_cycle
+        tx_endpoint = f"__emuflow_tx_{entries[0]['id']}"
+        rx_endpoint = f"__emuflow_rx_{entries[0]['id']}"
+        source_anchor = anchor_by_endpoint[tx_endpoint]["id"]
+        sink_anchor = anchor_by_endpoint[rx_endpoint]["id"]
+        demands.append(
+            {
+                "id": (
+                    f"{link_id}:{source}-to-{sink}:logical-{logical_lane}"
+                ),
+                "link": link_id,
+                "source": source,
+                "sink": sink,
+                "logical_lane": logical_lane,
+                "physical_lane": physical_lane,
+                "bit_within_physical_lane": bit_within_lane,
+                "source_anchor": source_anchor,
+                "sink_anchor": sink_anchor,
+                "schedule_entries": sorted(entry["id"] for entry in entries),
+            }
+        )
+    if (
+        set(anchor_by_id) != used_anchors
+        or set(anchor_by_endpoint) != used_endpoints
+    ):
+        missing = sorted(set(anchor_by_id) - used_anchors)
+        raise ValidationError(
+            "serial virtual anchors and schedule do not agree exactly; "
+            f"unmatched={missing[:5]}"
+        )
+    return demands
+
+
+def _serial_binding_entries(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    positions: Optional[Mapping[str, Any]],
+    plan: Optional[Mapping[str, Any]],
+    anchor_documents: Mapping[str, Mapping[str, Any]],
+) -> Tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
+    logical_demands = _serial_logical_demands(
+        schedule, platform, positions, plan, anchor_documents
+    )
+    links = {link.id: link for link in platform.links}
+    grouped: Dict[
+        Tuple[str, str, str, int], list[Mapping[str, Any]]
+    ] = defaultdict(list)
+    for demand in logical_demands:
+        grouped[
+            (
+                demand["link"],
+                demand["source"],
+                demand["sink"],
+                demand["physical_lane"],
+            )
+        ].append(demand)
+    entries = []
+    for (link_id, source, sink, physical_lane), demands in sorted(grouped.items()):
+        link = links[link_id]
+        source_endpoint = link.endpoint_binding(source)
+        sink_endpoint = link.endpoint_binding(sink)
+        assert source_endpoint is not None and sink_endpoint is not None
+        source_lane = source_endpoint.lanes[physical_lane]
+        sink_lane = sink_endpoint.lanes[physical_lane]
+        entries.append(
+            {
+                "id": f"{link_id}:{source}-to-{sink}:gty-{physical_lane}",
+                "link": link_id,
+                "source": source,
+                "sink": sink,
+                "physical_lane": physical_lane,
+                "payload_bits_per_lane_per_cycle": (
+                    link.payload_bits_per_lane_per_cycle
+                ),
+                "logical_lanes": sorted(
+                    demand["logical_lane"] for demand in demands
+                ),
+                "logical_bindings": sorted(demand["id"] for demand in demands),
+                "source_connector": source_endpoint.connector,
+                "sink_connector": sink_endpoint.connector,
+                "source_mgt_group": source_endpoint.mgt,
+                "sink_mgt_group": sink_endpoint.mgt,
+                "source_ports": {
+                    polarity: _serial_port(
+                        link_id, sink, "tx", polarity, physical_lane
+                    )
+                    for polarity in ("p", "n")
+                },
+                "sink_ports": {
+                    polarity: _serial_port(
+                        link_id, source, "rx", polarity, physical_lane
+                    )
+                    for polarity in ("p", "n")
+                },
+                "source_package_pins": {
+                    "p": source_lane.tx_package_pin_p,
+                    "n": source_lane.tx_package_pin_n,
+                },
+                "sink_package_pins": {
+                    "p": sink_lane.rx_package_pin_p,
+                    "n": sink_lane.rx_package_pin_n,
+                },
+                "transceiver_site_status": "unresolved",
+            }
+        )
+    return logical_demands, entries
+
+
+def _serial_binding_metrics(
+    logical_demands: Sequence[Mapping[str, Any]],
+    entries: Sequence[Mapping[str, Any]],
+) -> Dict[str, int]:
+    active_sites = {
+        (entry["link"], fpga, entry["physical_lane"])
+        for entry in entries
+        for fpga in (entry["source"], entry["sink"])
+    }
+    return {
+        "logical_bindings": len(logical_demands),
+        "bound_anchor_endpoints": 2 * len(logical_demands),
+        "directed_transceiver_channels": len(entries),
+        "active_transceiver_sites": len(active_sites),
+        "bound_differential_pairs": 2 * len(entries),
+        "bound_package_pins": 4 * len(entries),
+        "package_pin_collisions": 0,
+        "unresolved_transceiver_sites": len(active_sites),
+    }
+
+
+def build_serial_transceiver_binding(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    positions: Optional[Mapping[str, Any]],
+    plan: Optional[Mapping[str, Any]],
+    anchor_documents: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    logical_demands, entries = _serial_binding_entries(
+        schedule, platform, positions, plan, anchor_documents
+    )
+    binding = {
+        "schema": PACKAGE_PIN_BINDING_SCHEMA,
+        "status": "source_backed_boarddb",
+        "design": schedule["design"],
+        "platform": platform.name,
+        "board": platform.name,
+        "provider": SERIAL_TRANSCEIVER_PROVIDER,
+        "configuration": {
+            "electrical_interface": "differential_serial_transceiver",
+            "transceiver_site_status": "unresolved",
+        },
+        "metrics": _serial_binding_metrics(logical_demands, entries),
+        "entries": entries,
+    }
+    validate_serial_transceiver_binding(
+        schedule, platform, positions, plan, anchor_documents, binding
+    )
+    return binding
+
+
+def validate_serial_transceiver_binding(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    positions: Optional[Mapping[str, Any]],
+    plan: Optional[Mapping[str, Any]],
+    anchor_documents: Mapping[str, Mapping[str, Any]],
+    binding: Mapping[str, Any],
+) -> Dict[str, Any]:
+    logical_demands, entries = _serial_binding_entries(
+        schedule, platform, positions, plan, anchor_documents
+    )
+    expected_metrics = _serial_binding_metrics(logical_demands, entries)
+    expected_identity = {
+        "schema": PACKAGE_PIN_BINDING_SCHEMA,
+        "status": "source_backed_boarddb",
+        "design": schedule.get("design"),
+        "platform": platform.name,
+        "board": platform.name,
+        "provider": SERIAL_TRANSCEIVER_PROVIDER,
+        "configuration": {
+            "electrical_interface": "differential_serial_transceiver",
+            "transceiver_site_status": "unresolved",
+        },
+        "metrics": expected_metrics,
+        "entries": entries,
+    }
+    if dict(binding) != expected_identity:
+        raise ValidationError(
+            "serial transceiver binding does not independently agree with BoardDB"
+        )
+    used_pins = set()
+    for entry in entries:
+        for fpga_key, pin_key in (
+            ("source", "source_package_pins"),
+            ("sink", "sink_package_pins"),
+        ):
+            for pin in entry[pin_key].values():
+                key = (entry[fpga_key], pin)
+                if key in used_pins:
+                    raise ValidationError("serial transceiver package-pin collision")
+                used_pins.add(key)
+    return {"status": "pass", **expected_metrics}
 
 
 def validate_hardware_bsp(
@@ -811,6 +1127,8 @@ def validate_package_pin_binding(
 def binding_to_xdc(
     binding: Mapping[str, Any], fpga: str
 ) -> str:
+    if binding.get("provider") == SERIAL_TRANSCEIVER_PROVIDER:
+        return serial_binding_to_xdc(binding, fpga)
     synthetic = binding["status"] == "synthetic_validation"
     lines = [
         "# Generated by EmuFlow Phase 6B.",
@@ -855,13 +1173,58 @@ def binding_to_xdc(
     return "\n".join(lines)
 
 
+def serial_binding_to_xdc(
+    binding: Mapping[str, Any], fpga: str
+) -> str:
+    lines = [
+        "# Generated by EmuFlow Phase 6B from source-backed BoardDB bindings.",
+        "# GT transceiver sites and protocol IP remain BSP integration work.",
+        "# Differential GT pins do not use an LVCMOS IOSTANDARD constraint.",
+        "",
+    ]
+    records = []
+    for item in binding["entries"]:
+        if item["source"] == fpga:
+            for polarity in ("p", "n"):
+                records.append(
+                    (
+                        item["source_ports"][polarity],
+                        item["source_package_pins"][polarity],
+                        item["id"],
+                        item["source_connector"],
+                        item["source_mgt_group"],
+                    )
+                )
+        if item["sink"] == fpga:
+            for polarity in ("p", "n"):
+                records.append(
+                    (
+                        item["sink_ports"][polarity],
+                        item["sink_package_pins"][polarity],
+                        item["id"],
+                        item["sink_connector"],
+                        item["sink_mgt_group"],
+                    )
+                )
+    for port, package_pin, demand, connector, mgt in sorted(records):
+        lines.extend(
+            [
+                f"# binding={demand} connector={connector} mgt_group={mgt}",
+                f"set_property PACKAGE_PIN {package_pin} "
+                f"[get_ports {{{port}}}]",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def run_phase6b(
     schedule_path: Path,
     platform_path: Path,
-    positions_path: Path,
-    pin_plan_path: Path,
+    positions_path: Optional[Path],
+    pin_plan_path: Optional[Path],
     anchor_paths: Mapping[str, Path],
-    bsp_path: Path,
+    bsp_path: Optional[Path],
     output_dir: Path,
     *,
     executable: Optional[str] = None,
@@ -871,25 +1234,41 @@ def run_phase6b(
 ) -> Dict[str, Any]:
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
-    positions = read_json(positions_path)
-    plan = read_json(pin_plan_path)
+    positions = read_json(positions_path) if positions_path is not None else None
+    plan = read_json(pin_plan_path) if pin_plan_path is not None else None
     anchors = {fpga: read_json(path) for fpga, path in anchor_paths.items()}
-    bsp = read_json(bsp_path)
-    binding = build_package_pin_binding(
-        schedule,
-        platform,
-        positions,
-        plan,
-        anchors,
-        bsp,
-        executable=executable,
-        iostandard=iostandard,
-        placement_weight=placement_weight,
-        skew_weight=skew_weight,
-    )
-    validation = validate_package_pin_binding(
-        schedule, platform, positions, plan, anchors, bsp, binding
-    )
+    if bsp_path is None:
+        binding = build_serial_transceiver_binding(
+            schedule, platform, positions, plan, anchors
+        )
+        validation = validate_serial_transceiver_binding(
+            schedule, platform, positions, plan, anchors, binding
+        )
+        board_name = platform.name
+        provider = SERIAL_TRANSCEIVER_PROVIDER
+    else:
+        if positions is None or plan is None:
+            raise ValidationError(
+                "parallel Phase 6B requires position hints and a pin plan"
+            )
+        bsp = read_json(bsp_path)
+        binding = build_package_pin_binding(
+            schedule,
+            platform,
+            positions,
+            plan,
+            anchors,
+            bsp,
+            executable=executable,
+            iostandard=iostandard,
+            placement_weight=placement_weight,
+            skew_weight=skew_weight,
+        )
+        validation = validate_package_pin_binding(
+            schedule, platform, positions, plan, anchors, bsp, binding
+        )
+        board_name = bsp["board"]["name"]
+        provider = PACKAGE_PIN_PROVIDER
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "package_pin_binding.json", binding)
     xdc_files = {}
@@ -905,9 +1284,9 @@ def run_phase6b(
         "status": "pass",
         "design": schedule["design"],
         "platform": platform.name,
-        "board": bsp["board"]["name"],
+        "board": board_name,
         "qualification": binding["status"],
-        "provider": PACKAGE_PIN_PROVIDER,
+        "provider": provider,
         "validation": validation,
         "artifacts": {
             "binding": "package_pin_binding.json",
