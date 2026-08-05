@@ -16,6 +16,7 @@ from .cross_stage import (
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
+    materialize_eda2025_rtl_boarddb,
     optimize_eda2025_routing,
     optimize_eda2025_topology,
 )
@@ -269,6 +270,24 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2025_routing.add_argument("--max-rounds", type=int, default=4)
     eda2025_routing.add_argument(
         "--capacity-only", action="store_true", help="disable shortcut candidates"
+    )
+    eda2025_boarddb = contest_subparsers.add_parser(
+        "eda2025-materialize-boarddb",
+        help="populate a contest topology with an RTL-capable FPGA template",
+    )
+    eda2025_boarddb.add_argument("--instance", type=Path, required=True)
+    eda2025_boarddb.add_argument("--device-template", type=Path, required=True)
+    eda2025_boarddb.add_argument("--output", "-o", type=Path, required=True)
+    eda2025_boarddb.add_argument("--name", required=True)
+    eda2025_boarddb.add_argument("--topology", type=Path)
+    eda2025_boarddb.add_argument("--template-fpga")
+    eda2025_boarddb.add_argument("--lane-scale", type=int, default=1)
+    eda2025_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
+    eda2025_boarddb.add_argument("--latency-cycles", type=int, default=2)
+    eda2025_boarddb.add_argument(
+        "--link-mode",
+        choices=("abstract", "parallel", "serial", "source_synchronous"),
+        default="abstract",
     )
     eda2025_topology.add_argument(
         "--enable-shortcuts",
@@ -1644,6 +1663,19 @@ def _dispatch(args: argparse.Namespace) -> int:
                 current_topology_path=args.topology,
                 enable_shortcut_portfolio=not args.capacity_only,
                 max_rounds=args.max_rounds,
+            )
+        elif args.contest_command == "eda2025-materialize-boarddb":
+            report = materialize_eda2025_rtl_boarddb(
+                instance_path=args.instance,
+                device_template_path=args.device_template,
+                output_path=args.output,
+                name=args.name,
+                topology_path=args.topology,
+                template_fpga_id=args.template_fpga,
+                lane_scale=args.lane_scale,
+                fabric_clock_mhz=args.fabric_clock_mhz,
+                latency_cycles=args.latency_cycles,
+                link_mode=args.link_mode,
             )
         else:
             raise AssertionError(f"unhandled contest command {args.contest_command!r}")

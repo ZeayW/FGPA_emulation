@@ -6,6 +6,7 @@ from pathlib import Path
 from emuflow.contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
+    materialize_eda2025_rtl_boarddb,
     optimize_eda2025_routing,
     optimize_eda2025_topology,
 )
@@ -171,6 +172,90 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
             self.assertAlmostEqual(
                 portfolio["selected"]["worst_path_delay_ns"], 35.6
             )
+
+    def test_contest_topology_materializes_an_rtl_capable_boarddb(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized = self._import(root)
+            output = root / "rtl-boarddb.json"
+            repository = Path(__file__).resolve().parents[1]
+            report = materialize_eda2025_rtl_boarddb(
+                instance_path=normalized / "contest_instance.json",
+                device_template_path=(
+                    repository / "platforms/virtual/academic_vtr_4fpga_mesh.json"
+                ),
+                output_path=output,
+                name="eda2025_case01_academic_rtl",
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["fpgas"], 4)
+            self.assertEqual(report["links"], 4)
+            self.assertEqual(report["contest_channels"], 4)
+            boarddb = read_json(output)
+            self.assertEqual(boarddb["platform"]["kind"], "virtual")
+            self.assertEqual(
+                boarddb["platform"]["provenance"]["interconnect"]["instance"],
+                "eda2025_sample",
+            )
+            self.assertEqual(
+                {fpga["id"] for fpga in boarddb["fpgas"]},
+                {"F1", "F2", "F3", "F4"},
+            )
+            self.assertEqual(
+                {fpga["capacity"]["lut"] for fpga in boarddb["fpgas"]},
+                {400000},
+            )
+            self.assertEqual(
+                {link["data_lanes_per_direction"] for link in boarddb["links"]},
+                {1},
+            )
+
+    def test_rtl_boarddb_materializer_requires_explicit_heterogeneous_device(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized = self._import(root)
+            template = root / "heterogeneous.json"
+            template.write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.boarddb/v1",
+                        "platform": {"name": "heterogeneous", "kind": "virtual"},
+                        "fpgas": [
+                            {
+                                "id": "small",
+                                "part": "academic-small",
+                                "utilization_limit": 0.75,
+                                "capacity": {"lut": 100},
+                            },
+                            {
+                                "id": "large",
+                                "part": "academic-large",
+                                "utilization_limit": 0.75,
+                                "capacity": {"lut": 200},
+                            },
+                        ],
+                        "links": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "heterogeneous"):
+                materialize_eda2025_rtl_boarddb(
+                    instance_path=normalized / "contest_instance.json",
+                    device_template_path=template,
+                    output_path=root / "bad.json",
+                    name="bad",
+                )
+            report = materialize_eda2025_rtl_boarddb(
+                instance_path=normalized / "contest_instance.json",
+                device_template_path=template,
+                output_path=root / "selected.json",
+                name="selected",
+                template_fpga_id="large",
+                lane_scale=2,
+            )
+            self.assertEqual(report["template_fpga"], "large")
+            self.assertEqual(report["data_lanes"], 8)
 
     def test_checker_rejects_route_on_disconnected_pair(self):
         with tempfile.TemporaryDirectory() as temporary:

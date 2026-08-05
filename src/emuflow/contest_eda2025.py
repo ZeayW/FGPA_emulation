@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import defaultdict, deque
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -17,6 +18,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .platform import Platform
 from .routing import SYSTEM_ROUTES_SCHEMA
 
 
@@ -27,6 +29,9 @@ EDA2025_TOPOLOGY_OPTIMIZATION_SCHEMA = (
 )
 EDA2025_ROUTING_OPTIMIZATION_SCHEMA = (
     "emuflow.contest-eda2025-routing-optimization/v2"
+)
+EDA2025_BOARDDB_MATERIALIZATION_SCHEMA = (
+    "emuflow.contest-eda2025-boarddb-materialization/v1"
 )
 EDA2025_SOURCE_URL = (
     "https://edaoss.icisc.cn/file/cacheFile/2025/8/11/"
@@ -711,6 +716,174 @@ def _write_execution_adapter(
         "route_constraints": str(output_dir / "route_constraints.json"),
         "timing_paths": str(output_dir / "contest_timing_paths.json"),
     }
+
+
+def materialize_eda2025_rtl_boarddb(
+    instance_path: Path,
+    device_template_path: Path,
+    output_path: Path,
+    *,
+    name: str,
+    topology_path: Optional[Path] = None,
+    template_fpga_id: Optional[str] = None,
+    lane_scale: int = 1,
+    fabric_clock_mhz: float = 50.0,
+    latency_cycles: int = 2,
+    link_mode: str = "abstract",
+) -> Dict[str, Any]:
+    """Combine a contest interconnect with a real-RTL-capable FPGA template."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValidationError("name: expected a non-empty string")
+    if isinstance(lane_scale, bool) or not isinstance(lane_scale, int) or lane_scale <= 0:
+        raise ValidationError("lane_scale: expected a positive integer")
+    if (
+        isinstance(fabric_clock_mhz, bool)
+        or not isinstance(fabric_clock_mhz, (int, float))
+        or fabric_clock_mhz <= 0
+    ):
+        raise ValidationError("fabric_clock_mhz: expected a positive number")
+    if (
+        isinstance(latency_cycles, bool)
+        or not isinstance(latency_cycles, int)
+        or latency_cycles < 0
+    ):
+        raise ValidationError("latency_cycles: expected a non-negative integer")
+    if link_mode not in {"abstract", "parallel", "serial", "source_synchronous"}:
+        raise ValidationError("link_mode: unsupported BoardDB link mode")
+
+    instance = read_json(instance_path)
+    _validate_instance(instance)
+    template_platform = Platform.load(device_template_path)
+    template = read_json(device_template_path)
+    raw_fpgas = template.get("fpgas")
+    if not isinstance(raw_fpgas, list) or not raw_fpgas:
+        raise ValidationError("device template has no FPGA records")
+    by_id = {record.get("id"): record for record in raw_fpgas}
+    if template_fpga_id is not None:
+        if template_fpga_id not in by_id:
+            raise ValidationError(
+                f"device template has no FPGA {template_fpga_id!r}"
+            )
+        selected = by_id[template_fpga_id]
+    else:
+        selected = raw_fpgas[0]
+        signature = (
+            selected.get("part"),
+            selected.get("utilization_limit"),
+            selected.get("capacity"),
+        )
+        if any(
+            (
+                record.get("part"),
+                record.get("utilization_limit"),
+                record.get("capacity"),
+            )
+            != signature
+            for record in raw_fpgas[1:]
+        ):
+            raise ValidationError(
+                "device template is heterogeneous; select --template-fpga"
+            )
+
+    fpga_ids = instance["fpga_ids"]
+    topology = (
+        parse_topology(topology_path, fpga_ids)
+        if topology_path is not None
+        else instance["initial_topology"]
+    )
+    _check_io_limits(
+        topology,
+        fpga_ids,
+        instance["max_external_channels"],
+        "materialized contest topology",
+    )
+    initial_channels, changed_channels = _topology_change(
+        instance["initial_topology"], topology
+    )
+    allowed_changes = math.floor(
+        initial_channels
+        * instance["parameters"]["topology_change_fraction"]
+        + 1.0e-12
+    )
+    if changed_channels > allowed_changes:
+        raise ValidationError(
+            f"topology changes {changed_channels} channels; allowed {allowed_changes}"
+        )
+
+    device = {
+        "part": selected["part"],
+        "utilization_limit": selected["utilization_limit"],
+        "capacity": deepcopy(selected["capacity"]),
+    }
+    links = [
+        {
+            "id": f"eda2025_link_{left:03d}_{right:03d}",
+            "endpoints": [fpga_ids[left], fpga_ids[right]],
+            "direction": "full_duplex",
+            "mode": link_mode,
+            "data_lanes_per_direction": topology[left][right] * lane_scale,
+            "fabric_clock_mhz": float(fabric_clock_mhz),
+            "latency_cycles": latency_cycles,
+            "contest_channels": topology[left][right],
+            "lane_scale": lane_scale,
+        }
+        for left in range(len(fpga_ids))
+        for right in range(left + 1, len(fpga_ids))
+        if topology[left][right] > 0
+    ]
+    boarddb = {
+        "schema": "emuflow.boarddb/v1",
+        "platform": {
+            "name": name,
+            "kind": "virtual",
+            "description": (
+                "2025 EDA Elite public interconnect topology populated with "
+                f"the homogeneous FPGA device template {template_platform.name}"
+            ),
+            "provenance": {
+                "interconnect": {
+                    "schema": instance["schema"],
+                    "instance": instance["name"],
+                    "specification_url": instance["source"]["specification_url"],
+                    "topology": (
+                        str(topology_path)
+                        if topology_path is not None
+                        else "initial_topology"
+                    ),
+                },
+                "device_template": {
+                    "path": str(device_template_path),
+                    "platform": template_platform.name,
+                    "fpga": selected["id"],
+                },
+            },
+        },
+        "fpgas": [{"id": fpga_id, **deepcopy(device)} for fpga_id in fpga_ids],
+        "links": links,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(output_path, boarddb)
+    validated = Platform.load(output_path)
+    report = {
+        "schema": EDA2025_BOARDDB_MATERIALIZATION_SCHEMA,
+        "status": "pass",
+        "platform": validated.name,
+        "contest_instance": instance["name"],
+        "device_template": template_platform.name,
+        "template_fpga": selected["id"],
+        "fpgas": len(validated.fpgas),
+        "links": len(validated.links),
+        "contest_channels": sum(
+            topology[left][right]
+            for left in range(len(fpga_ids))
+            for right in range(left + 1, len(fpga_ids))
+        ),
+        "data_lanes": sum(link.data_lanes_per_direction for link in validated.links),
+        "topology_changes": changed_channels,
+        "allowed_topology_changes": allowed_changes,
+        "output": str(output_path),
+    }
+    return report
 
 
 def _write_topology_optimizer_input(

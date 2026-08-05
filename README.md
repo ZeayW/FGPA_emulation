@@ -510,6 +510,34 @@ solution can seed another run with `--topology`.
 The public benchmark bundle sets `Rmax` to 512, which is therefore the adapter
 default; callers can still override it for a different contest release.
 
+The contest's interconnect can also serve as the topology of a real-RTL
+experiment. The materializer copies a homogeneous FPGA capacity/part template,
+but not its links or package pins, onto every contest FPGA and preserves both
+sources in BoardDB provenance:
+
+```bash
+emuflow contest eda2025-materialize-boarddb \
+  --instance build/eda2025-case04/contest_instance.json \
+  --device-template platforms/virtual/academic_vtr_4fpga_mesh.json \
+  --name eda2025-case04-academic-rtl \
+  --fabric-clock-mhz 50 \
+  --latency-cycles 2 \
+  --output build/eda2025-case04/rtl-boarddb.json
+
+emuflow multi-fpga compile design.v \
+  --top top \
+  --clock clk \
+  --platform build/eda2025-case04/rtl-boarddb.json \
+  --frame-slots 512 \
+  --out build/design-on-eda2025
+```
+
+The contest describes channel counts and topology, not package pins or a
+published electrical bit width. `lane_scale=1` therefore maps each contest
+channel to one *abstract* BoardDB lane. Changing `--lane-scale` is an explicit
+architecture study and remains recorded in every link; it is never silently
+inferred from the device template or presented as measured board data.
+
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact
 harmonic constraint `sum(1 / ratio) <= 1`:
