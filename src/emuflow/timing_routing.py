@@ -490,7 +490,7 @@ def _prepare_native_model(
                 "direction_group": direction_group_by_link.get(link.id, -1),
                 "opposite_arc": arc_index.get(opposite_key, -1),
                 "capacity": capacities[arc["capacity_key"]]["capacity_bits"],
-                "lanes": link.data_lanes_per_direction,
+                "lanes": link.transport_bits_per_cycle_per_direction,
                 "delay_ns": _link_delay_ns(platform, link.id, constraints),
                 "beta_ns": 1000.0 / link.fabric_clock_mhz,
                 "is_sll": link.id in sll_links,
@@ -960,7 +960,7 @@ def reconstruct_system_route_timing(
     for key, capacity in capacities.items():
         lanes = link_by_id[
             capacity["link"]
-        ].data_lanes_per_direction
+        ].transport_bits_per_cycle_per_direction
         signals = capacity_usage[key]
         ratios[key] = estimate_tdm_ratio(
             signals,
@@ -1275,7 +1275,9 @@ def validate_native_system_routes(
     link_by_id = {link.id: link for link in platform.links}
     ratios = {}
     for key, capacity in capacities.items():
-        lanes = link_by_id[capacity["link"]].data_lanes_per_direction
+        lanes = link_by_id[
+            capacity["link"]
+        ].transport_bits_per_cycle_per_direction
         signals = capacity_usage[key]
         ratios[key] = estimate_tdm_ratio(
             signals,

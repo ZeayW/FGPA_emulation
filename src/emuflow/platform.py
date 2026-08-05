@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .errors import ValidationError
 from .io import read_json
@@ -61,13 +61,32 @@ class BoardLink:
     fabric_clock_mhz: float
     latency_cycles: int
     capacity_sharing: str = "per_direction"
+    payload_bits_per_lane_per_cycle: int = 1
+    max_line_rate_gbps_per_lane: Optional[float] = None
+
+    @property
+    def transport_bits_per_cycle_per_direction(self) -> int:
+        """User-side bit capacity exposed to routing and TDM.
+
+        Parallel links carry one bit per physical lane and cycle.  A serial
+        transceiver presents a wider user-side word for every physical lane;
+        the serializer itself remains a board-support-package concern.
+        """
+        return (
+            self.data_lanes_per_direction
+            * self.payload_bits_per_lane_per_cycle
+        )
 
     @property
     def raw_bits_per_second_per_direction(self) -> float:
-        return self.data_lanes_per_direction * self.fabric_clock_mhz * 1_000_000.0
+        return (
+            self.transport_bits_per_cycle_per_direction
+            * self.fabric_clock_mhz
+            * 1_000_000.0
+        )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "endpoints": list(self.endpoints),
             "direction": self.direction,
@@ -80,6 +99,18 @@ class BoardLink:
                 self.raw_bits_per_second_per_direction
             ),
         }
+        if self.payload_bits_per_lane_per_cycle != 1:
+            result["payload_bits_per_lane_per_cycle"] = (
+                self.payload_bits_per_lane_per_cycle
+            )
+            result["transport_bits_per_cycle_per_direction"] = (
+                self.transport_bits_per_cycle_per_direction
+            )
+        if self.max_line_rate_gbps_per_lane is not None:
+            result["max_line_rate_gbps_per_lane"] = (
+                self.max_line_rate_gbps_per_lane
+            )
+        return result
 
 
 @dataclass(frozen=True)
@@ -254,6 +285,40 @@ class Platform:
                     f"links[{index}].latency_cycles: "
                     "expected a non-negative integer"
                 )
+            payload_width = item.get("payload_bits_per_lane_per_cycle", 1)
+            if (
+                isinstance(payload_width, bool)
+                or not isinstance(payload_width, int)
+                or payload_width <= 0
+            ):
+                raise ValidationError(
+                    f"links[{index}].payload_bits_per_lane_per_cycle: "
+                    "expected a positive integer"
+                )
+            if mode != "serial" and payload_width != 1:
+                raise ValidationError(
+                    f"links[{index}].payload_bits_per_lane_per_cycle: "
+                    "values greater than one require serial mode"
+                )
+            line_rate = item.get("max_line_rate_gbps_per_lane")
+            if line_rate is not None:
+                if (
+                    mode != "serial"
+                    or isinstance(line_rate, bool)
+                    or not isinstance(line_rate, (int, float))
+                    or float(line_rate) <= 0.0
+                ):
+                    raise ValidationError(
+                        f"links[{index}].max_line_rate_gbps_per_lane: "
+                        "expected a positive number for a serial link"
+                    )
+                configured_rate = float(frequency) * payload_width / 1000.0
+                if configured_rate > float(line_rate) * (1.0 + 1e-9):
+                    raise ValidationError(
+                        f"links[{index}]: configured user-side rate "
+                        f"{configured_rate:g} Gbps/lane exceeds maximum "
+                        f"line rate {float(line_rate):g} Gbps/lane"
+                    )
             links.append(
                 BoardLink(
                     id=link_id,
@@ -264,6 +329,10 @@ class Platform:
                     fabric_clock_mhz=float(frequency),
                     latency_cycles=latency,
                     capacity_sharing=capacity_sharing,
+                    payload_bits_per_lane_per_cycle=payload_width,
+                    max_line_rate_gbps_per_lane=(
+                        None if line_rate is None else float(line_rate)
+                    ),
                 )
             )
 

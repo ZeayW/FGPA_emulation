@@ -468,7 +468,7 @@ def transport_to_systemverilog(
         )
     bus_name: Dict[Tuple[str, str, str], str] = {}
     for link_id, peer in groups:
-        width = links[link_id].data_lanes_per_direction
+        width = links[link_id].transport_bits_per_cycle_per_direction
         if "rx" in kinds_by_group[(link_id, peer)]:
             name = transport_endpoint_port(
                 {"kind": "rx", "link": link_id, "peer": peer}
@@ -628,6 +628,7 @@ def _build_virtual_anchors(
     platform: Platform,
     endpoints: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
+    links = {link.id: link for link in platform.links}
     grouped: Dict[Tuple[str, str, str, int], List[Mapping[str, Any]]] = (
         defaultdict(list)
     )
@@ -642,6 +643,22 @@ def _build_virtual_anchors(
         ].append(endpoint)
     records = []
     for (link, peer, kind, lane), items in sorted(grouped.items()):
+        board_link = links[link]
+        if board_link.mode == "serial":
+            required_fields = [
+                "package_pin_p",
+                "package_pin_n",
+                "connector",
+                "transceiver_site",
+            ]
+            physical_lane = lane // board_link.payload_bits_per_lane_per_cycle
+            bit_within_physical_lane = (
+                lane % board_link.payload_bits_per_lane_per_cycle
+            )
+        else:
+            required_fields = ["package_pin", "bank", "iostandard"]
+            physical_lane = lane
+            bit_within_physical_lane = 0
         records.append(
             {
                 "id": f"{link}:{fpga_id}:{kind}:{lane}",
@@ -649,23 +666,29 @@ def _build_virtual_anchors(
                 "peer": peer,
                 "direction": kind,
                 "logical_lane": lane,
+                "physical_lane": physical_lane,
+                "bit_within_physical_lane": bit_within_physical_lane,
                 "endpoint_ids": sorted(item["id"] for item in items),
                 "slots": sorted(item["slot"] for item in items),
                 "placement_class": "virtual_link_io_region",
                 "binding_status": "unbound",
+                "required_hardware_binding_fields": required_fields,
             }
         )
+    required_fields = sorted(
+        {
+            field
+            for record in records
+            for field in record["required_hardware_binding_fields"]
+        }
+    )
     return {
         "schema": VIRTUAL_IO_ANCHORS_SCHEMA,
         "platform": platform.name,
         "fpga": fpga_id,
         "part": next(fpga.part for fpga in platform.fpgas if fpga.id == fpga_id),
         "anchors": records,
-        "required_hardware_binding_fields": [
-            "package_pin",
-            "bank",
-            "iostandard",
-        ],
+        "required_hardware_binding_fields": required_fields,
     }
 
 

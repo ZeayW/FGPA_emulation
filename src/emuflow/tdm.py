@@ -283,7 +283,7 @@ def build_tdm_schedule(
                 slot_fill[arc["capacity_key"]][slot] += 1
                 if (
                     slot_fill[arc["capacity_key"]][slot]
-                    == link.data_lanes_per_direction
+                    == link.transport_bits_per_cycle_per_direction
                 ):
                     next_available[arc["capacity_key"]][slot] = (
                         first_available_slot(
@@ -451,7 +451,9 @@ def _domain_schedule_records(
     records = []
     for key in sorted(capacities):
         capacity = capacities[key]
-        lanes = links[capacity["link"]].data_lanes_per_direction
+        lanes = links[
+            capacity["link"]
+        ].transport_bits_per_cycle_per_direction
         scheduled = count_by_key[key]
         records.append(
             {
@@ -610,7 +612,7 @@ def validate_tdm_schedule(
             isinstance(lane, bool)
             or not isinstance(lane, int)
             or lane < 0
-            or lane >= link.data_lanes_per_direction
+            or lane >= link.transport_bits_per_cycle_per_direction
         ):
             raise ValidationError(
                 f"schedule.entries[{index}].lane: out of range"
@@ -1151,7 +1153,7 @@ def schedule_to_systemverilog_testbench(
     for key in channel_keys:
         index = channel_index[key]
         link = channel_link[key]
-        lanes = link.data_lanes_per_direction
+        lanes = link.transport_bits_per_cycle_per_direction
         lines.extend(
             [
                 f"  reg [{lanes - 1}:0] tx_data_{index};",

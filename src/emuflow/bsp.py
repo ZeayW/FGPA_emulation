@@ -41,6 +41,21 @@ def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
                 (link.endpoints[1], link.endpoints[0]),
             ):
                 for lane in range(link.data_lanes_per_direction):
+                    if link.mode == "serial":
+                        required_fields = [
+                            "package_pin_p",
+                            "package_pin_n",
+                            "connector",
+                            "transceiver_site",
+                        ]
+                        lane_kind = "serial_transceiver"
+                    else:
+                        required_fields = [
+                            "package_pin",
+                            "bank",
+                            "iostandard",
+                        ]
+                        lane_kind = "parallel_data"
                     records.append(
                         {
                             "id": f"{link.id}:{fpga}:inout:{lane}",
@@ -49,11 +64,12 @@ def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
                             "peer": peer,
                             "direction": "inout",
                             "logical_lane": lane,
-                            "required_binding_fields": [
-                                "package_pin",
-                                "bank",
-                                "iostandard",
-                            ],
+                            "physical_lane": lane,
+                            "lane_kind": lane_kind,
+                            "payload_bits_per_lane_per_cycle": (
+                                link.payload_bits_per_lane_per_cycle
+                            ),
+                            "required_binding_fields": required_fields,
                         }
                     )
             continue
@@ -63,6 +79,21 @@ def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
                     (source, sink, "tx"),
                     (sink, source, "rx"),
                 ):
+                    if link.mode == "serial":
+                        required_fields = [
+                            "package_pin_p",
+                            "package_pin_n",
+                            "connector",
+                            "transceiver_site",
+                        ]
+                        lane_kind = "serial_transceiver"
+                    else:
+                        required_fields = [
+                            "package_pin",
+                            "bank",
+                            "iostandard",
+                        ]
+                        lane_kind = "parallel_data"
                     records.append(
                         {
                             "id": f"{link.id}:{fpga}:{direction}:{lane}",
@@ -71,11 +102,12 @@ def _physical_data_lanes(platform: Platform) -> List[Dict[str, Any]]:
                             "peer": peer,
                             "direction": direction,
                             "logical_lane": lane,
-                            "required_binding_fields": [
-                                "package_pin",
-                                "bank",
-                                "iostandard",
-                            ],
+                            "physical_lane": lane,
+                            "lane_kind": lane_kind,
+                            "payload_bits_per_lane_per_cycle": (
+                                link.payload_bits_per_lane_per_cycle
+                            ),
+                            "required_binding_fields": required_fields,
                         }
                     )
     return sorted(records, key=lambda item: item["id"])
@@ -89,6 +121,23 @@ def _link_channels(platform: Platform) -> List[Dict[str, Any]]:
             directions = (link.endpoints,)
         for source, sink in directions:
             channel = f"{source}-to-{sink}"
+            if link.mode == "serial":
+                required_fields = [
+                    "connector",
+                    "transceiver_profile",
+                    "line_rate_gbps_per_lane",
+                    "encoding",
+                    "training_protocol",
+                ]
+            else:
+                required_fields = [
+                    "connector",
+                    "forwarded_clock_binding",
+                    "input_delay_ns",
+                    "output_delay_ns",
+                    "electrical_standard",
+                    "training_protocol",
+                ]
             records.append(
                 {
                     "id": f"{link.id}:{channel}",
@@ -97,15 +146,14 @@ def _link_channels(platform: Platform) -> List[Dict[str, Any]]:
                     "sink": sink,
                     "mode": link.mode,
                     "data_lanes": link.data_lanes_per_direction,
+                    "payload_bits_per_lane_per_cycle": (
+                        link.payload_bits_per_lane_per_cycle
+                    ),
+                    "transport_bits_per_cycle": (
+                        link.transport_bits_per_cycle_per_direction
+                    ),
                     "fabric_clock_mhz": link.fabric_clock_mhz,
-                    "required_binding_fields": [
-                        "connector",
-                        "forwarded_clock_binding",
-                        "input_delay_ns",
-                        "output_delay_ns",
-                        "electrical_standard",
-                        "training_protocol",
-                    ],
+                    "required_binding_fields": required_fields,
                 }
             )
     return sorted(records, key=lambda item: item["id"])
@@ -181,13 +229,14 @@ def _validate_anchors(
             item["link"],
             item["fpga"],
             item["direction"],
-            item["logical_lane"],
+            item["physical_lane"],
         ): item
         for item in physical_lanes
     }
     half_duplex_links = {
         link.id for link in platform.links if link.direction == "half_duplex"
     }
+    links_by_id = {link.id: link for link in platform.links}
     records: List[Dict[str, Any]] = []
     ids = set()
     for fpga_id in sorted(fpga_parts):
@@ -203,11 +252,9 @@ def _validate_anchors(
                 f"{fpga_id} virtual anchors do not match BoardDB"
             )
         required_fields = document.get("required_hardware_binding_fields")
-        if not isinstance(required_fields, list) or not {
-            "package_pin",
-            "bank",
-            "iostandard",
-        }.issubset(required_fields):
+        if not isinstance(required_fields, list) or any(
+            not isinstance(field, str) or not field for field in required_fields
+        ):
             raise ValidationError(
                 f"{fpga_id} virtual anchors omit hardware binding fields"
             )
@@ -229,11 +276,31 @@ def _validate_anchors(
                 raise ValidationError(
                     f"virtual anchor {anchor_id!r} is not explicitly unbound"
                 )
+            link_id = anchor.get("link")
+            board_link = links_by_id.get(link_id)
+            logical_lane = anchor.get("logical_lane")
+            if (
+                board_link is None
+                or isinstance(logical_lane, bool)
+                or not isinstance(logical_lane, int)
+                or logical_lane < 0
+                or logical_lane
+                >= board_link.transport_bits_per_cycle_per_direction
+            ):
+                raise ValidationError(
+                    f"virtual anchor {anchor_id!r} is not a legal BoardDB lane"
+                )
+            physical_lane = (
+                logical_lane // board_link.payload_bits_per_lane_per_cycle
+            )
+            bit_within_physical_lane = (
+                logical_lane % board_link.payload_bits_per_lane_per_cycle
+            )
             key = (
-                anchor.get("link"),
+                link_id,
                 fpga_id,
                 anchor.get("direction"),
-                anchor.get("logical_lane"),
+                physical_lane,
             )
             physical = lanes_by_key.get(key)
             if (
@@ -243,15 +310,44 @@ def _validate_anchors(
             ):
                 physical = lanes_by_key.get(
                     (
-                        anchor.get("link"),
+                        link_id,
                         fpga_id,
                         "inout",
-                        anchor.get("logical_lane"),
+                        physical_lane,
                     )
                 )
             if physical is None or anchor.get("peer") != physical["peer"]:
                 raise ValidationError(
                     f"virtual anchor {anchor_id!r} is not a legal BoardDB lane"
+                )
+            expected_fields = sorted(physical["required_binding_fields"])
+            anchor_fields = anchor.get(
+                "required_hardware_binding_fields", expected_fields
+            )
+            if (
+                not isinstance(anchor_fields, list)
+                or any(
+                    not isinstance(field, str) or not field
+                    for field in anchor_fields
+                )
+                or sorted(anchor_fields) != expected_fields
+                or not set(expected_fields).issubset(required_fields)
+            ):
+                raise ValidationError(
+                    f"virtual anchor {anchor_id!r} has invalid binding fields"
+                )
+            physical_projection = (
+                anchor.get("physical_lane", physical_lane),
+                anchor.get(
+                    "bit_within_physical_lane", bit_within_physical_lane
+                ),
+            )
+            if physical_projection != (
+                physical_lane,
+                bit_within_physical_lane,
+            ):
+                raise ValidationError(
+                    f"virtual anchor {anchor_id!r} has invalid serial lane projection"
                 )
             records.append(
                 {
@@ -260,8 +356,10 @@ def _validate_anchors(
                     "link": anchor["link"],
                     "peer": anchor["peer"],
                     "direction": anchor["direction"],
-                    "logical_lane": anchor["logical_lane"],
-                    "required_binding_fields": sorted(required_fields),
+                    "logical_lane": logical_lane,
+                    "physical_lane": physical_lane,
+                    "bit_within_physical_lane": bit_within_physical_lane,
+                    "required_binding_fields": expected_fields,
                 }
             )
     validation = phase6.get("validation")
@@ -396,6 +494,15 @@ def build_bsp_requirements(
                     ),
                     "fabric_clock_mhz": link.fabric_clock_mhz,
                     "latency_cycles": link.latency_cycles,
+                    "payload_bits_per_lane_per_cycle": (
+                        link.payload_bits_per_lane_per_cycle
+                    ),
+                    "transport_bits_per_cycle_per_direction": (
+                        link.transport_bits_per_cycle_per_direction
+                    ),
+                    "max_line_rate_gbps_per_lane": (
+                        link.max_line_rate_gbps_per_lane
+                    ),
                 }
                 for link in sorted(platform.links, key=lambda item: item.id)
             ],

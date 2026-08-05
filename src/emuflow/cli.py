@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Sequence
 
 from .architecture import ArchitectureDB
 from .benchmark import run_benchmark
+from .board_arm_mps4 import materialize_arm_mps4_boarddb
 from .bsp import run_phase8a
 from .cross_stage import (
     evaluate_cross_stage_candidate,
@@ -145,6 +146,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     platform_validate.add_argument("path", type=Path)
     platform_validate.add_argument("--normalized-out", type=Path)
+    platform_mps4 = platform_subparsers.add_parser(
+        "arm-mps4-materialize",
+        help="materialize Arm's documented three-MPS4 serial-link topology",
+    )
+    platform_mps4.add_argument("--output", "-o", type=Path, required=True)
+    platform_mps4.add_argument("--name", default="arm_mps4_3board_ring")
+    platform_mps4.add_argument(
+        "--fabric-clock-mhz", type=float, required=True
+    )
+    platform_mps4.add_argument(
+        "--payload-bits-per-lane-per-cycle", type=int, required=True
+    )
+    platform_mps4.add_argument(
+        "--latency-cycles", type=int, required=True
+    )
+    platform_mps4.add_argument(
+        "--utilization-limit", type=float, default=0.75
+    )
 
     contest_parser = subparsers.add_parser(
         "contest", help="public multi-FPGA contest format adapters"
@@ -1612,6 +1631,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "platform":
+        if args.platform_command == "arm-mps4-materialize":
+            report = materialize_arm_mps4_boarddb(
+                output_path=args.output,
+                name=args.name,
+                fabric_clock_mhz=args.fabric_clock_mhz,
+                payload_bits_per_lane_per_cycle=(
+                    args.payload_bits_per_lane_per_cycle
+                ),
+                latency_cycles=args.latency_cycles,
+                utilization_limit=args.utilization_limit,
+            )
+            _print_json(report)
+            return 0
         platform = Platform.load(args.path)
         if args.normalized_out is not None:
             write_json(args.normalized_out, platform.to_dict())

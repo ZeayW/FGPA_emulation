@@ -213,7 +213,7 @@ def _prepare_model(
                 "direction": capacity["direction"],
                 "lanes": links[
                     capacity["link"]
-                ].data_lanes_per_direction,
+                ].transport_bits_per_cycle_per_direction,
             }
         )
 

@@ -29,6 +29,14 @@
         "properties": {
           "capacity_sharing": {
             "enum": ["per_direction", "shared_bidirectional"]
+          },
+          "payload_bits_per_lane_per_cycle": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_line_rate_gbps_per_lane": {
+            "type": "number",
+            "exclusiveMinimum": 0
           }
         },
         "required": [

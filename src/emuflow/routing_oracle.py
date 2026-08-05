@@ -216,7 +216,7 @@ def exact_route_tree_selection(
                 signals = usage[key]
                 ratios[key] = estimate_tdm_ratio(
                     signals,
-                    link.data_lanes_per_direction,
+                    link.transport_bits_per_cycle_per_direction,
                     constraints,
                     is_sll=capacity["link"] in sll_links,
                 )

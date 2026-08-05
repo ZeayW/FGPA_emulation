@@ -172,6 +172,76 @@ class PlatformTest(unittest.TestCase):
                 }
             )
 
+    def test_serial_link_separates_physical_lanes_from_transport_width(self) -> None:
+        platform = Platform.from_dict(
+            {
+                "schema": "emuflow.boarddb/v1",
+                "platform": {"name": "serial", "kind": "hardware"},
+                "fpgas": [
+                    {
+                        "id": fpga_id,
+                        "part": "xcvu13p-1fhga2104e",
+                        "utilization_limit": 0.75,
+                        "capacity": {"lut": 1_728_000},
+                    }
+                    for fpga_id in ("F0", "F1")
+                ],
+                "links": [
+                    {
+                        "id": "gty",
+                        "endpoints": ["F0", "F1"],
+                        "direction": "full_duplex",
+                        "mode": "serial",
+                        "data_lanes_per_direction": 12,
+                        "payload_bits_per_lane_per_cycle": 64,
+                        "fabric_clock_mhz": 390.625,
+                        "max_line_rate_gbps_per_lane": 25.0,
+                        "latency_cycles": 4,
+                    }
+                ],
+            }
+        )
+        link = platform.links[0]
+        self.assertEqual(link.data_lanes_per_direction, 12)
+        self.assertEqual(link.transport_bits_per_cycle_per_direction, 768)
+        self.assertEqual(link.raw_bits_per_second_per_direction, 300e9)
+        constraints = normalize_route_constraints(None, platform)
+        _, _, capacities = build_directed_graph(platform, constraints)
+        self.assertEqual(
+            capacities["gty:F0->F1"]["capacity_bits"], 768 * 32
+        )
+
+    def test_serial_user_rate_cannot_exceed_line_rate(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "exceeds maximum"):
+            Platform.from_dict(
+                {
+                    "schema": "emuflow.boarddb/v1",
+                    "platform": {"name": "bad", "kind": "hardware"},
+                    "fpgas": [
+                        {
+                            "id": fpga_id,
+                            "part": "xcvu13p",
+                            "utilization_limit": 1.0,
+                            "capacity": {"lut": 1},
+                        }
+                        for fpga_id in ("F0", "F1")
+                    ],
+                    "links": [
+                        {
+                            "id": "gty",
+                            "endpoints": ["F0", "F1"],
+                            "direction": "full_duplex",
+                            "mode": "serial",
+                            "data_lanes_per_direction": 1,
+                            "payload_bits_per_lane_per_cycle": 64,
+                            "fabric_clock_mhz": 500,
+                            "max_line_rate_gbps_per_lane": 25,
+                            "latency_cycles": 1,
+                        }
+                    ],
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

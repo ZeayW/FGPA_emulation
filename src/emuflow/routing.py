@@ -290,7 +290,7 @@ def build_directed_graph(
                         else f"{source}->{sink}"
                     ),
                     "capacity_bits": (
-                        link.data_lanes_per_direction
+                        link.transport_bits_per_cycle_per_direction
                         * (
                             1
                             if link.id in constraints["sll_links"]

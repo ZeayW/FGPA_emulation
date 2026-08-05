@@ -44,6 +44,8 @@ class NativeToolsTest(unittest.TestCase):
                     "PATH": str(path_bin),
                 },
                 clear=False,
+            ), patch(
+                "emuflow.native_tools.REPO_ROOT", root / "empty-repo"
             ):
                 with self.assertRaisesRegex(
                     EmuFlowError, "in-tree repart build product"
@@ -55,6 +57,22 @@ class NativeToolsTest(unittest.TestCase):
             resolve_native_executable("openroad", "/comparison/openroad"),
             "/comparison/openroad",
         )
+
+    def test_relative_override_is_bound_before_backend_changes_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "build" / "bin" / "vpr"
+            executable.parent.mkdir(parents=True)
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                resolved = resolve_native_executable(
+                    "vpr", "build/bin/vpr"
+                )
+            finally:
+                os.chdir(previous)
+        self.assertEqual(resolved, str(executable.resolve()))
 
 
 if __name__ == "__main__":

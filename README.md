@@ -102,6 +102,13 @@
 >   [EDA-2025-git repository at a fixed commit](https://github.com/nsyw705/EDA-2025-git/tree/45315b739e6678bf04605aaa246285c768bc8e13/data_case)
 >   using per-file SHA-256 verification (benchmark inputs only; participant
 >   algorithms and the opaque checker binary are not incorporated)
+> - Public hardware-architecture data:
+>   the non-confidential
+>   [Arm MPS4 technical reference manual](https://documentation-service.arm.com/static/669a306a43b8ec1e18652768)
+>   for the three-board topology, ARC6/GTY links, connectors, and package pins,
+>   plus AMD
+>   [DS890](https://docs.amd.com/r/en-US/ds890-ultrascale-overview/Virtex-UltraScale-FPGA-Feature-Summary)
+>   for XCVU13P resource capacity
 > - CI:
 >   [actions/checkout](https://github.com/actions/checkout) and
 >   [actions/setup-python](https://github.com/actions/setup-python)
@@ -235,7 +242,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
-| Hardware BSP | In-tree contract | Pending board selection |
+| Hardware BSP | In-tree contract plus source-backed Arm MPS4 topology/pin inventory | MPS4 BoardDB is available; GTY protocol wrapper, clock/reset shell, bitstream, and hardware qualification remain open gates |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
@@ -751,6 +758,40 @@ that pin is not a legal timing startpoint. A physical run passes only if local
 P&R/DRC and the combined virtual runtime-clock slack both close.
 Original target-clock slack remains a reported optimization metric rather than
 the pausible-clock execution gate.
+
+### Source-backed Arm MPS4 BoardDB
+
+EmuFlow can materialize the three-board example documented in Arm's
+non-confidential MPS4 manual. The result is a hardware-kind BoardDB with three
+XCVU13P devices, a pairwise J48/J49 triangle, twelve full-duplex GTY lanes per
+link, the documented 25-Gbps-per-lane ceiling, and the Table A-18 differential
+package-pin mappings:
+
+```bash
+emuflow platform arm-mps4-materialize \
+  --output build/platforms/arm-mps4-3board.json \
+  --fabric-clock-mhz 50 \
+  --payload-bits-per-lane-per-cycle 64 \
+  --latency-cycles 4
+```
+
+The three transport-profile arguments are explicit because the board manual
+specifies physical connectivity and a maximum line rate, not a GTY protocol,
+user-side word width, or measured latency. The example uses the open backend's
+20-ns common fabric period: 64 user-side bits per lane at 50 MHz, or 3.2 Gbps
+per lane before encoding/protocol overhead. Routing and TDM use the resulting
+768 user-side bits per link cycle, while BSP requirements retain twelve
+physical differential transceiver lanes. A 390.625-MHz profile would reach the
+documented 25-Gbps raw ceiling, but requires that implementation to close a
+2.56-ns common clock or a future protocol wrapper with a separate GTY clock
+domain. In either case the model provenance remains
+`configured_model_not_hardware_measured` until hardware characterization.
+
+This BoardDB can drive the common multi-FPGA frontend and either physical
+provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
+validation, not XCVU13P sign-off. A board-runnable MPS4 result still requires
+the GTY protocol wrapper, reference-clock/reset shell, Vivado implementation,
+bitstream generation, and hardware link training.
 
 To validate one FPGA independently with the open physical backend, the
 following command fetches the pinned architecture automatically and enables

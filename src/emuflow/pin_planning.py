@@ -238,7 +238,7 @@ def _write_model(
     for index, domain in enumerate(domains):
         lines.append(
             f"DOMAIN {index} "
-            f"{link_by_id[domain[0]].data_lanes_per_direction}"
+            f"{link_by_id[domain[0]].transport_bits_per_cycle_per_direction}"
         )
     for index, entry in enumerate(entries):
         hint = position_by_entry[entry["id"]]
@@ -323,7 +323,9 @@ def _assignment_metrics(
     for entry in schedule["entries"]:
         hint = hints[entry["id"]]
         pin = assignment[entry["id"]][1]
-        lanes = link_by_id[entry["link"]].data_lanes_per_direction
+        lanes = link_by_id[
+            entry["link"]
+        ].transport_bits_per_cycle_per_direction
         pin_y = 0.5 if lanes == 1 else pin / (lanes - 1)
         pin_distance += abs(hint["source_y"] - pin_y)
         pin_distance += abs(hint["sink_y"] - pin_y)
@@ -422,7 +424,9 @@ def validate_pin_plan(
             or isinstance(pin, bool)
             or not isinstance(pin, int)
             or not 0 <= pin
-            < link_by_id[entry["link"]].data_lanes_per_direction
+            < link_by_id[
+                entry["link"]
+            ].transport_bits_per_cycle_per_direction
         ):
             raise ValidationError(
                 f"pin assignment for {entry['id']!r} is invalid"
