@@ -242,7 +242,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
-| Hardware BSP | In-tree contract plus source-backed Arm MPS4 topology/pin inventory | MPS4 BoardDB is available; GTY protocol wrapper, clock/reset shell, bitstream, and hardware qualification remain open gates |
+| Hardware BSP | In-tree contract plus source-backed Arm MPS4 topology/pin inventory | MPS4 BoardDB and exact active-lane differential binding are available. Phase 6C emits a synthesizable structural wrapper around an explicit external-PHY black box; GT configuration, reference clocks/reset, protocol/training, bitstream, and hardware qualification remain open gates |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
@@ -790,7 +790,13 @@ from those source-backed records. It deliberately leaves the exact
 that Vivado site mapping. For this fixed serial provider, `phase6b` consumes
 the Phase 5 schedule and Phase 6 per-FPGA anchor files directly; `--bsp`,
 `--position-hints`, and `--pin-plan` are only needed by the optimized parallel
-I/O provider. A 390.625-MHz profile would reach the
+I/O provider. Phase 6C then emits per-FPGA wrapper RTL whose user-side link
+ports connect directly to the generated transport module and whose scalar
+TXP/TXN/RXP/RXN ports exactly match the Phase 6B XDC. The wrapper instantiates
+an explicit `emuflow_external_serial_phy_lane` contract; that module remains a
+black box until a board-specific provider supplies the GT configuration,
+reference clock, reset sequence, encoding, and training logic. A 390.625-MHz
+profile would reach the
 documented 25-Gbps raw ceiling, but requires that implementation to close a
 2.56-ns common clock or a future protocol wrapper with a separate GTY clock
 domain. In either case the model provenance remains
@@ -1051,6 +1057,16 @@ the corresponding source TX and sink RX differential pairs are emitted once.
 No LVCMOS IOSTANDARD or undocumented transceiver site is invented. The MPS4
 path therefore has documented package-pin binding, while protocol IP, clocks,
 vendor DRC/timing sign-off, and hardware qualification remain later BSP gates.
+
+Phase 6C makes the next boundary executable rather than implicit. It generates
+one structural serial wrapper per FPGA, slices each transport word into the
+BoardDB payload width, declares only active scalar differential ports, and
+reduces every active PHY's `ready` signal into the transport controller's
+`links_ready`. It also emits the external-PHY module contract and a hash-bound
+manifest. The generated RTL can be parsed and structurally checked without
+vendor data, but the report deliberately marks hardware release as
+`blocked_on_external_phy_provider`; a black box is an interface, not a claimed
+GT implementation.
 
 FPGA placement follows the same rule. The default Phase 2/7 path launches the
 OpenPARF Python, C++, and PyTorch-operator source compiled by the root CMake

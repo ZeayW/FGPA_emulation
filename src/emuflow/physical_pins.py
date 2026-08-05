@@ -58,7 +58,7 @@ def _serial_port(
 ) -> str:
     return (
         f"gty_{direction}{polarity}_{_sv_name(link)}_"
-        f"{_sv_name(peer)}[{lane}]"
+        f"{_sv_name(peer)}_lane{lane}"
     )
 
 

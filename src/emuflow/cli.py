@@ -100,6 +100,7 @@ from .sta import (
     write_vivado_cut_net_map,
     write_vivado_net_map,
 )
+from .serial_wrapper import run_phase6c
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
 from .timing_routing import (
@@ -1541,6 +1542,14 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6b.add_argument("--skew-weight", type=float, default=1.0)
     phase6b.add_argument("--out", type=Path, required=True)
 
+    phase6c = subparsers.add_parser(
+        "phase6c",
+        help="generate serial-PHY wrapper RTL and its unresolved provider contract",
+    )
+    phase6c.add_argument("--platform", type=Path, required=True)
+    phase6c.add_argument("--binding", type=Path, required=True)
+    phase6c.add_argument("--out", type=Path, required=True)
+
     package_pin = subparsers.add_parser(
         "package-pin",
         help="physical package-pin binding artifact operations",
@@ -2499,6 +2508,15 @@ def _dispatch(args: argparse.Namespace) -> int:
             iostandard=args.iostandard,
             placement_weight=args.placement_weight,
             skew_weight=args.skew_weight,
+        )
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
+
+    if args.command == "phase6c":
+        report = run_phase6c(
+            platform_path=args.platform,
+            binding_path=args.binding,
+            output_dir=args.out,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

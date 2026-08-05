@@ -436,7 +436,7 @@ class PhysicalPinBindingTest(unittest.TestCase):
         )
         self.assertEqual(validation["status"], "pass")
         xdc = binding_to_xdc(binding, "mps4_1")
-        self.assertIn("gty_txp_mps4_b2b_1_mps4_2", xdc)
+        self.assertIn("gty_txp_mps4_b2b_1_mps4_2_lane", xdc)
         self.assertNotIn("set_property IOSTANDARD", xdc)
         corrupted = copy.deepcopy(binding)
         corrupted["entries"][0]["source_package_pins"]["p"] = "WRONG"

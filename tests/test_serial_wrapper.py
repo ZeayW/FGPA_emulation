@@ -1,0 +1,158 @@
+import copy
+import re
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.board_arm_mps4 import materialize_arm_mps4_boarddb
+from emuflow.errors import ValidationError
+from emuflow.io import read_json, write_json
+from emuflow.physical_pins import (
+    PACKAGE_PIN_BINDING_SCHEMA,
+    SERIAL_TRANSCEIVER_PROVIDER,
+    binding_to_xdc,
+)
+from emuflow.platform import Platform
+from emuflow.serial_wrapper import (
+    SERIAL_WRAPPER_SCHEMA,
+    build_serial_wrapper_manifest,
+    run_phase6c,
+    serial_wrapper_rtl,
+)
+
+
+class SerialWrapperTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        root = Path(self.temporary_directory.name)
+        self.platform_path = root / "platform.json"
+        materialize_arm_mps4_boarddb(
+            self.platform_path,
+            name="serial_wrapper_fixture",
+            fabric_clock_mhz=50.0,
+            payload_bits_per_lane_per_cycle=64,
+            latency_cycles=4,
+        )
+        self.platform = Platform.load(self.platform_path)
+        link = self.platform.links[0]
+        source = link.endpoint_binding("mps4_1")
+        sink = link.endpoint_binding("mps4_2")
+        source_lane = source.lanes[0]
+        sink_lane = sink.lanes[0]
+        self.binding = {
+            "schema": PACKAGE_PIN_BINDING_SCHEMA,
+            "status": "source_backed_boarddb",
+            "design": "serial_wrapper_fixture",
+            "platform": self.platform.name,
+            "board": self.platform.name,
+            "provider": SERIAL_TRANSCEIVER_PROVIDER,
+            "configuration": {
+                "electrical_interface": "differential_serial_transceiver",
+                "transceiver_site_status": "unresolved",
+            },
+            "metrics": {},
+            "entries": [
+                {
+                    "id": "mps4_b2b_1:mps4_1-to-mps4_2:gty-0",
+                    "link": "mps4_b2b_1",
+                    "source": "mps4_1",
+                    "sink": "mps4_2",
+                    "physical_lane": 0,
+                    "payload_bits_per_lane_per_cycle": 64,
+                    "logical_lanes": [0, 1],
+                    "logical_bindings": ["logical-0", "logical-1"],
+                    "source_connector": source.connector,
+                    "sink_connector": sink.connector,
+                    "source_mgt_group": source.mgt,
+                    "sink_mgt_group": sink.mgt,
+                    "source_ports": {
+                        "p": "gty_txp_mps4_b2b_1_mps4_2_lane0",
+                        "n": "gty_txn_mps4_b2b_1_mps4_2_lane0",
+                    },
+                    "sink_ports": {
+                        "p": "gty_rxp_mps4_b2b_1_mps4_1_lane0",
+                        "n": "gty_rxn_mps4_b2b_1_mps4_1_lane0",
+                    },
+                    "source_package_pins": {
+                        "p": source_lane.tx_package_pin_p,
+                        "n": source_lane.tx_package_pin_n,
+                    },
+                    "sink_package_pins": {
+                        "p": sink_lane.rx_package_pin_p,
+                        "n": sink_lane.rx_package_pin_n,
+                    },
+                    "transceiver_site_status": "unresolved",
+                }
+            ],
+        }
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def test_wrapper_is_reproducible_and_exposes_exact_active_ports(self) -> None:
+        first = build_serial_wrapper_manifest(self.platform, self.binding)
+        second = build_serial_wrapper_manifest(self.platform, self.binding)
+        self.assertEqual(first, second)
+        self.assertEqual(first["schema"], SERIAL_WRAPPER_SCHEMA)
+        self.assertEqual(first["status"], "awaiting_external_phy_provider")
+        self.assertEqual(first["metrics"]["active_transceiver_sites"], 2)
+        source = next(
+            item for item in first["fpgas"] if item["fpga"] == "mps4_1"
+        )
+        connection = next(
+            item
+            for item in source["transport_connections"]
+            if item["link"] == "mps4_b2b_1"
+        )
+        self.assertEqual(connection["width"], 768)
+        self.assertEqual(
+            connection["transport_tx_port"], "tx_mps4_b2b_1_mps4_2"
+        )
+        rtl = serial_wrapper_rtl(
+            self.platform, "mps4_1", source["sites"]
+        )
+        self.assertIn("module emuflow_serial_wrapper_mps4_1", rtl)
+        self.assertIn("gty_txp_mps4_b2b_1_mps4_2_lane0", rtl)
+        self.assertIn("tx_mps4_b2b_1_mps4_2[0 +: 64]", rtl)
+        self.assertIn("emuflow_external_serial_phy_lane", rtl)
+        self.assertNotIn("GTYE4_CHANNEL", rtl)
+        xdc_ports = set(
+            re.findall(r"\[get_ports \{([^}]+)\}\]", binding_to_xdc(
+                self.binding, "mps4_1"
+            ))
+        )
+        self.assertEqual(
+            xdc_ports,
+            {"gty_txp_mps4_b2b_1_mps4_2_lane0",
+             "gty_txn_mps4_b2b_1_mps4_2_lane0"},
+        )
+        self.assertTrue(all(port in rtl for port in xdc_ports))
+
+    def test_boarddb_pin_corruption_is_rejected(self) -> None:
+        corrupted = copy.deepcopy(self.binding)
+        corrupted["entries"][0]["source_package_pins"]["p"] = "WRONG"
+        with self.assertRaisesRegex(ValidationError, "disagrees with BoardDB"):
+            build_serial_wrapper_manifest(self.platform, corrupted)
+
+    def test_phase6c_writes_checked_black_box_boundary(self) -> None:
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding.json"
+        output = root / "phase6c"
+        write_json(binding_path, self.binding)
+        report = run_phase6c(self.platform_path, binding_path, output)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(
+            report["hardware_release_status"],
+            "blocked_on_external_phy_provider",
+        )
+        manifest = read_json(output / "serial_wrapper_manifest.json")
+        self.assertEqual(
+            manifest["phy_contract"]["implementation_status"],
+            "black_box_unresolved",
+        )
+        contract = (output / "external_serial_phy_contract.sv").read_text()
+        self.assertIn("(* black_box *)", contract)
+
+
+if __name__ == "__main__":
+    unittest.main()
