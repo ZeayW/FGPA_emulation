@@ -103,6 +103,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 normalized / "contest_instance.json",
                 routed / "routes.json",
                 runtime_seconds=18.0,
+                official_output_dir=root / "official",
             )
             self.assertEqual(evaluation["status"], "pass")
             self.assertEqual(evaluation["metrics"]["routed_cut_nets"], 3)
@@ -113,6 +114,13 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
             self.assertAlmostEqual(
                 evaluation["metrics"]["contest_score"],
                 71.2 * (1.0 + 0.2 * 18.0 / 3600.0),
+            )
+            official_routes = (root / "official" / "design.route.out").read_text()
+            self.assertEqual(official_routes.count("[net "), 3)
+            self.assertIn("[net 1]", official_routes)
+            self.assertEqual(
+                (root / "official" / "design.newtopo").read_text(),
+                TOPOLOGY,
             )
 
     def test_checker_rejects_route_on_disconnected_pair(self):
@@ -218,7 +226,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
             )
             self.assertEqual(boarddb["platform"]["kind"], "virtual")
             self.assertEqual(constraints["tdm_ratio_quantum"], 8)
-            self.assertEqual(constraints["frame_slots"], 32)
+            self.assertEqual(constraints["frame_slots"], 512)
             self.assertEqual(
                 len(constraints["shared_capacity_links"]), 4
             )

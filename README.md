@@ -97,7 +97,11 @@
 >   its fixed-commit public cases in
 >   [RePart](https://github.com/Welement-zyf/RePart/tree/211a9d8fd526576387cad7ac6dd3531354aeb31c/testcase),
 >   and the
->   [2025 EDA Elite reconfigurable multi-FPGA routing problem](https://edaosss.icisc.cn/file/cacheFile/2025/8/11/1e213a00cbd94e2b91e997740753cb60.pdf)
+>   [2025 EDA Elite reconfigurable multi-FPGA routing problem](https://edaoss.icisc.cn/file/cacheFile/2025/8/11/1e213a00cbd94e2b91e997740753cb60.pdf),
+>   with its public cases 01--04 fetched from the MIT-licensed
+>   [EDA-2025-git repository at a fixed commit](https://github.com/nsyw705/EDA-2025-git/tree/45315b739e6678bf04605aaa246285c768bc8e13/data_case)
+>   using per-file SHA-256 verification (benchmark inputs only; participant
+>   algorithms and the opaque checker binary are not incorporated)
 > - CI:
 >   [actions/checkout](https://github.com/actions/checkout) and
 >   [actions/setup-python](https://github.com/actions/setup-python)
@@ -448,26 +452,30 @@ BoardDB/partition/route-constraint artifacts consumed by the C++ system
 router:
 
 ```bash
+python3 scripts/fetch_eda2025_benchmarks.py \
+  --case case04 --out build/benchmarks/eda2025/case04
+
 emuflow contest eda2025-import \
-  --info design.info \
-  --net design.net \
-  --topology design.topo \
-  --assignment design.fpga.out \
-  --name public-case \
-  --out build/public-case
+  --info build/benchmarks/eda2025/case04/design.info \
+  --net build/benchmarks/eda2025/case04/design.net \
+  --topology build/benchmarks/eda2025/case04/design.topo \
+  --assignment build/benchmarks/eda2025/case04/design.fpga.out \
+  --name eda2025-case04 \
+  --out build/eda2025-case04
 
 emuflow phase4 \
-  --assignment build/public-case/partition_assignment.json \
-  --platform build/public-case/boarddb.json \
-  --constraints build/public-case/route_constraints.json \
-  --timing-paths build/public-case/contest_timing_paths.json \
-  --out build/public-case/phase4
+  --assignment build/eda2025-case04/partition_assignment.json \
+  --platform build/eda2025-case04/boarddb.json \
+  --constraints build/eda2025-case04/route_constraints.json \
+  --timing-paths build/eda2025-case04/contest_timing_paths.json \
+  --out build/eda2025-case04/phase4
 
 emuflow contest eda2025-evaluate \
-  --instance build/public-case/contest_instance.json \
-  --routes build/public-case/phase4/routes.json \
+  --instance build/eda2025-case04/contest_instance.json \
+  --routes build/eda2025-case04/phase4/routes.json \
   --runtime-seconds 0 \
-  --output build/public-case/contest_evaluation.json
+  --official-out build/eda2025-case04/official \
+  --output build/eda2025-case04/contest_evaluation.json
 ```
 
 The generated contest timing paths make the C++ route/TDM-co-optimized
@@ -480,6 +488,8 @@ limits, the 30% topology-change bound, exact cut-net coverage, and multicast
 reachability, then reports the published runtime-adjusted score. The generated
 BoardDB remains explicitly `virtual`; it is a reproducible academic benchmark
 architecture, not a claim about package pins or a commercial board.
+The public benchmark bundle sets `Rmax` to 512, which is therefore the adapter
+default; callers can still override it for a different contest release.
 
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact

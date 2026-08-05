@@ -222,7 +222,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2025_import.add_argument("--alpha-ns", type=float, default=0.7)
     eda2025_import.add_argument("--beta-ns", type=float, default=30.0)
     eda2025_import.add_argument("--ratio-quantum", type=int, default=8)
-    eda2025_import.add_argument("--max-ratio", type=int, default=32)
+    eda2025_import.add_argument("--max-ratio", type=int, default=512)
     eda2025_import.add_argument(
         "--topology-change-fraction", type=float, default=0.3
     )
@@ -235,6 +235,11 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2025_evaluate.add_argument("--new-topology", type=Path)
     eda2025_evaluate.add_argument("--runtime-seconds", type=float, default=0.0)
     eda2025_evaluate.add_argument("--output", "-o", type=Path)
+    eda2025_evaluate.add_argument(
+        "--official-out",
+        type=Path,
+        help="also write design.route.out and design.newtopo",
+    )
 
     ir_parser = subparsers.add_parser("ir", help="EmuIR operations")
     ir_subparsers = ir_parser.add_subparsers(dest="ir_command", required=True)
@@ -1582,6 +1587,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 output_path=args.output,
                 new_topology_path=args.new_topology,
                 runtime_seconds=args.runtime_seconds,
+                official_output_dir=args.official_out,
             )
         else:
             raise AssertionError(f"unhandled contest command {args.contest_command!r}")

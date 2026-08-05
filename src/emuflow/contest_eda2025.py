@@ -19,7 +19,7 @@ from .routing import SYSTEM_ROUTES_SCHEMA
 EDA2025_INSTANCE_SCHEMA = "emuflow.contest-eda2025-instance/v1"
 EDA2025_EVALUATION_SCHEMA = "emuflow.contest-eda2025-evaluation/v1"
 EDA2025_SOURCE_URL = (
-    "https://edaosss.icisc.cn/file/cacheFile/2025/8/11/"
+    "https://edaoss.icisc.cn/file/cacheFile/2025/8/11/"
     "1e213a00cbd94e2b91e997740753cb60.pdf"
 )
 
@@ -253,7 +253,7 @@ def import_eda2025_instance(
     alpha_ns: float = 0.7,
     beta_ns: float = 30.0,
     ratio_quantum: int = 8,
-    max_ratio: int = 32,
+    max_ratio: int = 512,
     topology_change_fraction: float = 0.3,
 ) -> Dict[str, Any]:
     if not isinstance(name, str) or not name.strip():
@@ -551,10 +551,10 @@ def _topology_change(
     return initial_channels, changed_channels
 
 
-def _route_path_delays(
+def _route_sink_paths(
     route: Mapping[str, Any],
     pair_delays: Mapping[Tuple[str, str], float],
-) -> Dict[str, float]:
+) -> Dict[str, Tuple[List[str], float]]:
     source = route["source"]
     graph: Dict[str, List[str]] = defaultdict(list)
     indegree: Dict[str, int] = defaultdict(int)
@@ -575,6 +575,7 @@ def _route_path_delays(
         graph[left].append(right)
         indegree[right] += 1
     delay = {source: 0.0}
+    paths = {source: [source]}
     queue = deque([source])
     while queue:
         node = queue.popleft()
@@ -584,6 +585,7 @@ def _route_path_delays(
                     f"route {route.get('id')!r}: tree has a cycle or reconvergence"
                 )
             delay[sink] = delay[node] + pair_delays[tuple(sorted((node, sink)))]
+            paths[sink] = [*paths[node], sink]
             queue.append(sink)
     edge_nodes = {node for edge in edge_set for node in edge}
     if not edge_nodes <= set(delay):
@@ -595,7 +597,74 @@ def _route_path_delays(
         )
     if any(count != 1 for node, count in indegree.items() if node != source):
         raise ValidationError(f"route {route.get('id')!r}: not an arborescence")
-    return {sink: delay[sink] for sink in route["sinks"]}
+    return {sink: (paths[sink], delay[sink]) for sink in route["sinks"]}
+
+
+def _route_path_delays(
+    route: Mapping[str, Any],
+    pair_delays: Mapping[Tuple[str, str], float],
+) -> Dict[str, float]:
+    return {
+        sink: delay
+        for sink, (_, delay) in _route_sink_paths(route, pair_delays).items()
+    }
+
+
+def _write_official_solution(
+    output_dir: Path,
+    instance: Mapping[str, Any],
+    route_by_net: Mapping[str, Mapping[str, Any]],
+    pair_delays: Mapping[Tuple[str, str], float],
+    topology: Sequence[Sequence[int]],
+) -> None:
+    """Write the contest's text outputs from independently checked routes."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fpga_ids = instance["fpga_ids"]
+    fpga_number = {
+        fpga_id: index for index, fpga_id in enumerate(fpga_ids, start=1)
+    }
+    assignment = instance["node_assignment"]
+    records = []
+    for net in instance["nets"]:
+        net_id = net["id"]
+        route = route_by_net.get(net_id)
+        if route is None:
+            continue
+        sink_paths = _route_sink_paths(route, pair_delays)
+        endpoint_paths = []
+        source_fpga = assignment[net["source_node"]]
+        for sink_node in net["sink_nodes"]:
+            sink_fpga = assignment[sink_node]
+            if sink_fpga == source_fpga:
+                continue
+            path, delay = sink_paths[sink_fpga]
+            endpoint_paths.append((path, delay))
+        records.append(
+            (
+                -max(delay for _, delay in endpoint_paths),
+                net["source_line"],
+                endpoint_paths,
+            )
+        )
+    records.sort(key=lambda record: (record[0], record[1]))
+    route_lines = []
+    for _, source_line, endpoint_paths in records:
+        route_lines.append(f"[net {source_line}]")
+        for path, delay in endpoint_paths:
+            encoded_path = ",".join(str(fpga_number[node]) for node in path)
+            route_lines.append(f"[{encoded_path}] [{delay:.10g}]")
+        route_lines.append("")
+    (output_dir / "design.route.out").write_text(
+        "\n".join(route_lines), encoding="utf-8"
+    )
+
+    topology_lines = [
+        f"{fpga_id}: {','.join(str(channel) for channel in topology[index])}"
+        for index, fpga_id in enumerate(fpga_ids)
+    ]
+    (output_dir / "design.newtopo").write_text(
+        "\n".join(topology_lines) + "\n", encoding="utf-8"
+    )
 
 
 def evaluate_eda2025_routes(
@@ -604,6 +673,7 @@ def evaluate_eda2025_routes(
     output_path: Optional[Path] = None,
     new_topology_path: Optional[Path] = None,
     runtime_seconds: float = 0.0,
+    official_output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     instance = read_json(instance_path)
     _validate_instance(instance)
@@ -761,6 +831,14 @@ def evaluate_eda2025_routes(
             "contest_score": score,
         },
     }
+    if official_output_dir is not None:
+        _write_official_solution(
+            official_output_dir,
+            instance,
+            route_by_net,
+            pair_delays,
+            topology,
+        )
     if output_path is not None:
         write_json(output_path, result)
     return result
