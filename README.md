@@ -470,22 +470,15 @@ emuflow phase4 \
   --timing-paths build/eda2025-case04/contest_timing_paths.json \
   --out build/eda2025-case04/phase4
 
-emuflow contest eda2025-optimize-topology \
+emuflow contest eda2025-optimize-routing \
   --instance build/eda2025-case04/contest_instance.json \
   --routes build/eda2025-case04/phase4/routes.json \
-  --out build/eda2025-case04/topology
-
-emuflow phase4 \
-  --assignment build/eda2025-case04/topology/normalized/partition_assignment.json \
-  --platform build/eda2025-case04/topology/normalized/boarddb.json \
-  --constraints build/eda2025-case04/topology/normalized/route_constraints.json \
-  --timing-paths build/eda2025-case04/topology/normalized/contest_timing_paths.json \
-  --out build/eda2025-case04/rerouted
+  --out build/eda2025-case04/optimized
 
 emuflow contest eda2025-evaluate \
   --instance build/eda2025-case04/contest_instance.json \
-  --routes build/eda2025-case04/rerouted/routes.json \
-  --new-topology build/eda2025-case04/topology/design.newtopo \
+  --routes build/eda2025-case04/optimized/selected/routed/routes.json \
+  --new-topology build/eda2025-case04/optimized/selected/design.newtopo \
   --runtime-seconds 0 \
   --official-out build/eda2025-case04/official \
   --output build/eda2025-case04/contest_evaluation.json
@@ -501,13 +494,13 @@ limits, the 30% topology-change bound, exact cut-net coverage, and multicast
 reachability, then reports the published runtime-adjusted score. The generated
 BoardDB remains explicitly `virtual`; it is a reproducible academic benchmark
 architecture, not a claim about package pins or a commercial board.
-The topology step is a first-party C++ quantized-minimax refinement kernel. It
-adds the minimum legal channel batch needed to cross a TDM-ratio quantum,
-respects every FPGA's external-IO and global topology-change budgets, and emits
-fresh generic Phase 4 contracts. Routing is then run again; the optimizer's
-fixed-route prediction is never reported as the final contest result. A later
-round can pass the previous `design.newtopo` with `--topology`, and a round that
-does not improve its fixed-route objective is rolled back.
+The topology step uses a first-party C++ quantized-minimax kernel. It evaluates
+capacity-refinement and optional direct-link shortcut neighborhoods, respects
+every FPGA's external-IO and the global topology-change budget, and emits fresh
+generic Phase 4 contracts. `eda2025-optimize-routing` reruns Phase 4 for each
+neighborhood and accepts only the best independently evaluated result; a local
+surrogate prediction is never reported as the final contest result. A later
+round can pass the selected `design.newtopo` with `--topology`.
 The public benchmark bundle sets `Rmax` to 512, which is therefore the adapter
 default; callers can still override it for a different contest release.
 

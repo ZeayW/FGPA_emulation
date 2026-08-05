@@ -6,6 +6,7 @@ the normalized contest instance remains the source of truth for scoring.
 """
 
 import math
+import shutil
 import subprocess
 import tempfile
 from collections import defaultdict, deque
@@ -23,6 +24,9 @@ EDA2025_INSTANCE_SCHEMA = "emuflow.contest-eda2025-instance/v1"
 EDA2025_EVALUATION_SCHEMA = "emuflow.contest-eda2025-evaluation/v1"
 EDA2025_TOPOLOGY_OPTIMIZATION_SCHEMA = (
     "emuflow.contest-eda2025-topology-optimization/v1"
+)
+EDA2025_ROUTING_OPTIMIZATION_SCHEMA = (
+    "emuflow.contest-eda2025-routing-optimization/v1"
 )
 EDA2025_SOURCE_URL = (
     "https://edaoss.icisc.cn/file/cacheFile/2025/8/11/"
@@ -716,6 +720,7 @@ def _write_topology_optimizer_input(
     routes: Mapping[str, Any],
     evaluation: Mapping[str, Any],
     change_budget: int,
+    enable_shortcuts: bool,
 ) -> None:
     fpga_ids = instance["fpga_ids"]
     fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
@@ -728,16 +733,20 @@ def _write_topology_optimizer_input(
     }
     paths = []
     for route in routes["routes"]:
-        for nodes, _ in _route_sink_paths(route, pair_delays).values():
+        for sink, (nodes, _) in _route_sink_paths(route, pair_delays).items():
             paths.append(
-                [
-                    pair_index[tuple(sorted((left, right)))]
-                    for left, right in zip(nodes, nodes[1:])
-                ]
+                (
+                    fpga_index[route["source"]],
+                    fpga_index[sink],
+                    [
+                        pair_index[tuple(sorted((left, right)))]
+                        for left, right in zip(nodes, nodes[1:])
+                    ],
+                )
             )
     parameters = instance["parameters"]
     lines = [
-        "EMUFLOW_EDA2025_TOPOLOGY_V1",
+        "EMUFLOW_EDA2025_TOPOLOGY_V2",
         " ".join(
             str(value)
             for value in (
@@ -748,6 +757,7 @@ def _write_topology_optimizer_input(
                 parameters["max_ratio"],
                 parameters["alpha_ns"],
                 parameters["beta_ns"],
+                int(enable_shortcuts),
             )
         ),
         " ".join(
@@ -762,7 +772,11 @@ def _write_topology_optimizer_input(
             for index, pair in enumerate(pairs)
         ),
         str(len(paths)),
-        *(f"{len(edges)} {' '.join(str(edge) for edge in edges)}" for edges in paths),
+        *(
+            f"{source} {sink} {len(edges)} "
+            f"{' '.join(str(edge) for edge in edges)}"
+            for source, sink, edges in paths
+        ),
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -815,6 +829,7 @@ def optimize_eda2025_topology(
     executable: Optional[str] = None,
     max_changes: Optional[int] = None,
     current_topology_path: Optional[Path] = None,
+    enable_shortcuts: bool = False,
 ) -> Dict[str, Any]:
     """Refine physical channel counts, then emit rerouting-ready contracts."""
     instance = read_json(instance_path)
@@ -848,7 +863,13 @@ def optimize_eda2025_topology(
         native_input = root / "topology.in"
         native_output = root / "topology.out"
         _write_topology_optimizer_input(
-            native_input, instance, topology, routes, baseline, budget
+            native_input,
+            instance,
+            topology,
+            routes,
+            baseline,
+            budget,
+            enable_shortcuts,
         )
         completed = subprocess.run(
             [resolved, str(native_input), str(native_output)],
@@ -899,9 +920,10 @@ def optimize_eda2025_topology(
         "status": "pass",
         "provider": "quantized-minimax-topology-refinement-v1",
         "method": {
-            "objective": "exact fixed-route quantized maximum path delay",
+            "objective": "routing-guided quantized maximum path delay",
             "move": "minimum channel addition crossing a TDM quantum boundary",
             "selection": "critical-window minimax with smooth pressure tie-break",
+            "shortcut_links": enable_shortcuts,
             "routing_closure": "rerun Phase 4 on emitted normalized contracts",
         },
         "metrics": {
@@ -923,6 +945,150 @@ def optimize_eda2025_topology(
         "artifacts": {"topology": str(topology_path), **artifacts},
     }
     write_json(output_dir / "topology_optimization.json", report)
+    return report
+
+
+def optimize_eda2025_routing(
+    instance_path: Path,
+    routes_path: Path,
+    output_dir: Path,
+    router: Optional[str] = None,
+    topology_optimizer: Optional[str] = None,
+    current_topology_path: Optional[Path] = None,
+    enable_shortcut_portfolio: bool = True,
+) -> Dict[str, Any]:
+    """Evaluate topology neighborhoods with real Phase 4 rerouting closure."""
+    from .phase4 import run_phase4
+
+    instance = read_json(instance_path)
+    _validate_instance(instance)
+    baseline = evaluate_eda2025_routes(
+        instance_path,
+        routes_path,
+        new_topology_path=current_topology_path,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    candidate_root = output_dir / "candidates"
+    candidate_root.mkdir(exist_ok=True)
+    records = [
+        {
+            "name": "baseline",
+            "worst_path_delay_ns": baseline["metrics"]["worst_path_delay_ns"],
+            "changed_channels": baseline["topology"]["changed_channels"],
+            "rerouted": False,
+            "accepted": False,
+            "root": None,
+        }
+    ]
+    strategies = [("capacity", False)]
+    if enable_shortcut_portfolio:
+        strategies.append(("capacity-and-shortcuts", True))
+    for name, shortcuts in strategies:
+        root = candidate_root / name
+        proposal = optimize_eda2025_topology(
+            instance_path=instance_path,
+            routes_path=routes_path,
+            output_dir=root,
+            executable=topology_optimizer,
+            current_topology_path=current_topology_path,
+            enable_shortcuts=shortcuts,
+        )
+        if proposal["metrics"]["iteration_changed_channels"] == 0:
+            records.append(
+                {
+                    "name": name,
+                    "worst_path_delay_ns": baseline["metrics"][
+                        "worst_path_delay_ns"
+                    ],
+                    "changed_channels": baseline["topology"][
+                        "changed_channels"
+                    ],
+                    "rerouted": False,
+                    "accepted": False,
+                    "root": str(root),
+                }
+            )
+            continue
+        normalized = root / "normalized"
+        routed = root / "routed"
+        run_phase4(
+            assignment_path=normalized / "partition_assignment.json",
+            platform_path=normalized / "boarddb.json",
+            output_dir=routed,
+            constraints_path=normalized / "route_constraints.json",
+            timing_paths_path=normalized / "contest_timing_paths.json",
+            router=router,
+        )
+        evaluation = evaluate_eda2025_routes(
+            instance_path,
+            routed / "routes.json",
+            output_path=root / "evaluation.json",
+            new_topology_path=root / "design.newtopo",
+        )
+        records.append(
+            {
+                "name": name,
+                "worst_path_delay_ns": evaluation["metrics"][
+                    "worst_path_delay_ns"
+                ],
+                "changed_channels": evaluation["topology"][
+                    "changed_channels"
+                ],
+                "rerouted": True,
+                "accepted": False,
+                "root": str(root),
+            }
+        )
+    best = min(
+        records,
+        key=lambda record: (
+            record["worst_path_delay_ns"],
+            record["changed_channels"],
+            record["name"],
+        ),
+    )
+    best["accepted"] = best["name"] != "baseline"
+    selected = output_dir / "selected"
+    if selected.exists():
+        shutil.rmtree(selected)
+    selected.mkdir()
+    if best["name"] == "baseline":
+        topology = (
+            parse_topology(current_topology_path, instance["fpga_ids"])
+            if current_topology_path is not None
+            else instance["initial_topology"]
+        )
+        _write_topology_text(
+            selected / "design.newtopo", instance["fpga_ids"], topology
+        )
+        _write_execution_adapter(instance, topology, selected / "normalized")
+        (selected / "routed").mkdir()
+        shutil.copy2(routes_path, selected / "routed" / "routes.json")
+        selected_evaluation = baseline
+    else:
+        source = Path(best["root"])
+        shutil.copy2(source / "design.newtopo", selected / "design.newtopo")
+        shutil.copytree(source / "normalized", selected / "normalized")
+        shutil.copytree(source / "routed", selected / "routed")
+        selected_evaluation = read_json(source / "evaluation.json")
+    write_json(selected / "evaluation.json", selected_evaluation)
+    report = {
+        "schema": EDA2025_ROUTING_OPTIMIZATION_SCHEMA,
+        "status": "pass",
+        "provider": "rerouting-closed-topology-portfolio-v1",
+        "objective": "minimum independently evaluated worst path delay",
+        "candidates": records,
+        "selected": {
+            "name": best["name"],
+            "improved": best["accepted"],
+            "worst_path_delay_ns": best["worst_path_delay_ns"],
+            "baseline_worst_path_delay_ns": baseline["metrics"][
+                "worst_path_delay_ns"
+            ],
+            "root": str(selected),
+        },
+    }
+    write_json(output_dir / "routing_optimization.json", report)
     return report
 
 

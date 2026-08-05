@@ -16,6 +16,7 @@ from .cross_stage import (
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
+    optimize_eda2025_routing,
     optimize_eda2025_topology,
 )
 from .contest_eda2024 import evaluate_eda2024_solution
@@ -254,6 +255,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--topology",
         type=Path,
         help="current design.newtopo for a subsequent optimization round",
+    )
+    eda2025_routing = contest_subparsers.add_parser(
+        "eda2025-optimize-routing",
+        help="select topology candidates using real Phase 4 rerouting",
+    )
+    eda2025_routing.add_argument("--instance", type=Path, required=True)
+    eda2025_routing.add_argument("--routes", type=Path, required=True)
+    eda2025_routing.add_argument("--out", type=Path, required=True)
+    eda2025_routing.add_argument("--topology", type=Path)
+    eda2025_routing.add_argument("--router")
+    eda2025_routing.add_argument("--topology-optimizer")
+    eda2025_routing.add_argument(
+        "--capacity-only", action="store_true", help="disable shortcut candidates"
+    )
+    eda2025_topology.add_argument(
+        "--enable-shortcuts",
+        action="store_true",
+        help="also propose direct links; candidates still require rerouting",
     )
 
     ir_parser = subparsers.add_parser("ir", help="EmuIR operations")
@@ -1612,6 +1631,17 @@ def _dispatch(args: argparse.Namespace) -> int:
                 executable=args.optimizer,
                 max_changes=args.max_changes,
                 current_topology_path=args.topology,
+                enable_shortcuts=args.enable_shortcuts,
+            )
+        elif args.contest_command == "eda2025-optimize-routing":
+            report = optimize_eda2025_routing(
+                instance_path=args.instance,
+                routes_path=args.routes,
+                output_dir=args.out,
+                router=args.router,
+                topology_optimizer=args.topology_optimizer,
+                current_topology_path=args.topology,
+                enable_shortcut_portfolio=not args.capacity_only,
             )
         else:
             raise AssertionError(f"unhandled contest command {args.contest_command!r}")

@@ -6,6 +6,7 @@ from pathlib import Path
 from emuflow.contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
+    optimize_eda2025_routing,
     optimize_eda2025_topology,
 )
 from emuflow.errors import ValidationError
@@ -122,6 +123,49 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
             self.assertEqual(
                 (root / "official" / "design.newtopo").read_text(),
                 TOPOLOGY,
+            )
+            topology_out = root / "topology"
+            topology_report = optimize_eda2025_topology(
+                instance_path=normalized / "contest_instance.json",
+                routes_path=routed / "routes.json",
+                output_dir=topology_out,
+                executable=str(eda2025_topology_optimizer()),
+                enable_shortcuts=True,
+            )
+            self.assertEqual(topology_report["metrics"]["changed_channels"], 1)
+            self.assertEqual(
+                topology_report["changes"][0]["fpgas"], ["F1", "F3"]
+            )
+            shortcut_routed = root / "shortcut-routed"
+            run_phase4(
+                assignment_path=topology_out / "normalized" / "partition_assignment.json",
+                platform_path=topology_out / "normalized" / "boarddb.json",
+                output_dir=shortcut_routed,
+                constraints_path=topology_out / "normalized" / "route_constraints.json",
+                timing_paths_path=topology_out / "normalized" / "contest_timing_paths.json",
+                router=str(tlr_router()),
+            )
+            shortcut_evaluation = evaluate_eda2025_routes(
+                normalized / "contest_instance.json",
+                shortcut_routed / "routes.json",
+                new_topology_path=topology_out / "design.newtopo",
+            )
+            self.assertAlmostEqual(
+                shortcut_evaluation["metrics"]["worst_path_delay_ns"], 35.6
+            )
+            portfolio = optimize_eda2025_routing(
+                instance_path=normalized / "contest_instance.json",
+                routes_path=routed / "routes.json",
+                output_dir=root / "portfolio",
+                router=str(tlr_router()),
+                topology_optimizer=str(eda2025_topology_optimizer()),
+            )
+            self.assertEqual(
+                portfolio["selected"]["name"], "capacity-and-shortcuts"
+            )
+            self.assertTrue(portfolio["selected"]["improved"])
+            self.assertAlmostEqual(
+                portfolio["selected"]["worst_path_delay_ns"], 35.6
             )
 
     def test_checker_rejects_route_on_disconnected_pair(self):
