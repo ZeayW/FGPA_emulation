@@ -497,7 +497,10 @@ architecture, not a claim about package pins or a commercial board.
 The topology step uses a first-party C++ quantized-minimax kernel. It evaluates
 capacity-refinement and optional direct-link shortcut neighborhoods, respects
 every FPGA's external-IO and the global topology-change budget, and emits fresh
-generic Phase 4 contracts. `eda2025-optimize-routing` reruns Phase 4 for each
+generic Phase 4 contracts. When a critical FPGA reaches its external-IO limit,
+the kernel can move channels from the lowest-delay-penalty donor edges and
+accounts for both the donor delay increase and target delay reduction before
+proposing the swap. `eda2025-optimize-routing` reruns Phase 4 for each
 neighborhood and accepts only the best independently evaluated result; a local
 surrogate prediction is never reported as the final contest result. A later
 round can pass the selected `design.newtopo` with `--topology`.

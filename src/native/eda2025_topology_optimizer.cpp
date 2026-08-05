@@ -42,6 +42,13 @@ struct Shortcut {
   std::vector<int> paths;
 };
 
+struct DonorMove {
+  int left = -1;
+  int right = -1;
+  int pair_index = -1;
+  double delay_increase = 0.0;
+};
+
 struct Model {
   int fpga_count = 0;
   int change_budget = 0;
@@ -246,13 +253,16 @@ Result optimize(Model& model) {
     int best_kind = -1;  // 0: routed-pair capacity, 1: direct shortcut.
     int best_pair = -1;
     int best_add = 0;
+    std::vector<DonorMove> best_donors;
     double best_worst = std::numeric_limits<double>::infinity();
     double best_pressure_gain = -1.0;
     double best_delta = 0.0;
     auto consider = [&](int kind, int index, int add,
+                        const std::vector<DonorMove>& donors,
                         const std::vector<int>& affected,
                         const auto& new_effective) {
       if (affected.empty()) return;
+      const int move_cost = add + static_cast<int>(donors.size());
       ++stamp;
       double max_affected = -1.0;
       double pressure_gain = 0.0;
@@ -276,9 +286,10 @@ Result optimize(Model& model) {
         }
       }
       const double predicted_worst = std::max(max_unaffected, max_affected);
-      pressure_gain /= add;
+      pressure_gain /= move_cost;
       const auto candidate_key = std::make_tuple(
-          predicted_worst, -pressure_gain, -maximum_gain / add, kind, index);
+          predicted_worst, -pressure_gain, -maximum_gain / move_cost,
+          kind, index);
       const auto best_key = std::make_tuple(
           best_worst, -best_pressure_gain,
           best_add == 0 ? 0.0 : -best_delta / best_add,
@@ -287,17 +298,81 @@ Result optimize(Model& model) {
         best_kind = kind;
         best_pair = index;
         best_add = add;
+        best_donors = donors;
         best_worst = predicted_worst;
         best_pressure_gain = pressure_gain;
         best_delta = maximum_gain;
       }
     };
 
+    auto low_cost_donors = [&](int endpoint, int target_neighbor,
+                               int needed) {
+      std::vector<DonorMove> donors;
+      if (needed <= 0) return donors;
+      std::vector<int> removed(model.fpga_count, 0);
+      while (static_cast<int>(donors.size()) < needed) {
+        int best_neighbor = -1;
+        int best_pair_index = -1;
+        double best_delta = std::numeric_limits<double>::infinity();
+        double best_pressure = std::numeric_limits<double>::infinity();
+        for (int neighbor = 0; neighbor < model.fpga_count; ++neighbor) {
+          if (neighbor == endpoint || neighbor == target_neighbor) continue;
+          const int channels =
+              model.topology[endpoint][neighbor] - removed[neighbor];
+          if (channels <= 1) continue;
+          const int used = model.used_pair_index[endpoint][neighbor];
+          double delta = 0.0;
+          double pressure = 0.0;
+          if (used >= 0) {
+            const Pair& pair = model.pairs[used];
+            const int old_ratio =
+                quantized_ratio(pair.load, channels, model.quantum);
+            const int new_ratio =
+                quantized_ratio(pair.load, channels - 1, model.quantum);
+            if (new_ratio > model.max_ratio) continue;
+            delta = model.alpha_ns * (new_ratio - old_ratio);
+            pressure = delta * (1.0 + pair.paths.size());
+          }
+          if (std::tie(pressure, delta, neighbor) <
+              std::tie(best_pressure, best_delta, best_neighbor)) {
+            best_neighbor = neighbor;
+            best_pair_index = used;
+            best_delta = delta;
+            best_pressure = pressure;
+          }
+        }
+        if (best_neighbor < 0) {
+          donors.clear();
+          return donors;
+        }
+        ++removed[best_neighbor];
+        donors.push_back(
+            {std::min(endpoint, best_neighbor),
+             std::max(endpoint, best_neighbor), best_pair_index, best_delta});
+      }
+      return donors;
+    };
+
+    auto move_donors = [&](int left, int right, int add) {
+      std::vector<DonorMove> donors;
+      const int left_need = std::max(
+          0, io_used[left] + add - model.limits[left]);
+      const int right_need = std::max(
+          0, io_used[right] + add - model.limits[right]);
+      auto left_donors = low_cost_donors(left, right, left_need);
+      auto right_donors = low_cost_donors(right, left, right_need);
+      if ((left_need > 0 && left_donors.empty()) ||
+          (right_need > 0 && right_donors.empty())) {
+        return std::vector<DonorMove>{};
+      }
+      donors.insert(donors.end(), left_donors.begin(), left_donors.end());
+      donors.insert(donors.end(), right_donors.begin(), right_donors.end());
+      return donors;
+    };
+
     for (int pair_index : pair_candidates) {
       const Pair& pair = model.pairs[pair_index];
-      const int slack = std::min(model.limits[pair.left] - io_used[pair.left],
-                                 model.limits[pair.right] - io_used[pair.right]);
-      const int available = std::min(slack, model.change_budget - result.changes);
+      const int available = model.change_budget - result.changes;
       if (available <= 0) continue;
       const int old_channels = model.topology[pair.left][pair.right];
       const int old_ratio = quantized_ratio(pair.load, old_channels, model.quantum);
@@ -308,22 +383,42 @@ Result optimize(Model& model) {
         ++add;
       }
       if (add > available) continue;
+      const auto donors = move_donors(pair.left, pair.right, add);
+      const int left_need = std::max(
+          0, io_used[pair.left] + add - model.limits[pair.left]);
+      const int right_need = std::max(
+          0, io_used[pair.right] + add - model.limits[pair.right]);
+      if (static_cast<int>(donors.size()) != left_need + right_need ||
+          add + static_cast<int>(donors.size()) > available) {
+        continue;
+      }
       const int new_ratio =
           quantized_ratio(pair.load, old_channels + add, model.quantum);
       const double delta = model.alpha_ns * (old_ratio - new_ratio);
       if (delta <= 0.0) continue;
-      consider(0, pair_index, add, pair.paths, [&](int path_index) {
-        return std::min(base_path_delays[path_index] - delta,
-                        shortcut_delays[path_index]);
+      std::unordered_map<int, double> donor_increase;
+      std::unordered_set<int> affected_set(pair.paths.begin(), pair.paths.end());
+      std::vector<int> affected = pair.paths;
+      for (const DonorMove& donor : donors) {
+        if (donor.pair_index < 0 || donor.delay_increase <= 0.0) continue;
+        for (int path_index : model.pairs[donor.pair_index].paths) {
+          donor_increase[path_index] += donor.delay_increase;
+          if (affected_set.insert(path_index).second)
+            affected.push_back(path_index);
+        }
+      }
+      std::unordered_set<int> target_paths(pair.paths.begin(), pair.paths.end());
+      consider(0, pair_index, add, donors, affected, [&](int path_index) {
+        const double updated_base = base_path_delays[path_index] +
+            donor_increase[path_index] -
+            (target_paths.count(path_index) ? delta : 0.0);
+        return std::min(updated_base, shortcut_delays[path_index]);
       });
     }
 
     for (int shortcut_index : shortcut_candidates) {
       const Shortcut& shortcut = model.shortcuts[shortcut_index];
-      const int slack = std::min(
-          model.limits[shortcut.left] - io_used[shortcut.left],
-          model.limits[shortcut.right] - io_used[shortcut.right]);
-      const int available = std::min(slack, model.change_budget - result.changes);
+      const int available = model.change_budget - result.changes;
       if (available <= 0) continue;
       const int old_channels = model.topology[shortcut.left][shortcut.right];
       const int load = static_cast<int>(shortcut.paths.size());
@@ -346,14 +441,56 @@ Result optimize(Model& model) {
         ++add;
       }
       if (add > available) continue;
+      const auto donors = move_donors(shortcut.left, shortcut.right, add);
+      const int left_need = std::max(
+          0, io_used[shortcut.left] + add - model.limits[shortcut.left]);
+      const int right_need = std::max(
+          0, io_used[shortcut.right] + add - model.limits[shortcut.right]);
+      if (static_cast<int>(donors.size()) != left_need + right_need ||
+          add + static_cast<int>(donors.size()) > available) {
+        continue;
+      }
       const double direct_delay = model.beta_ns + model.alpha_ns *
           quantized_ratio(load, old_channels + add, model.quantum);
-      consider(1, shortcut_index, add, shortcut.paths, [&](int path_index) {
-        return std::min(base_path_delays[path_index], direct_delay);
+      std::unordered_map<int, double> donor_increase;
+      std::unordered_set<int> affected_set(
+          shortcut.paths.begin(), shortcut.paths.end());
+      std::vector<int> affected = shortcut.paths;
+      for (const DonorMove& donor : donors) {
+        if (donor.pair_index < 0 || donor.delay_increase <= 0.0) continue;
+        for (int path_index : model.pairs[donor.pair_index].paths) {
+          donor_increase[path_index] += donor.delay_increase;
+          if (affected_set.insert(path_index).second)
+            affected.push_back(path_index);
+        }
+      }
+      std::unordered_set<int> target_paths(
+          shortcut.paths.begin(), shortcut.paths.end());
+      consider(1, shortcut_index, add, donors, affected,
+               [&](int path_index) {
+        const double updated_base =
+            base_path_delays[path_index] + donor_increase[path_index];
+        if (target_paths.count(path_index))
+          return std::min(updated_base, direct_delay);
+        return std::min(updated_base, shortcut_delays[path_index]);
       });
     }
 
     if (best_kind < 0) break;
+    for (const DonorMove& donor : best_donors) {
+      --model.topology[donor.left][donor.right];
+      --model.topology[donor.right][donor.left];
+      --io_used[donor.left];
+      --io_used[donor.right];
+      if (donor.pair_index >= 0 && donor.delay_increase > 0.0) {
+        delays[donor.pair_index] += donor.delay_increase;
+        for (int path_index : model.pairs[donor.pair_index].paths) {
+          base_path_delays[path_index] += donor.delay_increase;
+          effective_delays[path_index] = std::min(
+              base_path_delays[path_index], shortcut_delays[path_index]);
+        }
+      }
+    }
     if (best_kind == 0) {
       Pair& pair = model.pairs[best_pair];
       const int old_ratio = quantized_ratio(
@@ -387,7 +524,7 @@ Result optimize(Model& model) {
             std::min(base_path_delays[path_index], direct_delay);
       }
     }
-    result.changes += best_add;
+    result.changes += best_add + static_cast<int>(best_donors.size());
     ++result.iterations;
   }
   result.optimized_worst =

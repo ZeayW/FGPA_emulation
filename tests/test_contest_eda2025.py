@@ -330,6 +330,60 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
             self.assertEqual(second["metrics"]["iteration_changed_channels"], 0)
             self.assertEqual(second["metrics"]["changed_channels"], 1)
 
+    def test_cpp_topology_refinement_swaps_zero_cost_donor_channels(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "design.info").write_text(INFO, encoding="utf-8")
+            (source / "design.topo").write_text(
+                "F1: 0,1,0,2\n"
+                "F2: 1,0,2,0\n"
+                "F3: 0,2,0,1\n"
+                "F4: 2,0,1,0\n",
+                encoding="utf-8",
+            )
+            (source / "design.net").write_text(
+                "".join(f"s{index} 1 t{index}\n" for index in range(9)),
+                encoding="utf-8",
+            )
+            (source / "design.fpga.out").write_text(
+                "F1: " + " ".join(f"s{index}" for index in range(9)) + "\n"
+                "F2: " + " ".join(f"t{index}" for index in range(9)) + "\n"
+                "F3:\nF4:\n",
+                encoding="utf-8",
+            )
+            normalized = root / "normalized"
+            import_eda2025_instance(
+                info_path=source / "design.info",
+                net_path=source / "design.net",
+                topology_path=source / "design.topo",
+                assignment_path=source / "design.fpga.out",
+                output_dir=normalized,
+                name="channel_swap",
+                topology_change_fraction=1.0,
+            )
+            routed = root / "routed"
+            run_phase4(
+                assignment_path=normalized / "partition_assignment.json",
+                platform_path=normalized / "boarddb.json",
+                output_dir=routed,
+                constraints_path=normalized / "route_constraints.json",
+                timing_paths_path=normalized / "contest_timing_paths.json",
+                router=str(tlr_router()),
+            )
+            report = optimize_eda2025_topology(
+                instance_path=normalized / "contest_instance.json",
+                routes_path=routed / "routes.json",
+                output_dir=root / "optimized",
+                executable=str(eda2025_topology_optimizer()),
+            )
+            self.assertEqual(report["metrics"]["iteration_changed_channels"], 3)
+            changes = {tuple(change["fpgas"]): change for change in report["changes"]}
+            self.assertEqual(changes[("F1", "F2")]["optimized_channels"], 2)
+            self.assertEqual(changes[("F1", "F4")]["optimized_channels"], 1)
+            self.assertEqual(changes[("F2", "F3")]["optimized_channels"], 1)
+
     def test_normalized_artifacts_are_self_describing(self):
         with tempfile.TemporaryDirectory() as temporary:
             _, normalized = self._import(Path(temporary))
