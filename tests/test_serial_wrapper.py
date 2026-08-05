@@ -138,6 +138,28 @@ class SerialWrapperTest(unittest.TestCase):
         self.assertEqual(first["schema"], SERIAL_WRAPPER_SCHEMA)
         self.assertEqual(first["status"], "awaiting_external_phy_provider")
         self.assertEqual(first["metrics"]["active_transceiver_sites"], 2)
+        phy_contract = first["phy_contract"]
+        self.assertEqual(
+            phy_contract["internal_reset"]["derivation_status"],
+            "unresolved_from_board_reset",
+        )
+        self.assertEqual(
+            phy_contract["board_service_candidates"]["reference_clocks"][0][
+                "frequency_mhz"
+            ],
+            156.25,
+        )
+        self.assertEqual(
+            {
+                reset["signal"]
+                for reset in phy_contract["board_service_candidates"]["resets"]
+            },
+            {"IOFPGA_nRST", "CB_nPOR"},
+        )
+        self.assertIn(
+            "reference_clock_package_binding",
+            phy_contract["required_provider_fields"],
+        )
         source = next(
             item for item in first["fpgas"] if item["fpga"] == "mps4_1"
         )
@@ -201,6 +223,11 @@ class SerialWrapperTest(unittest.TestCase):
         self.assertEqual(
             manifest["phy_contract"]["implementation_status"],
             "black_box_unresolved",
+        )
+        self.assertEqual(
+            manifest["phy_contract"]["board_service_candidates"]
+            ["reference_clocks"][0]["signal"],
+            "B2B_CLK[9:0]",
         )
         contract = (output / "external_serial_phy_contract.sv").read_text()
         self.assertIn("(* black_box *)", contract)

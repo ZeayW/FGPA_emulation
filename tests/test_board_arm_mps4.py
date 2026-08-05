@@ -5,6 +5,7 @@ from pathlib import Path
 
 from emuflow.board_arm_mps4 import (
     ARM_MPS4_TRM_URL,
+    MPS4_B2B_REFCLK_DEFAULT_MHZ,
     materialize_arm_mps4_boarddb,
 )
 from emuflow.bsp import _link_channels, _physical_data_lanes, _validate_anchors
@@ -76,11 +77,28 @@ class ArmMps4BoardTest(unittest.TestCase):
             document["provenance"]["transport_profile"]["qualification"],
             "configured_model_not_hardware_measured",
         )
+        self.assertEqual(len(platform.clocks), 1)
+        self.assertEqual(
+            platform.clocks[0].frequency_mhz, MPS4_B2B_REFCLK_DEFAULT_MHZ
+        )
+        self.assertEqual(
+            platform.clocks[0].frequency_qualification, "documented_default"
+        )
+        self.assertEqual(platform.clocks[0].count, 10)
+        self.assertEqual(
+            platform.clocks[0].binding_status,
+            "logical_source_without_package_pins",
+        )
+        self.assertEqual(
+            {reset.id: reset.polarity for reset in platform.resets},
+            {"cb_npor": "active_low", "iofpga_nrst": "active_low"},
+        )
         normalized = platform.to_dict()
         self.assertEqual(
             normalized["links"][0]["endpoint_bindings"],
             document["links"][0]["endpoint_bindings"],
         )
+        self.assertEqual(normalized["board_services"], document["board_services"])
         self.assertEqual(
             Platform.from_dict(normalized).links[0].endpoint_binding("mps4_1")
             .lanes[0]
@@ -93,6 +111,12 @@ class ArmMps4BoardTest(unittest.TestCase):
         ]["p"] = "BD42"
         with self.assertRaisesRegex(ValidationError, "package pin is already used"):
             Platform.from_dict(corrupted)
+        duplicate_service = copy.deepcopy(document)
+        duplicate_service["board_services"]["resets"][0]["id"] = (
+            "b2b_mgt_refclk_pool"
+        )
+        with self.assertRaisesRegex(ValidationError, "duplicate"):
+            Platform.from_dict(duplicate_service)
         physical_lanes = _physical_data_lanes(platform)
         self.assertEqual(len(physical_lanes), 3 * 12 * 4)
         self.assertTrue(

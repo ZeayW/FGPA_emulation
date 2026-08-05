@@ -617,11 +617,24 @@ def build_serial_wrapper_manifest(
             "implementation_status": "black_box_unresolved",
             "required_provider_fields": [
                 "transceiver_site",
-                "reference_clock",
+                "reference_clock_selection",
+                "reference_clock_package_binding",
+                "reset_synchronization",
                 "line_encoding",
                 "reset_sequence",
                 "link_training",
             ],
+            "internal_reset": {
+                "signal": "reset",
+                "polarity": "active_high",
+                "derivation_status": "unresolved_from_board_reset",
+            },
+            "board_service_candidates": {
+                "reference_clocks": [
+                    clock.to_dict() for clock in platform.clocks
+                ],
+                "resets": [reset.to_dict() for reset in platform.resets],
+            },
         },
         "fpgas": fpgas,
         "metrics": {

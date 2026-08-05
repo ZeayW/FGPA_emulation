@@ -82,6 +82,47 @@
           "latency_cycles"
         ]
       }
+    },
+    "board_services": {
+      "type": "object",
+      "properties": {
+        "clocks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "signal", "kind", "frequency_mhz", "frequency_qualification", "count", "destination", "binding_status", "qualification"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "signal": {"type": "string", "minLength": 1},
+              "kind": {"type": "string", "minLength": 1},
+              "frequency_mhz": {"type": "number", "exclusiveMinimum": 0},
+              "frequency_qualification": {"enum": ["fixed", "documented_default", "configured"]},
+              "count": {"type": "integer", "minimum": 1},
+              "destination": {"type": "string", "minLength": 1},
+              "binding_status": {"enum": ["logical_source_without_package_pins", "package_bound"]},
+              "qualification": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "resets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "signal", "polarity", "purpose", "binding_status", "qualification"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "signal": {"type": "string", "minLength": 1},
+              "polarity": {"enum": ["active_low", "active_high"]},
+              "purpose": {"type": "string", "minLength": 1},
+              "binding_status": {"enum": ["logical_source_without_package_pins", "package_bound"]},
+              "qualification": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
     }
   },
   "$defs": {

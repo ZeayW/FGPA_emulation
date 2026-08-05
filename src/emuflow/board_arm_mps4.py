@@ -4,6 +4,9 @@ The hardware facts below come from Arm document 102577_0000_02_en,
 Issue 02 (2024), which is explicitly marked Non-Confidential.  The manual's
 Figure 3-22 shows three MPS4 boards connected pairwise through the two 25-Gbps
 board-to-board ARC6 ports.  Table A-18 supplies the FPGA package-pin mapping.
+Table 3-3 documents the board-to-board reference-clock pool and the reset
+section documents the board reset semantics, but neither gives their FPGA
+package pins or a clock-to-GTY-site mapping.
 Transport word width, user clock, and latency are deliberately caller-provided
 because the board manual specifies the physical line-rate ceiling, not a link
 protocol or GTY user-interface configuration.
@@ -33,6 +36,7 @@ MPS4_PART = "xcvu13p-fhga2104-1-e"
 MPS4_MANUFACTURER_PART = "XCVU13P-1FHGA2104E"
 MPS4_PHYSICAL_LANES = 12
 MPS4_B2B_MAX_LINE_RATE_GBPS = 25.0
+MPS4_B2B_REFCLK_DEFAULT_MHZ = 156.25
 
 
 def _connector(
@@ -197,6 +201,39 @@ def materialize_arm_mps4_boarddb(
             for fpga_id in fpga_ids
         ],
         "links": links,
+        "board_services": {
+            "clocks": [
+                {
+                    "id": "b2b_mgt_refclk_pool",
+                    "signal": "B2B_CLK[9:0]",
+                    "kind": "differential_reference_pool",
+                    "frequency_mhz": MPS4_B2B_REFCLK_DEFAULT_MHZ,
+                    "frequency_qualification": "documented_default",
+                    "count": 10,
+                    "destination": "fpga_board_to_board_mgt",
+                    "binding_status": "logical_source_without_package_pins",
+                    "qualification": "source_backed_board_manual",
+                }
+            ],
+            "resets": [
+                {
+                    "id": "cb_npor",
+                    "signal": "CB_nPOR",
+                    "polarity": "active_low",
+                    "purpose": "fpga_image_logic_cold_reset",
+                    "binding_status": "logical_source_without_package_pins",
+                    "qualification": "source_backed_board_manual",
+                },
+                {
+                    "id": "iofpga_nrst",
+                    "signal": "IOFPGA_nRST",
+                    "polarity": "active_low",
+                    "purpose": "board_peripherals_fpga_and_plls",
+                    "binding_status": "logical_source_without_package_pins",
+                    "qualification": "source_backed_board_manual",
+                },
+            ],
+        },
         "provenance": {
             "board_manual": {
                 "title": (
@@ -206,9 +243,11 @@ def materialize_arm_mps4_boarddb(
                 "issue": "02",
                 "url": ARM_MPS4_TRM_URL,
                 "facts": {
-                    "device_and_capacity": "pages 8, 22",
+                    "device_and_capacity": "pages 9, 23",
+                    "board_to_board_clocks": "pages 28-30, Table 3-3",
+                    "reset_semantics": "pages 30-32, Figures 3-5 and 3-6",
                     "three_board_wiring": "pages 50-51, Figure 3-22",
-                    "connector_pin_map": "pages 92-93, Table A-18",
+                    "connector_pin_map": "pages 93-94, Table A-18",
                 },
             },
             "device_capacity": {

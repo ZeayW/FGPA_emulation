@@ -13,6 +13,16 @@ VALID_PLATFORM_KINDS = {"virtual", "hardware"}
 VALID_DIRECTIONS = {"full_duplex", "half_duplex", "unidirectional"}
 VALID_LINK_MODES = {"source_synchronous", "parallel", "serial", "abstract"}
 VALID_CAPACITY_SHARING = {"per_direction", "shared_bidirectional"}
+VALID_CLOCK_FREQUENCY_QUALIFICATIONS = {
+    "fixed",
+    "documented_default",
+    "configured",
+}
+VALID_BOARD_BINDING_STATUS = {
+    "logical_source_without_package_pins",
+    "package_bound",
+}
+VALID_RESET_POLARITIES = {"active_low", "active_high"}
 
 
 def _require_mapping(value: Any, context: str) -> Mapping[str, Any]:
@@ -86,6 +96,52 @@ class LinkEndpointBinding:
             "connector": self.connector,
             "mgt": self.mgt,
             "lanes": [lane.to_dict() for lane in self.lanes],
+        }
+
+
+@dataclass(frozen=True)
+class BoardClockContract:
+    id: str
+    signal: str
+    kind: str
+    frequency_mhz: float
+    frequency_qualification: str
+    count: int
+    destination: str
+    binding_status: str
+    qualification: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "signal": self.signal,
+            "kind": self.kind,
+            "frequency_mhz": self.frequency_mhz,
+            "frequency_qualification": self.frequency_qualification,
+            "count": self.count,
+            "destination": self.destination,
+            "binding_status": self.binding_status,
+            "qualification": self.qualification,
+        }
+
+
+@dataclass(frozen=True)
+class BoardResetContract:
+    id: str
+    signal: str
+    polarity: str
+    purpose: str
+    binding_status: str
+    qualification: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "signal": self.signal,
+            "polarity": self.polarity,
+            "purpose": self.purpose,
+            "binding_status": self.binding_status,
+            "qualification": self.qualification,
         }
 
 
@@ -173,6 +229,8 @@ class Platform:
     description: str
     fpgas: Tuple[FpgaNode, ...]
     links: Tuple[BoardLink, ...]
+    clocks: Tuple[BoardClockContract, ...] = ()
+    resets: Tuple[BoardResetContract, ...] = ()
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Platform":
@@ -529,12 +587,105 @@ class Platform:
                 )
             )
 
+        raw_services = value.get("board_services", {})
+        services = _require_mapping(raw_services, "board_services")
+        raw_clocks = services.get("clocks", [])
+        raw_resets = services.get("resets", [])
+        if not isinstance(raw_clocks, list) or not isinstance(raw_resets, list):
+            raise ValidationError("board_services clocks/resets must be arrays")
+        clocks: List[BoardClockContract] = []
+        service_ids = set()
+        for index, raw_clock in enumerate(raw_clocks):
+            context = f"board_services.clocks[{index}]"
+            clock = _require_mapping(raw_clock, context)
+            clock_id = _require_nonempty_string(clock.get("id"), f"{context}.id")
+            signal = _require_nonempty_string(
+                clock.get("signal"), f"{context}.signal"
+            )
+            clock_kind = _require_nonempty_string(
+                clock.get("kind"), f"{context}.kind"
+            )
+            frequency = clock.get("frequency_mhz")
+            frequency_qualification = clock.get("frequency_qualification")
+            count = clock.get("count")
+            destination = _require_nonempty_string(
+                clock.get("destination"), f"{context}.destination"
+            )
+            binding_status = clock.get("binding_status")
+            qualification = _require_nonempty_string(
+                clock.get("qualification"), f"{context}.qualification"
+            )
+            if clock_id in service_ids:
+                raise ValidationError(f"{context}.id: duplicate {clock_id!r}")
+            if (
+                isinstance(frequency, bool)
+                or not isinstance(frequency, (int, float))
+                or float(frequency) <= 0.0
+                or frequency_qualification
+                not in VALID_CLOCK_FREQUENCY_QUALIFICATIONS
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count <= 0
+                or binding_status not in VALID_BOARD_BINDING_STATUS
+            ):
+                raise ValidationError(f"{context}: invalid clock contract")
+            service_ids.add(clock_id)
+            clocks.append(
+                BoardClockContract(
+                    id=clock_id,
+                    signal=signal,
+                    kind=clock_kind,
+                    frequency_mhz=float(frequency),
+                    frequency_qualification=frequency_qualification,
+                    count=count,
+                    destination=destination,
+                    binding_status=binding_status,
+                    qualification=qualification,
+                )
+            )
+        resets: List[BoardResetContract] = []
+        for index, raw_reset in enumerate(raw_resets):
+            context = f"board_services.resets[{index}]"
+            reset = _require_mapping(raw_reset, context)
+            reset_id = _require_nonempty_string(reset.get("id"), f"{context}.id")
+            signal = _require_nonempty_string(
+                reset.get("signal"), f"{context}.signal"
+            )
+            polarity = reset.get("polarity")
+            purpose = _require_nonempty_string(
+                reset.get("purpose"), f"{context}.purpose"
+            )
+            binding_status = reset.get("binding_status")
+            qualification = _require_nonempty_string(
+                reset.get("qualification"), f"{context}.qualification"
+            )
+            if reset_id in service_ids:
+                raise ValidationError(f"{context}.id: duplicate {reset_id!r}")
+            if (
+                polarity not in VALID_RESET_POLARITIES
+                or binding_status not in VALID_BOARD_BINDING_STATUS
+            ):
+                raise ValidationError(f"{context}: invalid reset contract")
+            service_ids.add(reset_id)
+            resets.append(
+                BoardResetContract(
+                    id=reset_id,
+                    signal=signal,
+                    polarity=polarity,
+                    purpose=purpose,
+                    binding_status=binding_status,
+                    qualification=qualification,
+                )
+            )
+
         return cls(
             name=name,
             kind=kind,
             description=description,
             fpgas=tuple(fpgas),
             links=tuple(links),
+            clocks=tuple(sorted(clocks, key=lambda item: item.id)),
+            resets=tuple(sorted(resets, key=lambda item: item.id)),
         )
 
     @classmethod
@@ -542,7 +693,7 @@ class Platform:
         return cls.from_dict(read_json(path))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "schema": BOARDDB_SCHEMA,
             "platform": {
                 "name": self.name,
@@ -552,6 +703,12 @@ class Platform:
             "fpgas": [fpga.to_dict() for fpga in self.fpgas],
             "links": [link.to_dict() for link in self.links],
         }
+        if self.clocks or self.resets:
+            result["board_services"] = {
+                "clocks": [clock.to_dict() for clock in self.clocks],
+                "resets": [reset.to_dict() for reset in self.resets],
+            }
+        return result
 
     def summary(self) -> Dict[str, Any]:
         return {

@@ -27,7 +27,9 @@
         "module",
         "rtl",
         "implementation_status",
-        "required_provider_fields"
+        "required_provider_fields",
+        "internal_reset",
+        "board_service_candidates"
       ],
       "properties": {
         "implementation_status": {"const": "black_box_unresolved"},
@@ -35,6 +37,18 @@
           "type": "array",
           "minItems": 1,
           "items": {"type": "string", "minLength": 1}
+        },
+        "internal_reset": {
+          "type": "object",
+          "required": ["signal", "polarity", "derivation_status"]
+        },
+        "board_service_candidates": {
+          "type": "object",
+          "required": ["reference_clocks", "resets"],
+          "properties": {
+            "reference_clocks": {"type": "array"},
+            "resets": {"type": "array"}
+          }
         }
       }
     },

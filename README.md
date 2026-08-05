@@ -778,7 +778,7 @@ emuflow platform arm-mps4-materialize \
 The three transport-profile arguments are explicit because the board manual
 specifies physical connectivity and a maximum line rate, not a GTY protocol,
 user-side word width, or measured latency. The example uses the open backend's
-20-ns common fabric period: 64 user-side bits per lane at 50 MHz, or 3.2 Gbps
+20-ns common transport/user period: 64 user-side bits per lane at 50 MHz, or 3.2 Gbps
 per lane before encoding/protocol overhead. Routing and TDM use the resulting
 768 user-side bits per link cycle, while BSP requirements retain twelve
 physical differential transceiver lanes. The normalized BoardDB preserves the
@@ -787,7 +787,14 @@ each logical user bit to `(physical GTY lane, bit within the user word)`,
 deduplicates physical channels, and emits differential package-pin XDC directly
 from those source-backed records. It deliberately leaves the exact
 `GTYE4_CHANNEL_X*Y*` site unresolved because the cited manual does not specify
-that Vivado site mapping. For this fixed serial provider, `phase6b` consumes
+that Vivado site mapping. The BoardDB separately records the ten
+`B2B_CLK[9:0]` differential MGT-clock candidates at their documented default
+156.25 MHz, plus the active-low `IOFPGA_nRST` and `CB_nPOR` reset semantics.
+These are source-backed service candidates, not usable XDC bindings: the
+manual does not publish their FPGA package pins or select which reference
+clock feeds each GTY site. Consequently, the current 50-MHz transport clock
+must not be confused with the 156.25-MHz GT reference-clock candidate. For
+this fixed serial provider, `phase6b` consumes
 the Phase 5 schedule and Phase 6 per-FPGA anchor files directly; `--bsp`,
 `--position-hints`, and `--pin-plan` are only needed by the optimized parallel
 I/O provider. Phase 6C then emits per-FPGA wrapper RTL whose user-side link
