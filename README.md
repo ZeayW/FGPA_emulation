@@ -473,6 +473,7 @@ emuflow phase4 \
 emuflow contest eda2025-optimize-routing \
   --instance build/eda2025-case04/contest_instance.json \
   --routes build/eda2025-case04/phase4/routes.json \
+  --max-rounds 4 \
   --out build/eda2025-case04/optimized
 
 emuflow contest eda2025-evaluate \
@@ -502,8 +503,10 @@ the kernel can move channels from the lowest-delay-penalty donor edges and
 accounts for both the donor delay increase and target delay reduction before
 proposing the swap. `eda2025-optimize-routing` reruns Phase 4 for each
 neighborhood and accepts only the best independently evaluated result; a local
-surrogate prediction is never reported as the final contest result. A later
-round can pass the selected `design.newtopo` with `--topology`.
+surrogate prediction is never reported as the final contest result. Accepted
+results feed the next round automatically until no strict improvement, the
+topology-change budget, or `--max-rounds` terminates the search. An existing
+solution can seed another run with `--topology`.
 The public benchmark bundle sets `Rmax` to 512, which is therefore the adapter
 default; callers can still override it for a different contest release.
 

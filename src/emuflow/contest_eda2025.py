@@ -26,7 +26,7 @@ EDA2025_TOPOLOGY_OPTIMIZATION_SCHEMA = (
     "emuflow.contest-eda2025-topology-optimization/v1"
 )
 EDA2025_ROUTING_OPTIMIZATION_SCHEMA = (
-    "emuflow.contest-eda2025-routing-optimization/v1"
+    "emuflow.contest-eda2025-routing-optimization/v2"
 )
 EDA2025_SOURCE_URL = (
     "https://edaoss.icisc.cn/file/cacheFile/2025/8/11/"
@@ -948,7 +948,7 @@ def optimize_eda2025_topology(
     return report
 
 
-def optimize_eda2025_routing(
+def _optimize_eda2025_routing_round(
     instance_path: Path,
     routes_path: Path,
     output_dir: Path,
@@ -1047,6 +1047,8 @@ def optimize_eda2025_routing(
             record["name"],
         ),
     )
+    if best["worst_path_delay_ns"] >= records[0]["worst_path_delay_ns"] - 1.0e-9:
+        best = records[0]
     best["accepted"] = best["name"] != "baseline"
     selected = output_dir / "selected"
     if selected.exists():
@@ -1084,6 +1086,117 @@ def optimize_eda2025_routing(
             "worst_path_delay_ns": best["worst_path_delay_ns"],
             "baseline_worst_path_delay_ns": baseline["metrics"][
                 "worst_path_delay_ns"
+            ],
+            "root": str(selected),
+        },
+    }
+    write_json(output_dir / "routing_optimization.json", report)
+    return report
+
+
+def optimize_eda2025_routing(
+    instance_path: Path,
+    routes_path: Path,
+    output_dir: Path,
+    router: Optional[str] = None,
+    topology_optimizer: Optional[str] = None,
+    current_topology_path: Optional[Path] = None,
+    enable_shortcut_portfolio: bool = True,
+    max_rounds: int = 4,
+) -> Dict[str, Any]:
+    """Run rerouting-closed topology rounds to convergence or budget."""
+    if (
+        isinstance(max_rounds, bool)
+        or not isinstance(max_rounds, int)
+        or max_rounds <= 0
+    ):
+        raise ValidationError("max_rounds: expected a positive integer")
+    instance = read_json(instance_path)
+    _validate_instance(instance)
+    initial = evaluate_eda2025_routes(
+        instance_path,
+        routes_path,
+        new_topology_path=current_topology_path,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rounds_root = output_dir / "rounds"
+    rounds_root.mkdir(exist_ok=True)
+    active_routes = routes_path
+    active_topology = current_topology_path
+    round_records = []
+    final_round = None
+    final_selected = None
+    termination = "max_rounds"
+    for round_index in range(1, max_rounds + 1):
+        round_root = rounds_root / f"round_{round_index:03d}"
+        round_report = _optimize_eda2025_routing_round(
+            instance_path=instance_path,
+            routes_path=active_routes,
+            output_dir=round_root,
+            router=router,
+            topology_optimizer=topology_optimizer,
+            current_topology_path=active_topology,
+            enable_shortcut_portfolio=enable_shortcut_portfolio,
+        )
+        final_round = round_report
+        final_selected = round_root / "selected"
+        round_records.append(
+            {
+                "round": round_index,
+                "baseline_worst_path_delay_ns": round_report["selected"][
+                    "baseline_worst_path_delay_ns"
+                ],
+                "selected": round_report["selected"]["name"],
+                "improved": round_report["selected"]["improved"],
+                "worst_path_delay_ns": round_report["selected"][
+                    "worst_path_delay_ns"
+                ],
+                "candidates": round_report["candidates"],
+                "root": str(round_root),
+            }
+        )
+        selected_evaluation = read_json(final_selected / "evaluation.json")
+        if not round_report["selected"]["improved"]:
+            termination = "no_strict_improvement"
+            break
+        active_routes = final_selected / "routed" / "routes.json"
+        active_topology = final_selected / "design.newtopo"
+        if (
+            selected_evaluation["topology"]["changed_channels"]
+            >= selected_evaluation["topology"]["allowed_changed_channels"]
+        ):
+            termination = "topology_change_budget_exhausted"
+            break
+    assert final_round is not None and final_selected is not None
+    selected = output_dir / "selected"
+    if selected.exists():
+        shutil.rmtree(selected)
+    shutil.copytree(final_selected, selected)
+    final_evaluation = read_json(selected / "evaluation.json")
+    final_delay = final_evaluation["metrics"]["worst_path_delay_ns"]
+    initial_delay = initial["metrics"]["worst_path_delay_ns"]
+    report = {
+        "schema": EDA2025_ROUTING_OPTIMIZATION_SCHEMA,
+        "status": "pass",
+        "provider": "iterative-rerouting-closed-topology-portfolio-v2",
+        "objective": "minimum independently evaluated worst path delay",
+        "configuration": {
+            "max_rounds": max_rounds,
+            "shortcut_portfolio": enable_shortcut_portfolio,
+        },
+        "rounds": round_records,
+        "termination": termination,
+        "selected": {
+            "name": final_round["selected"]["name"],
+            "improved": final_delay < initial_delay - 1.0e-9,
+            "rounds_completed": len(round_records),
+            "worst_path_delay_ns": final_delay,
+            "baseline_worst_path_delay_ns": initial_delay,
+            "changed_channels": final_evaluation["topology"][
+                "changed_channels"
+            ],
+            "allowed_changed_channels": final_evaluation["topology"][
+                "allowed_changed_channels"
             ],
             "root": str(selected),
         },

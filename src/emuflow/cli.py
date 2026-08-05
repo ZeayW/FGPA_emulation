@@ -266,6 +266,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2025_routing.add_argument("--topology", type=Path)
     eda2025_routing.add_argument("--router")
     eda2025_routing.add_argument("--topology-optimizer")
+    eda2025_routing.add_argument("--max-rounds", type=int, default=4)
     eda2025_routing.add_argument(
         "--capacity-only", action="store_true", help="disable shortcut candidates"
     )
@@ -1642,6 +1643,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 topology_optimizer=args.topology_optimizer,
                 current_topology_path=args.topology,
                 enable_shortcut_portfolio=not args.capacity_only,
+                max_rounds=args.max_rounds,
             )
         else:
             raise AssertionError(f"unhandled contest command {args.contest_command!r}")

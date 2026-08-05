@@ -164,6 +164,10 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 portfolio["selected"]["name"], "capacity-and-shortcuts"
             )
             self.assertTrue(portfolio["selected"]["improved"])
+            self.assertEqual(portfolio["selected"]["rounds_completed"], 1)
+            self.assertEqual(
+                portfolio["termination"], "topology_change_budget_exhausted"
+            )
             self.assertAlmostEqual(
                 portfolio["selected"]["worst_path_delay_ns"], 35.6
             )
