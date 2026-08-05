@@ -10,15 +10,14 @@ import shutil
 import subprocess
 import tempfile
 from collections import defaultdict, deque
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .contest_boarddb import materialize_homogeneous_boarddb
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
-from .platform import Platform
 from .routing import SYSTEM_ROUTES_SCHEMA
 
 
@@ -734,7 +733,11 @@ def materialize_eda2025_rtl_boarddb(
     """Combine a contest interconnect with a real-RTL-capable FPGA template."""
     if not isinstance(name, str) or not name.strip():
         raise ValidationError("name: expected a non-empty string")
-    if isinstance(lane_scale, bool) or not isinstance(lane_scale, int) or lane_scale <= 0:
+    if (
+        isinstance(lane_scale, bool)
+        or not isinstance(lane_scale, int)
+        or lane_scale <= 0
+    ):
         raise ValidationError("lane_scale: expected a positive integer")
     if (
         isinstance(fabric_clock_mhz, bool)
@@ -753,38 +756,6 @@ def materialize_eda2025_rtl_boarddb(
 
     instance = read_json(instance_path)
     _validate_instance(instance)
-    template_platform = Platform.load(device_template_path)
-    template = read_json(device_template_path)
-    raw_fpgas = template.get("fpgas")
-    if not isinstance(raw_fpgas, list) or not raw_fpgas:
-        raise ValidationError("device template has no FPGA records")
-    by_id = {record.get("id"): record for record in raw_fpgas}
-    if template_fpga_id is not None:
-        if template_fpga_id not in by_id:
-            raise ValidationError(
-                f"device template has no FPGA {template_fpga_id!r}"
-            )
-        selected = by_id[template_fpga_id]
-    else:
-        selected = raw_fpgas[0]
-        signature = (
-            selected.get("part"),
-            selected.get("utilization_limit"),
-            selected.get("capacity"),
-        )
-        if any(
-            (
-                record.get("part"),
-                record.get("utilization_limit"),
-                record.get("capacity"),
-            )
-            != signature
-            for record in raw_fpgas[1:]
-        ):
-            raise ValidationError(
-                "device template is heterogeneous; select --template-fpga"
-            )
-
     fpga_ids = instance["fpga_ids"]
     topology = (
         parse_topology(topology_path, fpga_ids)
@@ -810,11 +781,6 @@ def materialize_eda2025_rtl_boarddb(
             f"topology changes {changed_channels} channels; allowed {allowed_changes}"
         )
 
-    device = {
-        "part": selected["part"],
-        "utilization_limit": selected["utilization_limit"],
-        "capacity": deepcopy(selected["capacity"]),
-    }
     links = [
         {
             "id": f"eda2025_link_{left:03d}_{right:03d}",
@@ -831,39 +797,30 @@ def materialize_eda2025_rtl_boarddb(
         for right in range(left + 1, len(fpga_ids))
         if topology[left][right] > 0
     ]
-    boarddb = {
-        "schema": "emuflow.boarddb/v1",
-        "platform": {
-            "name": name,
-            "kind": "virtual",
-            "description": (
-                "2025 EDA Elite public interconnect topology populated with "
-                f"the homogeneous FPGA device template {template_platform.name}"
-            ),
-            "provenance": {
-                "interconnect": {
-                    "schema": instance["schema"],
-                    "instance": instance["name"],
-                    "specification_url": instance["source"]["specification_url"],
-                    "topology": (
-                        str(topology_path)
-                        if topology_path is not None
-                        else "initial_topology"
-                    ),
-                },
-                "device_template": {
-                    "path": str(device_template_path),
-                    "platform": template_platform.name,
-                    "fpga": selected["id"],
-                },
-            },
+    validated, template_platform, selected = materialize_homogeneous_boarddb(
+        output_path=output_path,
+        name=name,
+        description=(
+            "2025 EDA Elite public interconnect topology populated with a "
+            "homogeneous FPGA device template"
+        ),
+        fpga_ids=fpga_ids,
+        links=links,
+        device_template_path=device_template_path,
+        template_fpga_id=template_fpga_id,
+        provenance={
+            "interconnect": {
+                "schema": instance["schema"],
+                "instance": instance["name"],
+                "specification_url": instance["source"]["specification_url"],
+                "topology": (
+                    str(topology_path)
+                    if topology_path is not None
+                    else "initial_topology"
+                ),
+            }
         },
-        "fpgas": [{"id": fpga_id, **deepcopy(device)} for fpga_id in fpga_ids],
-        "links": links,
-    }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(output_path, boarddb)
-    validated = Platform.load(output_path)
+    )
     report = {
         "schema": EDA2025_BOARDDB_MATERIALIZATION_SCHEMA,
         "status": "pass",

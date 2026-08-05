@@ -198,6 +198,14 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 "eda2025_sample",
             )
             self.assertEqual(
+                boarddb["platform"]["provenance"]["device_template"]["platform"],
+                "academic_vtr_4fpga_mesh",
+            )
+            self.assertEqual(
+                boarddb["platform"]["provenance"]["device_template"]["fpga"],
+                "fpga0",
+            )
+            self.assertEqual(
                 {fpga["id"] for fpga in boarddb["fpgas"]},
                 {"F1", "F2", "F3", "F4"},
             )

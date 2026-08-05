@@ -29,6 +29,7 @@ from .contest_eda2023 import (
 from .contest_iccad2019 import (
     evaluate_iccad2019_solution,
     import_iccad2019_instance,
+    materialize_iccad2019_rtl_boarddb,
     optimize_iccad2019_ratios,
 )
 from .errors import EmuFlowError
@@ -192,6 +193,23 @@ def _build_parser() -> argparse.ArgumentParser:
     iccad2019_import.add_argument("--input", type=Path, required=True)
     iccad2019_import.add_argument("--name", required=True)
     iccad2019_import.add_argument("--out", type=Path, required=True)
+    iccad2019_boarddb = contest_subparsers.add_parser(
+        "iccad2019-materialize-boarddb",
+        help="populate a Problem B FPGA graph with an RTL-capable device template",
+    )
+    iccad2019_boarddb.add_argument("--instance", type=Path, required=True)
+    iccad2019_boarddb.add_argument("--device-template", type=Path, required=True)
+    iccad2019_boarddb.add_argument("--output", "-o", type=Path, required=True)
+    iccad2019_boarddb.add_argument("--name", required=True)
+    iccad2019_boarddb.add_argument("--template-fpga")
+    iccad2019_boarddb.add_argument("--lane-scale", type=int, default=1)
+    iccad2019_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
+    iccad2019_boarddb.add_argument("--latency-cycles", type=int, default=2)
+    iccad2019_boarddb.add_argument(
+        "--link-mode",
+        choices=("abstract", "parallel", "serial", "source_synchronous"),
+        default="abstract",
+    )
     iccad2019_optimize = contest_subparsers.add_parser(
         "iccad2019-optimize",
         help="assign exact-harmonic TDM ratios to EmuFlow routes",
@@ -1603,6 +1621,18 @@ def _dispatch(args: argparse.Namespace) -> int:
                 input_path=args.input,
                 output_dir=args.out,
                 name=args.name,
+            )
+        elif args.contest_command == "iccad2019-materialize-boarddb":
+            report = materialize_iccad2019_rtl_boarddb(
+                instance_path=args.instance,
+                device_template_path=args.device_template,
+                output_path=args.output,
+                name=args.name,
+                template_fpga_id=args.template_fpga,
+                lane_scale=args.lane_scale,
+                fabric_clock_mhz=args.fabric_clock_mhz,
+                latency_cycles=args.latency_cycles,
+                link_mode=args.link_mode,
             )
         elif args.contest_command == "iccad2019-optimize":
             report = optimize_iccad2019_ratios(

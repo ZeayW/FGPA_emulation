@@ -3,6 +3,7 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
+from emuflow.routing import build_directed_graph, normalize_route_constraints
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +94,79 @@ class PlatformTest(unittest.TestCase):
                             "data_lanes_per_direction": 1,
                             "fabric_clock_mhz": 1,
                             "latency_cycles": 0,
+                        }
+                    ],
+                }
+            )
+
+    def test_shared_bidirectional_capacity_is_a_default_route_domain(self) -> None:
+        platform = Platform.from_dict(
+            {
+                "schema": "emuflow.boarddb/v1",
+                "platform": {"name": "shared", "kind": "virtual"},
+                "fpgas": [
+                    {
+                        "id": fpga_id,
+                        "part": "academic",
+                        "utilization_limit": 1.0,
+                        "capacity": {"lut": 10},
+                    }
+                    for fpga_id in ("F0", "F1")
+                ],
+                "links": [
+                    {
+                        "id": "shared_link",
+                        "endpoints": ["F0", "F1"],
+                        "direction": "full_duplex",
+                        "capacity_sharing": "shared_bidirectional",
+                        "mode": "abstract",
+                        "data_lanes_per_direction": 1,
+                        "fabric_clock_mhz": 50,
+                        "latency_cycles": 2,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(
+            platform.links[0].capacity_sharing, "shared_bidirectional"
+        )
+        constraints = normalize_route_constraints(None, platform)
+        self.assertEqual(
+            constraints["shared_capacity_links"], ["shared_link"]
+        )
+        _, arcs, capacity_records = build_directed_graph(platform, constraints)
+        self.assertEqual(len(arcs), 2)
+        self.assertEqual(
+            {arc["capacity_key"] for arc in arcs.values()},
+            {"shared_link:shared"},
+        )
+        self.assertEqual(set(capacity_records), {"shared_link:shared"})
+
+    def test_shared_bidirectional_capacity_requires_full_duplex(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "requires full_duplex"):
+            Platform.from_dict(
+                {
+                    "schema": "emuflow.boarddb/v1",
+                    "platform": {"name": "bad", "kind": "virtual"},
+                    "fpgas": [
+                        {
+                            "id": fpga_id,
+                            "part": "academic",
+                            "utilization_limit": 1.0,
+                            "capacity": {"lut": 10},
+                        }
+                        for fpga_id in ("F0", "F1")
+                    ],
+                    "links": [
+                        {
+                            "id": "bad_shared_link",
+                            "endpoints": ["F0", "F1"],
+                            "direction": "half_duplex",
+                            "capacity_sharing": "shared_bidirectional",
+                            "mode": "abstract",
+                            "data_lanes_per_direction": 1,
+                            "fabric_clock_mhz": 50,
+                            "latency_cycles": 2,
                         }
                     ],
                 }

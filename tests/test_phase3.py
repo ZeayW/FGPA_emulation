@@ -12,6 +12,7 @@ from emuflow.partition import (
     build_partition_assignment,
     build_clusters,
     normalize_partition_constraints,
+    validate_cluster_assignment_balance,
     validate_partition_artifacts,
 )
 from emuflow.phase3 import run_phase3
@@ -47,6 +48,67 @@ class Phase3Test(unittest.TestCase):
             seed=7,
         )
         return constraints, clusters, assignment
+
+    def test_dimension_specific_balance_tolerance_preserves_tight_cell_balance(
+        self,
+    ) -> None:
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 0.25,
+                "balance_tolerance_by_dimension": {"bram": 0.50},
+            },
+            self.ir,
+            self.platform,
+        )
+        self.assertEqual(
+            constraints["balance_tolerance_by_dimension"], {"bram": 0.50}
+        )
+        clusters = []
+        brams = [2, 2, 1, 1, 1, 1, 0, 0]
+        assignment = {}
+        for index, bram in enumerate(brams):
+            cluster_id = f"cluster_{index}"
+            clusters.append(
+                {
+                    "id": cluster_id,
+                    "instances": [f"instance_{index}"],
+                    "resources": {"bram": bram},
+                    "fixed_fpga": None,
+                }
+            )
+            assignment[cluster_id] = "fpga0" if index < 4 else "fpga1"
+        with self.assertRaisesRegex(ValidationError, "multi-resource balance"):
+            validate_cluster_assignment_balance(
+                self.platform,
+                clusters,
+                assignment,
+                requested_tolerance=0.25,
+            )
+        report = validate_cluster_assignment_balance(
+            self.platform,
+            clusters,
+            assignment,
+            requested_tolerance=0.25,
+            requested_tolerance_by_dimension={"bram": 0.50},
+        )
+        self.assertEqual(
+            report["requested_balance_percent_by_dimension"]["cells"], 25.0
+        )
+        self.assertEqual(
+            report["requested_balance_percent_by_dimension"]["bram"], 50.0
+        )
+
+    def test_dimension_specific_balance_rejects_unknown_resource(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "unknown dimensions"):
+            normalize_partition_constraints(
+                {
+                    "schema": "emuflow.partition-constraints/v1",
+                    "balance_tolerance_by_dimension": {"unknown": 1.0},
+                },
+                self.ir,
+                self.platform,
+            )
 
     def test_pipeline_writes_valid_forced_two_fpga_partition(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

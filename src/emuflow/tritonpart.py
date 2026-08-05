@@ -588,15 +588,52 @@ def _repair_multi_resource_balance(
         base_balance.append(
             [capacity / capacity_total for capacity in capacities]
         )
-    effective_ratio = (
-        float(tritonpart_input["effective_balance_percent"]) / 100.0
+    tolerance_overrides = constraints.get(
+        "balance_tolerance_by_dimension", {}
     )
+    if tolerance_overrides:
+        cluster_records = {
+            cluster["id"]: cluster
+            for cluster in clusters_artifact["clusters"]
+        }
+        effective_ratio_by_dimension = []
+        for dimension_index, dimension in enumerate(dimensions):
+            requested = float(
+                tolerance_overrides.get(
+                    dimension, constraints["balance_tolerance"]
+                )
+            )
+            required = 0.0
+            largest_target = max(base_balance[dimension_index])
+            total = totals[dimension_index]
+            if total:
+                for cluster_id, weights in zip(
+                    cluster_order, vertex_weights
+                ):
+                    fixed_fpga = cluster_records[cluster_id]["fixed_fpga"]
+                    target_share = (
+                        base_balance[dimension_index][fpga_index[fixed_fpga]]
+                        if fixed_fpga is not None
+                        else largest_target
+                    )
+                    required = max(
+                        required,
+                        weights[dimension_index] / total / target_share - 1.0,
+                    )
+            effective_ratio_by_dimension.append(
+                max(requested, max(0.0, required) + 0.0001)
+            )
+    else:
+        effective_ratio = (
+            float(tritonpart_input["effective_balance_percent"]) / 100.0
+        )
+        effective_ratio_by_dimension = [effective_ratio] * num_dimensions
     allowed = [
         [
             math.floor(
                 totals[dimension]
                 * base_balance[dimension][part]
-                * (1.0 + effective_ratio)
+                * (1.0 + effective_ratio_by_dimension[dimension])
                 + 1e-7
             )
             for dimension in range(num_dimensions)
@@ -786,6 +823,7 @@ def _repair_multi_resource_balance(
         clusters_artifact["clusters"],
         assignment,
         constraints["balance_tolerance"],
+        constraints.get("balance_tolerance_by_dimension", {}),
     )
     return assignment, {
         "moves": move_total,
@@ -1112,6 +1150,7 @@ def run_tritonpart(
                     clusters_artifact["clusters"],
                     candidate,
                     constraints["balance_tolerance"],
+                    constraints.get("balance_tolerance_by_dimension", {}),
                 )
             )
         except ValidationError as error:

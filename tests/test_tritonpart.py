@@ -221,6 +221,37 @@ class TritonPartTest(unittest.TestCase):
                 {"cells", "lut", "ff"},
             )
 
+    def test_balance_repair_honors_dimension_specific_tolerances(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            constraints = {
+                **self.constraints,
+                "balance_tolerance_by_dimension": {
+                    "cells": 1.0,
+                    "lut": 1.0,
+                    "ff": 1.0,
+                },
+            }
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                constraints,
+                Path(temporary_directory),
+            )
+            raw = {
+                cluster["id"]: "fpga0"
+                for cluster in self.clusters["clusters"]
+            }
+            repaired, summary = _repair_multi_resource_balance(
+                raw,
+                self.clusters,
+                self.platform,
+                constraints,
+                artifact,
+            )
+            self.assertEqual(repaired, raw)
+            self.assertEqual(summary["moves"], 0)
+
     def test_phase3_executes_provider_and_independently_validates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)

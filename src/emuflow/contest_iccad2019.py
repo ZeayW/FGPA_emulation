@@ -10,6 +10,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
+from .contest_boarddb import materialize_homogeneous_boarddb
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
@@ -18,6 +19,9 @@ from .partition import PARTITION_ASSIGNMENT_SCHEMA
 
 ICCAD2019_INSTANCE_SCHEMA = "emuflow.contest-iccad2019-instance/v1"
 ICCAD2019_EVALUATION_SCHEMA = "emuflow.contest-iccad2019-evaluation/v1"
+ICCAD2019_BOARDDB_MATERIALIZATION_SCHEMA = (
+    "emuflow.contest-iccad2019-boarddb-materialization/v1"
+)
 ICCAD2019_SOURCE_URL = (
     "https://drive.google.com/file/d/"
     "1aJkaKgjJ56lWehHR_K9Lm8T-SFal00pU/view"
@@ -274,6 +278,108 @@ def import_iccad2019_instance(
             "route_constraints": str(output_dir / "route_constraints.json"),
             "timing_paths": str(output_dir / "contest_timing_paths.json"),
         },
+    }
+
+
+def materialize_iccad2019_rtl_boarddb(
+    instance_path: Path,
+    device_template_path: Path,
+    output_path: Path,
+    *,
+    name: str,
+    template_fpga_id: Optional[str] = None,
+    lane_scale: int = 1,
+    fabric_clock_mhz: float = 50.0,
+    latency_cycles: int = 2,
+    link_mode: str = "abstract",
+) -> Dict[str, Any]:
+    """Populate an ICCAD 2019 FPGA graph with an RTL-capable device model."""
+    if (
+        isinstance(lane_scale, bool)
+        or not isinstance(lane_scale, int)
+        or lane_scale <= 0
+    ):
+        raise ValidationError("lane_scale: expected a positive integer")
+    if (
+        isinstance(fabric_clock_mhz, bool)
+        or not isinstance(fabric_clock_mhz, (int, float))
+        or fabric_clock_mhz <= 0
+    ):
+        raise ValidationError("fabric_clock_mhz: expected a positive number")
+    if (
+        isinstance(latency_cycles, bool)
+        or not isinstance(latency_cycles, int)
+        or latency_cycles < 0
+    ):
+        raise ValidationError("latency_cycles: expected a non-negative integer")
+    if link_mode not in {"abstract", "parallel", "serial", "source_synchronous"}:
+        raise ValidationError("link_mode: unsupported BoardDB link mode")
+
+    instance = read_json(instance_path)
+    if instance.get("schema") != ICCAD2019_INSTANCE_SCHEMA:
+        raise ValidationError(
+            f"instance.schema: expected {ICCAD2019_INSTANCE_SCHEMA!r}"
+        )
+    fpga_count = instance.get("fpga_count")
+    edges = instance.get("edges")
+    if not isinstance(fpga_count, int) or fpga_count <= 0:
+        raise ValidationError("instance.fpga_count: expected a positive integer")
+    if not isinstance(edges, list) or not edges:
+        raise ValidationError("instance.edges: expected a non-empty array")
+    fpga_ids = [f"F{index}" for index in range(fpga_count)]
+    links = [
+        {
+            "id": f"iccad2019_edge_{edge['id']:06d}",
+            "endpoints": [fpga_ids[index] for index in edge["endpoints"]],
+            # Problem B gives every undirected edge one shared harmonic TDM
+            # domain. Both directions can be routed, but consume the same
+            # capacity domain; this is not half-duplex direction locking.
+            "direction": "full_duplex",
+            "capacity_sharing": "shared_bidirectional",
+            "mode": link_mode,
+            "data_lanes_per_direction": lane_scale,
+            "fabric_clock_mhz": float(fabric_clock_mhz),
+            "latency_cycles": latency_cycles,
+            "contest_edge": edge["id"],
+            "lane_scale": lane_scale,
+            "capacity_semantics": "shared-bidirectional-tdm-projection",
+        }
+        for edge in edges
+    ]
+    validated, template_platform, selected = materialize_homogeneous_boarddb(
+        output_path=output_path,
+        name=name,
+        description=(
+            "ICCAD 2019 Problem B public FPGA graph populated with a "
+            "homogeneous FPGA device template"
+        ),
+        fpga_ids=fpga_ids,
+        links=links,
+        device_template_path=device_template_path,
+        template_fpga_id=template_fpga_id,
+        provenance={
+            "interconnect": {
+                "schema": instance["schema"],
+                "instance": instance["name"],
+                "specification_url": instance["source"]["specification_url"],
+                "capacity_semantics": "shared-bidirectional-tdm-projection",
+            }
+        },
+    )
+    return {
+        "schema": ICCAD2019_BOARDDB_MATERIALIZATION_SCHEMA,
+        "status": "pass",
+        "platform": validated.name,
+        "contest_instance": instance["name"],
+        "device_template": template_platform.name,
+        "template_fpga": selected["id"],
+        "fpgas": len(validated.fpgas),
+        "links": len(validated.links),
+        "data_lanes": sum(
+            link.data_lanes_per_direction for link in validated.links
+        ),
+        "capacity_semantics": "shared-bidirectional-tdm-projection",
+        "output": str(output_path),
     }
 
 

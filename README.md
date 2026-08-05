@@ -574,6 +574,27 @@ leaving the normal source-to-sink timing model unchanged. An
 independent parser/checker recomputes multicast connectivity, shared capacity,
 and the official maximum net-group total-ratio objective.
 
+The same public FPGA graph can drive an RTL experiment independently of the
+contest nets. Each undirected contest edge becomes a BoardDB link that permits
+both route directions while merging them into one shared capacity domain:
+
+```bash
+emuflow contest iccad2019-materialize-boarddb \
+  --instance build/iccad2019/contest_instance.json \
+  --device-template platforms/virtual/academic_vtr_4fpga_mesh.json \
+  --name iccad2019-sample-academic-rtl \
+  --lane-scale 2 \
+  --output build/iccad2019/rtl-boarddb.json
+```
+
+Here too, `lane_scale=1` means one abstract lane per contest edge. Use at
+least two lanes when an arbitrary RTL workload must carry traffic in both
+directions on the same edge, because each scheduled lane group has one fixed
+direction. The output records `shared-bidirectional-tdm-projection`
+provenance: it preserves the published graph and shared capacity semantics,
+but does not claim package pins, electrical width, or a measured board
+implementation.
+
 The 2024 logic-replication cases remain in their exact upstream RePart
 format. Large benchmark data is fetched on demand at a fixed commit and
 verified against the recorded Git blob ids, rather than copied into this

@@ -169,6 +169,11 @@ def normalize_route_constraints(
             "route constraints.hard_sll_capacity: expected a boolean"
         )
 
+    boarddb_shared_links = {
+        link.id
+        for link in platform.links
+        if link.capacity_sharing == "shared_bidirectional"
+    }
     return {
         "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
         "frame_slots": raw_frame_slots,
@@ -176,7 +181,9 @@ def normalize_route_constraints(
         "unavailable_links": sorted(set(raw_unavailable)),
         "link_delay_ns": dict(sorted(link_delays.items())),
         "sll_links": sorted(set(raw_sll_links)),
-        "shared_capacity_links": sorted(set(raw_shared_links)),
+        "shared_capacity_links": sorted(
+            set(raw_shared_links) | boarddb_shared_links
+        ),
         "tree_edge_sum_tdm": tree_edge_sum_tdm,
         "hard_sll_capacity": hard_sll_capacity,
         **optimization_values,

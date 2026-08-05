@@ -247,6 +247,32 @@ def normalize_partition_constraints(
         raise ValidationError(
             "constraints.balance_tolerance: expected a non-negative number"
         )
+    raw_dimension_tolerances = raw.get("balance_tolerance_by_dimension", {})
+    if not isinstance(raw_dimension_tolerances, dict):
+        raise ValidationError(
+            "constraints.balance_tolerance_by_dimension: expected an object"
+        )
+    valid_dimensions = {"cells", *RESOURCE_FIELDS}
+    unknown_dimensions = sorted(
+        set(raw_dimension_tolerances) - valid_dimensions
+    )
+    if unknown_dimensions:
+        raise ValidationError(
+            "constraints.balance_tolerance_by_dimension: unknown dimensions "
+            f"{unknown_dimensions}"
+        )
+    dimension_tolerances: Dict[str, float] = {}
+    for dimension, value in raw_dimension_tolerances.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or float(value) < 0.0
+        ):
+            raise ValidationError(
+                "constraints.balance_tolerance_by_dimension."
+                f"{dimension}: expected a non-negative number"
+            )
+        dimension_tolerances[dimension] = float(value)
 
     return {
         "schema": PARTITION_CONSTRAINTS_SCHEMA,
@@ -256,6 +282,9 @@ def normalize_partition_constraints(
         ),
         "min_used_fpgas": raw_min_used,
         "balance_tolerance": float(raw_tolerance),
+        "balance_tolerance_by_dimension": dict(
+            sorted(dimension_tolerances.items())
+        ),
     }
 
 
@@ -448,6 +477,9 @@ def assign_clusters(
         fpga_id: {} for fpga_id in fpga_ids
     }
     tolerance = constraints["balance_tolerance"]
+    dimension_tolerances = constraints.get(
+        "balance_tolerance_by_dimension", {}
+    )
     for field in RESOURCE_FIELDS:
         total = total_resources[field]
         capacities = {
@@ -459,9 +491,10 @@ def assign_clusters(
             continue
         for fpga_id in fpga_ids:
             proportional = total * capacities[fpga_id] / capacity_total
+            field_tolerance = dimension_tolerances.get(field, tolerance)
             soft_caps[fpga_id][field] = min(
                 capacities[fpga_id],
-                math.ceil(proportional * (1.0 + tolerance)),
+                math.ceil(proportional * (1.0 + field_tolerance)),
             )
 
     def dominant_size(cluster: Mapping[str, Any]) -> float:
@@ -777,6 +810,7 @@ def validate_cluster_assignment_balance(
     clusters: Sequence[Mapping[str, Any]],
     cluster_assignment: Mapping[str, str],
     requested_tolerance: float,
+    requested_tolerance_by_dimension: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     fpga_ids = [fpga.id for fpga in platform.fpgas]
     dimensions = ["cells"]
@@ -823,7 +857,7 @@ def validate_cluster_assignment_balance(
             }
         base_balance[dimension] = shares
 
-    required_ratio = 0.0
+    required_ratio = {dimension: 0.0 for dimension in dimensions}
     for cluster in clusters:
         for dimension in dimensions:
             total = totals[dimension]
@@ -835,8 +869,8 @@ def validate_cluster_assignment_balance(
                 if fixed_fpga is not None
                 else max(base_balance[dimension].values())
             )
-            required_ratio = max(
-                required_ratio,
+            required_ratio[dimension] = max(
+                required_ratio[dimension],
                 weights[cluster["id"]][dimension]
                 / total
                 / target_share
@@ -858,19 +892,42 @@ def validate_cluster_assignment_balance(
         for dimension in dimensions:
             total = totals[dimension]
             if total:
-                required_ratio = max(
-                    required_ratio,
+                required_ratio[dimension] = max(
+                    required_ratio[dimension],
                     fixed_loads[fpga_id][dimension]
                     / total
                     / base_balance[dimension][fpga_id]
                     - 1.0,
                 )
 
-    requested_percent = requested_tolerance * 100.0
-    effective_percent = max(
-        requested_percent,
-        max(0.0, required_ratio * 100.0) + 0.01,
-    )
+    tolerance_overrides = requested_tolerance_by_dimension or {}
+    requested_percent_by_dimension = {
+        dimension: float(
+            tolerance_overrides.get(dimension, requested_tolerance)
+        )
+        * 100.0
+        for dimension in dimensions
+    }
+    if tolerance_overrides:
+        effective_percent_by_dimension = {
+            dimension: max(
+                requested_percent_by_dimension[dimension],
+                max(0.0, required_ratio[dimension] * 100.0) + 0.01,
+            )
+            for dimension in dimensions
+        }
+    else:
+        # Preserve the v1 contract: without an explicit per-dimension policy,
+        # an indivisible cluster in any resource relaxes the shared tolerance
+        # for every dimension.
+        shared_effective_percent = max(
+            requested_tolerance * 100.0,
+            max(0.0, max(required_ratio.values(), default=0.0) * 100.0)
+            + 0.01,
+        )
+        effective_percent_by_dimension = {
+            dimension: shared_effective_percent for dimension in dimensions
+        }
     loads = {
         fpga_id: {dimension: 0 for dimension in dimensions}
         for fpga_id in fpga_ids
@@ -889,7 +946,7 @@ def validate_cluster_assignment_balance(
             actual_share = loads[fpga_id][dimension] / total
             target_share = base_balance[dimension][fpga_id]
             allowed_share = target_share * (
-                1.0 + effective_percent / 100.0
+                1.0 + effective_percent_by_dimension[dimension] / 100.0
             )
             ratio = actual_share / allowed_share
             maximum_ratio = max(maximum_ratio, ratio)
@@ -911,10 +968,20 @@ def validate_cluster_assignment_balance(
             f"{violations[:8]}"
         )
     return {
-        "requested_balance_percent": requested_percent,
-        "effective_balance_percent": effective_percent,
-        "balance_auto_relaxed": (
-            effective_percent > requested_percent + 1e-9
+        "requested_balance_percent": requested_tolerance * 100.0,
+        "effective_balance_percent": max(
+            effective_percent_by_dimension.values(), default=0.0
+        ),
+        "requested_balance_percent_by_dimension": (
+            requested_percent_by_dimension
+        ),
+        "effective_balance_percent_by_dimension": (
+            effective_percent_by_dimension
+        ),
+        "balance_auto_relaxed": any(
+            effective_percent_by_dimension[dimension]
+            > requested_percent_by_dimension[dimension] + 1e-9
+            for dimension in dimensions
         ),
         "balance_dimensions": dimensions,
         "max_balance_limit_ratio": maximum_ratio,
@@ -1088,6 +1155,7 @@ def validate_partition_artifacts(
         raw_clusters,
         raw_cluster_assignment,
         constraints["balance_tolerance"],
+        constraints.get("balance_tolerance_by_dimension", {}),
     )
 
     illegal_cuts: List[str] = []

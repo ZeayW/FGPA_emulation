@@ -5,6 +5,7 @@ from pathlib import Path
 from emuflow.contest_iccad2019 import (
     evaluate_iccad2019_solution,
     import_iccad2019_instance,
+    materialize_iccad2019_rtl_boarddb,
     optimize_iccad2019_ratios,
 )
 from emuflow.errors import ValidationError
@@ -94,6 +95,61 @@ class Iccad2019ContestAdapterTest(unittest.TestCase):
             )
             self.assertEqual(constraints["tdm_ratio_quantum"], 2)
             self.assertTrue(constraints["tree_edge_sum_tdm"])
+
+    def test_public_graph_materializes_an_rtl_capable_boarddb(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized, _ = self._files(root)
+            output = root / "rtl-boarddb.json"
+            repository = Path(__file__).resolve().parents[1]
+            report = materialize_iccad2019_rtl_boarddb(
+                instance_path=normalized / "contest_instance.json",
+                device_template_path=(
+                    repository / "platforms/virtual/academic_vtr_4fpga_mesh.json"
+                ),
+                output_path=output,
+                name="iccad2019_sample_academic_rtl",
+                lane_scale=3,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["fpgas"], 8)
+            self.assertEqual(report["links"], 11)
+            self.assertEqual(report["data_lanes"], 33)
+            boarddb = read_json(output)
+            self.assertEqual(
+                {fpga["capacity"]["lut"] for fpga in boarddb["fpgas"]},
+                {400000},
+            )
+            self.assertEqual(
+                {link["direction"] for link in boarddb["links"]},
+                {"full_duplex"},
+            )
+            self.assertEqual(
+                {link["capacity_sharing"] for link in boarddb["links"]},
+                {"shared_bidirectional"},
+            )
+            self.assertEqual(
+                boarddb["platform"]["provenance"]["interconnect"][
+                    "capacity_semantics"
+                ],
+                "shared-bidirectional-tdm-projection",
+            )
+
+    def test_rtl_boarddb_materializer_rejects_invalid_lane_scale(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, normalized, _ = self._files(root)
+            with self.assertRaisesRegex(ValidationError, "lane_scale"):
+                materialize_iccad2019_rtl_boarddb(
+                    instance_path=normalized / "contest_instance.json",
+                    device_template_path=(
+                        Path(__file__).resolve().parents[1]
+                        / "platforms/virtual/academic_vtr_4fpga_mesh.json"
+                    ),
+                    output_path=root / "bad.json",
+                    name="bad",
+                    lane_scale=0,
+                )
 
     def test_official_sample_runs_through_cpp_router_and_ratio_optimizer(self):
         with tempfile.TemporaryDirectory() as temporary:

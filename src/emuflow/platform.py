@@ -12,6 +12,7 @@ BOARDDB_SCHEMA = "emuflow.boarddb/v1"
 VALID_PLATFORM_KINDS = {"virtual", "hardware"}
 VALID_DIRECTIONS = {"full_duplex", "half_duplex", "unidirectional"}
 VALID_LINK_MODES = {"source_synchronous", "parallel", "serial", "abstract"}
+VALID_CAPACITY_SHARING = {"per_direction", "shared_bidirectional"}
 
 
 def _require_mapping(value: Any, context: str) -> Mapping[str, Any]:
@@ -59,6 +60,7 @@ class BoardLink:
     data_lanes_per_direction: int
     fabric_clock_mhz: float
     latency_cycles: int
+    capacity_sharing: str = "per_direction"
 
     @property
     def raw_bits_per_second_per_direction(self) -> float:
@@ -73,6 +75,7 @@ class BoardLink:
             "data_lanes_per_direction": self.data_lanes_per_direction,
             "fabric_clock_mhz": self.fabric_clock_mhz,
             "latency_cycles": self.latency_cycles,
+            "capacity_sharing": self.capacity_sharing,
             "raw_bits_per_second_per_direction": (
                 self.raw_bits_per_second_per_direction
             ),
@@ -209,6 +212,22 @@ class Platform:
                     f"links[{index}].mode: expected one of "
                     f"{sorted(VALID_LINK_MODES)}"
                 )
+            capacity_sharing = item.get(
+                "capacity_sharing", "per_direction"
+            )
+            if capacity_sharing not in VALID_CAPACITY_SHARING:
+                raise ValidationError(
+                    f"links[{index}].capacity_sharing: expected one of "
+                    f"{sorted(VALID_CAPACITY_SHARING)}"
+                )
+            if (
+                capacity_sharing == "shared_bidirectional"
+                and direction != "full_duplex"
+            ):
+                raise ValidationError(
+                    f"links[{index}].capacity_sharing: "
+                    "shared_bidirectional requires full_duplex direction"
+                )
 
             lanes = item.get("data_lanes_per_direction")
             if isinstance(lanes, bool) or not isinstance(lanes, int) or lanes <= 0:
@@ -244,6 +263,7 @@ class Platform:
                     data_lanes_per_direction=lanes,
                     fabric_clock_mhz=float(frequency),
                     latency_cycles=latency,
+                    capacity_sharing=capacity_sharing,
                 )
             )
 
