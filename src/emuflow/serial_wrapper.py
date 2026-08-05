@@ -6,7 +6,7 @@ import hashlib
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
 from .io import read_json, write_json
@@ -355,10 +355,193 @@ def serial_wrapper_rtl(
     return "\n".join(lines)
 
 
+def _validate_transport_connections(
+    platform: Platform,
+    fpga: str,
+    sites: Sequence[Mapping[str, Any]],
+    transport: Mapping[str, Any],
+) -> Dict[Tuple[str, str], set[str]]:
+    if (
+        transport.get("schema") != "emuflow.transport-endpoints/v1"
+        or transport.get("platform") != platform.name
+        or transport.get("fpga") != fpga
+        or isinstance(transport.get("frame_slots"), bool)
+        or not isinstance(transport.get("frame_slots"), int)
+        or transport["frame_slots"] <= 0
+        or not isinstance(transport.get("endpoints"), list)
+    ):
+        raise ValidationError(f"{fpga} transport document is invalid")
+    incident = {link.id: link for link in _incident_links(platform, fpga)}
+    kinds: Dict[Tuple[str, str], set[str]] = defaultdict(set)
+    for endpoint in transport["endpoints"]:
+        if not isinstance(endpoint, dict):
+            raise ValidationError(f"{fpga} transport endpoint is malformed")
+        link = incident.get(endpoint.get("link"))
+        peer = endpoint.get("peer")
+        kind = endpoint.get("kind")
+        if (
+            link is None
+            or peer not in link.endpoints
+            or peer == fpga
+            or kind not in {"tx", "rx"}
+        ):
+            raise ValidationError(f"{fpga} transport endpoint is invalid")
+        kinds[(link.id, peer)].add(kind)
+    site_kinds: Dict[Tuple[str, str], set[str]] = defaultdict(set)
+    for site in sites:
+        for kind in ("tx", "rx"):
+            if site[kind] is not None:
+                site_kinds[(site["link"], site["peer"])].add(kind)
+    if kinds != site_kinds:
+        raise ValidationError(
+            f"{fpga} transport ports and serial wrapper directions disagree"
+        )
+    for field in ("source_signals", "shadow_signals"):
+        records = transport.get(field)
+        if not isinstance(records, list) or any(
+            not isinstance(record, dict)
+            or not isinstance(record.get("signal"), str)
+            or not record["signal"]
+            or isinstance(record.get("index"), bool)
+            or not isinstance(record.get("index"), int)
+            for record in records
+        ):
+            raise ValidationError(f"{fpga} transport {field} is invalid")
+        if (
+            {record["index"] for record in records} != set(range(len(records)))
+            or len({record["signal"] for record in records}) != len(records)
+        ):
+            raise ValidationError(f"{fpga} transport {field} is not contiguous")
+    return kinds
+
+
+def serial_integration_shell_rtl(
+    platform: Platform,
+    fpga: str,
+    sites: Sequence[Mapping[str, Any]],
+    transport: Mapping[str, Any],
+) -> str:
+    kinds = _validate_transport_connections(
+        platform, fpga, sites, transport
+    )
+    source_count = max(1, len(transport["source_signals"]))
+    shadow_count = max(1, len(transport["shadow_signals"]))
+    slot_bits = max(1, (transport["frame_slots"] - 1).bit_length())
+    ports = [
+        "  input  wire fabric_clk",
+        "  input  wire reset",
+        f"  input  wire [{source_count - 1}:0] source_values",
+        f"  output wire [{shadow_count - 1}:0] shadow_values",
+        "  output wire virtual_clock_enable",
+        f"  output wire [{slot_bits - 1}:0] slot_debug",
+        "  output wire links_ready_debug",
+    ]
+    for site in sites:
+        for direction in ("tx", "rx"):
+            record = site[direction]
+            if record is None:
+                continue
+            io = "output wire" if direction == "tx" else "input  wire"
+            ports.extend(
+                f"  {io} {record['ports'][polarity]}"
+                for polarity in ("p", "n")
+            )
+    lines = [
+        "// Generated Phase 6 transport-to-serial-wrapper integration shell.",
+        f"module emuflow_partition_shell_{_sv_name(fpga)} (",
+        ",\n".join(ports),
+        ");",
+        "",
+        "  wire links_ready;",
+    ]
+    incident = _incident_links(platform, fpga)
+    for link in incident:
+        peer = link.endpoints[1] if link.endpoints[0] == fpga else link.endpoints[0]
+        suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
+        width = link.transport_bits_per_cycle_per_direction
+        lines.extend(
+            [
+                f"  wire [{width - 1}:0] link_tx_{suffix};",
+                f"  wire [{width - 1}:0] link_rx_{suffix};",
+            ]
+        )
+        if "tx" not in kinds.get((link.id, peer), set()):
+            lines.append(f"  assign link_tx_{suffix} = {width}'b0;")
+    lines.extend(
+        [
+            "  assign links_ready_debug = links_ready;",
+            "",
+            f"  emuflow_transport_{_sv_name(fpga)} transport (",
+            "    .fabric_clk(fabric_clk),",
+            "    .reset(reset),",
+            "    .links_ready(links_ready),",
+            "    .source_values(source_values),",
+            "    .shadow_values(shadow_values),",
+            "    .virtual_clock_enable(virtual_clock_enable),",
+            "    .slot_debug(slot_debug)"
+            + ("," if kinds else ""),
+        ]
+    )
+    transport_ports = []
+    for link in incident:
+        peer = link.endpoints[1] if link.endpoints[0] == fpga else link.endpoints[0]
+        suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
+        active = kinds.get((link.id, peer), set())
+        if "rx" in active:
+            transport_ports.append(
+                f"    .rx_{suffix}(link_rx_{suffix})"
+            )
+        if "tx" in active:
+            transport_ports.append(
+                f"    .tx_{suffix}(link_tx_{suffix})"
+            )
+    if transport_ports:
+        lines.append(",\n".join(transport_ports))
+    lines.extend(
+        [
+            "  );",
+            "",
+            f"  {_wrapper_module_name(fpga)} serial_wrapper (",
+            "    .fabric_clk(fabric_clk),",
+            "    .reset(reset),",
+        ]
+    )
+    wrapper_ports = []
+    for link in incident:
+        peer = link.endpoints[1] if link.endpoints[0] == fpga else link.endpoints[0]
+        suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
+        wrapper_ports.extend(
+            [
+                f"    .tx_{suffix}(link_tx_{suffix})",
+                f"    .rx_{suffix}(link_rx_{suffix})",
+            ]
+        )
+    for site in sites:
+        for direction in ("tx", "rx"):
+            record = site[direction]
+            if record is None:
+                continue
+            wrapper_ports.extend(
+                f"    .{record['ports'][polarity]}("
+                f"{record['ports'][polarity]})"
+                for polarity in ("p", "n")
+            )
+    wrapper_ports.append("    .links_ready(links_ready)")
+    lines.append(",\n".join(wrapper_ports))
+    lines.extend(["  );", "", "endmodule", ""])
+    return "\n".join(lines)
+
+
 def build_serial_wrapper_manifest(
-    platform: Platform, binding: Mapping[str, Any]
+    platform: Platform,
+    binding: Mapping[str, Any],
+    transports: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
     sites = _binding_sites(platform, binding)
+    if transports is not None and set(transports) != set(sites):
+        raise ValidationError(
+            "serial wrapper transports must cover every FPGA exactly once"
+        )
     fpgas = []
     for fpga in sorted(platform.fpgas, key=lambda item: item.id):
         fpga_sites = sites[fpga.id]
@@ -370,13 +553,22 @@ def build_serial_wrapper_manifest(
                 else link.endpoints[0]
             )
             suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
+            link_sites = [
+                site for site in fpga_sites if site["link"] == link.id
+            ]
+            tx_active = any(site["tx"] is not None for site in link_sites)
+            rx_active = any(site["rx"] is not None for site in link_sites)
             transport_connections.append(
                 {
                     "link": link.id,
                     "peer": peer,
                     "width": link.transport_bits_per_cycle_per_direction,
-                    "transport_tx_port": f"tx_{suffix}",
-                    "transport_rx_port": f"rx_{suffix}",
+                    "transport_tx_port": f"tx_{suffix}" if tx_active else None,
+                    "transport_rx_port": f"rx_{suffix}" if rx_active else None,
+                    "wrapper_tx_port": f"tx_{suffix}",
+                    "wrapper_rx_port": f"rx_{suffix}",
+                    "inactive_tx_policy": None if tx_active else "tie_zero",
+                    "inactive_rx_policy": None if rx_active else "discard",
                 }
             )
         fpgas.append(
@@ -394,8 +586,25 @@ def build_serial_wrapper_manifest(
                 ),
                 "transport_connections": transport_connections,
                 "sites": fpga_sites,
+                **(
+                    {
+                        "integration_shell": (
+                            f"{fpga.id}.serial_integration_shell.sv"
+                        )
+                    }
+                    if transports is not None
+                    else {}
+                ),
             }
         )
+        if transports is not None:
+            if transports[fpga.id].get("design") != binding["design"]:
+                raise ValidationError(
+                    f"{fpga.id} transport design does not match binding"
+                )
+            _validate_transport_connections(
+                platform, fpga.id, fpga_sites, transports[fpga.id]
+            )
     return {
         "schema": SERIAL_WRAPPER_SCHEMA,
         "status": "awaiting_external_phy_provider",
@@ -429,6 +638,9 @@ def build_serial_wrapper_manifest(
             "unresolved_phy_modules": sum(
                 item["active_transceiver_sites"] for item in fpgas
             ),
+            "integrated_transport_shells": (
+                len(fpgas) if transports is not None else 0
+            ),
         },
     }
 
@@ -437,10 +649,19 @@ def run_phase6c(
     platform_path: Path,
     binding_path: Path,
     output_dir: Path,
+    transport_paths: Optional[Mapping[str, Path]] = None,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
     binding = read_json(binding_path)
-    manifest = build_serial_wrapper_manifest(platform, binding)
+    transports = (
+        {
+            fpga: read_json(path)
+            for fpga, path in transport_paths.items()
+        }
+        if transport_paths is not None
+        else None
+    )
+    manifest = build_serial_wrapper_manifest(platform, binding, transports)
     output_dir.mkdir(parents=True, exist_ok=True)
     contract = serial_phy_contract_rtl()
     contract_path = output_dir / "external_serial_phy_contract.sv"
@@ -457,10 +678,23 @@ def run_phase6c(
         wrapper_path.write_text(wrapper, encoding="utf-8")
         if wrapper_path.read_text(encoding="utf-8") != wrapper:
             raise ValidationError("written serial wrapper RTL does not agree")
+        if transports is not None:
+            shell = serial_integration_shell_rtl(
+                platform,
+                record["fpga"],
+                record["sites"],
+                transports[record["fpga"]],
+            )
+            shell_path = output_dir / record["integration_shell"]
+            shell_path.write_text(shell, encoding="utf-8")
+            if shell_path.read_text(encoding="utf-8") != shell:
+                raise ValidationError(
+                    "written serial integration shell does not agree"
+                )
     digest = hashlib.sha256(binding_path.read_bytes()).hexdigest()
     manifest["binding_sha256"] = digest
     write_json(output_dir / "serial_wrapper_manifest.json", manifest)
-    rebuilt = build_serial_wrapper_manifest(platform, binding)
+    rebuilt = build_serial_wrapper_manifest(platform, binding, transports)
     rebuilt["binding_sha256"] = digest
     if read_json(output_dir / "serial_wrapper_manifest.json") != rebuilt:
         raise ValidationError("serial wrapper manifest is not reproducible")
@@ -478,6 +712,16 @@ def run_phase6c(
             "wrappers": {
                 item["fpga"]: item["rtl"] for item in manifest["fpgas"]
             },
+            **(
+                {
+                    "integration_shells": {
+                        item["fpga"]: item["integration_shell"]
+                        for item in manifest["fpgas"]
+                    }
+                }
+                if transports is not None
+                else {}
+            ),
             "report": "phase6c_report.json",
         },
     }

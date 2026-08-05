@@ -1062,9 +1062,13 @@ Phase 6C makes the next boundary executable rather than implicit. It generates
 one structural serial wrapper per FPGA, slices each transport word into the
 BoardDB payload width, declares only active scalar differential ports, and
 reduces every active PHY's `ready` signal into the transport controller's
-`links_ready`. It also emits the external-PHY module contract and a hash-bound
-manifest. The generated RTL can be parsed and structurally checked without
-vendor data, but the report deliberately marks hardware release as
+`links_ready`. When the Phase 6 `transport.json` files are supplied, it also
+emits per-FPGA integration shells that instantiate both generated modules,
+connect only the transport's actual TX/RX directions, and tie an inactive TX
+word to zero rather than inventing a nonexistent transport port. It also emits
+the external-PHY module contract and a hash-bound manifest. The generated RTL
+can be parsed and structurally checked without vendor data, but the report
+deliberately marks hardware release as
 `blocked_on_external_phy_provider`; a black box is an interface, not a claimed
 GT implementation.
 

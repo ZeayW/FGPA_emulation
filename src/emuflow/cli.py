@@ -1548,6 +1548,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase6c.add_argument("--platform", type=Path, required=True)
     phase6c.add_argument("--binding", type=Path, required=True)
+    phase6c.add_argument(
+        "--transport", action="append", default=[], metavar="FPGA=PATH"
+    )
     phase6c.add_argument("--out", type=Path, required=True)
 
     package_pin = subparsers.add_parser(
@@ -2517,6 +2520,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             platform_path=args.platform,
             binding_path=args.binding,
             output_dir=args.out,
+            transport_paths=(
+                _keyed_paths(args.transport, "--transport")
+                if args.transport
+                else None
+            ),
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

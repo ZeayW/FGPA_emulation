@@ -17,6 +17,7 @@ from emuflow.serial_wrapper import (
     SERIAL_WRAPPER_SCHEMA,
     build_serial_wrapper_manifest,
     run_phase6c,
+    serial_integration_shell_rtl,
     serial_wrapper_rtl,
 )
 
@@ -85,6 +86,47 @@ class SerialWrapperTest(unittest.TestCase):
                 }
             ],
         }
+        self.transports = {
+            fpga: {
+                "schema": "emuflow.transport-endpoints/v1",
+                "design": "serial_wrapper_fixture",
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "frame_slots": 4,
+                "source_signals": (
+                    [{"signal": "net:n0", "index": 0}]
+                    if fpga == "mps4_1"
+                    else []
+                ),
+                "shadow_signals": (
+                    [{"signal": "shadow:d0:mps4_2", "index": 0}]
+                    if fpga == "mps4_2"
+                    else []
+                ),
+                "endpoints": (
+                    [
+                        {
+                            "id": "__emuflow_tx_s0",
+                            "kind": "tx",
+                            "link": "mps4_b2b_1",
+                            "peer": "mps4_2",
+                        }
+                    ]
+                    if fpga == "mps4_1"
+                    else [
+                        {
+                            "id": "__emuflow_rx_s0",
+                            "kind": "rx",
+                            "link": "mps4_b2b_1",
+                            "peer": "mps4_1",
+                        }
+                    ]
+                    if fpga == "mps4_2"
+                    else []
+                ),
+            }
+            for fpga in ("mps4_1", "mps4_2", "mps4_3")
+        }
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -127,6 +169,16 @@ class SerialWrapperTest(unittest.TestCase):
              "gty_txn_mps4_b2b_1_mps4_2_lane0"},
         )
         self.assertTrue(all(port in rtl for port in xdc_ports))
+        shell = serial_integration_shell_rtl(
+            self.platform,
+            "mps4_1",
+            source["sites"],
+            self.transports["mps4_1"],
+        )
+        self.assertIn("module emuflow_partition_shell_mps4_1", shell)
+        self.assertIn("emuflow_transport_mps4_1 transport", shell)
+        self.assertIn(".tx_mps4_b2b_1_mps4_2(", shell)
+        self.assertIn(".links_ready(links_ready)", shell)
 
     def test_boarddb_pin_corruption_is_rejected(self) -> None:
         corrupted = copy.deepcopy(self.binding)
@@ -152,6 +204,43 @@ class SerialWrapperTest(unittest.TestCase):
         )
         contract = (output / "external_serial_phy_contract.sv").read_text()
         self.assertIn("(* black_box *)", contract)
+
+    def test_phase6c_integrates_exact_transport_port_directions(self) -> None:
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding-integrated.json"
+        output = root / "phase6c-integrated"
+        write_json(binding_path, self.binding)
+        transport_paths = {}
+        for fpga, transport in self.transports.items():
+            path = root / f"{fpga}.transport.json"
+            write_json(path, transport)
+            transport_paths[fpga] = path
+        report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            output,
+            transport_paths=transport_paths,
+        )
+        self.assertEqual(
+            report["validation"]["integrated_transport_shells"], 3
+        )
+        self.assertIn("integration_shells", report["artifacts"])
+        source_shell = (
+            output / "mps4_1.serial_integration_shell.sv"
+        ).read_text()
+        sink_shell = (
+            output / "mps4_2.serial_integration_shell.sv"
+        ).read_text()
+        source_transport = source_shell.split(
+            "emuflow_transport_mps4_1 transport", 1
+        )[1].split("emuflow_serial_wrapper_mps4_1", 1)[0]
+        sink_transport = sink_shell.split(
+            "emuflow_transport_mps4_2 transport", 1
+        )[1].split("emuflow_serial_wrapper_mps4_2", 1)[0]
+        self.assertIn(".tx_mps4_b2b_1_mps4_2(", source_transport)
+        self.assertNotIn(".rx_mps4_b2b_1_mps4_2(", source_transport)
+        self.assertIn(".rx_mps4_b2b_1_mps4_1(", sink_transport)
+        self.assertNotIn(".tx_mps4_b2b_1_mps4_1(", sink_transport)
 
 
 if __name__ == "__main__":
