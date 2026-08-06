@@ -74,12 +74,15 @@ open_checkpoint $input_dcp
 set input [open $query_path r]
 set lines [split [read $input] "\n"]
 close $input
-if {[lindex $lines 0] ne "endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex"} {
+set legacy_header "endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex"
+set cone_header "$legacy_header\tcone_anchor_kind\tcone_anchor_object_hex"
+if {[lindex $lines 0] ne $legacy_header && [lindex $lines 0] ne $cone_header} {
   error "invalid logic segment timing query header"
 }
+set cone_queries [expr {[lindex $lines 0] eq $cone_header}]
 
 set output [open $output_path w]
-puts $output "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
+puts $output "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\tmeasurement\tactual_start_object_hex\tactual_end_object_hex"
 set emitted 0
 set missing 0
 foreach line [lrange $lines 1 end] {
@@ -87,7 +90,8 @@ foreach line [lrange $lines 1 end] {
     continue
   }
   set fields [split $line "\t"]
-  if {[llength $fields] != 6} {
+  set expected_fields [expr {$cone_queries ? 8 : 6}]
+  if {[llength $fields] != $expected_fields} {
     error "malformed logic segment timing query row"
   }
   set endpoint_hex [lindex $fields 0]
@@ -96,8 +100,21 @@ foreach line [lrange $lines 1 end] {
   set start_name [emuflow_hex_decode [lindex $fields 3]]
   set end_kind [lindex $fields 4]
   set end_name [emuflow_hex_decode [lindex $fields 5]]
+  set cone_kind ""
+  set cone_name ""
+  if {$cone_queries} {
+    set cone_kind [lindex $fields 6]
+    set cone_hex [lindex $fields 7]
+    if {$cone_kind ne "" || $cone_hex ne ""} {
+      if {$cone_kind eq "" || $cone_hex eq ""} {
+        error "logic segment cone anchor is incomplete"
+      }
+      set cone_name [emuflow_hex_decode $cone_hex]
+    }
+  }
   set start_object [emuflow_resolve_object $start_kind $start_name $hierarchy_prefix]
   set end_object [emuflow_resolve_object $end_kind $end_name $hierarchy_prefix]
+  set measurement "endpoint-exact"
   set start_is_hier_pin [expr {$start_kind eq "port" && \
     [get_property CLASS $start_object] eq "pin"}]
   set end_is_hier_pin [expr {$end_kind eq "port" && \
@@ -149,6 +166,27 @@ foreach line [lrange $lines 1 end] {
     set paths [get_timing_paths -quiet -user_ignored \
       -max_paths 1 -nworst 1 -through $start_object -through $end_object]
   }
+  # A provider-neutral hard-macro timing model can conservatively expose an
+  # input-to-output arc that the mapped vendor primitive proves is bitwise
+  # impossible (for example, multiplier input bit 15 to product bit 0).  The
+  # original endpoint pair then has no physical path.  Bound the real launch
+  # cone instead by forcing the path through the unique preserved driver of
+  # the globally cut net.  This excludes transport-mux control paths and is a
+  # routed upper bound, but is deliberately not labeled endpoint-exact.
+  if {[llength $paths] == 0 && $cone_name ne ""} {
+    set cone_object [emuflow_resolve_object \
+      $cone_kind $cone_name $hierarchy_prefix]
+    set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+      -through $cone_object -through $end_object]
+    if {[llength $paths] == 0} {
+      set paths [get_timing_paths -quiet -user_ignored \
+        -max_paths 1 -nworst 1 \
+        -through $cone_object -through $end_object]
+    }
+    if {[llength $paths] == 1} {
+      set measurement "cut-net-cone-upper-bound"
+    }
+  }
   if {[llength $paths] != 1} {
     if {$allow_missing} {
       puts "EMUFLOW_LOGIC_SEGMENT_MISSING endpoint=[emuflow_hex_decode $endpoint_hex] kind=$kind"
@@ -161,7 +199,12 @@ foreach line [lrange $lines 1 end] {
   if {$delay eq ""} {
     error "logic segment [emuflow_hex_decode $endpoint_hex] has no datapath delay"
   }
-  puts $output "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_name]\t[emuflow_hex_encode $end_name]"
+  set actual_start [get_property STARTPOINT_PIN [lindex $paths 0]]
+  set actual_end [get_property ENDPOINT_PIN [lindex $paths 0]]
+  if {$actual_start eq "" || $actual_end eq ""} {
+    error "logic segment [emuflow_hex_decode $endpoint_hex] has no physical endpoint trace"
+  }
+  puts $output "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_name]\t[emuflow_hex_encode $end_name]\t$measurement\t[emuflow_hex_encode $actual_start]\t[emuflow_hex_encode $actual_end]"
   incr emitted
 }
 close $output

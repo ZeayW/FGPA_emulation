@@ -206,6 +206,8 @@ def build_system_timing(
     system_paths = []
     discontinuous_paths = 0
     exact_logic_paths = 0
+    cone_bound_logic_paths = 0
+    measured_logic_paths = 0
     for record in records:
         transitions = record["cut_transitions"]
         partitions, discontinuities = _logic_partition_sequence(transitions)
@@ -296,6 +298,11 @@ def build_system_timing(
                 segment_delay = sum(
                     float(segment["delay_ns"]) for segment in segments
                 )
+                cone_bound_segments = sum(
+                    segment.get("measurement", "endpoint-exact")
+                    == "cut-net-cone-upper-bound"
+                    for segment in segments
+                )
                 composite = unreplaced_interface + segment_delay
                 candidates.append(
                     (
@@ -303,6 +310,7 @@ def build_system_timing(
                         member,
                         segment_delay,
                         unreplaced_interface,
+                        cone_bound_segments,
                     )
                 )
             if candidates and len(candidates) == len(member_ids):
@@ -311,11 +319,17 @@ def build_system_timing(
                     selected_member,
                     local_delay,
                     interface_delay,
+                    cone_bound_segments,
                 ) = max(candidates)
                 interface_model = "routed-endpoint-exact-unreplaced-stages"
-                logic_model = "routed-staging-chain-exact"
-                logic_exact = True
-                exact_logic_paths += 1
+                measured_logic_paths += 1
+                if cone_bound_segments:
+                    logic_model = "routed-staging-chain-cone-upper-bound"
+                    cone_bound_logic_paths += 1
+                else:
+                    logic_model = "routed-staging-chain-exact"
+                    logic_exact = True
+                    exact_logic_paths += 1
         total_delay = physical_delay + record["transport_delay_ns"]
         target_period = record["clock_period_ns"]
         system_paths.append(
@@ -344,6 +358,9 @@ def build_system_timing(
                 "runtime_clock_slack_bound_ns": virtual_period - total_delay,
                 "partition_chain_exact": discontinuities == 0,
                 "physical_logic_segments_exact": logic_exact,
+                "physical_logic_segments_cone_bound": (
+                    logic_model == "routed-staging-chain-cone-upper-bound"
+                ),
             }
         )
 
@@ -368,16 +385,20 @@ def build_system_timing(
             "staging-aware-physical-plus-concrete-link-tdm"
             if exact_logic_paths == len(system_paths)
             else (
-                "hybrid-staging-aware-and-partition-maxima-plus-concrete-"
-                "link-tdm"
-                if exact_logic_paths > 0
+                "staging-aware-routed-physical-bounds-plus-concrete-link-tdm"
+                if measured_logic_paths == len(system_paths)
                 else (
-                    "partition-logic-maxima-plus-endpoint-exact-interface-"
-                    "plus-concrete-link-tdm"
-                    if endpoint_delays is not None
+                    "hybrid-staging-aware-and-partition-maxima-plus-concrete-"
+                    "link-tdm"
+                    if measured_logic_paths > 0
                     else (
-                        "conservative-partition-physical-maxima-plus-"
-                        "concrete-link-tdm"
+                        "partition-logic-maxima-plus-endpoint-exact-interface-"
+                        "plus-concrete-link-tdm"
+                        if endpoint_delays is not None
+                        else (
+                            "conservative-partition-physical-maxima-plus-"
+                            "concrete-link-tdm"
+                        )
                     )
                 )
             )
@@ -385,22 +406,31 @@ def build_system_timing(
         "path_exactness": {
             "scheduled_link_tdm": True,
             "physical_boundary_endpoints": endpoint_delays is not None,
-            "physical_logic_segments": exact_logic_paths == len(system_paths),
+            "physical_logic_segments": (
+                exact_logic_paths == len(system_paths)
+            ),
+            "physical_logic_segment_bounds": (
+                measured_logic_paths == len(system_paths)
+            ),
+            "physical_logic_segments_endpoint_exact": (
+                exact_logic_paths == len(system_paths)
+            ),
             "physical_model": (
                 "routed-staging-chain-exact"
                 if exact_logic_paths == len(system_paths)
                 else (
-                    "hybrid-routed-staging-chain-and-partition-maxima"
-                    if exact_logic_paths > 0
+                    "routed-staging-chain-upper-bounds"
+                    if measured_logic_paths == len(system_paths)
                     else (
-                        "partition-logic-maxima-and-endpoint-exact-interface"
-                        if endpoint_delays is not None
+                        "hybrid-routed-staging-chain-and-partition-maxima"
+                        if measured_logic_paths > 0
                         else "per-partition-and-interface-maxima-upper-bound"
                     )
                 )
             ),
             "endpoint_exact_logic_paths": exact_logic_paths,
-            "fallback_logic_paths": len(system_paths) - exact_logic_paths,
+            "cone_bound_logic_paths": cone_bound_logic_paths,
+            "fallback_logic_paths": len(system_paths) - measured_logic_paths,
             "discontinuous_compressed_paths": discontinuous_paths,
         },
         "physical_source": {

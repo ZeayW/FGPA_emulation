@@ -315,9 +315,12 @@ and zero board-level DRC errors are source-backed. `board-timing` reopens those
 routed checkpoints and measures the mapped partition's logical segments and
 TX/RX boundaries. Phase 7C composes them as a staging-aware chain: an exact
 launch/transition segment replaces the conservative TX endpoint delay that it
-subsumes, while unreplaced RX/interface stages remain explicit. A logical STA
-path that cannot be proven continuous after Vivado technology remapping is
-recorded as unmeasured and retains the conservative per-partition fallback.
+subsumes, while unreplaced RX/interface stages remain explicit. If a
+provider-neutral hard-macro arc is not physically realized after Vivado
+technology mapping, the exporter instead measures the worst real path through
+the preserved cut-net driver and labels it `cut-net-cone-upper-bound`; it is
+never presented as endpoint-exact. Only a segment with neither proof remains
+unmeasured and retains the conservative per-partition fallback.
 The result remains model-only across the PCB/GT/PCS link and is not final
 hardware timing sign-off until that latency is source-backed or measured.
 

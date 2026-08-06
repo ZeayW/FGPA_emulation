@@ -72,6 +72,16 @@ def validate_vivado_board_timing_report(
             or item.get("boundary_endpoints", 0) <= 0
             or item.get("logic_segments", 0) < 0
             or item.get("missing_logic_segments", 0) < 0
+            or (
+                "endpoint_exact_logic_segments" in item
+                and (
+                    item.get("endpoint_exact_logic_segments", -1) < 0
+                    or item.get("cone_bound_logic_segments", -1) < 0
+                    or item["endpoint_exact_logic_segments"]
+                    + item["cone_bound_logic_segments"]
+                    != item["logic_segments"]
+                )
+            )
             for item in records
         )
     ):
@@ -100,6 +110,13 @@ def validate_vivado_board_timing_report(
             item["boundary_endpoints"] for item in records
         ),
         "logic_segments": sum(item["logic_segments"] for item in records),
+        "endpoint_exact_logic_segments": sum(
+            item.get("endpoint_exact_logic_segments", item["logic_segments"])
+            for item in records
+        ),
+        "cone_bound_logic_segments": sum(
+            item.get("cone_bound_logic_segments", 0) for item in records
+        ),
         "missing_logic_segments": sum(
             item.get("missing_logic_segments", 0) for item in records
         ),
@@ -238,6 +255,12 @@ def run_vivado_board_timing(
                 "hierarchy_prefix": hierarchy_prefix,
                 "boundary_endpoints": boundary_validation["endpoints"],
                 "logic_segments": logic_validation["segments"],
+                "endpoint_exact_logic_segments": logic_validation[
+                    "endpoint_exact_segments"
+                ],
+                "cone_bound_logic_segments": logic_validation[
+                    "cone_bound_segments"
+                ],
                 "missing_logic_segments": missing_segments,
                 "unsupported_logic_member_paths": len(
                     logic_database_value.get("unsupported_member_paths", [])
@@ -323,6 +346,12 @@ def run_vivado_board_timing(
             "hierarchy_prefix": hierarchy_prefix,
             "boundary_endpoints": boundary_import["endpoints"],
             "logic_segments": logic_import["segments"],
+            "endpoint_exact_logic_segments": logic_import[
+                "endpoint_exact_segments"
+            ],
+            "cone_bound_logic_segments": logic_import[
+                "cone_bound_segments"
+            ],
             "missing_logic_segments": logic_import["missing_segments"],
             "unsupported_logic_member_paths": logic_query_report[
                 "unsupported_member_paths"

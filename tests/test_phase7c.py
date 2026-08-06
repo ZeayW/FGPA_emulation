@@ -574,7 +574,7 @@ class Phase7CTest(unittest.TestCase):
             5.6,
         )
 
-    def test_qor_accepts_exact_chain_faster_than_replaced_tx_bound(self):
+    def test_qor_accepts_cone_bound_chain_faster_than_replaced_tx_bound(self):
         physical = self._physical_summary()
         identities = {}
         timings = {}
@@ -647,6 +647,14 @@ class Phase7CTest(unittest.TestCase):
                 "end_pin": "end",
                 "delay_ns": delay,
             }
+            if role == "launch":
+                segment.update(
+                    {
+                        "measurement": "cut-net-cone-upper-bound",
+                        "cone_anchor_object_kind": "pin",
+                        "cone_anchor_pin": "cut_driver/O",
+                    }
+                )
             physical["logic_segment_timing"][fpga] = {
                 "schema": "emuflow.logic-segment-timing/v1",
                 "status": "pass",
@@ -683,6 +691,18 @@ class Phase7CTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             path["physical_routed_stage_delay_bound_ns"], 3.1
+        )
+        self.assertTrue(path["physical_logic_segments_cone_bound"])
+        exactness = qor["timing"]["path_exactness"]
+        self.assertFalse(exactness["physical_logic_segments"])
+        self.assertTrue(exactness["physical_logic_segment_bounds"])
+        self.assertFalse(exactness["physical_logic_segments_endpoint_exact"])
+        self.assertEqual(exactness["endpoint_exact_logic_paths"], 0)
+        self.assertEqual(exactness["cone_bound_logic_paths"], 1)
+        self.assertEqual(exactness["fallback_logic_paths"], 0)
+        self.assertEqual(
+            qor["timing"]["qualification"],
+            "staging-aware-routed-physical-bounds-plus-concrete-link-tdm",
         )
 
     def test_phase7c_writes_generated_then_physically_closed_report(self):

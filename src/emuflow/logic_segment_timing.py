@@ -32,9 +32,13 @@ LOGIC_SEGMENT_TIMING_HEADER = (
 )
 VIVADO_LOGIC_SEGMENT_QUERY_HEADER = (
     "endpoint_hex\tkind\tstart_kind\tstart_object_hex\t"
-    "end_kind\tend_object_hex"
+    "end_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex"
 )
 VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
+    "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\t"
+    "measurement\tactual_start_object_hex\tactual_end_object_hex"
+)
+_LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 )
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
@@ -340,6 +344,9 @@ def _write_logic_segment_query(
     merged_net_index = {
         net["id"]: index for index, net in enumerate(merged_ir.value["nets"])
     }
+    original_nets = {
+        net["id"]: net for net in original_ir.value["nets"]
+    }
     merged_pins = _instance_pin_inventory(merged_ir)
     if object_provider not in {"vpr", "vivado"}:
         raise ValidationError("logic segment object provider is invalid")
@@ -412,6 +419,15 @@ def _write_logic_segment_query(
             merged_pins,
             merged_instances,
         )
+
+    def cone_anchor_object(net_id: str) -> tuple[str, str]:
+        net = original_nets.get(net_id)
+        drivers = [] if net is None else net.get("drivers", [])
+        if len(drivers) != 1:
+            raise ValidationError(
+                f"logic segment cut net {net_id!r} has no unique driver"
+            )
+        return endpoint_object(drivers[0])
     instance_assignment = assignment["instance_assignment"]
     segments = []
     exact_members = 0
@@ -497,10 +513,13 @@ def _write_logic_segment_query(
                         "end_pin": end_pin,
                     }
                     if object_provider == "vivado":
+                        anchor_kind, anchor_pin = cone_anchor_object(net)
                         segment.update(
                             {
                                 "start_object_kind": start_kind,
                                 "end_object_kind": end_kind,
+                                "cone_anchor_object_kind": anchor_kind,
+                                "cone_anchor_pin": anchor_pin,
                             }
                         )
                     segments.append(segment)
@@ -581,6 +600,8 @@ def _write_logic_segment_query(
                         item["start_pin"].encode("utf-8").hex(),
                         item["end_object_kind"],
                         item["end_pin"].encode("utf-8").hex(),
+                        item.get("cone_anchor_object_kind", ""),
+                        item.get("cone_anchor_pin", "").encode("utf-8").hex(),
                     )
                 )
                 for item in segments
@@ -694,6 +715,19 @@ def validate_logic_segment_identity(
             or segment["end_object_kind"] not in {"pin", "port"}
         ):
             raise ValidationError(f"{context} object kinds are invalid")
+        anchor_fields = {
+            "cone_anchor_object_kind",
+            "cone_anchor_pin",
+        }
+        present_anchor_fields = anchor_fields & set(segment)
+        if present_anchor_fields and (
+            present_anchor_fields != anchor_fields
+            or segment["kind"] == "capture"
+            or segment["cone_anchor_object_kind"] not in {"pin", "port"}
+            or not isinstance(segment["cone_anchor_pin"], str)
+            or not segment["cone_anchor_pin"]
+        ):
+            raise ValidationError(f"{context} cone anchor is invalid")
         replacement = segment.get("replace_tx_endpoint")
         if (segment["kind"] == "capture") != (replacement is None):
             raise ValidationError(f"{context} replacement is invalid")
@@ -787,8 +821,12 @@ def import_vivado_logic_segment_timing(
     validate_logic_segment_identity(identity)
     expected = {item["id"]: item for item in identity["segments"]}
     lines = input_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != VIVADO_LOGIC_SEGMENT_TIMING_HEADER:
+    if not lines or lines[0] not in {
+        VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
+        _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
+    }:
         raise ValidationError("Vivado logic segment timing header is invalid")
+    extended_format = lines[0] == VIVADO_LOGIC_SEGMENT_TIMING_HEADER
     measurements = {}
     for line_number, line in enumerate(lines[1:], start=2):
         if not line:
@@ -798,17 +836,39 @@ def import_vivado_logic_segment_timing(
             segment_id = bytes.fromhex(fields[0]).decode("utf-8")
             start_object = bytes.fromhex(fields[3]).decode("utf-8")
             end_object = bytes.fromhex(fields[4]).decode("utf-8")
+            measurement = fields[5] if extended_format else "endpoint-exact"
+            actual_start = (
+                bytes.fromhex(fields[6]).decode("utf-8")
+                if extended_format
+                else start_object
+            )
+            actual_end = (
+                bytes.fromhex(fields[7]).decode("utf-8")
+                if extended_format
+                else end_object
+            )
         except (IndexError, ValueError, UnicodeDecodeError) as error:
             raise ValidationError(
                 f"Vivado logic segment timing line {line_number} is invalid"
             ) from error
-        segment = expected.get(segment_id) if len(fields) == 5 else None
+        expected_fields = 8 if extended_format else 5
+        segment = (
+            expected.get(segment_id)
+            if len(fields) == expected_fields
+            else None
+        )
         if (
             segment is None
             or segment_id in measurements
             or fields[1] != segment["kind"]
             or start_object != segment["start_pin"]
             or end_object != segment["end_pin"]
+            or measurement not in {
+                "endpoint-exact",
+                "cut-net-cone-upper-bound",
+            }
+            or not actual_start
+            or not actual_end
         ):
             raise ValidationError(
                 f"Vivado logic segment timing line {line_number} is invalid"
@@ -823,7 +883,12 @@ def import_vivado_logic_segment_timing(
             raise ValidationError(
                 f"Vivado logic segment timing line {line_number} delay is invalid"
             )
-        measurements[segment_id] = delay
+        measurements[segment_id] = {
+            "delay_ns": delay,
+            "measurement": measurement,
+            "actual_start_object": actual_start,
+            "actual_end_object": actual_end,
+        }
     missing = sorted(set(expected) - set(measurements))
     if missing and not allow_missing:
         raise ValidationError(
@@ -853,6 +918,15 @@ def import_vivado_logic_segment_timing(
             {item["member_path"] for item in measured_segments}
         ),
         "unsupported_member_paths": len(unsupported),
+        "endpoint_exact_segments": sum(
+            measurements[item["id"]]["measurement"] == "endpoint-exact"
+            for item in measured_segments
+        ),
+        "cone_bound_segments": sum(
+            measurements[item["id"]]["measurement"]
+            == "cut-net-cone-upper-bound"
+            for item in measured_segments
+        ),
     }
     database = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
@@ -878,7 +952,7 @@ def import_vivado_logic_segment_timing(
             for segment_id in missing
         ],
         "segments": [
-            {**segment, "delay_ns": measurements[segment["id"]]}
+            {**segment, **measurements[segment["id"]]}
             for segment in measured_segments
         ],
     }
@@ -914,6 +988,8 @@ def validate_logic_segment_timing(
     identity["provider"] = "timing-validation"
     validate_logic_segment_identity(identity)
     maximum = 0.0
+    endpoint_exact = 0
+    cone_bound = 0
     for segment in database["segments"]:
         delay = segment.get("delay_ns")
         if (
@@ -923,10 +999,35 @@ def validate_logic_segment_timing(
             or float(delay) < 0.0
         ):
             raise ValidationError("logic segment timing delay is invalid")
+        measurement = segment.get("measurement", "endpoint-exact")
+        if measurement not in {
+            "endpoint-exact",
+            "cut-net-cone-upper-bound",
+        }:
+            raise ValidationError("logic segment timing measurement is invalid")
+        if measurement == "cut-net-cone-upper-bound":
+            if segment.get("kind") == "capture" or not isinstance(
+                segment.get("cone_anchor_pin"), str
+            ):
+                raise ValidationError(
+                    "logic segment cone-bound trace is invalid"
+                )
+            cone_bound += 1
+        else:
+            endpoint_exact += 1
+        for field in ("actual_start_object", "actual_end_object"):
+            if field in segment and (
+                not isinstance(segment[field], str) or not segment[field]
+            ):
+                raise ValidationError(
+                    "logic segment physical object trace is invalid"
+                )
         maximum = max(maximum, float(delay))
     return {
         "status": "pass",
         "fpga": database["fpga"],
         "segments": len(database["segments"]),
+        "endpoint_exact_segments": endpoint_exact,
+        "cone_bound_segments": cone_bound,
         "maximum_delay_ns": maximum,
     }

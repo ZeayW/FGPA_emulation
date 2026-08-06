@@ -325,6 +325,78 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 segment["id"],
             )
 
+    def test_vivado_import_preserves_cone_bound_measurement_trace(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity_path = root / "identity.json"
+            segment = {
+                "id": "logic0",
+                "kind": "launch",
+                "system_path": "path0",
+                "member_path": "member0",
+                "cut_index": 0,
+                "fpga": "fpga0",
+                "replace_tx_endpoint": "tx0",
+                "start_pin": "spurious_ff/Q",
+                "end_pin": "tx_port[0]",
+                "start_object_kind": "pin",
+                "end_object_kind": "port",
+                "cone_anchor_object_kind": "pin",
+                "cone_anchor_pin": "cut_driver/O",
+            }
+            write_json(
+                identity_path,
+                {
+                    "schema": "emuflow.logic-segment-identity/v1",
+                    "status": "pass",
+                    "design": "dut",
+                    "platform": "board",
+                    "fpga": "fpga0",
+                    "provider": "test",
+                    "coverage": {
+                        "segments": 1,
+                        "system_paths": 1,
+                        "member_paths": 1,
+                        "unsupported_member_paths": 0,
+                    },
+                    "unsupported_member_paths": [],
+                    "segments": [segment],
+                },
+            )
+            fields = (
+                segment["id"].encode().hex(),
+                segment["kind"],
+                "3.125",
+                segment["start_pin"].encode().hex(),
+                segment["end_pin"].encode().hex(),
+                "cut-net-cone-upper-bound",
+                "real_ff/C".encode().hex(),
+                "pcs_fifo/D".encode().hex(),
+            )
+            raw = root / "timing.tsv"
+            raw.write_text(
+                "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\t"
+                "end_object_hex\tmeasurement\tactual_start_object_hex\t"
+                "actual_end_object_hex\n"
+                + "\t".join(fields)
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "timing.json"
+            report = import_vivado_logic_segment_timing(
+                raw, identity_path, output
+            )
+            self.assertEqual(report["cone_bound_segments"], 1)
+            database = read_json(output)
+            self.assertEqual(
+                database["segments"][0]["measurement"],
+                "cut-net-cone-upper-bound",
+            )
+            self.assertEqual(
+                database["segments"][0]["actual_start_object"],
+                "real_ff/C",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

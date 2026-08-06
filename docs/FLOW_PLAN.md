@@ -502,7 +502,11 @@ physical RAMB clock launch object while recovering the exact logical output
 bit from EmuIR net identity. Phase 7C uses the resulting
 `logic-segment-timing/v1` measurements and replaces the matching TX interface
 terms instead of adding a whole partition's critical-path maximum. Exact and
-fallback path counts are part of `system-timing/v1`; structured TimingPathDB
+fallback path counts are part of `system-timing/v1`. When a coarse
+provider-neutral hard-macro arc has no corresponding vendor timing arc, the
+Vivado provider constrains the worst physical path through the preserved
+cut-net driver and records a distinct cut-net-cone upper bound rather than
+claiming endpoint exactness. Structured TimingPathDB
 endpoints retain the actual sink of each multicast member and remove local
 fanout of globally cut nets, while
 legacy or unmapped endpoints remain conservative.
