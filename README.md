@@ -844,6 +844,26 @@ or link training, so the hardware-release status remains blocked until those
 editable-source providers are compiled and checked. No private overlay or
 experimental record is stored in this repository.
 
+The next boundary is a versioned `serial-phy-provider/v1` manifest. It accepts
+only editable Verilog/SystemVerilog, Tcl, and XDC inputs; hashes every source;
+checks that both generated contract module names are actually defined; and
+rejects checkpoints, netlists, archives, and compiled objects as substitutes
+for source. With `--platform`, it also checks the FPGA part, user-side payload
+width and clock, provider line rate, and the BoardDB line-rate ceiling:
+
+```bash
+emuflow phy-provider validate \
+  --manifest local/serial-phy-provider.json \
+  --platform build/platforms/arm-mps4-3board.json \
+  --normalized-out build/providers/serial-phy-provider.normalized.json
+```
+
+Provider qualification is explicit: `simulation_only` is useful for
+structural/equivalence tests but can never authorize hardware release;
+`editable_source_hardware` means the implementation is source-visible, not
+that Vivado elaboration, GT placement, timing, DRC, bitstream generation, or
+board training has already passed. Those remain separate checked gates.
+
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
 validation, not XCVU13P sign-off. A board-runnable MPS4 result still requires

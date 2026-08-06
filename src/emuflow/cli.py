@@ -102,6 +102,7 @@ from .sta import (
     write_vivado_net_map,
 )
 from .serial_wrapper import run_phase6c
+from .serial_phy_provider import validate_serial_phy_provider_file
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
 from .timing_routing import (
@@ -178,6 +179,19 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_overlay.add_argument("--platform", type=Path, required=True)
     platform_overlay.add_argument("--overlay", type=Path, required=True)
     platform_overlay.add_argument("--normalized-out", type=Path)
+
+    phy_provider = subparsers.add_parser(
+        "phy-provider", help="editable-source serial PHY provider operations"
+    )
+    phy_provider_subparsers = phy_provider.add_subparsers(
+        dest="phy_provider_command", required=True
+    )
+    phy_provider_validate = phy_provider_subparsers.add_parser(
+        "validate", help="validate source inventory and BoardDB compatibility"
+    )
+    phy_provider_validate.add_argument("--manifest", type=Path, required=True)
+    phy_provider_validate.add_argument("--platform", type=Path)
+    phy_provider_validate.add_argument("--normalized-out", type=Path)
 
     contest_parser = subparsers.add_parser(
         "contest", help="public multi-FPGA contest format adapters"
@@ -1699,6 +1713,15 @@ def _dispatch(args: argparse.Namespace) -> int:
         if args.normalized_out is not None:
             write_json(args.normalized_out, platform.to_dict())
         _print_json(platform.summary())
+        return 0
+
+    if args.command == "phy-provider":
+        report = validate_serial_phy_provider_file(
+            manifest_path=args.manifest,
+            platform_path=args.platform,
+            normalized_out=args.normalized_out,
+        )
+        _print_json(report)
         return 0
 
     if args.command == "contest":
