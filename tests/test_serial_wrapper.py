@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import re
 import tempfile
 import unittest
@@ -186,6 +187,67 @@ class SerialWrapperTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def _write_phy_provider(self, qualification: str) -> Path:
+        root = Path(self.temporary_directory.name)
+        source = root / f"provider-{qualification}.sv"
+        source_text = """module emuflow_external_serial_clock_reset #(
+  parameter integer BOARD_RESET_ACTIVE_LOW = 1
+) (input wire refclk_p, input wire refclk_n, input wire board_reset,
+   output wire phy_refclk, output wire phy_reset, output wire ready);
+  assign phy_refclk = refclk_p;
+  assign phy_reset = BOARD_RESET_ACTIVE_LOW ? ~board_reset : board_reset;
+  assign ready = 1'b1;
+endmodule
+module emuflow_external_serial_phy_lane #(
+  parameter integer PAYLOAD_WIDTH = 64
+) (input wire user_clk, input wire reset, input wire phy_refclk,
+   input wire phy_reset, input wire [PAYLOAD_WIDTH-1:0] tx_data,
+   output wire [PAYLOAD_WIDTH-1:0] rx_data, output wire txp,
+   output wire txn, input wire rxp, input wire rxn, output wire ready);
+  assign rx_data = {PAYLOAD_WIDTH{1'b0}};
+  assign txp = 1'b0; assign txn = 1'b1; assign ready = 1'b1;
+endmodule
+"""
+        source.write_text(source_text, encoding="utf-8")
+        manifest = root / f"provider-{qualification}.json"
+        write_json(
+            manifest,
+            {
+                "schema": "emuflow.serial-phy-provider/v1",
+                "id": f"{qualification}_fixture",
+                "qualification": qualification,
+                "supported_parts": ["xcvu13p-fhga2104-1-e"],
+                "modules": {
+                    "clock_reset": "emuflow_external_serial_clock_reset",
+                    "lane": "emuflow_external_serial_phy_lane",
+                },
+                "source_root": ".",
+                "sources": [
+                    {
+                        "path": source.name,
+                        "language": "systemverilog",
+                        "role": "unit_test_fixture",
+                        "sha256": hashlib.sha256(
+                            source_text.encode("utf-8")
+                        ).hexdigest(),
+                    }
+                ],
+                "protocol": {
+                    "payload_bits_per_lane_per_cycle": 64,
+                    "user_clock_mhz": 50.0,
+                    "line_rate_gbps_per_lane": 10.0,
+                    "encoding": "unit_test",
+                    "link_training": "unit_test",
+                    "reset_sequence": "unit_test",
+                },
+                "provenance": {
+                    "license": "unit-test-only",
+                    "upstream": "repository unit test",
+                },
+            },
+        )
+        return manifest
 
     def test_wrapper_is_reproducible_and_exposes_exact_active_ports(self) -> None:
         first = build_serial_wrapper_manifest(self.platform, self.binding)
@@ -399,6 +461,65 @@ class SerialWrapperTest(unittest.TestCase):
         self.assertIn(
             "transceiver_site",
             manifest["phy_contract"]["required_provider_fields"],
+        )
+
+    def test_phase6c_binds_provider_source_without_overclaiming_release(self) -> None:
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding-provider.json"
+        overlay_path = root / "overlay-provider.json"
+        write_json(binding_path, self.binding)
+        write_json(overlay_path, self.overlay)
+
+        simulation_provider = self._write_phy_provider("simulation_only")
+        simulation_out = root / "phase6c-simulation-provider"
+        simulation_report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            simulation_out,
+            board_overlay_path=overlay_path,
+            phy_provider_path=simulation_provider,
+        )
+        self.assertEqual(
+            simulation_report["hardware_release_status"],
+            "blocked_on_external_phy_provider",
+        )
+        simulation_manifest = read_json(
+            simulation_out / "serial_wrapper_manifest.json"
+        )
+        self.assertEqual(simulation_manifest["status"], "provider_source_bound")
+        self.assertIn(
+            "reset_synchronization",
+            simulation_manifest["phy_contract"]["required_provider_fields"],
+        )
+
+        hardware_provider = self._write_phy_provider(
+            "editable_source_hardware"
+        )
+        hardware_out = root / "phase6c-hardware-provider"
+        hardware_report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            hardware_out,
+            board_overlay_path=overlay_path,
+            phy_provider_path=hardware_provider,
+        )
+        self.assertEqual(
+            hardware_report["hardware_release_status"],
+            "pending_vivado_provider_validation",
+        )
+        hardware_manifest = read_json(
+            hardware_out / "serial_wrapper_manifest.json"
+        )
+        self.assertEqual(
+            hardware_manifest["phy_contract"]["required_provider_fields"], []
+        )
+        self.assertEqual(
+            hardware_manifest["metrics"]["provider_source_bound_phy_modules"],
+            2,
+        )
+        self.assertEqual(len(hardware_manifest["phy_provider_manifest_sha256"]), 64)
+        self.assertTrue(
+            (hardware_out / "serial_phy_provider.normalized.json").is_file()
         )
 
 

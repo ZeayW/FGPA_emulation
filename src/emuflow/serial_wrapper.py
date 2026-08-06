@@ -16,12 +16,12 @@ from .physical_pins import (
     SERIAL_TRANSCEIVER_PROVIDER,
 )
 from .platform import BoardLink, Platform
+from .serial_contract import SERIAL_CLOCK_RESET_MODULE, SERIAL_PHY_MODULE
+from .serial_phy_provider import validate_serial_phy_provider
 
 
 SERIAL_WRAPPER_SCHEMA = "emuflow.serial-wrapper/v1"
 SERIAL_WRAPPER_REPORT_SCHEMA = "emuflow.phase6c-report/v1"
-SERIAL_PHY_MODULE = "emuflow_external_serial_phy_lane"
-SERIAL_CLOCK_RESET_MODULE = "emuflow_external_serial_clock_reset"
 
 
 def _sv_name(value: str) -> str:
@@ -664,6 +664,7 @@ def build_serial_wrapper_manifest(
     binding: Mapping[str, Any],
     transports: Optional[Mapping[str, Mapping[str, Any]]] = None,
     board_overlay: Optional[Mapping[str, Any]] = None,
+    phy_provider: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     sites = _binding_sites(platform, binding)
     overlay_result = (
@@ -838,28 +839,50 @@ def build_serial_wrapper_manifest(
         and overlay_result["hardware_qualification"] == "source_backed"
         else 0
     )
-    required_provider_fields = [
-        "reset_synchronization",
-        "line_encoding",
-        "reset_sequence",
-        "link_training",
-    ]
+    provider_hardware_source_bound = (
+        phy_provider is not None
+        and phy_provider.get("schema") == "emuflow.serial-phy-provider/v1"
+        and phy_provider.get("qualification") == "editable_source_hardware"
+    )
+    required_provider_fields = []
     if not source_backed_site_resolution:
-        required_provider_fields[0:0] = [
+        required_provider_fields.extend(
+            [
             "transceiver_site",
             "reference_clock_selection",
             "reference_clock_package_binding",
-        ]
+            ]
+        )
+    if not provider_hardware_source_bound:
+        required_provider_fields.extend(
+            [
+                "reset_synchronization",
+                "line_encoding",
+                "reset_sequence",
+                "link_training",
+            ]
+        )
+    implementation_status = (
+        "editable_source_bound_pending_tool_validation"
+        if provider_hardware_source_bound
+        else "simulation_source_bound"
+        if phy_provider is not None
+        else "black_box_unresolved"
+    )
     return {
         "schema": SERIAL_WRAPPER_SCHEMA,
-        "status": "awaiting_external_phy_provider",
+        "status": (
+            "provider_source_bound"
+            if phy_provider is not None
+            else "awaiting_external_phy_provider"
+        ),
         "design": binding["design"],
         "platform": platform.name,
         "binding_provider": SERIAL_TRANSCEIVER_PROVIDER,
         "phy_contract": {
             "module": SERIAL_PHY_MODULE,
             "rtl": "external_serial_phy_contract.sv",
-            "implementation_status": "black_box_unresolved",
+            "implementation_status": implementation_status,
             "required_provider_fields": required_provider_fields,
             "internal_reset": {
                 "signal": "reset",
@@ -890,6 +913,20 @@ def build_serial_wrapper_manifest(
                 if overlay is not None
                 else {"status": "not_provided"}
             ),
+            "provider": (
+                {
+                    "status": "source_inventory_bound",
+                    "id": phy_provider["id"],
+                    "qualification": phy_provider["qualification"],
+                    "supported_parts": phy_provider["supported_parts"],
+                    "modules": phy_provider["modules"],
+                    "protocol": phy_provider["protocol"],
+                    "sources": phy_provider["sources"],
+                    "provenance": phy_provider["provenance"],
+                }
+                if phy_provider is not None
+                else {"status": "not_provided"}
+            ),
         },
         "fpgas": fpgas,
         "metrics": {
@@ -911,6 +948,9 @@ def build_serial_wrapper_manifest(
                 active_sites - source_backed_resolved_sites
             ),
             "unresolved_phy_modules": active_sites,
+            "provider_source_bound_phy_modules": (
+                active_sites if phy_provider is not None else 0
+            ),
             "integrated_transport_shells": (
                 len(fpgas) if transports is not None else 0
             ),
@@ -924,6 +964,7 @@ def run_phase6c(
     output_dir: Path,
     transport_paths: Optional[Mapping[str, Path]] = None,
     board_overlay_path: Optional[Path] = None,
+    phy_provider_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
     binding = read_json(binding_path)
@@ -938,8 +979,20 @@ def run_phase6c(
     board_overlay = (
         read_json(board_overlay_path) if board_overlay_path is not None else None
     )
+    phy_provider_result = (
+        validate_serial_phy_provider(
+            read_json(phy_provider_path), phy_provider_path, platform
+        )
+        if phy_provider_path is not None
+        else None
+    )
+    phy_provider = (
+        phy_provider_result["normalized"]
+        if phy_provider_result is not None
+        else None
+    )
     manifest = build_serial_wrapper_manifest(
-        platform, binding, transports, board_overlay
+        platform, binding, transports, board_overlay, phy_provider
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     contract = serial_phy_contract_rtl()
@@ -982,16 +1035,22 @@ def run_phase6c(
                 raise ValidationError("written board service XDC does not agree")
     digest = hashlib.sha256(binding_path.read_bytes()).hexdigest()
     manifest["binding_sha256"] = digest
-    write_json(output_dir / "serial_wrapper_manifest.json", manifest)
     rebuilt = build_serial_wrapper_manifest(
-        platform, binding, transports, board_overlay
+        platform, binding, transports, board_overlay, phy_provider
     )
     rebuilt["binding_sha256"] = digest
     if board_overlay_path is not None:
         overlay_digest = hashlib.sha256(board_overlay_path.read_bytes()).hexdigest()
         manifest["board_overlay_sha256"] = overlay_digest
         rebuilt["board_overlay_sha256"] = overlay_digest
-        write_json(output_dir / "serial_wrapper_manifest.json", manifest)
+    if phy_provider_path is not None:
+        provider_digest = hashlib.sha256(phy_provider_path.read_bytes()).hexdigest()
+        manifest["phy_provider_manifest_sha256"] = provider_digest
+        rebuilt["phy_provider_manifest_sha256"] = provider_digest
+        write_json(
+            output_dir / "serial_phy_provider.normalized.json", phy_provider
+        )
+    write_json(output_dir / "serial_wrapper_manifest.json", manifest)
     if read_json(output_dir / "serial_wrapper_manifest.json") != rebuilt:
         raise ValidationError("serial wrapper manifest is not reproducible")
     report = {
@@ -1000,11 +1059,26 @@ def run_phase6c(
         "status": "pass",
         "design": manifest["design"],
         "platform": platform.name,
-        "hardware_release_status": "blocked_on_external_phy_provider",
+        "hardware_release_status": (
+            "pending_vivado_provider_validation"
+            if not manifest["phy_contract"]["required_provider_fields"]
+            and manifest["phy_contract"]["implementation_status"]
+            == "editable_source_bound_pending_tool_validation"
+            else "blocked_on_external_phy_provider"
+        ),
         "validation": dict(manifest["metrics"]),
         "artifacts": {
             "manifest": "serial_wrapper_manifest.json",
             "phy_contract": "external_serial_phy_contract.sv",
+            **(
+                {
+                    "phy_provider_inventory": (
+                        "serial_phy_provider.normalized.json"
+                    )
+                }
+                if phy_provider is not None
+                else {}
+            ),
             "wrappers": {
                 item["fpga"]: item["rtl"] for item in manifest["fpgas"]
             },

@@ -10,7 +10,7 @@ from typing import Any, Dict, Mapping, Optional
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
-from .serial_wrapper import SERIAL_CLOCK_RESET_MODULE, SERIAL_PHY_MODULE
+from .serial_contract import SERIAL_CLOCK_RESET_MODULE, SERIAL_PHY_MODULE
 
 
 SERIAL_PHY_PROVIDER_SCHEMA = "emuflow.serial-phy-provider/v1"
@@ -210,6 +210,13 @@ def validate_serial_phy_provider(
         if language in {"systemverilog", "verilog"}:
             hdl_text.append(path.read_text(encoding="utf-8"))
     combined_hdl = "\n".join(hdl_text)
+    if (
+        qualification == "editable_source_hardware"
+        and re.search(r"\(\*\s*black_box\s*\*\)", combined_hdl)
+    ):
+        raise ValidationError(
+            "editable-source hardware provider cannot contain black-box modules"
+        )
     for role, module in sorted(modules.items()):
         if re.search(rf"\bmodule\s+{re.escape(module)}\b", combined_hdl) is None:
             raise ValidationError(

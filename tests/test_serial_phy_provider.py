@@ -156,6 +156,19 @@ class SerialPhyProviderTest(unittest.TestCase):
                 incompatible, self.manifest_path, self.platform
             )
 
+    def test_hardware_qualification_rejects_black_box_source(self) -> None:
+        source_text = """(* black_box *) module emuflow_external_serial_clock_reset; endmodule
+(* black_box *) module emuflow_external_serial_phy_lane; endmodule
+"""
+        self.source_path.write_text(source_text, encoding="utf-8")
+        hardware = copy.deepcopy(self.manifest)
+        hardware["qualification"] = "editable_source_hardware"
+        hardware["sources"][0]["sha256"] = hashlib.sha256(
+            source_text.encode("utf-8")
+        ).hexdigest()
+        with self.assertRaisesRegex(ValidationError, "black-box"):
+            validate_serial_phy_provider(hardware, self.manifest_path)
+
 
 if __name__ == "__main__":
     unittest.main()

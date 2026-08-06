@@ -15,7 +15,9 @@
   ],
   "properties": {
     "schema": {"const": "emuflow.serial-wrapper/v1"},
-    "status": {"const": "awaiting_external_phy_provider"},
+    "status": {
+      "enum": ["awaiting_external_phy_provider", "provider_source_bound"]
+    },
     "design": {"type": "string", "minLength": 1},
     "platform": {"type": "string", "minLength": 1},
     "binding_provider": {
@@ -30,7 +32,8 @@
         "required_provider_fields",
         "internal_reset",
         "board_service_candidates",
-        "board_support_overlay"
+        "board_support_overlay",
+        "provider"
       ],
       "properties": {
         "implementation_status": {"const": "black_box_unresolved"},
@@ -52,6 +55,10 @@
           }
         },
         "board_support_overlay": {
+          "type": "object",
+          "required": ["status"]
+        },
+        "provider": {
           "type": "object",
           "required": ["status"]
         }
@@ -83,6 +90,10 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "board_overlay_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "phy_provider_manifest_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     }

@@ -1574,6 +1574,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--transport", action="append", default=[], metavar="FPGA=PATH"
     )
     phase6c.add_argument(
+        "--phy-provider",
+        type=Path,
+        help="editable-source serial PHY provider manifest",
+    )
+    phase6c.add_argument(
         "--board-overlay",
         type=Path,
         help="validated board-specific GT site, reference-clock, and reset bindings",
@@ -2570,6 +2575,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 else None
             ),
             board_overlay_path=args.board_overlay,
+            phy_provider_path=args.phy_provider,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

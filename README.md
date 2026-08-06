@@ -825,6 +825,7 @@ emuflow phase6c \
   --platform build/platforms/arm-mps4-3board.json \
   --binding build/phase6b/package_pin_binding.json \
   --board-overlay local/mps4-board-support.json \
+  --phy-provider local/serial-phy-provider.json \
   --out build/phase6c
 ```
 
@@ -863,6 +864,13 @@ structural/equivalence tests but can never authorize hardware release;
 `editable_source_hardware` means the implementation is source-visible, not
 that Vivado elaboration, GT placement, timing, DRC, bitstream generation, or
 board training has already passed. Those remain separate checked gates.
+When Phase 6C consumes the provider, it hash-binds both the provider manifest
+and every inventoried source into its output. A simulation provider leaves the
+release blocked. An editable hardware provider combined with a complete
+source-backed board overlay advances only to
+`pending_vivado_provider_validation`; it never turns source presence into a
+hardware-pass claim. The generated black-box file remains an interface
+reference and must not be compiled together with the bound provider sources.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
