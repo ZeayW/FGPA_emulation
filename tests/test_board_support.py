@@ -57,6 +57,7 @@ class BoardSupportOverlayTest(unittest.TestCase):
                     "fpga": "mps4_1",
                     "board_service": "cb_npor",
                     "package_pin": "RST0",
+                    "iostandard": "LVCMOS18",
                 }
             ],
             "transceiver_sites": [
@@ -68,6 +69,7 @@ class BoardSupportOverlayTest(unittest.TestCase):
                     "physical_lane": 0,
                     "site": "GTYE4_CHANNEL_X0Y0",
                     "reference_clock_binding": "mps4_1_refclk0",
+                    "reset_binding": "mps4_1_cold_reset",
                 }
             ],
         }

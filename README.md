@@ -831,11 +831,18 @@ emuflow phase6c \
 An overlay is either explicitly `user_supplied_unverified` or
 `source_backed_hardware_definition`, and Phase 6C hash-binds it into the
 manifest. A complete source-backed overlay can resolve the data fields for GT
-sites and reference clocks. It still cannot resolve the external PHY RTL,
-reset synchronization, encoding, reset sequence, or link training, so the
-hardware-release status remains blocked until those editable-source providers
-are compiled and checked. No private overlay or experimental record is stored
-in this repository.
+sites, reference clocks, and board reset pins. The generated wrapper exposes
+those differential clock and reset ports, instantiates one shared external
+clock/reset contract for each distinct binding pair, and connects its
+`phy_refclk`/`phy_reset` outputs to all assigned lane contracts. Phase 6C emits
+a separate source-backed board-service XDC with package pins, reset
+IOSTANDARDs, and `create_clock`; unverified overlays never emit those
+constraints. GT channel LOCs remain the PHY provider's responsibility because
+the LOC must target the provider's real primitive hierarchy. This still cannot
+resolve the external PHY RTL, reset synchronization, encoding, reset sequence,
+or link training, so the hardware-release status remains blocked until those
+editable-source providers are compiled and checked. No private overlay or
+experimental record is stored in this repository.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model

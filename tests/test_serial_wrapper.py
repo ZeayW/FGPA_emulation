@@ -162,6 +162,7 @@ class SerialWrapperTest(unittest.TestCase):
                     "fpga": fpga,
                     "board_service": "cb_npor",
                     "package_pin": f"{fpga.upper()}_RST",
+                    "iostandard": "LVCMOS18",
                 }
                 for fpga in ("mps4_1", "mps4_2")
             ],
@@ -174,6 +175,7 @@ class SerialWrapperTest(unittest.TestCase):
                     "physical_lane": 0,
                     "site": site,
                     "reference_clock_binding": f"{fpga}_refclk0",
+                    "reset_binding": f"{fpga}_reset",
                 }
                 for fpga, connector, mgt, site in (
                     ("mps4_1", "J49", "MGT0", "GTYE4_CHANNEL_X0Y0"),
@@ -233,6 +235,8 @@ class SerialWrapperTest(unittest.TestCase):
         self.assertIn("gty_txp_mps4_b2b_1_mps4_2_lane0", rtl)
         self.assertIn("tx_mps4_b2b_1_mps4_2[0 +: 64]", rtl)
         self.assertIn("emuflow_external_serial_phy_lane", rtl)
+        self.assertIn(".phy_refclk(1'b0)", rtl)
+        self.assertIn(".phy_reset(reset)", rtl)
         self.assertNotIn("GTYE4_CHANNEL", rtl)
         xdc_ports = set(
             re.findall(r"\[get_ports \{([^}]+)\}\]", binding_to_xdc(
@@ -285,6 +289,7 @@ class SerialWrapperTest(unittest.TestCase):
         )
         contract = (output / "external_serial_phy_contract.sv").read_text()
         self.assertIn("(* black_box *)", contract)
+        self.assertIn("emuflow_external_serial_clock_reset", contract)
 
     def test_phase6c_integrates_exact_transport_port_directions(self) -> None:
         root = Path(self.temporary_directory.name)
@@ -368,6 +373,14 @@ class SerialWrapperTest(unittest.TestCase):
         )
         written = read_json(output / "serial_wrapper_manifest.json")
         self.assertEqual(len(written["board_overlay_sha256"]), 64)
+        service_xdc = (output / "mps4_1.board_services.xdc").read_text()
+        self.assertIn("set_property PACKAGE_PIN MPS4_1_REFP", service_xdc)
+        self.assertIn("create_clock -name mps4_1_refclk0 -period 6.4", service_xdc)
+        self.assertIn("set_property IOSTANDARD LVCMOS18", service_xdc)
+        wrapper = (output / "mps4_1.serial_wrapper.sv").read_text()
+        self.assertIn("input  wire refclk_mps4_1_refclk0_p", wrapper)
+        self.assertIn("input  wire board_reset_mps4_1_reset", wrapper)
+        self.assertIn("emuflow_external_serial_clock_reset", wrapper)
 
     def test_unverified_overlay_does_not_reduce_hardware_gaps(self) -> None:
         overlay = copy.deepcopy(self.overlay)

@@ -152,6 +152,7 @@ def validate_board_support_overlay(
         clock_bindings[binding_id] = normalized
 
     normalized_resets = []
+    reset_bindings: Dict[str, Mapping[str, Any]] = {}
     for index, raw in enumerate(_records(overlay.get("resets"), "resets")):
         context = f"resets[{index}]"
         binding_id = _string(raw.get("id"), f"{context}.id")
@@ -162,6 +163,9 @@ def validate_board_support_overlay(
         package_pin = _string(
             raw.get("package_pin"), f"{context}.package_pin"
         )
+        iostandard = _string(
+            raw.get("iostandard"), f"{context}.iostandard"
+        )
         if (
             binding_id in used_ids
             or fpga not in fpga_ids
@@ -171,15 +175,16 @@ def validate_board_support_overlay(
             raise ValidationError(f"{context}: invalid reset binding")
         used_ids.add(binding_id)
         used_pins.add((fpga, package_pin))
-        normalized_resets.append(
-            {
-                "id": binding_id,
-                "fpga": fpga,
-                "board_service": service_id,
-                "package_pin": package_pin,
-                "polarity": reset_services[service_id].polarity,
-            }
-        )
+        normalized = {
+            "id": binding_id,
+            "fpga": fpga,
+            "board_service": service_id,
+            "package_pin": package_pin,
+            "iostandard": iostandard,
+            "polarity": reset_services[service_id].polarity,
+        }
+        normalized_resets.append(normalized)
+        reset_bindings[binding_id] = normalized
 
     links = {link.id: link for link in platform.links}
     used_endpoint_lanes = set()
@@ -198,6 +203,9 @@ def validate_board_support_overlay(
             raw.get("reference_clock_binding"),
             f"{context}.reference_clock_binding",
         )
+        reset_binding = _string(
+            raw.get("reset_binding"), f"{context}.reset_binding"
+        )
         lane = raw.get("physical_lane")
         link = links.get(link_id)
         endpoint = link.endpoint_binding(fpga) if link is not None else None
@@ -213,6 +221,8 @@ def validate_board_support_overlay(
             or endpoint.mgt != mgt_group
             or refclk not in clock_bindings
             or clock_bindings[refclk]["fpga"] != fpga
+            or reset_binding not in reset_bindings
+            or reset_bindings[reset_binding]["fpga"] != fpga
             or endpoint_key in used_endpoint_lanes
             or (fpga, site) in used_sites
         ):
@@ -228,6 +238,7 @@ def validate_board_support_overlay(
                 "physical_lane": lane,
                 "site": site,
                 "reference_clock_binding": refclk,
+                "reset_binding": reset_binding,
             }
         )
 

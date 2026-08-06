@@ -71,6 +71,8 @@
           "active_tx_directions",
           "active_rx_directions",
           "transport_connections",
+          "board_services",
+          "board_service_constraints_status",
           "sites"
         ]
       }

@@ -38,14 +38,14 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "fpga", "board_service", "package_pin"]
+        "required": ["id", "fpga", "board_service", "package_pin", "iostandard"]
       }
     },
     "transceiver_sites": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["fpga", "link", "connector", "mgt_group", "physical_lane", "site", "reference_clock_binding"]
+        "required": ["fpga", "link", "connector", "mgt_group", "physical_lane", "site", "reference_clock_binding", "reset_binding"]
       }
     }
   },
