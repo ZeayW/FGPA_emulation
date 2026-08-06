@@ -36,6 +36,10 @@ class PcsSourceTest(unittest.TestCase):
             "emuflow_record_async_fifo.sv",
             "emuflow_10g_pcs_cdc_adapter.sv",
             "emuflow_record_dejitter_buffer.sv",
+            "emuflow_record_mux.sv",
+            "emuflow_record_demux.sv",
+            "emuflow_runtime_sync_control_endpoint.sv",
+            "emuflow_runtime_sync_pcs_edge.sv",
         }
         self.assertTrue(required.issubset({path.name for path in pcs.glob("*.sv")}))
 

@@ -995,10 +995,13 @@ sources. EmuFlow adds a three-block XGMII record envelope carrying a typed
 record, 16-bit sequence, 64-bit payload, and CRC-16. At 156.25 MHz it sustains
 52.08 million records/s, enough for one record per 50-MHz fabric cycle. The
 receive path remains elastic through CDC and then enters a sequence-checked
-prefill/de-jitter buffer before deterministic fabric-cycle release. This layer
-is source-visible and simulator-validated, but is not yet a board-ready PHY:
-the GT adapter, in-band runtime-sync control binding, measured latency bound,
-and physical clock/reset proof remain required.
+prefill/de-jitter buffer before deterministic fabric-cycle release. Typed
+in-band `READY` and `START(epoch)` records bind one full-duplex PCS edge to the
+runtime synchronization tree; control/data overlap after startup is a sticky
+error instead of an implicit data stall. This layer is source-visible and
+simulator-validated, but is not yet a board-ready PHY: Phase 6C still needs the
+v3 parallel GT-SerDes adapter, a checked control-latency bound, and physical
+clock/reset proof.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model

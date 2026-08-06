@@ -320,3 +320,83 @@ module pcs_record_dejitter_tb;
         $finish;
     end
 endmodule
+
+module pcs_runtime_sync_control_tb;
+    reg clk = 1'b0;
+    reg reset = 1'b1;
+    always #10 clk = ~clk;
+    reg child_local_ready = 1'b0;
+    reg parent_start_valid = 1'b0;
+    reg [31:0] parent_start_epoch = 32'b0;
+    wire parent_remote_ready;
+    wire child_remote_start_valid;
+    wire [31:0] child_remote_start_epoch;
+
+    wire p_tx_valid;
+    wire [1:0] p_tx_kind;
+    wire [15:0] p_tx_sequence;
+    wire [63:0] p_tx_payload;
+    wire c_tx_valid;
+    wire [1:0] c_tx_kind;
+    wire [15:0] c_tx_sequence;
+    wire [63:0] c_tx_payload;
+    wire parent_error;
+    wire child_error;
+
+    emuflow_runtime_sync_control_endpoint #(.ROLE_PARENT(1)) parent (
+        .fabric_clk(clk), .reset(reset),
+        .local_subtree_ready(1'b0),
+        .local_start_valid(parent_start_valid),
+        .local_start_epoch(parent_start_epoch),
+        .remote_subtree_ready(parent_remote_ready),
+        .remote_start_valid(), .remote_start_epoch(),
+        .tx_control_valid(p_tx_valid), .tx_control_ready(1'b1),
+        .tx_control_kind(p_tx_kind),
+        .tx_control_sequence(p_tx_sequence),
+        .tx_control_payload(p_tx_payload),
+        .rx_control_valid(c_tx_valid), .rx_control_ready(),
+        .rx_control_kind(c_tx_kind),
+        .rx_control_sequence(c_tx_sequence),
+        .rx_control_payload(c_tx_payload),
+        .protocol_error(parent_error)
+    );
+    emuflow_runtime_sync_control_endpoint #(.ROLE_PARENT(0)) child (
+        .fabric_clk(clk), .reset(reset),
+        .local_subtree_ready(child_local_ready),
+        .local_start_valid(1'b0), .local_start_epoch(32'b0),
+        .remote_subtree_ready(),
+        .remote_start_valid(child_remote_start_valid),
+        .remote_start_epoch(child_remote_start_epoch),
+        .tx_control_valid(c_tx_valid), .tx_control_ready(1'b1),
+        .tx_control_kind(c_tx_kind),
+        .tx_control_sequence(c_tx_sequence),
+        .tx_control_payload(c_tx_payload),
+        .rx_control_valid(p_tx_valid), .rx_control_ready(),
+        .rx_control_kind(p_tx_kind),
+        .rx_control_sequence(p_tx_sequence),
+        .rx_control_payload(p_tx_payload),
+        .protocol_error(child_error)
+    );
+
+    initial begin
+        repeat (4) @(posedge clk);
+        @(negedge clk); reset = 1'b0;
+        repeat (3) @(posedge clk);
+        @(negedge clk); child_local_ready = 1'b1;
+        wait (parent_remote_ready == 1'b1);
+        @(negedge clk);
+        parent_start_epoch = 32'h12345678;
+        parent_start_valid = 1'b1;
+        wait (child_remote_start_valid == 1'b1);
+        if (child_remote_start_epoch !== 32'h12345678)
+            $fatal(1, "START epoch did not cross the control endpoint");
+        @(negedge clk); parent_start_valid = 1'b0;
+        child_local_ready = 1'b0;
+        wait (parent_remote_ready == 1'b0);
+        @(posedge clk); #1;
+        if (parent_error || child_error)
+            $fatal(1, "runtime-sync control endpoint reported an error");
+        $display("EMUFLOW_PCS_RUNTIME_SYNC_CONTROL_TB status=pass");
+        $finish;
+    end
+endmodule

@@ -58,6 +58,15 @@ module emuflow_10g_pcs_cdc_adapter #(
     wire record_framing_error;
     wire record_crc_error;
     wire record_overflow_error;
+    wire pcs_link_ready = rx_status && rx_block_lock && !rx_high_ber;
+    reg pcs_rx_error_sticky;
+    reg pcs_tx_error_sticky;
+    reg link_ready_sync1;
+    reg link_ready_sync2;
+    reg rx_error_sync1;
+    reg rx_error_sync2;
+    reg tx_error_sync1;
+    reg tx_error_sync2;
 
     emuflow_record_async_fifo #(.DEPTH(FIFO_DEPTH)) tx_fifo (
         .source_clk(fabric_clk), .source_reset(fabric_reset),
@@ -112,9 +121,40 @@ module emuflow_10g_pcs_cdc_adapter #(
         .sink_payload(rx_record_payload)
     );
 
-    assign link_ready = rx_status && rx_block_lock && !rx_high_ber;
+    always @(posedge pcs_rx_clk) begin
+        if (pcs_rx_reset) begin
+            pcs_rx_error_sticky <= 1'b0;
+        end else if (rx_bad_block || rx_sequence_error || rx_high_ber ||
+                     record_framing_error || record_crc_error ||
+                     record_overflow_error || rx_fifo_overflow) begin
+            pcs_rx_error_sticky <= 1'b1;
+        end
+    end
+    always @(posedge pcs_tx_clk) begin
+        if (pcs_tx_reset)
+            pcs_tx_error_sticky <= 1'b0;
+        else if (tx_bad_block)
+            pcs_tx_error_sticky <= 1'b1;
+    end
+    always @(posedge fabric_clk) begin
+        if (fabric_reset) begin
+            link_ready_sync1 <= 1'b0;
+            link_ready_sync2 <= 1'b0;
+            rx_error_sync1 <= 1'b0;
+            rx_error_sync2 <= 1'b0;
+            tx_error_sync1 <= 1'b0;
+            tx_error_sync2 <= 1'b0;
+        end else begin
+            link_ready_sync1 <= pcs_link_ready;
+            link_ready_sync2 <= link_ready_sync1;
+            rx_error_sync1 <= pcs_rx_error_sticky;
+            rx_error_sync2 <= rx_error_sync1;
+            tx_error_sync1 <= pcs_tx_error_sticky;
+            tx_error_sync2 <= tx_error_sync1;
+        end
+    end
+
+    assign link_ready = link_ready_sync2;
     assign link_error =
-        tx_bad_block || rx_bad_block || rx_sequence_error || rx_high_ber ||
-        record_framing_error || record_crc_error || record_overflow_error ||
-        tx_fifo_overflow || rx_fifo_overflow;
+        tx_fifo_overflow || rx_error_sync2 || tx_error_sync2;
 endmodule
