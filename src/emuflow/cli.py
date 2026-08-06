@@ -205,7 +205,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phy_provider_elaborate.add_argument(
         "--transport", action="append", default=[], metavar="FPGA=PATH"
     )
-    phy_provider_elaborate.add_argument("--yosys", type=Path, required=True)
+    elaborate_tool = phy_provider_elaborate.add_mutually_exclusive_group(
+        required=True
+    )
+    elaborate_tool.add_argument("--yosys", type=Path)
+    elaborate_tool.add_argument("--vivado", type=Path)
     phy_provider_elaborate.add_argument("--out", type=Path, required=True)
 
     contest_parser = subparsers.add_parser(
@@ -1746,6 +1750,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.transport, "--transport"
                 ),
                 yosys_executable=args.yosys,
+                vivado_executable=args.vivado,
                 output_dir=args.out,
             )
             _print_json(report)

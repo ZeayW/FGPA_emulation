@@ -6,7 +6,7 @@ import hashlib
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
@@ -54,6 +54,49 @@ def build_yosys_elaboration_script(
     )
 
 
+def _tcl_quote(value: str) -> str:
+    return "{" + value.replace("\\", "/").replace("}", "\\}") + "}"
+
+
+def build_vivado_elaboration_tcl(
+    sources: Sequence[Path], top: str, part: str, utilization_report: Path
+) -> str:
+    if not sources:
+        raise ValidationError("serial PHY elaboration source list is empty")
+    if not top or not part:
+        raise ValidationError("Vivado elaboration top/part is invalid")
+    source_list = " ".join(_tcl_quote(str(path)) for path in sources)
+    return "\n".join(
+        [
+            "create_project -in_memory -part " + _tcl_quote(part) + " emuflow_phy",
+            "foreach source [list " + source_list + "] {",
+            "  read_verilog -sv $source",
+            "}",
+            "set_property top " + _tcl_quote(top) + " [current_fileset]",
+            "synth_design -rtl -mode out_of_context -top "
+            + _tcl_quote(top)
+            + " -part "
+            + _tcl_quote(part),
+            "set black_boxes [get_cells -quiet -hier -filter {IS_BLACKBOX == 1}]",
+            "if {[llength $black_boxes] != 0} {",
+            "  puts stderr \"EMUFLOW_PHY_ELAB black_boxes=$black_boxes\"",
+            "  exit 3",
+            "}",
+            "set report_handle [open "
+            + _tcl_quote(str(utilization_report))
+            + " w]",
+            "puts $report_handle \"top=" + top + "\"",
+            "puts $report_handle \"part=" + part + "\"",
+            "puts $report_handle \"cells=[llength [get_cells -hier]]\"",
+            "puts $report_handle \"black_boxes=[llength $black_boxes]\"",
+            "close $report_handle",
+            "puts \"EMUFLOW_PHY_ELAB status=pass top=" + top + " part=" + part + "\"",
+            "exit 0",
+            "",
+        ]
+    )
+
+
 def run_serial_phy_elaboration(
     *,
     platform_path: Path,
@@ -61,7 +104,8 @@ def run_serial_phy_elaboration(
     phase6c_dir: Path,
     runtime_controller_path: Path,
     transport_rtl_paths: Mapping[str, Path],
-    yosys_executable: Path,
+    yosys_executable: Optional[Path],
+    vivado_executable: Optional[Path],
     output_dir: Path,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
@@ -111,8 +155,14 @@ def run_serial_phy_elaboration(
         )
     if not runtime_controller_path.is_file():
         raise ValidationError("runtime controller RTL is missing")
-    if not yosys_executable.is_file():
-        raise ValidationError("Yosys elaboration executable is missing")
+    if (yosys_executable is None) == (vivado_executable is None):
+        raise ValidationError("select exactly one elaboration tool")
+    executable = (
+        yosys_executable if yosys_executable is not None else vivado_executable
+    )
+    assert executable is not None
+    if not executable.is_file():
+        raise ValidationError("elaboration executable is missing")
 
     source_root = (provider_manifest_path.parent / provider["source_root"]).resolve()
     provider_hdl = [
@@ -123,14 +173,17 @@ def run_serial_phy_elaboration(
     if not provider_hdl:
         raise ValidationError("provider has no HDL source for elaboration")
     output_dir.mkdir(parents=True, exist_ok=True)
+    tool_name = "yosys" if yosys_executable is not None else "vivado"
+    version_flag = "-V" if tool_name == "yosys" else "-version"
     version = subprocess.run(
-        [str(yosys_executable), "-V"],
+        [str(executable), version_flag],
         check=False,
         capture_output=True,
         text=True,
     )
     if version.returncode != 0:
-        raise EmuFlowError("failed to query Yosys version")
+        raise EmuFlowError(f"failed to query {tool_name} version")
+    parts = {fpga.id: fpga.part for fpga in platform.fpgas}
     fpga_results = []
     for record in sorted(fpga_records, key=lambda item: item["fpga"]):
         fpga = record["fpga"]
@@ -153,22 +206,43 @@ def run_serial_phy_elaboration(
             shell_path,
         ]
         top = f"emuflow_partition_shell_{_sv_name(fpga)}"
-        script = build_yosys_elaboration_script(sources, top)
+        generated_files = []
+        if tool_name == "yosys":
+            script = build_yosys_elaboration_script(sources, top)
+            command = [str(executable), "-q", "-p", script]
+        else:
+            utilization_path = output_dir / f"{fpga}.vivado.elaboration.rpt"
+            script_path = output_dir / f"{fpga}.vivado.tcl"
+            script_path.write_text(
+                build_vivado_elaboration_tcl(
+                    sources, top, parts[fpga], utilization_path
+                ),
+                encoding="utf-8",
+            )
+            generated_files.extend((script_path, utilization_path))
+            command = [
+                str(executable),
+                "-mode",
+                "batch",
+                "-nojournal",
+                "-nolog",
+                "-source",
+                str(script_path),
+            ]
         completed = subprocess.run(
-            [str(yosys_executable), "-q", "-p", script],
-            check=False,
-            capture_output=True,
-            text=True,
+            command, check=False, capture_output=True, text=True
         )
-        log_path = output_dir / f"{fpga}.yosys.log"
+        log_path = output_dir / f"{fpga}.{tool_name}.log"
         log_path.write_text(
             completed.stdout + completed.stderr, encoding="utf-8"
         )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
             raise EmuFlowError(
-                f"{fpga}: provider elaboration failed: {detail[-1000:]}"
+                f"{fpga}: {tool_name} provider elaboration failed: {detail[-1000:]}"
             )
+        if any(not path.is_file() for path in generated_files):
+            raise EmuFlowError(f"{fpga}: {tool_name} omitted an expected report")
         fpga_results.append(
             {
                 "fpga": fpga,
@@ -183,20 +257,31 @@ def run_serial_phy_elaboration(
                 ],
                 "log": log_path.name,
                 "log_sha256": _sha256(log_path),
+                "generated": [
+                    {
+                        "path": path.name,
+                        "sha256": _sha256(path),
+                    }
+                    for path in generated_files
+                ],
             }
         )
     report = {
         "schema": SERIAL_PHY_ELABORATION_SCHEMA,
         "status": "pass",
-        "qualification": "open_rtl_elaboration_only",
+        "qualification": (
+            "open_rtl_elaboration_only"
+            if tool_name == "yosys"
+            else "vivado_rtl_elaboration_only"
+        ),
         "design": manifest["design"],
         "platform": platform.name,
         "provider": provider["id"],
         "provider_qualification": provider["qualification"],
         "tool": {
-            "name": "yosys",
-            "version": version.stdout.strip(),
-            "executable": str(yosys_executable),
+            "name": tool_name,
+            "version": (version.stdout + version.stderr).strip(),
+            "executable": str(executable),
         },
         "phase6c_manifest_sha256": _sha256(manifest_path),
         "provider_manifest_sha256": expected_provider_hash,

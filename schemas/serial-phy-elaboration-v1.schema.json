@@ -7,7 +7,9 @@
   "properties": {
     "schema": {"const": "emuflow.serial-phy-elaboration/v1"},
     "status": {"const": "pass"},
-    "qualification": {"const": "open_rtl_elaboration_only"},
+    "qualification": {
+      "enum": ["open_rtl_elaboration_only", "vivado_rtl_elaboration_only"]
+    },
     "fpgas": {"type": "array", "minItems": 1},
     "validation": {
       "type": "object",

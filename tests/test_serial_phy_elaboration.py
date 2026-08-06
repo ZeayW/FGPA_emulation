@@ -2,7 +2,10 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.serial_phy_elaboration import build_yosys_elaboration_script
+from emuflow.serial_phy_elaboration import (
+    build_vivado_elaboration_tcl,
+    build_yosys_elaboration_script,
+)
 
 
 class SerialPhyElaborationTest(unittest.TestCase):
@@ -23,6 +26,20 @@ class SerialPhyElaborationTest(unittest.TestCase):
             build_yosys_elaboration_script([], "top")
         with self.assertRaisesRegex(ValidationError, "top"):
             build_yosys_elaboration_script([Path("provider.sv")], "")
+
+    def test_builds_vivado_part_specific_black_box_gate(self) -> None:
+        script = build_vivado_elaboration_tcl(
+            [Path("provider source.sv"), Path("wrapper.sv")],
+            "emuflow_partition_shell_mps4_1",
+            "xcvu13p-fhga2104-1-e",
+            Path("utilization.rpt"),
+        )
+        self.assertIn("create_project -in_memory", script)
+        self.assertIn("xcvu13p-fhga2104-1-e", script)
+        self.assertIn("synth_design -rtl -mode out_of_context", script)
+        self.assertIn("IS_BLACKBOX == 1", script)
+        self.assertIn("cells=[llength [get_cells -hier]]", script)
+        self.assertIn("black_boxes=[llength $black_boxes]", script)
 
 
 if __name__ == "__main__":

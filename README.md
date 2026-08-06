@@ -893,6 +893,11 @@ Every FPGA must pass `hierarchy -check` and `check -assert`. The resulting
 report inventories and hashes all inputs and logs, but is deliberately marked
 `open_rtl_elaboration_only` with `hardware_release_authorized: false`; it does
 not validate vendor primitives, GT LOCs, timing, electrical DRC, or a board.
+Replacing `--yosys ...` with `--vivado ...` runs the same source-bound inputs
+through an in-memory, part-specific Vivado RTL elaboration and rejects any
+remaining black boxes. Its qualification is `vivado_rtl_elaboration_only` and
+it has the same non-release boundary; a successful XCVU13P elaboration is not
+GT placement, routing, timing, or electrical sign-off.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
