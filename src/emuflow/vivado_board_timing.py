@@ -55,9 +55,10 @@ def validate_vivado_board_timing_report(
         raise ValidationError("Vivado board timing schema is invalid")
     if report.get("status") != "pass":
         raise ValidationError("Vivado board timing did not pass")
-    if report.get("qualification") != (
-        "routed-board-maxima-plus-interface-measurements-link-model-only"
-    ):
+    if report.get("qualification") not in {
+        "routed-board-stage-timing-plus-link-model-only",
+        "routed-board-maxima-plus-interface-measurements-link-model-only",
+    }:
         raise ValidationError("Vivado board timing qualification is invalid")
     records = report.get("fpgas")
     if not isinstance(records, list) or not records:
@@ -384,23 +385,20 @@ def run_vivado_board_timing(
             }
         )
     feedback_summary = dict(source_physical)
-    feedback_summary.pop("logic_segment_timing", None)
     feedback_summary.update(
         {
             "provider": "vivado-board-integrated-timing-feedback-v1",
-            "qualification": (
-                "routed-board-maxima-plus-interface-measurements-"
-                "link-model-only"
-            ),
+            "qualification": "routed-board-stage-timing-link-model-only",
             "fpgas": board_physical_fpgas,
             "boundary_timing": boundary_timing,
+            "logic_segment_timing": logic_timing,
             "timing_component_provenance": {
                 "fpga_logic_bound": (
                     "vivado-board-routed-checkpoint-worst-datapath"
                 ),
                 "logic_segment_diagnostics": (
-                    "vivado-board-routed-dcp-not-composed-across-"
-                    "transport-staging"
+                    "vivado-board-routed-dcp-staging-aware-exact-"
+                    "when-complete"
                 ),
                 "partition_boundary_endpoints": "vivado-board-routed-dcp",
                 "board_link_propagation": "platform-model-not-measured",
@@ -438,10 +436,7 @@ def run_vivado_board_timing(
     report = {
         "schema": VIVADO_BOARD_TIMING_SCHEMA,
         "status": "pass",
-        "qualification": (
-            "routed-board-maxima-plus-interface-measurements-"
-            "link-model-only"
-        ),
+        "qualification": "routed-board-stage-timing-plus-link-model-only",
         "design": source_physical["design"],
         "platform": platform.name,
         "source_bindings": {

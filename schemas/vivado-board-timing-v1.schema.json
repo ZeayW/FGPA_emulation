@@ -20,7 +20,10 @@
     "schema": {"const": "emuflow.vivado-board-timing/v1"},
     "status": {"const": "pass"},
     "qualification": {
-      "const": "routed-board-maxima-plus-interface-measurements-link-model-only"
+      "enum": [
+        "routed-board-stage-timing-plus-link-model-only",
+        "routed-board-maxima-plus-interface-measurements-link-model-only"
+      ]
     },
     "fpgas": {"type": "array", "minItems": 1},
     "board_link_timing": {

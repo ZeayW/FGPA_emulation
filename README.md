@@ -313,11 +313,13 @@ generation is rejected until fabric-clock generation, synchronous reset
 release, every remaining top-level package pin, board synchronization latency,
 and zero board-level DRC errors are source-backed. `board-timing` reopens those
 routed checkpoints and measures the mapped partition's logical segments and
-TX/RX boundaries. Resolvable paths use exact Vivado routed delay; paths split
-by transport staging registers are recorded explicitly and retain Phase 7C's
-conservative per-partition fallback. The result remains model-only across the
-PCB/GT/PCS link and is not final hardware timing sign-off until that latency
-is source-backed or measured.
+TX/RX boundaries. Phase 7C composes them as a staging-aware chain: an exact
+launch/transition segment replaces the conservative TX endpoint delay that it
+subsumes, while unreplaced RX/interface stages remain explicit. A logical STA
+path that cannot be proven continuous after Vivado technology remapping is
+recorded as unmeasured and retains the conservative per-partition fallback.
+The result remains model-only across the PCB/GT/PCS link and is not final
+hardware timing sign-off until that latency is source-backed or measured.
 
 `emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
 physical backend. It binds synthesis, baseline VPR packing and

@@ -135,14 +135,17 @@ foreach line [lrange $lines 1 end] {
     }
   }
   # A preserved EmuFlow pin can be physically connected while not being a
-  # legal Vivado timing startpoint/endpoint (notably RAM address pins and
-  # hierarchy-crossing combinational pins).  Constrain the same ordered pair
-  # as through-points and let Vivado recover the enclosing sequential path.
-  if {[llength $paths] == 0 && !$end_is_hier_pin} {
+  # legal Vivado timing startpoint/endpoint (notably a synchronous RAM output
+  # or a hierarchy-crossing combinational pin).  Constrain the same ordered
+  # pair as through-points and let Vivado recover the enclosing sequential
+  # path.  This fallback is also required when the end object is a hierarchy
+  # pin: -from a RAM output is illegal even though an ordered through/through
+  # query has one routed RAM-clock-to-interface path.
+  if {[llength $paths] == 0} {
     set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
       -through $start_object -through $end_object]
   }
-  if {[llength $paths] == 0 && !$end_is_hier_pin} {
+  if {[llength $paths] == 0} {
     set paths [get_timing_paths -quiet -user_ignored \
       -max_paths 1 -nworst 1 -through $start_object -through $end_object]
   }

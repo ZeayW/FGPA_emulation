@@ -27,15 +27,16 @@ class VivadoBoardTimingTest(unittest.TestCase):
             "emuflow_resolve_object $start_kind $start_name $hierarchy_prefix",
             logic,
         )
+        self.assertIn(
+            "-through $start_object -through $end_object",
+            logic,
+        )
 
     def test_report_keeps_board_link_latency_outside_signoff(self):
         report = {
             "schema": "emuflow.vivado-board-timing/v1",
             "status": "pass",
-            "qualification": (
-                "routed-board-maxima-plus-interface-measurements-"
-                "link-model-only"
-            ),
+            "qualification": "routed-board-stage-timing-plus-link-model-only",
             "design": "counter",
             "platform": "board",
             "fpgas": [
@@ -59,6 +60,13 @@ class VivadoBoardTimingTest(unittest.TestCase):
         summary = validate_vivado_board_timing_report(report)
         self.assertEqual(summary["boundary_endpoints"], 4)
         self.assertFalse(summary["final_system_signoff"])
+        report["qualification"] = (
+            "routed-board-maxima-plus-interface-measurements-"
+            "link-model-only"
+        )
+        self.assertEqual(
+            validate_vivado_board_timing_report(report)["fpgas"], 1
+        )
         report["board_link_timing"]["final_system_signoff"] = True
         with self.assertRaisesRegex(ValidationError, "board link"):
             validate_vivado_board_timing_report(report)

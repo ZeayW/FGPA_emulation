@@ -163,9 +163,12 @@ def build_system_timing(
 
     The schedule/link component is path-exact for the Phase-4 routed sink
     selected by the timing model. Routed endpoint measurements are used when
-    the physical backend provides complete BoundaryTimingDB coverage. The DUT
-    logic component remains a safe per-partition post-route maximum; backends
-    without endpoint measurements also use a per-hop interface maximum.
+    the physical backend provides complete BoundaryTimingDB coverage. Exact
+    logic segments replace the TX endpoint measurements they subsume; the
+    remaining RX/interface stages and the measured logic-stage chain are then
+    composed without assuming that either component is a separable pure-logic
+    delay. Backends without complete segment coverage retain conservative
+    per-partition post-route maxima.
     """
     records = reconstruct_tdm_schedule_timing_paths(
         routes, platform, schedule
@@ -280,22 +283,37 @@ def build_system_timing(
                         f"system timing path {record['path']} logic segment "
                         "replacement coverage is invalid"
                     )
-                composite = (
-                    interface_delay
-                    - sum(endpoint_delays[item] for item in replacements)
-                    + sum(float(segment["delay_ns"]) for segment in segments)
+                replaced_interface = sum(
+                    endpoint_delays[item] for item in replacements
                 )
-                candidates.append((composite, member))
-            if candidates and len(candidates) == len(member_ids):
-                physical_delay, selected_member = max(candidates)
-                local_delay = physical_delay - interface_delay
-                if local_delay < -1.0e-8:
+                unreplaced_interface = interface_delay - replaced_interface
+                if unreplaced_interface < -1.0e-8:
                     raise ValidationError(
-                        f"system timing path {record['path']} has a negative "
-                        "endpoint-exact logic contribution"
+                        f"system timing path {record['path']} has invalid "
+                        "endpoint replacement accounting"
                     )
-                local_delay = max(0.0, local_delay)
-                logic_model = "routed-endpoint-chain-exact"
+                unreplaced_interface = max(0.0, unreplaced_interface)
+                segment_delay = sum(
+                    float(segment["delay_ns"]) for segment in segments
+                )
+                composite = unreplaced_interface + segment_delay
+                candidates.append(
+                    (
+                        composite,
+                        member,
+                        segment_delay,
+                        unreplaced_interface,
+                    )
+                )
+            if candidates and len(candidates) == len(member_ids):
+                (
+                    physical_delay,
+                    selected_member,
+                    local_delay,
+                    interface_delay,
+                ) = max(candidates)
+                interface_model = "routed-endpoint-exact-unreplaced-stages"
+                logic_model = "routed-staging-chain-exact"
                 logic_exact = True
                 exact_logic_paths += 1
         total_delay = physical_delay + record["transport_delay_ns"]
@@ -317,6 +335,7 @@ def build_system_timing(
                 "physical_interface_model": interface_model,
                 "physical_logic_model": logic_model,
                 "physical_logic_member_path": selected_member,
+                "physical_routed_stage_delay_bound_ns": physical_delay,
                 "scheduled_link_tdm_delay_ns": record[
                     "transport_delay_ns"
                 ],
@@ -346,13 +365,21 @@ def build_system_timing(
         "design": runtime["design"],
         "platform": platform.name,
         "qualification": (
-            "endpoint-chain-physical-plus-concrete-link-tdm"
+            "staging-aware-physical-plus-concrete-link-tdm"
             if exact_logic_paths == len(system_paths)
             else (
-                "partition-logic-maxima-plus-endpoint-exact-interface-plus-"
-                "concrete-link-tdm"
-                if endpoint_delays is not None
-                else "conservative-partition-physical-maxima-plus-concrete-link-tdm"
+                "hybrid-staging-aware-and-partition-maxima-plus-concrete-"
+                "link-tdm"
+                if exact_logic_paths > 0
+                else (
+                    "partition-logic-maxima-plus-endpoint-exact-interface-"
+                    "plus-concrete-link-tdm"
+                    if endpoint_delays is not None
+                    else (
+                        "conservative-partition-physical-maxima-plus-"
+                        "concrete-link-tdm"
+                    )
+                )
             )
         ),
         "path_exactness": {
@@ -360,12 +387,16 @@ def build_system_timing(
             "physical_boundary_endpoints": endpoint_delays is not None,
             "physical_logic_segments": exact_logic_paths == len(system_paths),
             "physical_model": (
-                "routed-endpoint-chain-exact"
+                "routed-staging-chain-exact"
                 if exact_logic_paths == len(system_paths)
                 else (
-                    "partition-logic-maxima-and-endpoint-exact-interface"
-                    if endpoint_delays is not None
-                    else "per-partition-and-interface-maxima-upper-bound"
+                    "hybrid-routed-staging-chain-and-partition-maxima"
+                    if exact_logic_paths > 0
+                    else (
+                        "partition-logic-maxima-and-endpoint-exact-interface"
+                        if endpoint_delays is not None
+                        else "per-partition-and-interface-maxima-upper-bound"
+                    )
                 )
             ),
             "endpoint_exact_logic_paths": exact_logic_paths,

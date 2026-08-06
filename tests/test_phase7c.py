@@ -559,15 +559,130 @@ class Phase7CTest(unittest.TestCase):
         self.assertTrue(timing["path_exactness"]["physical_logic_segments"])
         self.assertEqual(
             timing["qualification"],
-            "endpoint-chain-physical-plus-concrete-link-tdm",
+            "staging-aware-physical-plus-concrete-link-tdm",
         )
         self.assertAlmostEqual(
             timing["paths"][0]["physical_logic_delay_bound_ns"],
-            4.6,
+            5.0,
         )
         self.assertAlmostEqual(
             timing["paths"][0]["physical_interface_delay_bound_ns"],
-            1.0,
+            0.6,
+        )
+        self.assertAlmostEqual(
+            timing["paths"][0]["physical_routed_stage_delay_bound_ns"],
+            5.6,
+        )
+
+    def test_qor_accepts_exact_chain_faster_than_replaced_tx_bound(self):
+        physical = self._physical_summary()
+        identities = {}
+        timings = {}
+        for fpga, endpoint_id, kind, delay in (
+            ("fpga0", "__emuflow_tx_s000000", "tx", 3.0),
+            ("fpga1", "__emuflow_rx_s000000", "rx", 0.6),
+        ):
+            identities[fpga] = {
+                "schema": "emuflow.boundary-identity/v1",
+                "status": "pass",
+                "design": "dut",
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "provider": "test",
+                "coverage": {
+                    "endpoints": 1,
+                    "tx": int(kind == "tx"),
+                    "rx": int(kind == "rx"),
+                    "external_port_nets": 1,
+                },
+                "endpoints": [{
+                    "id": endpoint_id,
+                    "kind": kind,
+                    "schedule_entry": "s000000",
+                }],
+            }
+            timings[fpga] = {
+                "schema": "emuflow.boundary-timing/v1",
+                "status": "pass",
+                "design": "dut",
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "provider": "test",
+                "qualification": "endpoint-exact",
+                "coverage": {
+                    "endpoints": 1,
+                    "tx": int(kind == "tx"),
+                    "rx": int(kind == "rx"),
+                },
+                "endpoints": [{
+                    "id": endpoint_id,
+                    "kind": kind,
+                    "schedule_entry": "s000000",
+                    "delay_ns": delay,
+                    "start_object": "start",
+                    "end_object": "end",
+                    "measurement": (
+                        "logical-source-to-tx-port"
+                        if kind == "tx"
+                        else "rx-port-to-shadow-capture"
+                    ),
+                }],
+            }
+        physical["boundary_identities"] = identities
+        physical["boundary_timing"] = timings
+        physical["logic_segment_timing"] = {}
+        for fpga, role, replacement, delay in (
+            ("fpga0", "launch", "__emuflow_tx_s000000", 2.0),
+            ("fpga1", "capture", None, 0.5),
+        ):
+            segment = {
+                "id": f"logic-{role}",
+                "kind": role,
+                "system_path": "system-critical",
+                "member_path": "system-critical",
+                "cut_index": 0 if role == "launch" else 1,
+                "fpga": fpga,
+                "replace_tx_endpoint": replacement,
+                "start_pin": "start",
+                "end_pin": "end",
+                "delay_ns": delay,
+            }
+            physical["logic_segment_timing"][fpga] = {
+                "schema": "emuflow.logic-segment-timing/v1",
+                "status": "pass",
+                "design": "dut",
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "provider": "test",
+                "qualification": "endpoint-chain",
+                "coverage": {
+                    "segments": 1,
+                    "system_paths": 1,
+                    "member_paths": 1,
+                    "unsupported_member_paths": 0,
+                },
+                "unsupported_member_paths": [],
+                "segments": [segment],
+            }
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            self.reports["phase5"],
+            self.reports["phase6"],
+            physical,
+            self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
+        )
+        path = qor["timing"]["paths"][0]
+        self.assertEqual(path["physical_logic_delay_bound_ns"], 2.5)
+        self.assertAlmostEqual(
+            path["physical_interface_delay_bound_ns"], 0.6
+        )
+        self.assertAlmostEqual(
+            path["physical_routed_stage_delay_bound_ns"], 3.1
         )
 
     def test_phase7c_writes_generated_then_physically_closed_report(self):
