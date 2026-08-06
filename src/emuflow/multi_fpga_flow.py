@@ -11,6 +11,7 @@ from .board_link_timing import (
     directed_route_link_delays,
     validate_board_link_timing,
 )
+from .cross_stage import run_cross_stage_optimization
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
     run_frame_length_search,
@@ -180,6 +181,47 @@ def validate_multi_fpga_flow_report(
             raise ValidationError(
                 "frame-search selection disagrees with TDM/runtime"
             )
+    cross_stage = report.get("cross_stage")
+    cross_stage_iteration = None
+    if cross_stage is not None:
+        if (
+            not isinstance(cross_stage, dict)
+            or cross_stage.get("status") != "pass"
+            or cross_stage.get("design") != design
+            or cross_stage.get("platform") != platform
+        ):
+            raise ValidationError(
+                "multi-FPGA cross-stage identity disagrees"
+            )
+        candidates = cross_stage.get("candidates")
+        selected_iteration = cross_stage.get("selected_iteration")
+        if (
+            not isinstance(candidates, list)
+            or isinstance(selected_iteration, bool)
+            or not isinstance(selected_iteration, int)
+            or selected_iteration < 0
+            or selected_iteration >= len(candidates)
+        ):
+            raise ValidationError(
+                "multi-FPGA cross-stage selection is invalid"
+            )
+        selected = candidates[selected_iteration]
+        if (
+            not isinstance(selected, dict)
+            or selected.get("status") != "pass"
+            or selected.get("iteration") != selected_iteration
+            or selected.get("candidate_id")
+            != cross_stage.get("selected_candidate_id")
+            or selected.get("phase3_validation")
+            != partition_validation
+            or selected.get("phase4_validation") != route_validation
+            or selected.get("phase5_validation") != tdm_validation
+        ):
+            raise ValidationError(
+                "selected cross-stage candidate disagrees with canonical "
+                "Phase 3--5 stages"
+            )
+        cross_stage_iteration = selected_iteration
     if any(
         item.get("status") != "pass"
         for item in (
@@ -204,6 +246,7 @@ def validate_multi_fpga_flow_report(
         "scheduled_hops": split_validation.get("scheduled_hops"),
         "equivalence_mismatches": equivalence.get("mismatches"),
         "frame_slots": runtime["validation"].get("frame_slots"),
+        "cross_stage_iteration": cross_stage_iteration,
         "nominal_virtual_frequency_mhz": runtime["validation"].get(
             "nominal_virtual_frequency_mhz"
         ),
@@ -255,6 +298,9 @@ def run_multi_fpga_flow(
     optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
     ratio_optimizer: Optional[str] = None,
+    cross_stage_iterations: int = 0,
+    cross_stage_feedback_optimizer: Optional[str] = None,
+    cross_stage_pair_pressure_weight: float = 1.0,
     simulation_frames: int = 16,
     equivalence_cycles: int = 16,
     equivalence_seed: int = 20260727,
@@ -315,6 +361,16 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "--board-link-timing-db requires --timing-driven so its bounds "
             "participate in partition-crossing route/TDM optimization"
+        )
+    if (
+        isinstance(cross_stage_iterations, bool)
+        or not isinstance(cross_stage_iterations, int)
+        or cross_stage_iterations < 0
+    ):
+        raise EmuFlowError("--cross-stage-iterations must be non-negative")
+    if cross_stage_iterations and not timing_driven:
+        raise EmuFlowError(
+            "--cross-stage-iterations requires --timing-driven"
         )
     if timing_driven and not clock_periods:
         raise EmuFlowError(
@@ -569,7 +625,7 @@ def run_multi_fpga_flow(
     assignment_path = phase3_root / "assignment.json"
 
     projected_timing_paths = timing_paths
-    if timing_driven:
+    if timing_driven and not cross_stage_iterations:
         projected_timing_paths = timing_root / "cut-timing-paths.json"
         projection_report = project_sta_path_database(
             path_database_path,
@@ -581,7 +637,76 @@ def run_multi_fpga_flow(
     phase4_root = output_dir / "system-route"
     phase5_root = output_dir / "tdm"
     frame_search_report = None
-    if optimize_frame_slots:
+    cross_stage_report = None
+    if cross_stage_iterations:
+        cross_stage_root = output_dir / "cross-stage"
+        cross_stage_report = run_cross_stage_optimization(
+            ir_path=ir_path,
+            platform_path=platform_path,
+            database_path=path_database_path,
+            initial_assignment_path=assignment_path,
+            output_dir=cross_stage_root,
+            phase3_constraints_path=(
+                phase3_root / "constraints.normalized.json"
+            ),
+            route_constraints_path=route_constraints,
+            board_link_timing_path=board_link_timing_db,
+            phase3_provider=partition_provider,
+            max_outer_iterations=cross_stage_iterations,
+            seed=seed,
+            min_used_fpgas=min_used_fpgas,
+            balance_tolerance=balance_tolerance,
+            openroad=openroad,
+            repart=repart,
+            partition_timeout_seconds=partition_timeout_seconds,
+            router=router,
+            frame_slots=frame_slots,
+            optimize_frame_slots=optimize_frame_slots,
+            route_max_iterations=route_max_iterations,
+            ratio_optimizer=ratio_optimizer,
+            feedback_optimizer=cross_stage_feedback_optimizer,
+            simulation_frames=simulation_frames,
+            pair_pressure_weight=cross_stage_pair_pressure_weight,
+        )
+        selected = cross_stage_report["candidates"][
+            cross_stage_report["selected_iteration"]
+        ]
+        if cross_stage_report["selected_iteration"] != 0:
+            selected_phase3_root = (
+                cross_stage_root / selected["assignment"]
+            ).parent
+            shutil.rmtree(phase3_root)
+            shutil.copytree(selected_phase3_root, phase3_root)
+            phase3_report = read_json(phase3_root / "phase3_report.json")
+            assignment_path = phase3_root / "assignment.json"
+        projected_timing_paths = timing_root / "cut-timing-paths.json"
+        shutil.copy2(
+            cross_stage_root / selected["timing_paths"],
+            projected_timing_paths,
+        )
+        timing_report["cut_path_projection"] = selected["projection"]
+        shutil.copytree(
+            (cross_stage_root / selected["routes"]).parent,
+            phase4_root,
+        )
+        shutil.copytree(
+            (cross_stage_root / selected["schedule"]).parent,
+            phase5_root,
+        )
+        phase4_report = read_json(phase4_root / "phase4_report.json")
+        phase5_report = read_json(phase5_root / "phase5_report.json")
+        if optimize_frame_slots:
+            selected_frame_search = cross_stage_root / selected[
+                "frame_search"
+            ]
+            shutil.copytree(
+                selected_frame_search.parent,
+                output_dir / "frame-search",
+            )
+            frame_search_report = read_json(
+                output_dir / "frame-search/frame-search-report.json"
+            )
+    elif optimize_frame_slots:
         if frame_slots is None:
             raise EmuFlowError(
                 "--optimize-frame-slots requires --frame-slots as its "
@@ -706,6 +831,11 @@ def run_multi_fpga_flow(
             if frame_search_report is not None
             else {}
         ),
+        **(
+            {"cross_stage": cross_stage_report}
+            if cross_stage_report is not None
+            else {}
+        ),
         "runtime": runtime_report,
         **(
             {"physical": physical_report}
@@ -748,6 +878,19 @@ def run_multi_fpga_flow(
                 "path": "runtime/qor_report.json",
                 "sha256": _sha256(runtime_root / "qor_report.json"),
             },
+            **(
+                {
+                    "cross_stage_report": {
+                        "path": "cross-stage/cross_stage_report.json",
+                        "sha256": _sha256(
+                            output_dir
+                            / "cross-stage/cross_stage_report.json"
+                        ),
+                    }
+                }
+                if cross_stage_report is not None
+                else {}
+            ),
             **(
                 {
                     "physical_flow_report": {

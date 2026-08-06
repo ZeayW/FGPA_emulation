@@ -342,6 +342,14 @@ Phase 4/5 constraints, uses them in the scheduled-path objective and feedback,
 and records a self-contained database/constraint artifact pair that the report
 checker independently reconstructs.
 
+The main `multi-fpga compile` orchestration exposes this loop through
+`--cross-stage-iterations`. It promotes the accepted candidate into the
+canonical Phase 3--5 artifacts and continues that exact candidate through
+Phase 6 netlist/transport generation, the selected physical backend, and
+Phase 7C unified system timing. The aggregate validator cross-checks the
+selected candidate identity and all three independent stage validations before
+the run can pass.
+
 Acceptance uses the concrete schedule rather than the analytical routing
 proxy. The candidate checker reconstructs transport delay for every path in
 the global database; paths with no candidate cut nets remain in the objective
@@ -632,7 +640,9 @@ Until a board is selected:
   OpenPARF clustered placement, checked VPR `.place` emission, and VPR
   detailed routing work for the heterogeneous VTR flagship backend;
 - multi-FPGA entry point: `emuflow multi-fpga compile`, with a hash-bound
-  report through per-FPGA split and transport generation;
+  report through per-FPGA split and transport generation; optional
+  cross-stage Phase 3--5 optimization can continue its selected candidate
+  through physical implementation and Phase 7C;
 - per-FPGA open physical entry point: `emuflow vpr fpga-open`;
 - optional real-device backend: UltraScale+/Vivado.
 

@@ -16,7 +16,11 @@ from emuflow.multi_fpga_flow import (
 )
 from emuflow.platform import Platform
 from emuflow.tdm import reconstruct_tdm_schedule_timing_paths
-from tests.native_build import tdm_ratio_optimizer, tlr_router
+from tests.native_build import (
+    tdm_partition_feedback,
+    tdm_ratio_optimizer,
+    tlr_router,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,6 +148,10 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 frame_slots=32,
                 optimize_frame_slots=True,
+                cross_stage_iterations=1,
+                cross_stage_feedback_optimizer=str(
+                    tdm_partition_feedback()
+                ),
                 equivalence_cycles=2,
             )
             self.assertEqual(report["timing"]["status"], "pass")
@@ -202,6 +210,39 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 report["summary"]["frame_slots"],
                 report["frame_search"]["selected_frame_slots"],
             )
+            selected_iteration = report["cross_stage"][
+                "selected_iteration"
+            ]
+            selected = report["cross_stage"]["candidates"][
+                selected_iteration
+            ]
+            self.assertEqual(
+                report["summary"]["cross_stage_iteration"],
+                selected_iteration,
+            )
+            self.assertEqual(
+                selected["phase3_validation"],
+                report["stages"]["partition"]["validation"],
+            )
+            self.assertEqual(
+                selected["phase4_validation"],
+                report["stages"]["system_route"]["validation"],
+            )
+            self.assertEqual(
+                selected["phase5_validation"],
+                report["stages"]["tdm"]["validation"],
+            )
+            self.assertEqual(
+                report["runtime"]["validation"]["status"], "pass"
+            )
+            broken_cross_stage = copy.deepcopy(report)
+            broken_cross_stage["cross_stage"]["selected_candidate_id"] = (
+                "tampered"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "selected cross-stage candidate"
+            ):
+                validate_multi_fpga_flow_report(broken_cross_stage)
             broken = copy.deepcopy(report)
             broken["frame_search"]["selected_frame_slots"] = 31
             with self.assertRaisesRegex(
@@ -215,6 +256,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 "timing/board-link-timing.json",
                 "timing/board-link-route-constraints.json",
                 "frame-search/frame-search-report.json",
+                "cross-stage/cross_stage_report.json",
                 "runtime/runtime_contract.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)

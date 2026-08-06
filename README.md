@@ -162,6 +162,7 @@ flowchart TD
 
     PART --> SROUTE["Board-level system routing"]
     SROUTE --> TDM["TDM ratio, slot and lane assignment"]
+    TDM -. "optional checked feedback + line search" .-> PART
     TDM --> PIN["Logical pin planning and transport generation"]
     PIN --> SPLIT["Per-FPGA netlist + transport fabric"]
 
@@ -265,6 +266,13 @@ then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
 
+With `--cross-stage-iterations N`, the same command runs the checked Phase
+3--5 TDM-feedback line search. The selected candidate—not merely the initial
+partition—is promoted to the canonical partition, route, and schedule, then
+continues through Phase 6, the requested physical backend, and Phase 7C. The
+top-level validator requires the selected candidate's independent Phase 3/4/5
+results to match those consumed by all later stages.
+
 The same command can continue through the checked serial BSP boundary after a
 provider recipe has been materialized. It then runs Phase 6B, constructs the
 runtime synchronization tree, derives GT sites when needed, runs Phase 6C, and
@@ -342,6 +350,8 @@ emuflow multi-fpga compile design.v --top top \
   --platform build/platforms/arm-mps4-3board.json \
   --timing-driven --clock-period clk=10 \
   --board-link-timing-db build/platforms/arm-mps4-link-timing.json \
+  --cross-stage-iterations 2 \
+  --physical --physical-backend open \
   --out build/full-flow
 ```
 

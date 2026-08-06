@@ -727,6 +727,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--route-max-iterations", type=int)
     multi_fpga_compile.add_argument("--ratio-optimizer")
+    multi_fpga_compile.add_argument(
+        "--cross-stage-iterations",
+        type=int,
+        default=0,
+        help=(
+            "run checked Phase 3--5 TDM-feedback optimization and continue "
+            "its selected candidate through split, physical, and runtime"
+        ),
+    )
+    multi_fpga_compile.add_argument("--cross-stage-feedback-optimizer")
+    multi_fpga_compile.add_argument(
+        "--cross-stage-pair-pressure-weight", type=float, default=1.0
+    )
     multi_fpga_compile.add_argument("--simulation-frames", type=int, default=16)
     multi_fpga_compile.add_argument("--equivalence-cycles", type=int, default=16)
     multi_fpga_compile.add_argument(
@@ -2524,6 +2537,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             optimize_frame_slots=args.optimize_frame_slots,
             route_max_iterations=args.route_max_iterations,
             ratio_optimizer=args.ratio_optimizer,
+            cross_stage_iterations=args.cross_stage_iterations,
+            cross_stage_feedback_optimizer=(
+                args.cross_stage_feedback_optimizer
+            ),
+            cross_stage_pair_pressure_weight=(
+                args.cross_stage_pair_pressure_weight
+            ),
             simulation_frames=args.simulation_frames,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
