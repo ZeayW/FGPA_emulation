@@ -872,6 +872,28 @@ source-backed board overlay advances only to
 hardware-pass claim. The generated black-box file remains an interface
 reference and must not be compiled together with the bound provider sources.
 
+The open elaboration gate then compiles the bound provider sources with every
+generated runtime controller, transport module, serial wrapper, and integration
+shell using the in-tree Yosys build:
+
+```bash
+emuflow phy-provider elaborate \
+  --manifest local/serial-phy-provider.json \
+  --platform build/platforms/arm-mps4-3board.json \
+  --phase6c-dir build/phase6c \
+  --runtime-controller build/split/virtual_runtime_controller.sv \
+  --transport mps4_1=build/split/mps4_1/transport_schedule.sv \
+  --transport mps4_2=build/split/mps4_2/transport_schedule.sv \
+  --transport mps4_3=build/split/mps4_3/transport_schedule.sv \
+  --yosys build/engines/yosys/yosys \
+  --out build/phase6c-elaboration
+```
+
+Every FPGA must pass `hierarchy -check` and `check -assert`. The resulting
+report inventories and hashes all inputs and logs, but is deliberately marked
+`open_rtl_elaboration_only` with `hardware_release_authorized: false`; it does
+not validate vendor primitives, GT LOCs, timing, electrical DRC, or a board.
+
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
 validation, not XCVU13P sign-off. A board-runnable MPS4 result still requires

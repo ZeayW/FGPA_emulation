@@ -103,6 +103,7 @@ from .sta import (
 )
 from .serial_wrapper import run_phase6c
 from .serial_phy_provider import validate_serial_phy_provider_file
+from .serial_phy_elaboration import run_serial_phy_elaboration
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
 from .timing_routing import (
@@ -192,6 +193,20 @@ def _build_parser() -> argparse.ArgumentParser:
     phy_provider_validate.add_argument("--manifest", type=Path, required=True)
     phy_provider_validate.add_argument("--platform", type=Path)
     phy_provider_validate.add_argument("--normalized-out", type=Path)
+    phy_provider_elaborate = phy_provider_subparsers.add_parser(
+        "elaborate", help="elaborate provider sources with generated FPGA shells"
+    )
+    phy_provider_elaborate.add_argument("--manifest", type=Path, required=True)
+    phy_provider_elaborate.add_argument("--platform", type=Path, required=True)
+    phy_provider_elaborate.add_argument("--phase6c-dir", type=Path, required=True)
+    phy_provider_elaborate.add_argument(
+        "--runtime-controller", type=Path, required=True
+    )
+    phy_provider_elaborate.add_argument(
+        "--transport", action="append", default=[], metavar="FPGA=PATH"
+    )
+    phy_provider_elaborate.add_argument("--yosys", type=Path, required=True)
+    phy_provider_elaborate.add_argument("--out", type=Path, required=True)
 
     contest_parser = subparsers.add_parser(
         "contest", help="public multi-FPGA contest format adapters"
@@ -1721,6 +1736,20 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "phy-provider":
+        if args.phy_provider_command == "elaborate":
+            report = run_serial_phy_elaboration(
+                platform_path=args.platform,
+                provider_manifest_path=args.manifest,
+                phase6c_dir=args.phase6c_dir,
+                runtime_controller_path=args.runtime_controller,
+                transport_rtl_paths=_keyed_paths(
+                    args.transport, "--transport"
+                ),
+                yosys_executable=args.yosys,
+                output_dir=args.out,
+            )
+            _print_json(report)
+            return 0
         report = validate_serial_phy_provider_file(
             manifest_path=args.manifest,
             platform_path=args.platform,
