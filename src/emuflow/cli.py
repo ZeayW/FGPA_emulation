@@ -1570,6 +1570,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--route-constraints", type=Path
     )
     cross_stage_optimize.add_argument(
+        "--board-link-timing-db",
+        type=Path,
+        help=(
+            "apply direction-exact BoardLinkTimingDB bounds to every "
+            "routing, TDM, and feedback candidate"
+        ),
+    )
+    cross_stage_optimize.add_argument(
         "--phase3-provider",
         choices=("repart-replication", "repart", "tritonpart"),
         default="repart-replication",
@@ -2746,6 +2754,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 output_dir=args.out,
                 phase3_constraints_path=args.phase3_constraints,
                 route_constraints_path=args.route_constraints,
+                board_link_timing_path=args.board_link_timing_db,
                 phase3_provider=args.phase3_provider,
                 max_outer_iterations=args.max_outer_iterations,
                 seed=args.seed,

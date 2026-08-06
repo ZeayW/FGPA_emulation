@@ -336,6 +336,12 @@ the source-built partitioner generates a new assignment, and the frozen
 partition-independent STA database is projected onto that assignment before
 the Phase 4 and Phase 5 kernels run.
 
+The optimizer accepts the same `--board-link-timing-db` input as the main
+compile command. It overlays direction-exact bounds onto every candidate's
+Phase 4/5 constraints, uses them in the scheduled-path objective and feedback,
+and records a self-contained database/constraint artifact pair that the report
+checker independently reconstructs.
+
 Acceptance uses the concrete schedule rather than the analytical routing
 proxy. The candidate checker reconstructs transport delay for every path in
 the global database; paths with no candidate cut nets remain in the objective

@@ -8,6 +8,10 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from .board_link_timing import (
+    directed_route_link_delays,
+    validate_board_link_timing,
+)
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
     run_frame_length_search,
@@ -31,7 +35,11 @@ from .phase3 import run_phase3
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .platform import Platform
-from .routing import route_link_delay_ns, validate_system_routes
+from .routing import (
+    SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
+    route_link_delay_ns,
+    validate_system_routes,
+)
 from .runtime import build_virtual_runtime, validate_virtual_runtime
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
@@ -609,6 +617,34 @@ def _relative(path: Path, root: Path) -> str:
     return str(path.relative_to(root))
 
 
+def _validated_report_artifact(
+    root: Path, record: Any, label: str
+) -> Path:
+    if not isinstance(record, dict):
+        raise ValidationError(f"cross-stage {label} artifact is invalid")
+    relative = record.get("path")
+    digest = record.get("sha256")
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or not isinstance(digest, str)
+        or len(digest) != 64
+    ):
+        raise ValidationError(f"cross-stage {label} artifact is invalid")
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as error:
+        raise ValidationError(
+            f"cross-stage {label} artifact escapes the report root"
+        ) from error
+    if not path.is_file() or _sha256(path) != digest:
+        raise ValidationError(
+            f"cross-stage {label} artifact hash mismatch"
+        )
+    return path
+
+
 def _run_candidate_flow(
     *,
     root: Path,
@@ -734,6 +770,7 @@ def run_cross_stage_optimization(
     output_dir: Path,
     phase3_constraints_path: Optional[Path] = None,
     route_constraints_path: Optional[Path] = None,
+    board_link_timing_path: Optional[Path] = None,
     phase3_provider: str = "repart-replication",
     max_outer_iterations: int = 1,
     seed: int = 0,
@@ -806,6 +843,62 @@ def run_cross_stage_optimization(
         partition_constraints,
     )
 
+    effective_route_constraints_path = route_constraints_path
+    board_link_timing_report = None
+    if board_link_timing_path is not None:
+        link_timing = read_json(board_link_timing_path.resolve())
+        link_validation = validate_board_link_timing(
+            link_timing, platform
+        )
+        directed_delays, projection = directed_route_link_delays(
+            link_timing, platform
+        )
+        inputs_root = output_dir / "inputs"
+        inputs_root.mkdir(parents=True, exist_ok=True)
+        copied_timing_path = inputs_root / "board-link-timing.json"
+        write_json(copied_timing_path, link_timing)
+        raw_route_constraints = (
+            read_json(route_constraints_path.resolve())
+            if route_constraints_path is not None
+            else {"schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA}
+        )
+        if not isinstance(raw_route_constraints, dict):
+            raise ValidationError("route constraints must be an object")
+        effective_constraints = dict(raw_route_constraints)
+        effective_constraints["directed_link_delay_ns"] = (
+            directed_delays
+        )
+        effective_route_constraints_path = (
+            inputs_root / "board-link-route-constraints.json"
+        )
+        write_json(
+            effective_route_constraints_path, effective_constraints
+        )
+        board_link_timing_report = {
+            "status": "pass",
+            "validation": link_validation,
+            "routing_projection": projection,
+            "applied_to": [
+                "every-phase4-candidate",
+                "every-phase5-candidate",
+                "cross-stage-objective-and-feedback",
+            ],
+            "artifacts": {
+                "database": {
+                    "path": _relative(copied_timing_path, output_dir),
+                    "sha256": _sha256(copied_timing_path),
+                },
+                "effective_route_constraints": {
+                    "path": _relative(
+                        effective_route_constraints_path, output_dir
+                    ),
+                    "sha256": _sha256(
+                        effective_route_constraints_path
+                    ),
+                },
+            },
+        }
+
     candidates = []
     baseline = _run_candidate_flow(
         root=output_dir,
@@ -813,7 +906,7 @@ def run_cross_stage_optimization(
         assignment_path=assignment_path,
         database_path=database_path,
         platform_path=platform_path,
-        route_constraints_path=route_constraints_path,
+        route_constraints_path=effective_route_constraints_path,
         frame_slots=frame_slots,
         optimize_frame_slots=optimize_frame_slots,
         route_max_iterations=route_max_iterations,
@@ -902,7 +995,9 @@ def run_cross_stage_optimization(
                     assignment_path=phase3_root / "assignment.json",
                     database_path=database_path,
                     platform_path=platform_path,
-                    route_constraints_path=route_constraints_path,
+                    route_constraints_path=(
+                        effective_route_constraints_path
+                    ),
                     frame_slots=frame_slots,
                     optimize_frame_slots=optimize_frame_slots,
                     route_max_iterations=route_max_iterations,
@@ -1006,6 +1101,7 @@ def run_cross_stage_optimization(
             "feedback_interpolation": (
                 "exp(step_size*log(raw_weight))"
             ),
+            "board_link_timing": board_link_timing_report is not None,
         },
         "source_sha256": {
             "ir": _sha256(ir_path),
@@ -1030,7 +1126,21 @@ def run_cross_stage_optimization(
                 if route_constraints_path is not None
                 else {}
             ),
+            **(
+                {
+                    "board_link_timing": _sha256(
+                        board_link_timing_path
+                    )
+                }
+                if board_link_timing_path is not None
+                else {}
+            ),
         },
+        **(
+            {"board_link_timing": board_link_timing_report}
+            if board_link_timing_report is not None
+            else {}
+        ),
         "selected_iteration": incumbent_index,
         "selected_candidate_id": candidates[incumbent_index][
             "candidate_id"
@@ -1121,6 +1231,73 @@ def validate_cross_stage_report(
         raise ValidationError(
             "cross-stage report optimized frame has no upper bound"
         )
+    uses_board_link_timing = configuration.get("board_link_timing")
+    if not isinstance(uses_board_link_timing, bool):
+        raise ValidationError(
+            "cross-stage board link timing flag is invalid"
+        )
+    link_timing_report = report.get("board_link_timing")
+    directed_link_delays = None
+    if uses_board_link_timing:
+        if (
+            not isinstance(link_timing_report, dict)
+            or link_timing_report.get("status") != "pass"
+            or not isinstance(source_hashes.get("board_link_timing"), str)
+            or len(source_hashes["board_link_timing"]) != 64
+        ):
+            raise ValidationError(
+                "cross-stage board link timing report is invalid"
+            )
+        artifacts = link_timing_report.get("artifacts")
+        if not isinstance(artifacts, dict):
+            raise ValidationError(
+                "cross-stage board link timing artifacts are invalid"
+            )
+        timing_artifact = _validated_report_artifact(
+            root, artifacts.get("database"), "board link timing"
+        )
+        constraints_artifact = _validated_report_artifact(
+            root,
+            artifacts.get("effective_route_constraints"),
+            "effective route constraints",
+        )
+        link_timing = read_json(timing_artifact)
+        link_validation = validate_board_link_timing(
+            link_timing, platform
+        )
+        directed_link_delays, projection = directed_route_link_delays(
+            link_timing, platform
+        )
+        if (
+            link_timing_report.get("validation") != link_validation
+            or link_timing_report.get("routing_projection")
+            != projection
+            or link_timing_report.get("applied_to")
+            != [
+                "every-phase4-candidate",
+                "every-phase5-candidate",
+                "cross-stage-objective-and-feedback",
+            ]
+        ):
+            raise ValidationError(
+                "cross-stage board link timing reconstruction mismatch"
+            )
+        effective_constraints = read_json(constraints_artifact)
+        if (
+            not isinstance(effective_constraints, dict)
+            or effective_constraints.get("directed_link_delay_ns")
+            != directed_link_delays
+        ):
+            raise ValidationError(
+                "cross-stage effective link timing constraints mismatch"
+            )
+    elif (
+        link_timing_report is not None
+        or "board_link_timing" in source_hashes
+    ):
+        raise ValidationError(
+            "cross-stage unexpected board link timing metadata"
+        )
     incumbent = None
     incumbent_record = None
     selected = 0
@@ -1164,6 +1341,14 @@ def validate_cross_stage_report(
                     "failed cross-stage candidate cannot be accepted"
                 )
             continue
+        if directed_link_delays is not None:
+            candidate_routes = read_json(root / candidate["routes"])
+            if candidate_routes.get("constraints", {}).get(
+                "directed_link_delay_ns"
+            ) != directed_link_delays:
+                raise ValidationError(
+                    "cross-stage candidate link timing constraints mismatch"
+                )
         if index > 0:
             assert incumbent_record is not None
             raw_feedback = read_json(root / candidate["raw_feedback"])

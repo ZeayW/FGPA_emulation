@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cross_stage import (
     build_cross_stage_candidate,
     compare_candidate_objectives,
@@ -251,6 +252,7 @@ class CrossStageCandidateTest(unittest.TestCase):
             platform_path = root / "platform.json"
             initial_root = root / "initial"
             database_path = root / "database.json"
+            board_link_timing_path = root / "board-link-timing.json"
             write_json(ir_path, ir.value)
             write_json(
                 platform_path,
@@ -271,6 +273,14 @@ class CrossStageCandidateTest(unittest.TestCase):
             assignment = json.loads(
                 (initial_root / "assignment.json").read_text()
             )
+            link_timing = build_board_link_timing_model(
+                Platform.load(platform_path)
+            )
+            for record in link_timing["links"]:
+                record["delay_bound_ns"] = (
+                    3.0 if record["from"] == "a" else 7.0
+                )
+            write_json(board_link_timing_path, link_timing)
             self.assertTrue(assignment["cut_nets"])
             path_nets = [net["id"] for net in ir.value["nets"]]
             write_json(
@@ -332,6 +342,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                         initial_root / "assignment.json"
                     ),
                     output_dir=output,
+                    board_link_timing_path=board_link_timing_path,
                     phase3_provider="greedy",
                     max_outer_iterations=1,
                     min_used_fpgas=2,
@@ -351,6 +362,25 @@ class CrossStageCandidateTest(unittest.TestCase):
                 )
                 self.assertEqual(checked["status"], "pass")
                 self.assertEqual(report["selected_iteration"], 0)
+                self.assertTrue(
+                    report["configuration"]["board_link_timing"]
+                )
+                self.assertEqual(
+                    report["board_link_timing"]["routing_projection"][
+                        "directed_links"
+                    ],
+                    2,
+                )
+                routes = json.loads(
+                    (
+                        output
+                        / report["candidates"][0]["routes"]
+                    ).read_text()
+                )
+                self.assertEqual(
+                    routes["constraints"]["directed_link_delay_ns"],
+                    {"ab": {"a": {"b": 3.0}, "b": {"a": 7.0}}},
+                )
                 self.assertEqual(
                     report["termination"], "line-search-rejected"
                 )
@@ -392,6 +422,26 @@ class CrossStageCandidateTest(unittest.TestCase):
                 reports[0]["candidates"][0]["objective_key"],
                 reports[1]["candidates"][0]["objective_key"],
             )
+            corrupted_link_timing = copy.deepcopy(reports[0])
+            corrupted_link_timing["board_link_timing"][
+                "routing_projection"
+            ]["maximum_route_link_delay_ns"] += 1.0
+            corrupted_link_timing_path = (
+                root / "run_0" / "corrupted_link_timing_report.json"
+            )
+            write_json(
+                corrupted_link_timing_path, corrupted_link_timing
+            )
+            with self.assertRaisesRegex(
+                ValidationError,
+                "board link timing reconstruction mismatch",
+            ):
+                validate_cross_stage_report(
+                    corrupted_link_timing_path,
+                    ir_path,
+                    database_path,
+                    platform_path,
+                )
             corrupted = copy.deepcopy(reports[0])
             corrupted["candidates"][1]["feedback_validation"][
                 "maximum_feedback_weight"

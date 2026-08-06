@@ -1329,6 +1329,12 @@ interpolation, with a deterministic decreasing-step line search; this limits
 the discontinuity of a new hypergraph partition and never promotes a
 regressing full-step candidate.
 
+Passing `--board-link-timing-db` applies the same direction-exact link bounds
+used by `multi-fpga compile` to every cross-stage routing, TDM, candidate-score,
+and feedback transaction. The report retains checked copies of the timing
+database and effective constraints, preventing candidate searches from
+silently reverting to BoardDB defaults.
+
 With `--optimize-frame-slots`, every partition candidate treats
 `--frame-slots` as a feasible upper bound and reruns the checked Phase 4/5
 minimum-frame search. The outer-loop objective first minimizes the exact
