@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import ValidationError
 from emuflow.phase7c import run_phase7c
 from emuflow.platform import Platform
@@ -442,6 +443,40 @@ class Phase7CTest(unittest.TestCase):
                 "physical_interface_delay_bound_ns"
             ],
             1.0,
+        )
+
+    def test_qor_uses_versioned_board_link_delay_bound(self):
+        physical = self._physical_summary()
+        link_timing = build_board_link_timing_model(self.platform)
+        record = next(
+            item
+            for item in link_timing["links"]
+            if item["from"] == "fpga0" and item["to"] == "fpga1"
+        )
+        record["delay_bound_ns"] = 12.0
+        record["qualification"] = "characterized-upper-bound"
+        record["source"] = {
+            "kind": "vendor-characterization",
+            "reference": "characterization-report-sha256:0123456789abcdef",
+        }
+        physical["board_link_timing"] = link_timing
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            self.reports["phase5"],
+            self.reports["phase6"],
+            physical,
+            self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
+        )
+        path = qor["timing"]["paths"][0]
+        self.assertEqual(path["scheduled_link_tdm_model_delay_ns"], 8.0)
+        self.assertEqual(path["scheduled_link_tdm_delay_ns"], 12.0)
+        self.assertEqual(
+            path["scheduled_link_tdm_model"], "board-link-timing-db"
         )
 
     def test_qor_replaces_partition_maxima_with_exact_logic_segments(self):

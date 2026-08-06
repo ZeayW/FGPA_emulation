@@ -324,6 +324,27 @@ unmeasured and retains the conservative per-partition fallback.
 The result remains model-only across the PCB/GT/PCS link and is not final
 hardware timing sign-off until that latency is source-backed or measured.
 
+Board-link timing is a separate versioned input rather than an undocumented
+constant. Generate the explicit model from BoardDB, then replace individual
+directed records with characterized or measured upper bounds and validate the
+result:
+
+```bash
+emuflow platform link-timing-model \
+  --platform build/platforms/arm-mps4-3board.json \
+  --output build/platforms/arm-mps4-link-timing.json
+
+emuflow platform link-timing-validate \
+  --platform build/platforms/arm-mps4-3board.json \
+  --input build/platforms/arm-mps4-link-timing.json
+```
+
+`BoardLinkTimingDB` covers every legal link direction and distinguishes
+`model-only`, `characterized-upper-bound`, and `measured-upper-bound` evidence.
+Its functional `latency_cycles` must match BoardDB; a different cycle count
+requires regenerating the TDM schedule and transport RTL rather than changing
+only a timing report.
+
 `emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
 physical backend. It binds synthesis, baseline VPR packing and
 auto-layout sizing, ArchitectureDB/TimingDB import, OpenPARF placement, final

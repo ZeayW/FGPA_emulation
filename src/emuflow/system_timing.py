@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Mapping, Optional
 
+from .board_link_timing import validate_board_link_timing
 from .boundary_timing import validate_boundary_timing_database
 from .errors import ValidationError
 from .logic_segment_timing import validate_logic_segment_timing
@@ -151,6 +152,21 @@ def _logic_segment_database(
     return result
 
 
+def _board_link_delay_database(
+    physical_summary: Mapping[str, Any], platform: Platform
+) -> Optional[Dict[tuple[str, str, str], float]]:
+    raw = physical_summary.get("board_link_timing")
+    if raw is None:
+        return None
+    validate_board_link_timing(raw, platform)
+    return {
+        (item["link"], item["from"], item["to"]): float(
+            item["delay_bound_ns"]
+        )
+        for item in raw["links"]
+    }
+
+
 def build_system_timing(
     runtime: Mapping[str, Any],
     routes: Mapping[str, Any],
@@ -194,6 +210,9 @@ def build_system_timing(
     delays = _physical_delay_database(physical_summary)
     endpoint_delays = _endpoint_delay_database(physical_summary)
     logic_segments = _logic_segment_database(physical_summary)
+    board_link_delays = _board_link_delay_database(
+        physical_summary, platform
+    )
     expected_fpgas = {fpga.id for fpga in platform.fpgas}
     if set(delays) != expected_fpgas:
         raise ValidationError(
@@ -330,7 +349,18 @@ def build_system_timing(
                     logic_model = "routed-staging-chain-exact"
                     logic_exact = True
                     exact_logic_paths += 1
-        total_delay = physical_delay + record["transport_delay_ns"]
+        transport_delay = record["transport_delay_ns"]
+        transport_model = "phase5-boarddb-model"
+        if board_link_delays is not None:
+            transport_delay = 0.0
+            for hop in scheduled_hops:
+                key = (hop["link"], hop["from"], hop["to"])
+                transport_delay += (
+                    board_link_delays[key]
+                    + hop["tdm_wait_slots"] * hop["tdm_slot_ns"]
+                )
+            transport_model = "board-link-timing-db"
+        total_delay = physical_delay + transport_delay
         target_period = record["clock_period_ns"]
         system_paths.append(
             {
@@ -350,9 +380,11 @@ def build_system_timing(
                 "physical_logic_model": logic_model,
                 "physical_logic_member_path": selected_member,
                 "physical_routed_stage_delay_bound_ns": physical_delay,
-                "scheduled_link_tdm_delay_ns": record[
+                "scheduled_link_tdm_delay_ns": transport_delay,
+                "scheduled_link_tdm_model_delay_ns": record[
                     "transport_delay_ns"
                 ],
+                "scheduled_link_tdm_model": transport_model,
                 "system_delay_bound_ns": total_delay,
                 "target_clock_slack_bound_ns": target_period - total_delay,
                 "runtime_clock_slack_bound_ns": virtual_period - total_delay,

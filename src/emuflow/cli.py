@@ -7,6 +7,10 @@ from typing import Any, Dict, Optional, Sequence
 from .architecture import ArchitectureDB
 from .benchmark import run_benchmark
 from .board_arm_mps4 import materialize_arm_mps4_boarddb
+from .board_link_timing import (
+    build_board_link_timing_model,
+    validate_board_link_timing,
+)
 from .board_support import validate_board_support_overlay_file
 from .bsp import run_phase8a
 from .cross_stage import (
@@ -196,6 +200,18 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_gt_sites.add_argument("--platform", type=Path, required=True)
     platform_gt_sites.add_argument("--vivado", type=Path, required=True)
     platform_gt_sites.add_argument("--out", type=Path, required=True)
+    platform_link_model = platform_subparsers.add_parser(
+        "link-timing-model",
+        help="materialize explicit directed link-delay bounds from BoardDB",
+    )
+    platform_link_model.add_argument("--platform", type=Path, required=True)
+    platform_link_model.add_argument("--output", "-o", type=Path, required=True)
+    platform_link_validate = platform_subparsers.add_parser(
+        "link-timing-validate",
+        help="validate a characterized or measured BoardLinkTimingDB",
+    )
+    platform_link_validate.add_argument("--platform", type=Path, required=True)
+    platform_link_validate.add_argument("--input", type=Path, required=True)
 
     phy_provider = subparsers.add_parser(
         "phy-provider", help="serial PHY provider and vendor recipe operations"
@@ -878,6 +894,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_board_timing.add_argument("--workers", type=int, default=3)
     multi_fpga_board_timing.add_argument("--resume", action="store_true")
+    multi_fpga_board_timing.add_argument("--link-timing-db", type=Path)
     multi_fpga_board_timing.add_argument("--out", type=Path, required=True)
     vpr_run = vpr_subparsers.add_parser(
         "run",
@@ -1881,6 +1898,19 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report)
             return 0
+        if args.platform_command == "link-timing-model":
+            platform = Platform.load(args.platform)
+            database = build_board_link_timing_model(platform)
+            write_json(args.output, database)
+            report = validate_board_link_timing(database, platform)
+            report["output"] = str(args.output)
+            _print_json(report)
+            return 0
+        if args.platform_command == "link-timing-validate":
+            platform = Platform.load(args.platform)
+            database = read_json(args.input)
+            _print_json(validate_board_link_timing(database, platform))
+            return 0
         platform = Platform.load(args.path)
         if args.normalized_out is not None:
             write_json(args.normalized_out, platform.to_dict())
@@ -2369,6 +2399,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 hierarchy_prefix=args.hierarchy_prefix,
                 workers=args.workers,
                 resume=args.resume,
+                link_timing_path=args.link_timing_db,
             )
             _print_json(report["summary"])
             return 0

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schema/board-link-timing-v1.schema.json",
+  "title": "EmuFlow directed board-link timing database v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "platform",
+    "measurement_scope",
+    "final_link_timing_signoff",
+    "links"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.board-link-timing/v1"},
+    "status": {"const": "pass"},
+    "platform": {"type": "string", "minLength": 1},
+    "measurement_scope": {
+      "const": "tx-transport-stage-to-rx-transport-stage"
+    },
+    "final_link_timing_signoff": {"type": "boolean"},
+    "links": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "link",
+          "from",
+          "to",
+          "fabric_clock_mhz",
+          "latency_cycles",
+          "delay_bound_ns",
+          "qualification",
+          "source"
+        ],
+        "properties": {
+          "qualification": {
+            "enum": [
+              "model-only",
+              "characterized-upper-bound",
+              "measured-upper-bound"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

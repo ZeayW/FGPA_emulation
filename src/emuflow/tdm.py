@@ -931,6 +931,9 @@ def reconstruct_tdm_schedule_timing_paths(
                     "to": hop["to"],
                     "tx_endpoint": f"__emuflow_tx_{entry['id']}",
                     "rx_endpoint": f"__emuflow_rx_{entry['id']}",
+                    "base_link_delay_ns": hop["base_delay_ns"],
+                    "tdm_wait_slots": wait_slots,
+                    "tdm_slot_ns": hop["beta_ns"],
                     "link_tdm_delay_ns": hop_delay_ns,
                 }
             )

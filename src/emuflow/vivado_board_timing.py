@@ -7,6 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
+from .board_link_timing import (
+    build_board_link_timing_model,
+    validate_board_link_timing,
+)
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .boundary_timing import validate_boundary_timing_database
@@ -89,8 +93,15 @@ def validate_vivado_board_timing_report(
     link_model = report.get("board_link_timing")
     if (
         not isinstance(link_model, dict)
-        or link_model.get("status") != "modeled-not-measured"
+        or link_model.get("status") not in {
+            "modeled-or-characterized-upper-bound",
+            "measured-upper-bound",
+            "modeled-not-measured",
+        }
         or link_model.get("final_system_signoff") is not False
+        or not isinstance(
+            link_model.get("final_link_timing_signoff", False), bool
+        )
     ):
         raise ValidationError("Vivado board link timing boundary is invalid")
     system = report.get("system_timing")
@@ -135,6 +146,7 @@ def run_vivado_board_timing(
     hierarchy_prefix: str = "mapped_partition",
     workers: int = 3,
     resume: bool = False,
+    link_timing_path: Path | None = None,
 ) -> Dict[str, Any]:
     """Feed routed board DCP timing back into the unified Phase-7C model.
 
@@ -188,6 +200,14 @@ def run_vivado_board_timing(
         raise ValidationError("Vivado board timing physical summary is missing")
     source_physical = read_json(physical_summary_path)
     platform = Platform.load(platform_path)
+    if link_timing_path is None:
+        link_timing = build_board_link_timing_model(platform)
+    else:
+        link_timing_path = link_timing_path.resolve()
+        link_timing = read_json(link_timing_path)
+    link_timing_validation = validate_board_link_timing(
+        link_timing, platform
+    )
     if source_physical.get("platform") != platform.name or not isinstance(
         source_physical.get("design"), str
     ):
@@ -421,6 +441,7 @@ def run_vivado_board_timing(
             "fpgas": board_physical_fpgas,
             "boundary_timing": boundary_timing,
             "logic_segment_timing": logic_timing,
+            "board_link_timing": link_timing,
             "timing_component_provenance": {
                 "fpga_logic_bound": (
                     "vivado-board-routed-checkpoint-worst-datapath"
@@ -475,17 +496,34 @@ def run_vivado_board_timing(
         "fpgas": records,
         "parallel_workers": min(workers, len(ordered_fpgas)),
         "board_link_timing": {
-            "status": "modeled-not-measured",
-            "source": "BoardDB link latency and Phase-5 TDM schedule",
+            "status": (
+                "measured-upper-bound"
+                if link_timing_validation["final_link_timing_signoff"]
+                else "modeled-or-characterized-upper-bound"
+            ),
+            "source": "BoardLinkTimingDB and Phase-5 TDM schedule",
+            "validation": link_timing_validation,
             "known": [
                 "routed FPGA logic segment delay for path-continuous segments",
                 "routed mapped-partition boundary delay",
                 "TDM slot precedence and serialization delay",
+                *(
+                    ["measured TX-stage-to-RX-stage board-link upper bounds"]
+                    if link_timing_validation["final_link_timing_signoff"]
+                    else []
+                ),
             ],
-            "unknown": [
-                "PCB trace and connector propagation",
-                "GT/PCS elastic-buffer and clock-domain latency",
-                "board-to-board skew under hardware operating conditions",
+            "unknown": (
+                []
+                if link_timing_validation["final_link_timing_signoff"]
+                else [
+                    "PCB trace and connector propagation",
+                    "GT/PCS elastic-buffer and clock-domain latency",
+                    "board-to-board skew under hardware operating conditions",
+                ]
+            ),
+            "final_link_timing_signoff": link_timing_validation[
+                "final_link_timing_signoff"
             ],
             "final_system_signoff": False,
         },

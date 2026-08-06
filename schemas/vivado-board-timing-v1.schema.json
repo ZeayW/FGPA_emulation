@@ -30,7 +30,14 @@
       "type": "object",
       "required": ["status", "source", "known", "unknown", "final_system_signoff"],
       "properties": {
-        "status": {"const": "modeled-not-measured"},
+        "status": {
+          "enum": [
+            "modeled-not-measured",
+            "modeled-or-characterized-upper-bound",
+            "measured-upper-bound"
+          ]
+        },
+        "final_link_timing_signoff": {"type": "boolean"},
         "final_system_signoff": {"const": false}
       }
     },

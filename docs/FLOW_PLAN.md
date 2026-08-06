@@ -478,6 +478,14 @@ combines per-hop routed endpoint delay, board-link/TDM delay, and the post-route
 DUT logic bound. It reports original-target-clock and virtual-runtime-clock
 slack separately.
 
+Board-link delay is supplied through `board-link-timing/v1`, with one record
+per legal directed BoardDB arc. The contract preserves the functional
+`latency_cycles` used to generate the schedule and transport RTL while allowing
+the nanosecond upper bound to advance independently from `model-only` to
+vendor-characterized and finally hardware-measured evidence. A cycle-count
+change invalidates the existing schedule rather than silently altering only
+the final timing report.
+
 When the observation-only `shadow_values` top port is removed, Phase 6 keeps
 the shadow-register net's internal sinks. This preserves the registered
 RX-to-next-hop-TX connection on routing-only FPGAs instead of allowing physical
