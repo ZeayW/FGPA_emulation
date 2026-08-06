@@ -23,6 +23,7 @@ SERIAL_PHY_PROVIDER_V2_SCHEMA = "emuflow.serial-phy-provider/v2"
 SERIAL_PHY_PROVIDER_V3_SCHEMA = "emuflow.serial-phy-provider/v3"
 VALID_PROVIDER_QUALIFICATIONS = {
     "editable_source_hardware",
+    "vendor_generated_hardware",
     "simulation_only",
 }
 VALID_SOURCE_LANGUAGES = {"systemverilog", "verilog", "tcl", "xdc"}
@@ -169,7 +170,7 @@ def validate_serial_phy_provider(
     if not isinstance(implementation, dict):
         raise ValidationError("serial PHY implementation record is missing")
     implementation_kind = implementation.get("kind")
-    if qualification == "editable_source_hardware":
+    if qualification in {"editable_source_hardware", "vendor_generated_hardware"}:
         if implementation_kind != "amd_ultrascale_plus_gty":
             raise ValidationError(
                 "hardware PHY provider must declare amd_ultrascale_plus_gty"
@@ -210,6 +211,19 @@ def validate_serial_phy_provider(
                         "implementation.channel_instance_template",
                     ),
                 }
+            )
+            hierarchy_resolution = implementation.get(
+                "hierarchy_resolution", "exact_instance"
+            )
+            if hierarchy_resolution not in {
+                "exact_instance",
+                "descendant_primitive_sorted",
+            }:
+                raise ValidationError(
+                    "hardware PHY hierarchy_resolution is invalid"
+                )
+            normalized_implementation["hierarchy_resolution"] = (
+                hierarchy_resolution
             )
             template = normalized_implementation["channel_instance_template"]
             if template.count("{channel}") != 1:
@@ -361,7 +375,7 @@ def validate_serial_phy_provider(
             hdl_text.append(path.read_text(encoding="utf-8"))
     combined_hdl = "\n".join(hdl_text)
     if (
-        qualification == "editable_source_hardware"
+        qualification in {"editable_source_hardware", "vendor_generated_hardware"}
         and re.search(r"\(\*\s*black_box\s*\*\)", combined_hdl)
     ):
         raise ValidationError(
@@ -401,6 +415,76 @@ def validate_serial_phy_provider(
                 "editable-source hardware provider omits declared primitive "
                 f"instances: {missing_instances}"
             )
+    vendor_products = None
+    if qualification == "vendor_generated_hardware":
+        raw_products = manifest.get("vendor_products")
+        if not isinstance(raw_products, dict):
+            raise ValidationError("vendor-generated provider products are missing")
+        if raw_products.get("generator") != "vivado_gtwizard_ultrascale":
+            raise ValidationError("vendor-generated provider generator is invalid")
+        raw_xci = raw_products.get("xci")
+        if (
+            not isinstance(raw_xci, list)
+            or not raw_xci
+            or any(not isinstance(item, dict) for item in raw_xci)
+        ):
+            raise ValidationError("vendor-generated provider XCI inventory is invalid")
+        xci_inventory = []
+        xci_paths = set()
+        for index, item in enumerate(raw_xci):
+            context = f"vendor_products.xci[{index}]"
+            relative = _string(item.get("path"), f"{context}.path")
+            expected = _string(item.get("sha256"), f"{context}.sha256")
+            if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+                raise ValidationError(f"{context}.sha256 is invalid")
+            path = (manifest_path.parent / relative).resolve()
+            if (
+                manifest_path.parent.resolve() not in path.parents
+                or not path.is_file()
+                or path.suffix.lower() != ".xci"
+            ):
+                raise ValidationError(f"{context}: XCI escapes or is missing")
+            if relative in xci_paths or _sha256(path) != expected:
+                raise ValidationError(f"{context}: duplicate or SHA-256 mismatch")
+            xci_paths.add(relative)
+            xci_inventory.append(
+                {
+                    "path": relative,
+                    "bytes": path.stat().st_size,
+                    "sha256": expected,
+                }
+            )
+        raw_modules = raw_products.get("modules")
+        if (
+            not isinstance(raw_modules, list)
+            or not raw_modules
+            or any(
+                not isinstance(module, str)
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module) is None
+                for module in raw_modules
+            )
+            or len(raw_modules) != len(set(raw_modules))
+        ):
+            raise ValidationError(
+                "vendor-generated provider module inventory is invalid"
+            )
+        missing_modules = sorted(
+            module
+            for module in raw_modules
+            if re.search(rf"\b{re.escape(module)}\s+\w+\s*\(", combined_hdl)
+            is None
+        )
+        if missing_modules:
+            raise ValidationError(
+                "provider adapter omits generated IP modules: "
+                + ", ".join(missing_modules)
+            )
+        vendor_products = {
+            "generator": "vivado_gtwizard_ultrascale",
+            "modules": sorted(raw_modules),
+            "xci": sorted(xci_inventory, key=lambda item: item["path"]),
+            "counts_as_open_flow_implementation": False,
+        }
     for role, module in sorted(modules.items()):
         if re.search(rf"\bmodule\s+{re.escape(module)}\b", combined_hdl) is None:
             raise ValidationError(
@@ -423,6 +507,7 @@ def validate_serial_phy_provider(
         "sources": sorted(inventory, key=lambda item: item["path"]),
         "protocol": normalized_protocol,
         "provenance": {"license": license_id, "upstream": upstream},
+        **({"vendor_products": vendor_products} if vendor_products else {}),
     }
     compatibility = (
         _validate_platform_compatibility(normalized, platform)

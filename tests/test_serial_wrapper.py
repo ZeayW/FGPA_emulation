@@ -21,6 +21,7 @@ from emuflow.serial_wrapper import (
     SERIAL_WRAPPER_SCHEMA,
     build_serial_wrapper_manifest,
     run_phase6c,
+    serial_gt_site_tcl,
     serial_integration_shell_rtl,
     serial_wrapper_rtl,
 )
@@ -198,6 +199,37 @@ class SerialWrapperTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_vendor_gt_tcl_resolves_generated_descendants_per_quad(self) -> None:
+        tcl = serial_gt_site_tcl(
+            {
+                "transceiver_quads": [
+                    {
+                        "common_site": "GTYE4_COMMON_X0Y1",
+                        "channels": [
+                            {
+                                "channel_index": 1,
+                                "channel_site": "GTYE4_CHANNEL_X0Y5",
+                            },
+                            {
+                                "channel_index": 3,
+                                "channel_site": "GTYE4_CHANNEL_X0Y7",
+                            },
+                        ],
+                    }
+                ]
+            },
+            {
+                "channel_instance_template": "channel_gen[{channel}].adapter",
+                "channel_primitive": "GTYE4_CHANNEL",
+                "common_primitive": "GTYE4_COMMON",
+                "hierarchy_resolution": "descendant_primitive_sorted",
+            },
+        )
+        self.assertIn("REF_NAME == GTYE4_CHANNEL", tcl)
+        self.assertIn("GTYE4_CHANNEL_X0Y5 GTYE4_CHANNEL_X0Y7", tcl)
+        self.assertIn("REF_NAME == GTYE4_COMMON", tcl)
+        self.assertIn("set_property LOC GTYE4_COMMON_X0Y1", tcl)
 
     def _write_phy_provider(
         self, qualification: str, schema: str = "emuflow.serial-phy-provider/v1"
@@ -753,11 +785,15 @@ endmodule
         self.assertTrue(
             (hardware_out / "serial_phy_provider.normalized.json").is_file()
         )
-        gt_xdc = (hardware_out / "mps4_1.gt_sites.xdc").read_text()
+        self.assertEqual(
+            hardware_report["artifacts"]["gt_site_tcl"]["mps4_1"],
+            "mps4_1.gt_sites.tcl",
+        )
+        gt_tcl = (hardware_out / "mps4_1.gt_sites.tcl").read_text()
         self.assertIn(
             "set_property LOC GTYE4_CHANNEL_X0Y0 "
             "[get_cells {serial_wrapper/site_0_phy/gty_channel}]",
-            gt_xdc,
+            gt_tcl,
         )
 
     def test_vivado_site_map_emits_real_loc_but_keeps_services_blocked(self) -> None:
@@ -802,11 +838,11 @@ endmodule
             },
             {"GTYE4_COMMON_X0Y5", "GTYE4_COMMON_X0Y9"},
         )
-        gt_xdc = (output / "mps4_1.gt_sites.xdc").read_text()
+        gt_tcl = (output / "mps4_1.gt_sites.tcl").read_text()
         self.assertIn(
             "set_property LOC GTYE4_CHANNEL_X0Y20 "
             "[get_cells {serial_wrapper/site_0_phy/gty_channel}]",
-            gt_xdc,
+            gt_tcl,
         )
         self.assertFalse((output / "mps4_1.board_services.xdc").exists())
 
@@ -861,17 +897,17 @@ endmodule
         )
         self.assertIn(".ACTIVE_CHANNEL_MASK(4'b0001)", wrapper)
         self.assertNotIn("emuflow_external_serial_phy_lane #(", wrapper)
-        xdc = (output / "mps4_1.gt_sites.xdc").read_text()
-        self.assertNotIn("if {", xdc)
+        tcl = (output / "mps4_1.gt_sites.tcl").read_text()
+        self.assertNotIn("if {", tcl)
         self.assertIn(
             "set_property LOC GTYE4_COMMON_X0Y5 "
             "[get_cells {serial_wrapper/quad_0_phy/gty_common}]",
-            xdc,
+            tcl,
         )
         self.assertIn(
             "set_property LOC GTYE4_CHANNEL_X0Y20 "
             "[get_cells {serial_wrapper/quad_0_phy/channel_0.gty_channel}]",
-            xdc,
+            tcl,
         )
 
     def test_v3_embeds_open_pcs_and_runtime_sync_in_wrapper(self) -> None:

@@ -195,7 +195,7 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_gt_sites.add_argument("--out", type=Path, required=True)
 
     phy_provider = subparsers.add_parser(
-        "phy-provider", help="editable-source serial PHY provider operations"
+        "phy-provider", help="serial PHY provider and vendor recipe operations"
     )
     phy_provider_subparsers = phy_provider.add_subparsers(
         dest="phy_provider_command", required=True
@@ -1643,7 +1643,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6c.add_argument(
         "--phy-provider",
         type=Path,
-        help="editable-source serial PHY provider manifest",
+        help="source-visible or materialized vendor serial PHY provider manifest",
     )
     phase6c.add_argument(
         "--board-overlay",

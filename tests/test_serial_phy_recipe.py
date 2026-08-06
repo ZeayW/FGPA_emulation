@@ -6,7 +6,7 @@ from pathlib import Path
 
 from emuflow.board_arm_mps4 import materialize_arm_mps4_boarddb
 from emuflow.errors import ValidationError
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.platform import Platform
 from emuflow.serial_phy_recipe import (
     SERIAL_PHY_RECIPE_SCHEMA,
@@ -122,6 +122,26 @@ class SerialPhyRecipeTest(unittest.TestCase):
         self.assertIn("set expected_ips [lsort [list {a_core} {z_core}]]", script)
         self.assertIn("generate_target all $actual_ips", script)
         self.assertIn("status=pass part=xcvu13p-fhga2104-1-e", script)
+
+    def test_repository_recipe_has_a_hash_bound_v3_adapter(self) -> None:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "providers"
+            / "vivado_gty_10g"
+            / "recipe.json"
+        )
+        result = validate_serial_phy_recipe(read_json(path), path)
+        normalized = result["normalized"]
+        self.assertEqual(
+            normalized["provider"]["schema"],
+            "emuflow.serial-phy-provider/v3",
+        )
+        self.assertEqual(normalized["protocol"]["pcs_data_width"], 64)
+        self.assertEqual(normalized["protocol"]["pcs_header_width"], 2)
+        self.assertEqual(
+            normalized["provenance"]["revision"],
+            "77320a9471d19c7dd383914bc049e02d9f4f1ffb",
+        )
 
 
 if __name__ == "__main__":

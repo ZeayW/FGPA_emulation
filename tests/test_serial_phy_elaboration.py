@@ -40,7 +40,7 @@ class SerialPhyElaborationTest(unittest.TestCase):
             },
             38,
             1,
-            [Path("mps4_1.gt_sites.xdc")],
+            [Path("mps4_1.gt_sites.tcl")],
             [f"GTYE4_CHANNEL_X0Y{index}" for index in range(38)],
             10,
             [f"GTYE4_COMMON_X0Y{index}" for index in range(10)],
@@ -61,8 +61,8 @@ class SerialPhyElaborationTest(unittest.TestCase):
         self.assertIn("common_primitive_count", script)
         self.assertIn("expected=10", script)
         self.assertIn("expected=38", script)
-        self.assertIn("read_xdc $constraint", script)
-        self.assertIn("mps4_1.gt_sites.xdc", script)
+        self.assertIn("source $constraint", script)
+        self.assertIn("mps4_1.gt_sites.tcl", script)
         self.assertIn("set actual_channel_locs [lsort", script)
         self.assertIn("channel_locs=$actual_channel_locs", script)
         self.assertIn("common_locs=$actual_common_locs", script)
@@ -97,13 +97,38 @@ class SerialPhyElaborationTest(unittest.TestCase):
                     "reference_clock_primitive": "IBUFDS_GTE4",
                 },
                 expected_channel_primitives=2,
-                constraint_sources=[Path("gt.xdc")],
+                constraint_sources=[Path("gt.tcl")],
                 expected_channel_locs=[
                     "GTYE4_CHANNEL_X0Y0",
                     "GTYE4_CHANNEL_X0Y1",
                 ],
                 expected_channel_cells=["only_one_cell"],
             )
+
+    def test_builds_vendor_ip_and_dynamic_hierarchy_elaboration(self) -> None:
+        script = build_vivado_elaboration_tcl(
+            [Path("adapter.sv"), Path("wrapper.sv")],
+            "top",
+            "xcvu13p-fhga2104-1-e",
+            Path("report.rpt"),
+            {
+                "channel_primitive": "GTYE4_CHANNEL",
+                "common_primitive": "GTYE4_COMMON",
+                "reference_clock_primitive": "IBUFDS_GTE4",
+            },
+            expected_channel_primitives=2,
+            expected_reference_clock_primitives=1,
+            constraint_sources=[Path("gt.tcl")],
+            expected_channel_locs=["GTYE4_CHANNEL_X0Y0", "GTYE4_CHANNEL_X0Y1"],
+            expected_common_primitives=1,
+            expected_common_locs=["GTYE4_COMMON_X0Y0"],
+            ip_sources=[Path("full.xci"), Path("channel.xci")],
+            check_exact_primitive_hierarchy=False,
+        )
+        self.assertIn("read_ip $ip_source", script)
+        self.assertIn("synth_ip [get_ips]", script)
+        self.assertNotIn("actual_channel_cells ne", script)
+        self.assertIn("channel_locs=$actual_channel_locs", script)
 
 
 if __name__ == "__main__":

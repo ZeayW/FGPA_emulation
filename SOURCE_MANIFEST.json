@@ -333,6 +333,7 @@
         "schemas/serial-phy-elaboration-v1.schema.json",
         "schemas/serial-phy-recipe-v1.schema.json",
         "schemas/vivado-pin-site-map-v2.schema.json",
+        "providers/vivado_gty_10g/emuflow_vivado_gty_10g_quad.sv",
         "providers/vivado_gty_10g/generate_gty_ip.tcl",
         "providers/vivado_gty_10g/recipe.json",
         "providers/vivado_gty_10g/LICENSE"

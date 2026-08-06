@@ -14,12 +14,12 @@
       "license": "Apache-2.0"
     },
     {
-      "id": "taxi-gty-generation-recipe",
+      "id": "verilog-ethernet-gty-generation-recipe",
       "path": "providers/vivado_gty_10g",
-      "upstream": "https://github.com/fpganinja/taxi",
-      "version_or_revision": "d5d38d824149b68f7c9e0c3df24f337df6bf23de",
-      "license": "CERN-OHL-S-2.0",
-      "build_status": "optional-vivado-generated-hardware-recipe"
+      "upstream": "https://github.com/alexforencich/verilog-ethernet",
+      "version_or_revision": "77320a9471d19c7dd383914bc049e02d9f4f1ffb",
+      "license": "MIT",
+      "build_status": "source-visible-v3-adapter-plus-optional-vivado-generated-hardware"
     },
     {
       "id": "corundum-verilog-ethernet-10g-pcs-subset",

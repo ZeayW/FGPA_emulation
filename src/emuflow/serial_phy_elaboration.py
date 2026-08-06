@@ -73,6 +73,8 @@ def build_vivado_elaboration_tcl(
     expected_channel_cells: Sequence[str] = (),
     expected_common_cells: Sequence[str] = (),
     expected_runtime_sync_primitives: int = 0,
+    ip_sources: Sequence[Path] = (),
+    check_exact_primitive_hierarchy: bool = True,
 ) -> str:
     if not sources:
         raise ValidationError("serial PHY elaboration source list is empty")
@@ -93,17 +95,31 @@ def build_vivado_elaboration_tcl(
         raise ValidationError("expected GT common LOC inventory is inconsistent")
     if (
         constraint_sources
+        and check_exact_primitive_hierarchy
         and len(expected_channel_cells) != expected_channel_primitives
     ):
         raise ValidationError("expected GT channel hierarchy inventory is inconsistent")
     if (
         constraint_sources
+        and check_exact_primitive_hierarchy
         and len(expected_common_cells) != expected_common_primitives
     ):
         raise ValidationError("expected GT common hierarchy inventory is inconsistent")
     source_list = " ".join(_tcl_quote(str(path)) for path in sources)
     lines = [
-            "create_project -in_memory -part " + _tcl_quote(part) + " emuflow_phy",
+        "create_project -in_memory -part " + _tcl_quote(part) + " emuflow_phy",
+    ]
+    if ip_sources:
+        ip_list = " ".join(_tcl_quote(str(path)) for path in ip_sources)
+        lines.extend(
+            [
+                "foreach ip_source [list " + ip_list + "] { read_ip $ip_source }",
+                "generate_target all [get_ips]",
+                "synth_ip [get_ips]",
+            ]
+        )
+    lines.extend(
+        [
             "foreach source [list " + source_list + "] {",
             "  read_verilog -sv $source",
             "}",
@@ -120,7 +136,8 @@ def build_vivado_elaboration_tcl(
             "set runtime_sync_primitives [get_cells -quiet -hier -filter "
             + _tcl_quote("NAME == runtime_sync || NAME =~ */runtime_sync")
             + "]",
-    ]
+        ]
+    )
     if primitive_contract is not None:
         channel_primitive = primitive_contract["channel_primitive"]
         refclk_primitive = primitive_contract["reference_clock_primitive"]
@@ -228,28 +245,35 @@ def build_vivado_elaboration_tcl(
         expected_common_hierarchy = " ".join(
             _tcl_quote(cell) for cell in expected_common_cells
         )
+        if check_exact_primitive_hierarchy:
+            lines.extend(
+                [
+                    "set actual_channel_cells [lsort $channel_primitives]",
+                    "set expected_channel_cells [lsort [list "
+                    + expected_channel_hierarchy
+                    + "]]",
+                    "set actual_common_cells [lsort $common_primitives]",
+                    "set expected_common_cells [lsort [list "
+                    + expected_common_hierarchy
+                    + "]]",
+                    "if {$actual_channel_cells ne $expected_channel_cells} {",
+                    "  puts stderr \"EMUFLOW_PHY_ELAB "
+                    "channel_cells=$actual_channel_cells "
+                    "expected=$expected_channel_cells\"",
+                    "  exit 9",
+                    "}",
+                    "if {$actual_common_cells ne $expected_common_cells} {",
+                    "  puts stderr \"EMUFLOW_PHY_ELAB "
+                    "common_cells=$actual_common_cells "
+                    "expected=$expected_common_cells\"",
+                    "  exit 10",
+                    "}",
+                ]
+            )
         lines.extend(
             [
-                "set actual_channel_cells [lsort $channel_primitives]",
-                "set expected_channel_cells [lsort [list "
-                + expected_channel_hierarchy
-                + "]]",
-                "set actual_common_cells [lsort $common_primitives]",
-                "set expected_common_cells [lsort [list "
-                + expected_common_hierarchy
-                + "]]",
-                "if {$actual_channel_cells ne $expected_channel_cells} {",
-                "  puts stderr \"EMUFLOW_PHY_ELAB channel_cells=$actual_channel_cells "
-                "expected=$expected_channel_cells\"",
-                "  exit 9",
-                "}",
-                "if {$actual_common_cells ne $expected_common_cells} {",
-                "  puts stderr \"EMUFLOW_PHY_ELAB common_cells=$actual_common_cells "
-                "expected=$expected_common_cells\"",
-                "  exit 10",
-                "}",
                 "foreach constraint [list " + constraint_list + "] {",
-                "  read_xdc $constraint",
+                "  source $constraint",
                 "}",
                 "set actual_channel_locs [list]",
                 "foreach channel_cell $channel_primitives {",
@@ -340,6 +364,8 @@ def run_serial_phy_elaboration(
         bound_provider.get("status") != "source_inventory_bound"
         or bound_provider.get("id") != provider["id"]
         or bound_provider.get("sources") != provider["sources"]
+        or bound_provider.get("vendor_products")
+        != provider.get("vendor_products")
     ):
         raise ValidationError("Phase 6C provider source inventory mismatch")
     fpga_records = manifest.get("fpgas")
@@ -372,6 +398,14 @@ def run_serial_phy_elaboration(
     ]
     if not provider_hdl:
         raise ValidationError("provider has no HDL source for elaboration")
+    vendor_ip_sources = []
+    if provider.get("vendor_products") is not None:
+        vendor_ip_sources = [
+            (provider_manifest_path.parent / item["path"]).resolve()
+            for item in provider["vendor_products"]["xci"]
+        ]
+        if any(not path.is_file() for path in vendor_ip_sources):
+            raise ValidationError("vendor-generated provider XCI is missing")
     runtime_sync_hdl = []
     runtime_sync_record = manifest.get("runtime_sync", {"status": "not_provided"})
     if runtime_sync_record.get("status") == "source_inventory_bound":
@@ -413,6 +447,10 @@ def run_serial_phy_elaboration(
             open_pcs_hdl.append(open_pcs_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     tool_name = "yosys" if yosys_executable is not None else "vivado"
+    if tool_name == "yosys" and vendor_ip_sources:
+        raise ValidationError(
+            "vendor-generated serial PHY providers require Vivado elaboration"
+        )
     version_flag = "-V" if tool_name == "yosys" else "-version"
     version = subprocess.run(
         [str(executable), version_flag],
@@ -465,9 +503,10 @@ def run_serial_phy_elaboration(
             expected_common_locs = []
             expected_channel_cells = []
             expected_common_cells = []
+            check_exact_primitive_hierarchy = True
             if primitive_contract is not None:
                 gt_site_artifacts = phase6c_report.get("artifacts", {}).get(
-                    "gt_site_xdc", {}
+                    "gt_site_tcl", {}
                 )
                 gt_site_name = gt_site_artifacts.get(fpga)
                 if (
@@ -480,7 +519,7 @@ def run_serial_phy_elaboration(
                     )
                 gt_site_path = phase6c_dir / gt_site_name
                 if not gt_site_path.is_file():
-                    raise ValidationError(f"{fpga}: GT site XDC is missing")
+                    raise ValidationError(f"{fpga}: GT site Tcl is missing")
                 constraint_sources.append(gt_site_path)
                 expected_channel_locs = [
                     site["transceiver_site"] for site in record["sites"]
@@ -489,24 +528,29 @@ def run_serial_phy_elaboration(
                     "emuflow.serial-phy-provider/v2",
                     "emuflow.serial-phy-provider/v3",
                 }:
+                    check_exact_primitive_hierarchy = (
+                        primitive_contract.get("hierarchy_resolution")
+                        != "descendant_primitive_sorted"
+                    )
                     expected_common_locs = [
                         quad["common_site"]
                         for quad in record["transceiver_quads"]
                     ]
-                    for quad_index, quad in enumerate(
-                        record["transceiver_quads"]
-                    ):
-                        expected_common_cells.append(
-                            f"serial_wrapper/quad_{quad_index}_phy/"
-                            f"{primitive_contract['common_instance']}"
-                        )
-                        for channel in quad["channels"]:
-                            hierarchy = primitive_contract[
-                                "channel_instance_template"
-                            ].format(channel=channel["channel_index"])
-                            expected_channel_cells.append(
-                                f"serial_wrapper/quad_{quad_index}_phy/{hierarchy}"
+                    if check_exact_primitive_hierarchy:
+                        for quad_index, quad in enumerate(
+                            record["transceiver_quads"]
+                        ):
+                            expected_common_cells.append(
+                                f"serial_wrapper/quad_{quad_index}_phy/"
+                                f"{primitive_contract['common_instance']}"
                             )
+                            for channel in quad["channels"]:
+                                hierarchy = primitive_contract[
+                                    "channel_instance_template"
+                                ].format(channel=channel["channel_index"])
+                                expected_channel_cells.append(
+                                    f"serial_wrapper/quad_{quad_index}_phy/{hierarchy}"
+                                )
                 else:
                     expected_channel_cells = [
                         f"serial_wrapper/site_{index}_phy/"
@@ -534,6 +578,10 @@ def run_serial_phy_elaboration(
                     expected_common_cells=expected_common_cells,
                     expected_runtime_sync_primitives=(
                         1 if record.get("runtime_sync") is not None else 0
+                    ),
+                    ip_sources=vendor_ip_sources,
+                    check_exact_primitive_hierarchy=(
+                        check_exact_primitive_hierarchy
                     ),
                 ),
                 encoding="utf-8",
@@ -573,6 +621,10 @@ def run_serial_phy_elaboration(
                         "sha256": _sha256(path),
                     }
                     for path in sources
+                ],
+                "vendor_products": [
+                    {"path": str(path), "sha256": _sha256(path)}
+                    for path in vendor_ip_sources
                 ],
                 "constraints": [
                     {

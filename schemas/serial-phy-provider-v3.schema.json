@@ -7,7 +7,7 @@
   "properties": {
     "schema": {"const": "emuflow.serial-phy-provider/v3"},
     "id": {"type": "string", "minLength": 1},
-    "qualification": {"enum": ["editable_source_hardware", "simulation_only"]},
+    "qualification": {"enum": ["editable_source_hardware", "vendor_generated_hardware", "simulation_only"]},
     "supported_parts": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
     "modules": {
       "type": "object",
@@ -28,7 +28,8 @@
         "reference_clock_primitive": {"type": "string", "minLength": 1},
         "channel_instance_template": {"type": "string", "minLength": 1},
         "common_instance": {"type": "string", "minLength": 1},
-        "reference_clock_instance": {"type": "string", "minLength": 1}
+        "reference_clock_instance": {"type": "string", "minLength": 1},
+        "hierarchy_resolution": {"enum": ["exact_instance", "descendant_primitive_sorted"]}
       },
       "additionalProperties": false
     },
@@ -38,7 +39,17 @@
       "type": "object",
       "required": ["payload_bits_per_lane_per_cycle", "user_clock_mhz", "line_rate_gbps_per_lane", "encoding", "link_training", "reset_sequence", "pcs_data_width", "pcs_header_width", "pcs_clock_mhz", "pcs_implementation"]
     },
-    "provenance": {"type": "object", "required": ["license", "upstream"]}
+    "provenance": {"type": "object", "required": ["license", "upstream"]},
+    "vendor_products": {
+      "type": "object",
+      "required": ["generator", "modules", "xci"],
+      "properties": {
+        "generator": {"const": "vivado_gtwizard_ultrascale"},
+        "modules": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "xci": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["path", "sha256"]}}
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

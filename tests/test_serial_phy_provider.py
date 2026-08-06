@@ -366,6 +366,80 @@ class SerialPhyProviderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "placeholder"):
             validate_serial_phy_provider(malformed, self.manifest_path)
 
+    def test_validates_vendor_generated_v3_provider_without_calling_it_open(self) -> None:
+        source_text = SERDES_PROVIDER_SOURCE.replace(
+            "  GTYE4_COMMON gty_common ();\n  GTYE4_CHANNEL gty_channel ();",
+            "  emuflow_gty_10g_full full_ip ();\n"
+            "  emuflow_gty_10g_channel channel_ip ();",
+        )
+        source = self.root / "vendor-adapter.sv"
+        source.write_text(source_text, encoding="utf-8")
+        xci_records = []
+        for name in ("emuflow_gty_10g_full", "emuflow_gty_10g_channel"):
+            xci = self.root / f"{name}.xci"
+            xci.write_text(f"fixture {name}\n", encoding="utf-8")
+            xci_records.append(
+                {"path": xci.name, "sha256": hashlib.sha256(xci.read_bytes()).hexdigest()}
+            )
+        manifest = copy.deepcopy(self.manifest)
+        manifest.update(
+            {
+                "schema": SERIAL_PHY_PROVIDER_V3_SCHEMA,
+                "id": "vendor_serdes_provider_fixture",
+                "qualification": "vendor_generated_hardware",
+                "modules": {
+                    "clock_reset": "emuflow_external_serial_clock_reset",
+                    "serdes_quad": "emuflow_external_gty_serdes_quad",
+                },
+                "implementation": {
+                    "kind": "amd_ultrascale_plus_gty",
+                    "channel_primitive": "GTYE4_CHANNEL",
+                    "common_primitive": "GTYE4_COMMON",
+                    "reference_clock_primitive": "IBUFDS_GTE4",
+                    "channel_instance_template": "channel_gen[{channel}].adapter",
+                    "common_instance": "channel_gen",
+                    "reference_clock_instance": "refclk_buffer",
+                    "hierarchy_resolution": "descendant_primitive_sorted",
+                },
+                "sources": [
+                    {
+                        "path": source.name,
+                        "language": "systemverilog",
+                        "role": "vendor_adapter_fixture",
+                        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    }
+                ],
+                "vendor_products": {
+                    "generator": "vivado_gtwizard_ultrascale",
+                    "modules": [
+                        "emuflow_gty_10g_full",
+                        "emuflow_gty_10g_channel",
+                    ],
+                    "xci": xci_records,
+                },
+            }
+        )
+        manifest["protocol"].update(
+            {
+                "encoding": "64b66b",
+                "line_rate_gbps_per_lane": 10.3125,
+                "pcs_data_width": 64,
+                "pcs_header_width": 2,
+                "pcs_clock_mhz": 156.25,
+                "pcs_implementation": "emuflow-in-tree-corundum-10gbase-r",
+            }
+        )
+        result = validate_serial_phy_provider(
+            manifest, self.manifest_path, self.platform
+        )
+        self.assertEqual(result["qualification"], "vendor_generated_hardware")
+        self.assertFalse(
+            result["normalized"]["vendor_products"][
+                "counts_as_open_flow_implementation"
+            ]
+        )
+        self.assertEqual(len(result["normalized"]["vendor_products"]["xci"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

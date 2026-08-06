@@ -114,8 +114,9 @@
 >   for XCVU13P resource capacity
 > - Optional commercial serial-PHY recipe:
 >   the in-tree Tcl is adapted from
->   [Taxi's UltraScale+ 10G GTY recipe](https://github.com/fpganinja/taxi/blob/d5d38d824149b68f7c9e0c3df24f337df6bf23de/src/eth/rtl/us/taxi_eth_phy_10g_us_gty_156.tcl)
->   under CERN-OHL-S-2.0; it generates vendor-controlled products with Vivado
+>   the [verilog-ethernet VCU108 10G GTY recipe](https://github.com/alexforencich/verilog-ethernet/blob/77320a9471d19c7dd383914bc049e02d9f4f1ffb/example/VCU108/fpga_10g/ip/eth_xcvr_gt.tcl)
+>   under MIT; the v3 adapter and recipe are visible source, while Vivado
+>   generates vendor-controlled products
 >   and therefore does not count as an open-flow implementation
 > - CI:
 >   [actions/checkout](https://github.com/actions/checkout) and
@@ -246,11 +247,11 @@ boundaries; combinational loops and hard macros remain atomic.
 | System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
 | TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Range-normalized KKT updates avoid numeric collapse on large timing scales. Exact/scalable legalization uses every physical lane, then global path-budget and per-domain minimax refinement cross quantization plateaus; concrete scheduling and independent checks enforce direction, ratio, collision, barrier, and transport semantics |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
-| Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming that reference clocks or the protocol wrapper are complete |
+| Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming missing reference-clock/reset package bindings |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
-| Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology, reserves one full-duplex control lane per synchronization-tree edge, and binds the open PCS to the provider-v3 66-bit GT SerDes boundary. A functional GT implementation, real board refclk/reset bindings, measured control latency, bitstream, and hardware qualification remain open gates |
+| Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology, reserves one full-duplex control lane per synchronization-tree edge, and binds the open PCS through the source-visible provider-v3 adapter to Vivado-generated GTY IP. Real board refclk/reset bindings, measured control latency, routed timing, bitstream, and hardware qualification remain open gates |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
@@ -898,23 +899,30 @@ emuflow phy-provider materialize-recipe \
   --manifest providers/vivado_gty_10g/recipe.json \
   --part xcvu13p-fhga2104-1-e \
   --vivado /path/to/Vivado/bin/vivado \
+  --platform build/platforms/arm-mps4-3board.json \
   --out build/providers/vivado-gty-10g
 ```
 
 The command verifies the recipe hash and upstream provenance, creates the
 declared IPs for the selected part, requires generated HDL to contain both
-`GTYE4_CHANNEL` and `GTYE4_COMMON`, and inventories the generated XCI files.
+`GTYE4_CHANNEL` and `GTYE4_COMMON`, inventories the generated XCI files, and
+emits `build/providers/vivado-gty-10g/serial_phy_provider.json`. That provider
+binds the in-tree, source-visible 64-data+2-header quad adapter to the generated
+IP and can be passed directly to Phase 6C.
 Its report always records `counts_as_open_flow_implementation: false` and
 `hardware_release_authorized: false`. Generated vendor files remain build
-artifacts and must not be committed. An EmuFlow contract adapter, real MPS4
-reference-clock/reset bindings, full implementation, and hardware training
+artifacts and must not be committed. Real MPS4 reference-clock/reset bindings,
+full placement/routing/timing, measured control latency, and hardware training
 are still required.
 
 Provider qualification is explicit: `simulation_only` is useful for
 structural/equivalence tests but can never authorize hardware release;
 `editable_source_hardware` means the implementation is source-visible, not
 that Vivado elaboration, GT placement, timing, DRC, bitstream generation, or
-board training has already passed. Those remain separate checked gates.
+board training has already passed. `vendor_generated_hardware` means the
+adapter and generation recipe are source-visible but the hash-bound XCI files
+were produced by Vivado and do not count as an open implementation. Those
+remain separate checked gates.
 An editable UltraScale+ provider-v2 or provider-v3 must declare and directly
 instantiate its channel, shared-common, and reference-clock primitives (normally
 `GTYE4_CHANNEL`, `GTYE4_COMMON`, and `IBUFDS_GTE4`) and provide stable common
@@ -924,9 +932,12 @@ behavioral implementation instead. A hardware provider containing
 `(* black_box *)` modules is rejected, and provider v1 remains blocked on
 `quad_shared_common`.
 When Phase 6C consumes the provider, it hash-binds both the provider manifest
-and every inventoried source into its output. A simulation provider leaves the
-release blocked. An editable provider-v2/v3 hardware implementation combined
-with a complete source-backed board overlay advances only to
+and every inventoried source into its output. For a vendor-generated provider,
+it also hash-binds every XCI and the Vivado elaboration path rejects Yosys so
+that proprietary products cannot silently enter the fully open route. A
+simulation provider leaves the release blocked. An editable provider-v2/v3
+hardware implementation combined with a complete source-backed board overlay
+advances only to
 `pending_vivado_provider_validation`; it never turns source presence into a
 hardware-pass claim. The generated black-box file remains an interface
 reference and must not be compiled together with the bound provider sources.
@@ -982,9 +993,10 @@ one declared channel primitive per active transceiver site, one common
 primitive per active quad, and one reference-clock primitive per generated
 clock/reset domain. When runtime synchronization is bound, it also requires
 exactly one synthesized tree-node instance in every FPGA shell. Phase 6C
-derives a GT LOC XDC from the source-backed or
-device-derived site map and the provider hierarchy contract; Vivado must
-report that both channel and common primitive LOC sets exactly match it.
+derives a post-synthesis GT LOC Tcl constraint from the source-backed or
+device-derived site map and the provider hierarchy contract. It resolves
+generated-IP descendants only after synthesis; Vivado must then report that
+both channel and common primitive LOC sets exactly match it.
 Its qualification is `vivado_ooc_synthesis_structure_validation` and it has
 the same non-release boundary; these checks are still not placement, routing,
 timing, protocol correctness, or electrical sign-off.
@@ -1000,15 +1012,18 @@ in-band `READY` and `START(epoch)` records bind one full-duplex PCS edge to the
 runtime synchronization tree; control/data overlap after startup is a sticky
 error instead of an implicit data stall. Phase 6C now instantiates this
 source-visible layer per active channel and binds control endpoints directly
-to the generated synchronization tree. It is not yet a board-ready PHY:
-provider v3 still needs a functional parallel GT-SerDes implementation, a
-checked control-latency bound, and physical clock/reset proof.
+to the generated synchronization tree. The optional Vivado provider now
+supplies the functional parallel GT-SerDes boundary for the commercial route.
+It is not yet board-qualified: a checked control-latency bound, source-backed
+physical clock/reset bindings, routed timing closure, and hardware training
+remain required. The fully open route intentionally does not claim an open
+UltraScale+ GTY implementation.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
 validation, not XCVU13P sign-off. A board-runnable MPS4 result still requires
-the GTY SerDes provider, reference-clock/reset shell, Vivado implementation,
-bitstream generation, and hardware link training.
+the missing source-backed board overlay, Vivado implementation and bitstream
+generation, measured latency, and hardware link training.
 
 To validate one FPGA independently with the open physical backend, the
 following command fetches the pinned architecture automatically and enables

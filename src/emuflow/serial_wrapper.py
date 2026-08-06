@@ -522,16 +522,54 @@ def serial_board_service_xdc(fpga_record: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def serial_gt_site_xdc(
+def serial_gt_site_tcl(
     fpga_record: Mapping[str, Any], implementation: Mapping[str, Any]
 ) -> str:
     lines = [
-        "# Generated trusted GT channel placement constraints.",
+        "# Generated trusted post-synthesis GT placement constraints.",
         "# Sites are source-backed or device-DB-derived from source-backed pins.",
         "# Cell paths are derived from the provider primitive hierarchy contract.",
     ]
     is_quad = "channel_instance_template" in implementation
     if is_quad:
+        if (
+            implementation.get("hierarchy_resolution")
+            == "descendant_primitive_sorted"
+        ):
+            channel_primitive = implementation["channel_primitive"]
+            common_primitive = implementation["common_primitive"]
+            for quad_index, quad in enumerate(fpga_record["transceiver_quads"]):
+                channel_locs = [
+                    channel["channel_site"]
+                    for channel in sorted(
+                        quad["channels"], key=lambda item: item["channel_index"]
+                    )
+                ]
+                scope = f"*serial_wrapper/quad_{quad_index}_phy/*"
+                channels_var = f"emuflow_quad_{quad_index}_channels"
+                channel_locs_var = f"emuflow_quad_{quad_index}_channel_locs"
+                common_var = f"emuflow_quad_{quad_index}_common"
+                lines.extend(
+                    [
+                        f"set {channels_var} [lsort [get_cells -quiet -hier "
+                        f"-filter {{REF_NAME == {channel_primitive} && "
+                        f"NAME =~ {scope}}}]]",
+                        f"set {channel_locs_var} [list {' '.join(channel_locs)}]",
+                        f"if {{[llength ${channels_var}] != "
+                        f"[llength ${channel_locs_var}]}} {{ error "
+                        f"\"EmuFlow GT channel hierarchy mismatch in quad "
+                        f"{quad_index}\" }}",
+                        f"foreach cell ${channels_var} loc ${channel_locs_var} "
+                        "{ set_property LOC $loc $cell }",
+                        f"set {common_var} [get_cells -quiet -hier -filter "
+                        f"{{REF_NAME == {common_primitive} && NAME =~ {scope}}}]",
+                        f"if {{[llength ${common_var}] != 1}} {{ error "
+                        f"\"EmuFlow GT common hierarchy mismatch in quad "
+                        f"{quad_index}\" }}",
+                        f"set_property LOC {quad['common_site']} ${common_var}",
+                    ]
+                )
+            return "\n".join(lines) + "\n"
         for quad_index, quad in enumerate(fpga_record["transceiver_quads"]):
             common_path = (
                 f"serial_wrapper/quad_{quad_index}_phy/"
@@ -557,7 +595,7 @@ def serial_gt_site_xdc(
             "resolved_source_backed",
             "resolved_vendor_device_db",
         }:
-            raise ValidationError("GT site XDC requires trusted site bindings")
+            raise ValidationError("GT site Tcl requires trusted site bindings")
         cell_path = f"serial_wrapper/site_{index}_phy/{channel_instance}"
         lines.append(
             f"set_property LOC {site['transceiver_site']} "
@@ -1695,7 +1733,8 @@ def build_serial_wrapper_manifest(
         hardware_implementation = (
             phy_provider["implementation"]
             if phy_provider is not None
-            and phy_provider["qualification"] == "editable_source_hardware"
+            and phy_provider["qualification"]
+            in {"editable_source_hardware", "vendor_generated_hardware"}
             else None
         )
         gt_site_constraints_status = (
@@ -1811,7 +1850,8 @@ def build_serial_wrapper_manifest(
         phy_provider is not None
         and phy_provider.get("schema")
         in {SERIAL_PHY_PROVIDER_V2_SCHEMA, SERIAL_PHY_PROVIDER_V3_SCHEMA}
-        and phy_provider.get("qualification") == "editable_source_hardware"
+        and phy_provider.get("qualification")
+        in {"editable_source_hardware", "vendor_generated_hardware"}
         and sum(len(item["transceiver_quads"]) for item in fpgas) > 0
         and trusted_resolved_sites == active_sites
     )
@@ -1856,7 +1896,11 @@ def build_serial_wrapper_manifest(
             else "runtime_sync_control_transport"
         )
     implementation_status = (
-        "editable_source_bound_pending_tool_validation"
+        "vendor_generated_bound_pending_vivado_validation"
+        if provider_hardware_source_bound
+        and phy_provider is not None
+        and phy_provider.get("qualification") == "vendor_generated_hardware"
+        else "editable_source_bound_pending_tool_validation"
         if provider_hardware_source_bound
         else "simulation_source_bound"
         if phy_provider is not None
@@ -1923,6 +1967,11 @@ def build_serial_wrapper_manifest(
                     "implementation": phy_provider["implementation"],
                     "protocol": phy_provider["protocol"],
                     "sources": phy_provider["sources"],
+                    **(
+                        {"vendor_products": phy_provider["vendor_products"]}
+                        if phy_provider.get("vendor_products") is not None
+                        else {}
+                    ),
                     "provenance": phy_provider["provenance"],
                 }
                 if phy_provider is not None
@@ -2116,13 +2165,13 @@ def run_phase6c(
                 raise ValidationError("written board service XDC does not agree")
         if record["gt_site_constraints_status"] == "trusted_emittable":
             assert phy_provider is not None
-            gt_site_xdc = serial_gt_site_xdc(
+            gt_site_tcl = serial_gt_site_tcl(
                 record, phy_provider["implementation"]
             )
-            gt_site_xdc_path = output_dir / f"{record['fpga']}.gt_sites.xdc"
-            gt_site_xdc_path.write_text(gt_site_xdc, encoding="utf-8")
-            if gt_site_xdc_path.read_text(encoding="utf-8") != gt_site_xdc:
-                raise ValidationError("written GT site XDC does not agree")
+            gt_site_tcl_path = output_dir / f"{record['fpga']}.gt_sites.tcl"
+            gt_site_tcl_path.write_text(gt_site_tcl, encoding="utf-8")
+            if gt_site_tcl_path.read_text(encoding="utf-8") != gt_site_tcl:
+                raise ValidationError("written GT site Tcl does not agree")
     digest = hashlib.sha256(binding_path.read_bytes()).hexdigest()
     manifest["binding_sha256"] = digest
     rebuilt = build_serial_wrapper_manifest(
@@ -2276,8 +2325,8 @@ def run_phase6c(
                 if item["board_service_constraints_status"]
                 == "source_backed_emittable"
             },
-            "gt_site_xdc": {
-                item["fpga"]: f"{item['fpga']}.gt_sites.xdc"
+            "gt_site_tcl": {
+                item["fpga"]: f"{item['fpga']}.gt_sites.tcl"
                 for item in manifest["fpgas"]
                 if item["gt_site_constraints_status"]
                 == "trusted_emittable"

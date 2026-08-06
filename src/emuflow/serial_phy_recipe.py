@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
@@ -111,6 +112,85 @@ def validate_serial_phy_recipe(
         ):
             raise ValidationError(f"protocol.{field} must be positive")
     encoding = _string(protocol.get("encoding"), "protocol.encoding")
+    adapter = None
+    provider_template = None
+    raw_adapter = manifest.get("adapter")
+    raw_provider = manifest.get("provider")
+    if (raw_adapter is None) != (raw_provider is None):
+        raise ValidationError(
+            "serial PHY recipe adapter and provider template must appear together"
+        )
+    if raw_adapter is not None:
+        if not isinstance(raw_adapter, dict) or not isinstance(raw_provider, dict):
+            raise ValidationError("serial PHY provider adapter/template is invalid")
+        adapter_relative = _string(raw_adapter.get("path"), "adapter.path")
+        adapter_digest = _string(raw_adapter.get("sha256"), "adapter.sha256")
+        if re.fullmatch(r"[0-9a-f]{64}", adapter_digest) is None:
+            raise ValidationError("adapter.sha256 is invalid")
+        adapter_path = (root / adapter_relative).resolve()
+        if (
+            root not in adapter_path.parents
+            or not adapter_path.is_file()
+            or adapter_path.suffix.lower() not in {".sv", ".v"}
+            or _sha256(adapter_path) != adapter_digest
+        ):
+            raise ValidationError("serial PHY adapter is missing or modified")
+        modules = raw_provider.get("modules")
+        implementation = raw_provider.get("implementation")
+        if (
+            raw_provider.get("schema") != "emuflow.serial-phy-provider/v3"
+            or not isinstance(modules, dict)
+            or not isinstance(implementation, dict)
+        ):
+            raise ValidationError("serial PHY provider template is incompatible")
+        provider_id = _string(raw_provider.get("id"), "provider.id")
+        adapter_text = adapter_path.read_text(encoding="utf-8")
+        for module in modules.values():
+            module_name = _string(module, "provider.modules")
+            if re.search(rf"\bmodule\s+{re.escape(module_name)}\b", adapter_text) is None:
+                raise ValidationError(
+                    f"serial PHY adapter omits provider module {module_name}"
+                )
+        for ip in raw_ips:
+            if re.search(rf"\b{re.escape(ip)}\s+\w+\s*\(", adapter_text) is None:
+                raise ValidationError(
+                    f"serial PHY adapter omits generated module {ip}"
+                )
+        required_protocol = {
+            "payload_bits_per_lane_per_cycle": int,
+            "user_clock_mhz": (int, float),
+            "link_training": str,
+            "reset_sequence": str,
+            "pcs_data_width": int,
+            "pcs_header_width": int,
+            "pcs_clock_mhz": (int, float),
+            "pcs_implementation": str,
+        }
+        for field, expected_type in required_protocol.items():
+            value = protocol.get(field)
+            if isinstance(value, bool) or not isinstance(value, expected_type):
+                raise ValidationError(f"protocol.{field} is invalid")
+        if (
+            protocol["pcs_data_width"] != 64
+            or protocol["pcs_header_width"] != 2
+            or abs(
+                float(protocol["pcs_clock_mhz"]) * 66 / 1000
+                - float(protocol["line_rate_gbps_per_lane"])
+            )
+            > 1e-9
+        ):
+            raise ValidationError("serial PHY recipe PCS boundary is incompatible")
+        adapter = {
+            "path": adapter_relative,
+            "bytes": adapter_path.stat().st_size,
+            "sha256": adapter_digest,
+        }
+        provider_template = {
+            "schema": "emuflow.serial-phy-provider/v3",
+            "id": provider_id,
+            "modules": dict(modules),
+            "implementation": dict(implementation),
+        }
     provenance = manifest.get("provenance")
     if not isinstance(provenance, dict):
         raise ValidationError("serial PHY recipe provenance is missing")
@@ -149,6 +229,22 @@ def validate_serial_phy_recipe(
             ),
             "reference_clock_mhz": float(protocol["reference_clock_mhz"]),
             "encoding": encoding,
+            **(
+                {
+                    "payload_bits_per_lane_per_cycle": protocol[
+                        "payload_bits_per_lane_per_cycle"
+                    ],
+                    "user_clock_mhz": float(protocol["user_clock_mhz"]),
+                    "link_training": protocol["link_training"],
+                    "reset_sequence": protocol["reset_sequence"],
+                    "pcs_data_width": protocol["pcs_data_width"],
+                    "pcs_header_width": protocol["pcs_header_width"],
+                    "pcs_clock_mhz": float(protocol["pcs_clock_mhz"]),
+                    "pcs_implementation": protocol["pcs_implementation"],
+                }
+                if adapter is not None
+                else {}
+            ),
         },
         "provenance": {
             "license": license_id,
@@ -159,6 +255,7 @@ def validate_serial_phy_recipe(
             "counts_as_open_flow_implementation": False,
             "reason": "Vivado generates vendor-controlled GT Wizard products",
         },
+        **({"adapter": adapter, "provider": provider_template} if adapter else {}),
     }
     return {
         "status": "pass",
@@ -283,6 +380,90 @@ def materialize_serial_phy_recipe(
         raise EmuFlowError(
             f"generated GT Wizard HDL omits expected primitives: {missing}"
         )
+    xci_records = [
+        {
+            "path": str(path.relative_to(output_dir)),
+            "bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        }
+        for path in xci_files
+    ]
+    provider_artifact = None
+    if recipe.get("adapter") is not None:
+        adapter_source = (
+            manifest_path.parent / recipe["adapter"]["path"]
+        ).resolve()
+        adapter_relative = Path("provider_sources") / adapter_source.name
+        adapter_destination = output_dir / adapter_relative
+        adapter_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(adapter_source, adapter_destination)
+        if _sha256(adapter_destination) != recipe["adapter"]["sha256"]:
+            raise EmuFlowError("copied serial PHY adapter digest changed")
+        template = recipe["provider"]
+        provider_manifest = {
+            "schema": template["schema"],
+            "id": template["id"],
+            "qualification": "vendor_generated_hardware",
+            "supported_parts": recipe["supported_parts"],
+            "modules": template["modules"],
+            "implementation": template["implementation"],
+            "source_root": ".",
+            "sources": [
+                {
+                    "path": adapter_relative.as_posix(),
+                    "language": (
+                        "systemverilog"
+                        if adapter_destination.suffix.lower() == ".sv"
+                        else "verilog"
+                    ),
+                    "role": "source_visible_v3_gtwizard_contract_adapter",
+                    "sha256": _sha256(adapter_destination),
+                }
+            ],
+            "protocol": {
+                "payload_bits_per_lane_per_cycle": recipe["protocol"][
+                    "payload_bits_per_lane_per_cycle"
+                ],
+                "user_clock_mhz": recipe["protocol"]["user_clock_mhz"],
+                "line_rate_gbps_per_lane": recipe["protocol"][
+                    "line_rate_gbps_per_lane"
+                ],
+                "encoding": "64b66b",
+                "link_training": recipe["protocol"]["link_training"],
+                "reset_sequence": recipe["protocol"]["reset_sequence"],
+                "pcs_data_width": recipe["protocol"]["pcs_data_width"],
+                "pcs_header_width": recipe["protocol"]["pcs_header_width"],
+                "pcs_clock_mhz": recipe["protocol"]["pcs_clock_mhz"],
+                "pcs_implementation": recipe["protocol"][
+                    "pcs_implementation"
+                ],
+            },
+            "vendor_products": {
+                "generator": "vivado_gtwizard_ultrascale",
+                "modules": recipe["expected_ips"],
+                "xci": [
+                    {"path": item["path"], "sha256": item["sha256"]}
+                    for item in xci_records
+                ],
+            },
+            "provenance": {
+                "license": recipe["provenance"]["license"],
+                "upstream": recipe["provenance"]["upstream"],
+            },
+        }
+        provider_path = output_dir / "serial_phy_provider.json"
+        write_json(provider_path, provider_manifest)
+        from .serial_phy_provider import validate_serial_phy_provider
+
+        validate_serial_phy_provider(
+            provider_manifest, provider_path, platform
+        )
+        provider_artifact = {
+            "path": provider_path.name,
+            "sha256": _sha256(provider_path),
+            "adapter": adapter_relative.as_posix(),
+            "adapter_sha256": _sha256(adapter_destination),
+        }
     report = {
         "schema": SERIAL_PHY_RECIPE_REPORT_SCHEMA,
         "status": "pass",
@@ -298,14 +479,7 @@ def materialize_serial_phy_recipe(
             "executable": str(vivado_executable),
         },
         "products": {
-            "xci": [
-                {
-                    "path": str(path.relative_to(output_dir)),
-                    "bytes": path.stat().st_size,
-                    "sha256": _sha256(path),
-                }
-                for path in xci_files
-            ],
+            "xci": xci_records,
             "generated_hdl_files": len(generated_hdl),
             "generated_hdl_bytes": sum(path.stat().st_size for path in generated_hdl),
             "primitive_presence": primitive_presence,
@@ -315,10 +489,14 @@ def materialize_serial_phy_recipe(
             "script_sha256": _sha256(script_path),
             "log": log_path.name,
             "log_sha256": _sha256(log_path),
+            **({"provider": provider_artifact} if provider_artifact else {}),
         },
         "next_required_gates": [
-            "emuflow_contract_adapter",
-            "phase6c_source_binding",
+            *(
+                ["phase6c_source_binding"]
+                if provider_artifact
+                else ["emuflow_contract_adapter", "phase6c_source_binding"]
+            ),
             "board_reference_clock_and_reset_overlay",
             "vivado_synthesis_placement_routing_timing_drc",
             "hardware_link_training",
