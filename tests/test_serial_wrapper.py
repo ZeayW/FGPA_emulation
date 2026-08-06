@@ -22,6 +22,10 @@ from emuflow.serial_wrapper import (
     serial_integration_shell_rtl,
     serial_wrapper_rtl,
 )
+from emuflow.runtime_sync import (
+    build_runtime_sync_topology,
+    validate_runtime_sync_provider,
+)
 from emuflow.vivado_pin_sites import (
     VIVADO_PIN_SITE_MAP_SCHEMA,
     collect_serial_pin_inventory,
@@ -502,6 +506,46 @@ endmodule
         self.assertIn(".rx_mps4_b2b_1_mps4_1(", sink_transport)
         self.assertNotIn(".tx_mps4_b2b_1_mps4_1(", sink_transport)
 
+    def test_phase6c_integrates_source_visible_runtime_sync_node(self) -> None:
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding-runtime-sync.json"
+        topology_path = root / "runtime-sync-topology.json"
+        output = root / "phase6c-runtime-sync"
+        write_json(binding_path, self.binding)
+        transport_paths = {}
+        for fpga, transport in self.transports.items():
+            path = root / f"{fpga}.runtime-sync.transport.json"
+            write_json(path, transport)
+            transport_paths[fpga] = path
+        provider_path = (
+            Path(__file__).resolve().parents[1]
+            / "providers/runtime_sync_tree/provider.json"
+        )
+        provider = validate_runtime_sync_provider(
+            read_json(provider_path), provider_path
+        )["normalized"]
+        topology = build_runtime_sync_topology(self.platform, provider)
+        write_json(topology_path, topology)
+        report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            output,
+            transport_paths=transport_paths,
+            runtime_sync_topology_path=topology_path,
+            runtime_sync_provider_path=provider_path,
+        )
+        self.assertEqual(report["validation"]["runtime_sync_nodes"], 3)
+        manifest = read_json(output / "serial_wrapper_manifest.json")
+        required = manifest["phy_contract"]["required_provider_fields"]
+        self.assertNotIn("global_ready_consensus", required)
+        self.assertIn("runtime_sync_control_transport", required)
+        shell = (output / "mps4_1.serial_integration_shell.sv").read_text()
+        self.assertIn("emuflow_runtime_sync_tree_node", shell)
+        self.assertIn(".local_ready(local_links_ready)", shell)
+        self.assertIn(".global_ready(links_ready)", shell)
+        self.assertIn(".links_ready(local_links_ready)", shell)
+        self.assertIn("runtime_sync_rtl", report["artifacts"])
+
     def test_source_backed_overlay_resolves_site_and_refclk_data_only(self) -> None:
         manifest = build_serial_wrapper_manifest(
             self.platform, self.binding, board_overlay=self.overlay
@@ -716,10 +760,17 @@ endmodule
         )
         self.assertEqual(
             report["hardware_release_status"],
-            "pending_vivado_provider_validation",
+            "blocked_on_external_phy_provider",
         )
         manifest = read_json(output / "serial_wrapper_manifest.json")
-        self.assertEqual(manifest["phy_contract"]["required_provider_fields"], [])
+        self.assertEqual(
+            manifest["phy_contract"]["required_provider_fields"],
+            [
+                "fabric_clock_phase_alignment",
+                "synchronous_reset_release",
+                "global_ready_consensus",
+            ],
+        )
         self.assertEqual(
             manifest["phy_contract"]["module"],
             "emuflow_external_serial_phy_quad",

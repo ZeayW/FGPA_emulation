@@ -25,6 +25,11 @@ from .serial_phy_provider import (
     SERIAL_PHY_PROVIDER_V2_SCHEMA,
     validate_serial_phy_provider,
 )
+from .runtime_sync import (
+    RUNTIME_SYNC_NODE_MODULE,
+    validate_runtime_sync_provider,
+    validate_runtime_sync_topology,
+)
 from .vivado_pin_sites import validate_vivado_pin_site_map
 
 
@@ -803,6 +808,8 @@ def serial_integration_shell_rtl(
     sites: Sequence[Mapping[str, Any]],
     transport: Mapping[str, Any],
     board_services: Optional[Mapping[str, Any]] = None,
+    runtime_sync_node: Optional[Mapping[str, Any]] = None,
+    runtime_sync_parameters: Optional[Mapping[str, Any]] = None,
 ) -> str:
     board_services = board_services or {
         "reference_clocks": [], "resets": [], "clock_reset_domains": []
@@ -822,6 +829,22 @@ def serial_integration_shell_rtl(
         f"  output wire [{slot_bits - 1}:0] slot_debug",
         "  output wire links_ready_debug",
     ]
+    if runtime_sync_node is not None:
+        if runtime_sync_parameters is None:
+            raise ValidationError("runtime sync node requires topology parameters")
+        child_ports = max(1, len(runtime_sync_node["children"]))
+        epoch_bits = runtime_sync_parameters["epoch_bits"]
+        ports.extend(
+            [
+                f"  input  wire [{child_ports - 1}:0] sync_child_subtree_ready",
+                "  input  wire sync_parent_start_valid",
+                f"  input  wire [{epoch_bits - 1}:0] sync_parent_start_epoch",
+                "  output wire sync_subtree_ready",
+                "  output wire sync_child_start_valid",
+                f"  output wire [{epoch_bits - 1}:0] sync_child_start_epoch",
+                "  output wire sync_faulted",
+            ]
+        )
     for clock in board_services["reference_clocks"]:
         p, n = _clock_ports(clock["id"])
         ports.extend((f"  input  wire {p}", f"  input  wire {n}"))
@@ -843,8 +866,40 @@ def serial_integration_shell_rtl(
         ",\n".join(ports),
         ");",
         "",
+        "  wire local_links_ready;",
         "  wire links_ready;",
     ]
+    if runtime_sync_node is None:
+        lines.extend(["  assign links_ready = local_links_ready;", ""])
+    else:
+        child_ports = max(1, len(runtime_sync_node["children"]))
+        active_mask = (1 << len(runtime_sync_node["children"])) - 1
+        parameters = runtime_sync_parameters
+        lines.extend(
+            [
+                f"  wire [{parameters['epoch_bits'] - 1}:0] sync_epoch_debug;",
+                f"  {RUNTIME_SYNC_NODE_MODULE} #(",
+                f"    .EPOCH_BITS({parameters['epoch_bits']}),",
+                f"    .CHILD_PORTS({child_ports}),",
+                f"    .ACTIVE_CHILD_MASK({child_ports}'h{active_mask:x}),",
+                f"    .IS_ROOT({1 if runtime_sync_node['role'] == 'root' else 0}),",
+                f"    .START_MARGIN_CYCLES({parameters['start_margin_cycles']}),",
+                f"    .READY_STABLE_CYCLES({parameters['ready_stable_cycles']})",
+                "  ) runtime_sync (",
+                "    .fabric_clk(fabric_clk), .reset(reset),",
+                "    .local_ready(local_links_ready),",
+                "    .child_subtree_ready(sync_child_subtree_ready),",
+                "    .parent_start_valid(sync_parent_start_valid),",
+                "    .parent_start_epoch(sync_parent_start_epoch),",
+                "    .subtree_ready(sync_subtree_ready),",
+                "    .child_start_valid(sync_child_start_valid),",
+                "    .child_start_epoch(sync_child_start_epoch),",
+                "    .global_ready(links_ready),",
+                "    .faulted(sync_faulted), .epoch(sync_epoch_debug)",
+                "  );",
+                "",
+            ]
+        )
     incident = _incident_links(platform, fpga)
     for link in incident:
         peer = link.endpoints[1] if link.endpoints[0] == fpga else link.endpoints[0]
@@ -923,7 +978,7 @@ def serial_integration_shell_rtl(
                 f"{record['ports'][polarity]})"
                 for polarity in ("p", "n")
             )
-    wrapper_ports.append("    .links_ready(links_ready)")
+    wrapper_ports.append("    .links_ready(local_links_ready)")
     lines.append(",\n".join(wrapper_ports))
     lines.extend(["  );", "", "endmodule", ""])
     return "\n".join(lines)
@@ -936,7 +991,21 @@ def build_serial_wrapper_manifest(
     board_overlay: Optional[Mapping[str, Any]] = None,
     phy_provider: Optional[Mapping[str, Any]] = None,
     gt_site_map: Optional[Mapping[str, Any]] = None,
+    runtime_sync_topology: Optional[Mapping[str, Any]] = None,
+    runtime_sync_provider: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if (runtime_sync_topology is None) != (runtime_sync_provider is None):
+        raise ValidationError(
+            "runtime sync topology and provider must be supplied together"
+        )
+    runtime_sync_nodes = {}
+    if runtime_sync_topology is not None:
+        validate_runtime_sync_topology(
+            runtime_sync_topology, platform, runtime_sync_provider
+        )
+        runtime_sync_nodes = {
+            node["fpga"]: node for node in runtime_sync_topology["nodes"]
+        }
     sites = _binding_sites(platform, binding)
     overlay_result = (
         validate_board_support_overlay(board_overlay, platform)
@@ -1125,6 +1194,11 @@ def build_serial_wrapper_manifest(
                 "transceiver_quads": transceiver_quads,
                 "sites": fpga_sites,
                 **(
+                    {"runtime_sync": runtime_sync_nodes[fpga.id]}
+                    if runtime_sync_topology is not None
+                    else {}
+                ),
+                **(
                     {
                         "integration_shell": (
                             f"{fpga.id}.serial_integration_shell.sv"
@@ -1196,6 +1270,13 @@ def build_serial_wrapper_manifest(
             and phy_provider.get("schema") != SERIAL_PHY_PROVIDER_V2_SCHEMA
         ):
             required_provider_fields.append("quad_shared_common")
+    required_provider_fields.extend(
+        ["fabric_clock_phase_alignment", "synchronous_reset_release"]
+    )
+    if runtime_sync_topology is None:
+        required_provider_fields.append("global_ready_consensus")
+    else:
+        required_provider_fields.append("runtime_sync_control_transport")
     implementation_status = (
         "editable_source_bound_pending_tool_validation"
         if provider_hardware_source_bound
@@ -1268,6 +1349,24 @@ def build_serial_wrapper_manifest(
                 else {"status": "not_provided"}
             ),
         },
+        "runtime_sync": (
+            {
+                "status": "source_inventory_bound",
+                "provider": runtime_sync_provider["id"],
+                "qualification": runtime_sync_provider["qualification"],
+                "module": RUNTIME_SYNC_NODE_MODULE,
+                "algorithm": runtime_sync_topology["algorithm"],
+                "root": runtime_sync_topology["root"],
+                "parameters": runtime_sync_topology["parameters"],
+                "fault_policy": runtime_sync_topology["fault_policy"],
+                "board_proof": runtime_sync_topology["board_proof"],
+                "hardware_release_status": runtime_sync_topology[
+                    "hardware_release_status"
+                ],
+            }
+            if runtime_sync_topology is not None
+            else {"status": "not_provided"}
+        ),
         "fpgas": fpgas,
         "metrics": {
             "fpgas": len(fpgas),
@@ -1301,6 +1400,7 @@ def build_serial_wrapper_manifest(
             "integrated_transport_shells": (
                 len(fpgas) if transports is not None else 0
             ),
+            "runtime_sync_nodes": len(runtime_sync_nodes),
         },
     }
 
@@ -1313,6 +1413,8 @@ def run_phase6c(
     board_overlay_path: Optional[Path] = None,
     phy_provider_path: Optional[Path] = None,
     gt_site_map_path: Optional[Path] = None,
+    runtime_sync_topology_path: Optional[Path] = None,
+    runtime_sync_provider_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
     binding = read_json(binding_path)
@@ -1346,8 +1448,31 @@ def run_phase6c(
         if phy_provider_result is not None
         else None
     )
+    if (runtime_sync_topology_path is None) != (
+        runtime_sync_provider_path is None
+    ):
+        raise ValidationError(
+            "runtime sync topology and provider paths must be supplied together"
+        )
+    runtime_sync_provider = None
+    runtime_sync_topology = None
+    if runtime_sync_provider_path is not None:
+        runtime_sync_provider = validate_runtime_sync_provider(
+            read_json(runtime_sync_provider_path), runtime_sync_provider_path
+        )["normalized"]
+        runtime_sync_topology = read_json(runtime_sync_topology_path)
+        validate_runtime_sync_topology(
+            runtime_sync_topology, platform, runtime_sync_provider
+        )
     manifest = build_serial_wrapper_manifest(
-        platform, binding, transports, board_overlay, phy_provider, gt_site_map
+        platform,
+        binding,
+        transports,
+        board_overlay,
+        phy_provider,
+        gt_site_map,
+        runtime_sync_topology,
+        runtime_sync_provider,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     contract = serial_phy_contract_rtl()
@@ -1379,6 +1504,12 @@ def run_phase6c(
                 record["sites"],
                 transports[record["fpga"]],
                 record["board_services"],
+                runtime_sync_node=record.get("runtime_sync"),
+                runtime_sync_parameters=(
+                    runtime_sync_topology["parameters"]
+                    if runtime_sync_topology is not None
+                    else None
+                ),
             )
             shell_path = output_dir / record["integration_shell"]
             shell_path.write_text(shell, encoding="utf-8")
@@ -1404,7 +1535,14 @@ def run_phase6c(
     digest = hashlib.sha256(binding_path.read_bytes()).hexdigest()
     manifest["binding_sha256"] = digest
     rebuilt = build_serial_wrapper_manifest(
-        platform, binding, transports, board_overlay, phy_provider, gt_site_map
+        platform,
+        binding,
+        transports,
+        board_overlay,
+        phy_provider,
+        gt_site_map,
+        runtime_sync_topology,
+        runtime_sync_provider,
     )
     rebuilt["binding_sha256"] = digest
     if board_overlay_path is not None:
@@ -1423,6 +1561,37 @@ def run_phase6c(
         manifest["vivado_gt_site_map_sha256"] = gt_site_map_digest
         rebuilt["vivado_gt_site_map_sha256"] = gt_site_map_digest
         write_json(output_dir / "vivado_pin_site_map.bound.json", gt_site_map)
+    if runtime_sync_topology_path is not None:
+        topology_digest = hashlib.sha256(
+            runtime_sync_topology_path.read_bytes()
+        ).hexdigest()
+        provider_digest = hashlib.sha256(
+            runtime_sync_provider_path.read_bytes()
+        ).hexdigest()
+        manifest["runtime_sync_topology_sha256"] = topology_digest
+        rebuilt["runtime_sync_topology_sha256"] = topology_digest
+        manifest["runtime_sync_provider_manifest_sha256"] = provider_digest
+        rebuilt["runtime_sync_provider_manifest_sha256"] = provider_digest
+        write_json(
+            output_dir / "runtime_sync_topology.bound.json",
+            runtime_sync_topology,
+        )
+        write_json(
+            output_dir / "runtime_sync_provider.normalized.json",
+            runtime_sync_provider,
+        )
+        runtime_sync_rtl = []
+        for source_record in runtime_sync_provider["sources"]:
+            if source_record["language"] not in {"systemverilog", "verilog"}:
+                continue
+            sync_source = Path(source_record["absolute_path"])
+            relative = Path("runtime_sync_provider_sources") / source_record["path"]
+            destination = output_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(
+                sync_source.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            runtime_sync_rtl.append(relative.as_posix())
     write_json(output_dir / "serial_wrapper_manifest.json", manifest)
     if read_json(output_dir / "serial_wrapper_manifest.json") != rebuilt:
         raise ValidationError("serial wrapper manifest is not reproducible")
@@ -1455,6 +1624,17 @@ def run_phase6c(
             **(
                 {"gt_site_map": "vivado_pin_site_map.bound.json"}
                 if gt_site_map is not None
+                else {}
+            ),
+            **(
+                {
+                    "runtime_sync_topology": "runtime_sync_topology.bound.json",
+                    "runtime_sync_provider": (
+                        "runtime_sync_provider.normalized.json"
+                    ),
+                    "runtime_sync_rtl": runtime_sync_rtl,
+                }
+                if runtime_sync_topology is not None
                 else {}
             ),
             "wrappers": {

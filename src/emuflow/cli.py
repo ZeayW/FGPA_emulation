@@ -87,6 +87,10 @@ from .pin_planning import (
 )
 from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
+from .runtime_sync import (
+    run_runtime_sync_materialization,
+    validate_runtime_sync_provider,
+)
 from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
     VALID_XILINX_FAMILIES,
@@ -231,6 +235,30 @@ def _build_parser() -> argparse.ArgumentParser:
     phy_provider_materialize.add_argument("--vivado", type=Path, required=True)
     phy_provider_materialize.add_argument("--platform", type=Path)
     phy_provider_materialize.add_argument("--out", type=Path, required=True)
+
+    runtime_sync = subparsers.add_parser(
+        "runtime-sync",
+        help="source-visible distributed runtime synchronization operations",
+    )
+    runtime_sync_subparsers = runtime_sync.add_subparsers(
+        dest="runtime_sync_command", required=True
+    )
+    runtime_sync_validate = runtime_sync_subparsers.add_parser(
+        "validate-provider",
+        help="validate the runtime synchronization source inventory",
+    )
+    runtime_sync_validate.add_argument("--provider", type=Path, required=True)
+    runtime_sync_materialize = runtime_sync_subparsers.add_parser(
+        "materialize",
+        help="build a deterministic synchronization tree and HDL testbench",
+    )
+    runtime_sync_materialize.add_argument("--platform", type=Path, required=True)
+    runtime_sync_materialize.add_argument("--provider", type=Path, required=True)
+    runtime_sync_materialize.add_argument("--root")
+    runtime_sync_materialize.add_argument(
+        "--ready-stable-cycles", type=int, default=4
+    )
+    runtime_sync_materialize.add_argument("--out", type=Path, required=True)
 
     contest_parser = subparsers.add_parser(
         "contest", help="public multi-FPGA contest format adapters"
@@ -1627,6 +1655,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Vivado-derived package-pin to GT channel site map",
     )
+    phase6c.add_argument(
+        "--runtime-sync-topology",
+        type=Path,
+        help="validated rooted-tree runtime synchronization topology",
+    )
+    phase6c.add_argument(
+        "--runtime-sync-provider",
+        type=Path,
+        help="source-visible runtime synchronization provider manifest",
+    )
     phase6c.add_argument("--out", type=Path, required=True)
 
     package_pin = subparsers.add_parser(
@@ -1803,6 +1841,23 @@ def _dispatch(args: argparse.Namespace) -> int:
             platform_path=args.platform,
             normalized_out=args.normalized_out,
         )
+        _print_json(report)
+        return 0
+
+    if args.command == "runtime-sync":
+        if args.runtime_sync_command == "validate-provider":
+            report = validate_runtime_sync_provider(
+                read_json(args.provider), args.provider
+            )
+            report = {key: value for key, value in report.items() if key != "normalized"}
+        else:
+            report = run_runtime_sync_materialization(
+                platform_path=args.platform,
+                provider_path=args.provider,
+                output_dir=args.out,
+                root=args.root,
+                ready_stable_cycles=args.ready_stable_cycles,
+            )
         _print_json(report)
         return 0
 
@@ -2654,6 +2709,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             board_overlay_path=args.board_overlay,
             phy_provider_path=args.phy_provider,
             gt_site_map_path=args.gt_site_map,
+            runtime_sync_topology_path=args.runtime_sync_topology,
+            runtime_sync_provider_path=args.runtime_sync_provider,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

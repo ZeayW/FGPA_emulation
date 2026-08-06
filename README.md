@@ -849,6 +849,8 @@ emuflow phase6c \
   --gt-site-map build/platforms/mps4-gt-sites/vivado_pin_site_map.json \
   --board-overlay local/mps4-board-support.json \
   --phy-provider local/serial-phy-provider.json \
+  --runtime-sync-topology build/runtime-sync/runtime_sync_topology.json \
+  --runtime-sync-provider providers/runtime_sync_tree/provider.json \
   --out build/phase6c
 ```
 
@@ -925,6 +927,28 @@ with a complete source-backed board overlay advances only to
 `pending_vivado_provider_validation`; it never turns source presence into a
 hardware-pass claim. The generated black-box file remains an interface
 reference and must not be compiled together with the bound provider sources.
+Provider v2 resolves the GT quad structural defect but does not itself imply
+distributed runtime synchronization. EmuFlow includes an Apache-2.0,
+source-visible rooted-tree future-epoch barrier. Local PHY-ready values reduce
+toward a deterministic root; after a stable interval the root broadcasts a
+future epoch far enough ahead for the deepest tree node, so phase-aligned FPGA
+controllers release together. The RTL latches a post-release local link fault
+and requires global reset recovery. Materialize and independently simulate its
+topology before Phase 6C:
+
+```bash
+emuflow runtime-sync materialize \
+  --platform build/platforms/arm-mps4-3board.json \
+  --provider providers/runtime_sync_tree/provider.json \
+  --out build/runtime-sync
+```
+
+The generated latency-aware HDL testbench checks same-epoch release across the
+whole BoardDB tree and sticky fault behavior. Binding this provider resolves
+the algorithmic `global_ready_consensus` gap, but hardware release remains
+blocked on `fabric_clock_phase_alignment`, `synchronous_reset_release`, and
+`runtime_sync_control_transport`. Those are physical board/PCS properties and
+cannot be proven by a topology-only model.
 
 The open elaboration gate then compiles the bound provider sources with every
 generated runtime controller, transport module, serial wrapper, and integration
@@ -953,7 +977,9 @@ hierarchy preservation and rejects any remaining black boxes. For an
 UltraScale+ hardware provider it also requires
 one declared channel primitive per active transceiver site, one common
 primitive per active quad, and one reference-clock primitive per generated
-clock/reset domain. Phase 6C derives a GT LOC XDC from the source-backed or
+clock/reset domain. When runtime synchronization is bound, it also requires
+exactly one synthesized tree-node instance in every FPGA shell. Phase 6C
+derives a GT LOC XDC from the source-backed or
 device-derived site map and the provider hierarchy contract; Vivado must
 report that both channel and common primitive LOC sets exactly match it.
 Its qualification is `vivado_ooc_synthesis_structure_validation` and it has
@@ -1308,7 +1334,9 @@ comparison experiment and is never the default provider.
 src/emuflow/       flow implementations, providers, and independent checkers
 schemas/           versioned artifact schemas
 platforms/         board-independent virtual multi-FPGA platforms
-rtl/transport/     reusable TDM and barrier RTL
+rtl/transport/     reusable TDM datapath and frame-barrier RTL
+rtl/runtime_sync/  source-visible multi-FPGA startup synchronization RTL
+providers/         editable-source provider manifests and vendor recipes
 benchmarks/        benchmark catalog and run configurations
 examples/          small reproducible RTL and artifact fixtures
 scripts/           provider integration and reusable flow utilities

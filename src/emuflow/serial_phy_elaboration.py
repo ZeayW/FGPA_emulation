@@ -72,6 +72,7 @@ def build_vivado_elaboration_tcl(
     expected_common_locs: Sequence[str] = (),
     expected_channel_cells: Sequence[str] = (),
     expected_common_cells: Sequence[str] = (),
+    expected_runtime_sync_primitives: int = 0,
 ) -> str:
     if not sources:
         raise ValidationError("serial PHY elaboration source list is empty")
@@ -116,6 +117,9 @@ def build_vivado_elaboration_tcl(
             "  puts stderr \"EMUFLOW_PHY_ELAB black_boxes=$black_boxes\"",
             "  exit 3",
             "}",
+            "set runtime_sync_primitives [get_cells -quiet -hier -filter "
+            + _tcl_quote("REF_NAME == emuflow_runtime_sync_tree_node")
+            + "]",
     ]
     if primitive_contract is not None:
         channel_primitive = primitive_contract["channel_primitive"]
@@ -162,7 +166,18 @@ def build_vivado_elaboration_tcl(
             "puts $report_handle \"reference_clock_cells=$refclk_primitives\"",
             "puts $report_handle \"common_primitives=[llength $common_primitives]\"",
             "puts $report_handle \"common_cells=$common_primitives\"",
+            "puts $report_handle \"runtime_sync_primitives=[llength $runtime_sync_primitives]\"",
+            "puts $report_handle \"runtime_sync_cells=$runtime_sync_primitives\"",
             "close $report_handle",
+            "if {[llength $runtime_sync_primitives] != "
+            + str(expected_runtime_sync_primitives)
+            + "} {",
+            "  puts stderr \"EMUFLOW_PHY_ELAB runtime_sync_primitive_count="
+            "[llength $runtime_sync_primitives] expected="
+            + str(expected_runtime_sync_primitives)
+            + "\"",
+            "  exit 11",
+            "}",
         ]
     )
     if primitive_contract is not None:
@@ -357,6 +372,28 @@ def run_serial_phy_elaboration(
     ]
     if not provider_hdl:
         raise ValidationError("provider has no HDL source for elaboration")
+    runtime_sync_hdl = []
+    runtime_sync_record = manifest.get("runtime_sync", {"status": "not_provided"})
+    if runtime_sync_record.get("status") == "source_inventory_bound":
+        runtime_sync_names = phase6c_report.get("artifacts", {}).get(
+            "runtime_sync_rtl"
+        )
+        if (
+            not isinstance(runtime_sync_names, list)
+            or not runtime_sync_names
+            or any(not isinstance(name, str) for name in runtime_sync_names)
+        ):
+            raise ValidationError("Phase 6C runtime synchronization RTL is missing")
+        for runtime_sync_name in runtime_sync_names:
+            relative = Path(runtime_sync_name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValidationError("Phase 6C runtime synchronization path is unsafe")
+            runtime_sync_path = phase6c_dir / relative
+            if not runtime_sync_path.is_file():
+                raise ValidationError(
+                    "Phase 6C runtime synchronization source is missing"
+                )
+            runtime_sync_hdl.append(runtime_sync_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     tool_name = "yosys" if yosys_executable is not None else "vivado"
     version_flag = "-V" if tool_name == "yosys" else "-version"
@@ -385,6 +422,7 @@ def run_serial_phy_elaboration(
         shell_path = phase6c_dir / shell_name
         sources = [
             *provider_hdl,
+            *runtime_sync_hdl,
             runtime_controller_path,
             transport_path,
             wrapper_path,
@@ -473,6 +511,9 @@ def run_serial_phy_elaboration(
                     expected_common_locs=expected_common_locs,
                     expected_channel_cells=expected_channel_cells,
                     expected_common_cells=expected_common_cells,
+                    expected_runtime_sync_primitives=(
+                        1 if record.get("runtime_sync") is not None else 0
+                    ),
                 ),
                 encoding="utf-8",
             )

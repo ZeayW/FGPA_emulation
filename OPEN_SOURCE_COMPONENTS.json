@@ -8,7 +8,7 @@
   "vendored_sources": [
     {
       "id": "emuflow-first-party",
-      "path": "src",
+      "path": ".",
       "upstream": "https://github.com/ZeayW/FGPA_emulation",
       "version_or_revision": "current repository revision",
       "license": "Apache-2.0"

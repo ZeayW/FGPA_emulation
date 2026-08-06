@@ -205,7 +205,13 @@
         "schemas/package-pin-binding-v1.schema.json",
         "scripts/generate_synthetic_vu9p_bsp.py",
         "platforms/synthetic/xcvu9p_4fpga_mesh_bsp.json",
-        "rtl/transport"
+        "rtl/transport",
+        "rtl/runtime_sync",
+        "providers/runtime_sync_tree/provider.json",
+        "src/emuflow/runtime_sync.py",
+        "schemas/runtime-sync-provider-v1.schema.json",
+        "schemas/runtime-sync-topology-v1.schema.json",
+        "schemas/serial-wrapper-v1.schema.json"
       ],
       "build_targets": [
         "emuflow_pin_planner",
