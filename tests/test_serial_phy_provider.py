@@ -11,6 +11,7 @@ from emuflow.platform import Platform
 from emuflow.serial_phy_provider import (
     SERIAL_PHY_PROVIDER_SCHEMA,
     SERIAL_PHY_PROVIDER_V2_SCHEMA,
+    SERIAL_PHY_PROVIDER_V3_SCHEMA,
     validate_serial_phy_provider,
     validate_serial_phy_provider_file,
 )
@@ -63,6 +64,35 @@ module emuflow_external_serial_phy_quad #(
   assign txp = 4'b0000; assign txn = 4'b1111;
   assign lane_ready = ACTIVE_CHANNEL_MASK;
   assign common_ready = 1'b1;
+endmodule
+"""
+
+SERDES_PROVIDER_SOURCE = """module emuflow_external_serial_clock_reset #(
+  parameter integer BOARD_RESET_ACTIVE_LOW = 1
+) (input wire refclk_p, input wire refclk_n, input wire board_reset,
+   output wire phy_refclk, output wire phy_reset, output wire ready);
+  IBUFDS_GTE4 refclk_buffer ();
+  assign phy_refclk = refclk_p;
+  assign phy_reset = BOARD_RESET_ACTIVE_LOW ? ~board_reset : board_reset;
+  assign ready = 1'b1;
+endmodule
+
+module emuflow_external_gty_serdes_quad #(
+  parameter [3:0] ACTIVE_CHANNEL_MASK = 4'b0000
+) (input wire phy_refclk, input wire phy_reset,
+   input wire [255:0] serdes_tx_data, input wire [7:0] serdes_tx_hdr,
+   output wire [255:0] serdes_rx_data, output wire [7:0] serdes_rx_hdr,
+   input wire [3:0] serdes_rx_bitslip, input wire [3:0] serdes_rx_reset_req,
+   output wire [3:0] tx_usrclk, output wire [3:0] rx_usrclk,
+   output wire [3:0] txp, output wire [3:0] txn,
+   input wire [3:0] rxp, input wire [3:0] rxn,
+   output wire [3:0] lane_ready, output wire common_ready);
+  GTYE4_COMMON gty_common ();
+  GTYE4_CHANNEL gty_channel ();
+  assign serdes_rx_data = 256'b0; assign serdes_rx_hdr = 8'b0;
+  assign tx_usrclk = 4'b0; assign rx_usrclk = 4'b0;
+  assign txp = 4'b0; assign txn = 4'b1;
+  assign lane_ready = ACTIVE_CHANNEL_MASK; assign common_ready = 1'b1;
 endmodule
 """
 
@@ -237,6 +267,62 @@ class SerialPhyProviderTest(unittest.TestCase):
             result["normalized"]["modules"]["quad"],
             "emuflow_external_serial_phy_quad",
         )
+
+    def test_validates_open_pcs_serdes_v3_provider_contract(self) -> None:
+        source = self.root / "serdes-provider.sv"
+        source.write_text(SERDES_PROVIDER_SOURCE, encoding="utf-8")
+        manifest = copy.deepcopy(self.manifest)
+        manifest.update(
+            {
+                "schema": SERIAL_PHY_PROVIDER_V3_SCHEMA,
+                "id": "serdes_provider_fixture",
+                "qualification": "editable_source_hardware",
+                "modules": {
+                    "clock_reset": "emuflow_external_serial_clock_reset",
+                    "serdes_quad": "emuflow_external_gty_serdes_quad",
+                },
+                "implementation": {
+                    "kind": "amd_ultrascale_plus_gty",
+                    "channel_primitive": "GTYE4_CHANNEL",
+                    "common_primitive": "GTYE4_COMMON",
+                    "reference_clock_primitive": "IBUFDS_GTE4",
+                    "channel_instance_template": "channel_{channel}/gty_channel",
+                    "common_instance": "gty_common",
+                    "reference_clock_instance": "refclk_buffer",
+                },
+                "sources": [
+                    {
+                        "path": source.name,
+                        "language": "systemverilog",
+                        "role": "parallel_66b_serdes_fixture",
+                        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        )
+        manifest["protocol"].update(
+            {
+                "encoding": "64b66b",
+                "line_rate_gbps_per_lane": 10.3125,
+                "pcs_data_width": 64,
+                "pcs_header_width": 2,
+                "pcs_clock_mhz": 156.25,
+                "pcs_implementation": "emuflow-in-tree-corundum-10gbase-r",
+            }
+        )
+        result = validate_serial_phy_provider(
+            manifest, self.manifest_path, self.platform
+        )
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(
+            result["normalized"]["modules"]["serdes_quad"],
+            "emuflow_external_gty_serdes_quad",
+        )
+        self.assertEqual(result["normalized"]["protocol"]["pcs_clock_mhz"], 156.25)
+        wrong_rate = copy.deepcopy(manifest)
+        wrong_rate["protocol"]["line_rate_gbps_per_lane"] = 10.0
+        with self.assertRaisesRegex(ValidationError, "pcs_clock_mhz"):
+            validate_serial_phy_provider(wrong_rate, self.manifest_path)
 
     def test_v2_hardware_requires_common_and_channel_hierarchy(self) -> None:
         source = self.root / "quad-hardware.sv"

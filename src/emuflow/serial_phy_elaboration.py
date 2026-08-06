@@ -118,7 +118,7 @@ def build_vivado_elaboration_tcl(
             "  exit 3",
             "}",
             "set runtime_sync_primitives [get_cells -quiet -hier -filter "
-            + _tcl_quote("REF_NAME == emuflow_runtime_sync_tree_node")
+            + _tcl_quote("NAME == runtime_sync || NAME =~ */runtime_sync")
             + "]",
     ]
     if primitive_contract is not None:
@@ -394,6 +394,23 @@ def run_serial_phy_elaboration(
                     "Phase 6C runtime synchronization source is missing"
                 )
             runtime_sync_hdl.append(runtime_sync_path)
+    open_pcs_hdl = []
+    if provider.get("schema") == "emuflow.serial-phy-provider/v3":
+        open_pcs_names = phase6c_report.get("artifacts", {}).get("open_pcs_rtl")
+        if (
+            not isinstance(open_pcs_names, list)
+            or not open_pcs_names
+            or any(not isinstance(name, str) for name in open_pcs_names)
+        ):
+            raise ValidationError("Phase 6C open PCS RTL closure is missing")
+        for open_pcs_name in open_pcs_names:
+            relative = Path(open_pcs_name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValidationError("Phase 6C open PCS path is unsafe")
+            open_pcs_path = phase6c_dir / relative
+            if not open_pcs_path.is_file():
+                raise ValidationError("Phase 6C open PCS source is missing")
+            open_pcs_hdl.append(open_pcs_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     tool_name = "yosys" if yosys_executable is not None else "vivado"
     version_flag = "-V" if tool_name == "yosys" else "-version"
@@ -423,6 +440,7 @@ def run_serial_phy_elaboration(
         sources = [
             *provider_hdl,
             *runtime_sync_hdl,
+            *open_pcs_hdl,
             runtime_controller_path,
             transport_path,
             wrapper_path,
@@ -467,7 +485,10 @@ def run_serial_phy_elaboration(
                 expected_channel_locs = [
                     site["transceiver_site"] for site in record["sites"]
                 ]
-                if provider.get("schema") == "emuflow.serial-phy-provider/v2":
+                if provider.get("schema") in {
+                    "emuflow.serial-phy-provider/v2",
+                    "emuflow.serial-phy-provider/v3",
+                }:
                     expected_common_locs = [
                         quad["common_site"]
                         for quad in record["transceiver_quads"]

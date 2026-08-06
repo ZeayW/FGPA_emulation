@@ -250,7 +250,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
-| Hardware BSP | In-tree contract plus source-backed Arm MPS4 topology/pin inventory | MPS4 BoardDB and exact active-lane differential binding are available. Phase 6C derives channel/common quad topology and emits either the legacy lane boundary or the quad-aware provider-v2 boundary. GT implementation, real board refclk/reset bindings, protocol/training, bitstream, and hardware qualification remain open gates |
+| Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology, reserves one full-duplex control lane per synchronization-tree edge, and binds the open PCS to the provider-v3 66-bit GT SerDes boundary. A functional GT implementation, real board refclk/reset bindings, measured control latency, bitstream, and hardware qualification remain open gates |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
@@ -827,11 +827,11 @@ qualify real UltraScale+ hardware because it does not model the shared GT
 common. Provider v2 instead instantiates one
 `emuflow_external_serial_phy_quad` per device-derived `GTYE4_COMMON`, maps up
 to four active channels through an explicit mask, and requires all channels in
-that quad to share one clock/reset domain. A 390.625-MHz
-profile would reach the
-documented 25-Gbps raw ceiling, but requires that implementation to close a
-2.56-ns common clock or a future protocol wrapper with a separate GTY clock
-domain. In either case the model provenance remains
+that quad to share one clock/reset domain. Provider v3 is the selected
+open-PCS boundary: the repository owns framing, CRC, 10GBASE-R PCS, CDC,
+de-jitter, and runtime synchronization, while the board provider exposes only
+four parallel 64-bit data plus 2-bit header SerDes channels and their user
+clocks/reset requests. The model provenance remains
 `configured_model_not_hardware_measured` until hardware characterization.
 
 Missing board-vendor details are supplied through a separate
@@ -868,16 +868,16 @@ a separate source-backed board-service XDC with package pins, reset
 IOSTANDARDs, and `create_clock`; unverified overlays never emit those
 constraints. GT channel LOCs remain the PHY provider's responsibility because
 the LOC must target the provider's real primitive hierarchy. This still cannot
-resolve the external PHY RTL, reset synchronization, encoding, reset sequence,
-or link training, so the hardware-release status remains blocked until those
-editable-source providers are compiled and checked. No private overlay or
-experimental record is stored in this repository.
+resolve the board-specific GT SerDes RTL, reset synchronization, reset
+sequence, or physical link training, so the hardware-release status remains
+blocked until those editable-source providers are compiled and checked. No
+private overlay or experimental record is stored in this repository.
 
-The hardware boundary is the versioned `serial-phy-provider/v2` manifest; v1
-is retained as a non-hardware-ready compatibility contract. Both accept only
-editable Verilog/SystemVerilog, Tcl, and XDC inputs; hash every source; check
-that the declared contract module names are actually defined; and
-rejects checkpoints, netlists, archives, and compiled objects as substitutes
+The selected hardware boundary is the versioned `serial-phy-provider/v3`
+manifest; v1 and v2 are retained as compatibility contracts. All versions
+accept only editable Verilog/SystemVerilog, Tcl, and XDC inputs; hash every
+source; check that the declared contract module names are actually defined;
+and reject checkpoints, netlists, archives, and compiled objects as substitutes
 for source. With `--platform`, it also checks the FPGA part, user-side payload
 width and clock, provider line rate, and the BoardDB line-rate ceiling:
 
@@ -915,8 +915,8 @@ structural/equivalence tests but can never authorize hardware release;
 `editable_source_hardware` means the implementation is source-visible, not
 that Vivado elaboration, GT placement, timing, DRC, bitstream generation, or
 board training has already passed. Those remain separate checked gates.
-An editable UltraScale+ provider-v2 must declare and directly instantiate its
-channel, shared-common, and reference-clock primitives (normally
+An editable UltraScale+ provider-v2 or provider-v3 must declare and directly
+instantiate its channel, shared-common, and reference-clock primitives (normally
 `GTYE4_CHANNEL`, `GTYE4_COMMON`, and `IBUFDS_GTE4`) and provide stable common
 and per-channel hierarchy paths. Merely naming those primitives or wrapping a
 generated checkpoint is insufficient. Simulation providers declare a
@@ -925,7 +925,7 @@ behavioral implementation instead. A hardware provider containing
 `quad_shared_common`.
 When Phase 6C consumes the provider, it hash-binds both the provider manifest
 and every inventoried source into its output. A simulation provider leaves the
-release blocked. An editable provider-v2 hardware implementation combined
+release blocked. An editable provider-v2/v3 hardware implementation combined
 with a complete source-backed board overlay advances only to
 `pending_vivado_provider_validation`; it never turns source presence into a
 hardware-pass claim. The generated black-box file remains an interface
@@ -950,7 +950,7 @@ The generated latency-aware HDL testbench checks same-epoch release across the
 whole BoardDB tree and sticky fault behavior. Binding this provider resolves
 the algorithmic `global_ready_consensus` gap, but hardware release remains
 blocked on `fabric_clock_phase_alignment`, `synchronous_reset_release`, and
-`runtime_sync_control_transport`. Those are physical board/PCS properties and
+`runtime_sync_control_transport_latency`. Those are physical board/PCS properties and
 cannot be proven by a topology-only model.
 
 The open elaboration gate then compiles the bound provider sources with every
@@ -998,15 +998,16 @@ receive path remains elastic through CDC and then enters a sequence-checked
 prefill/de-jitter buffer before deterministic fabric-cycle release. Typed
 in-band `READY` and `START(epoch)` records bind one full-duplex PCS edge to the
 runtime synchronization tree; control/data overlap after startup is a sticky
-error instead of an implicit data stall. This layer is source-visible and
-simulator-validated, but is not yet a board-ready PHY: Phase 6C still needs the
-v3 parallel GT-SerDes adapter, a checked control-latency bound, and physical
-clock/reset proof.
+error instead of an implicit data stall. Phase 6C now instantiates this
+source-visible layer per active channel and binds control endpoints directly
+to the generated synchronization tree. It is not yet a board-ready PHY:
+provider v3 still needs a functional parallel GT-SerDes implementation, a
+checked control-latency bound, and physical clock/reset proof.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
 validation, not XCVU13P sign-off. A board-runnable MPS4 result still requires
-the GTY protocol wrapper, reference-clock/reset shell, Vivado implementation,
+the GTY SerDes provider, reference-clock/reset shell, Vivado implementation,
 bitstream generation, and hardware link training.
 
 To validate one FPGA independently with the open physical backend, the

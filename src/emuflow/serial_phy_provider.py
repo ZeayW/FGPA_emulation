@@ -12,6 +12,7 @@ from .io import read_json, write_json
 from .platform import Platform
 from .serial_contract import (
     SERIAL_CLOCK_RESET_MODULE,
+    SERIAL_GTY_SERDES_QUAD_MODULE,
     SERIAL_PHY_MODULE,
     SERIAL_PHY_QUAD_MODULE,
 )
@@ -19,6 +20,7 @@ from .serial_contract import (
 
 SERIAL_PHY_PROVIDER_SCHEMA = "emuflow.serial-phy-provider/v1"
 SERIAL_PHY_PROVIDER_V2_SCHEMA = "emuflow.serial-phy-provider/v2"
+SERIAL_PHY_PROVIDER_V3_SCHEMA = "emuflow.serial-phy-provider/v3"
 VALID_PROVIDER_QUALIFICATIONS = {
     "editable_source_hardware",
     "simulation_only",
@@ -109,10 +111,15 @@ def validate_serial_phy_provider(
     platform: Optional[Platform] = None,
 ) -> Dict[str, Any]:
     schema = manifest.get("schema")
-    if schema not in {SERIAL_PHY_PROVIDER_SCHEMA, SERIAL_PHY_PROVIDER_V2_SCHEMA}:
+    if schema not in {
+        SERIAL_PHY_PROVIDER_SCHEMA,
+        SERIAL_PHY_PROVIDER_V2_SCHEMA,
+        SERIAL_PHY_PROVIDER_V3_SCHEMA,
+    }:
         raise ValidationError(
             "serial PHY provider schema must be "
-            f"{SERIAL_PHY_PROVIDER_SCHEMA!r} or {SERIAL_PHY_PROVIDER_V2_SCHEMA!r}"
+            f"{SERIAL_PHY_PROVIDER_SCHEMA!r}, {SERIAL_PHY_PROVIDER_V2_SCHEMA!r}, "
+            f"or {SERIAL_PHY_PROVIDER_V3_SCHEMA!r}"
         )
     provider_id = _string(manifest.get("id"), "provider.id")
     qualification = manifest.get("qualification")
@@ -140,7 +147,7 @@ def validate_serial_phy_provider(
             "clock_reset": SERIAL_CLOCK_RESET_MODULE,
             "lane": SERIAL_PHY_MODULE,
         }
-    else:
+    elif schema == SERIAL_PHY_PROVIDER_V2_SCHEMA:
         if set(modules) != {"clock_reset", "quad"}:
             raise ValidationError("serial PHY v2 module inventory is incompatible")
         if modules.get("quad") != SERIAL_PHY_QUAD_MODULE:
@@ -148,6 +155,15 @@ def validate_serial_phy_provider(
         normalized_modules = {
             "clock_reset": SERIAL_CLOCK_RESET_MODULE,
             "quad": SERIAL_PHY_QUAD_MODULE,
+        }
+    else:
+        if set(modules) != {"clock_reset", "serdes_quad"}:
+            raise ValidationError("serial PHY v3 module inventory is incompatible")
+        if modules.get("serdes_quad") != SERIAL_GTY_SERDES_QUAD_MODULE:
+            raise ValidationError("serial PHY SerDes quad module name is incompatible")
+        normalized_modules = {
+            "clock_reset": SERIAL_CLOCK_RESET_MODULE,
+            "serdes_quad": SERIAL_GTY_SERDES_QUAD_MODULE,
         }
     implementation = manifest.get("implementation")
     if not isinstance(implementation, dict):
@@ -218,8 +234,8 @@ def validate_serial_phy_provider(
             )
         ):
             raise ValidationError("hardware PHY primitive name is invalid")
-        if schema == SERIAL_PHY_PROVIDER_V2_SCHEMA and re.fullmatch(
-            r"[A-Za-z0-9_{}./]+",
+        if schema != SERIAL_PHY_PROVIDER_SCHEMA and re.fullmatch(
+            r"[A-Za-z0-9_{}./\[\]]+",
             normalized_implementation["channel_instance_template"],
         ) is None:
             raise ValidationError("hardware PHY channel hierarchy template is invalid")
@@ -252,6 +268,37 @@ def validate_serial_phy_provider(
             protocol.get("reset_sequence"), "protocol.reset_sequence"
         ),
     }
+    if schema == SERIAL_PHY_PROVIDER_V3_SCHEMA:
+        normalized_protocol.update(
+            {
+                "pcs_data_width": protocol.get("pcs_data_width"),
+                "pcs_header_width": protocol.get("pcs_header_width"),
+                "pcs_clock_mhz": _positive_number(
+                    protocol.get("pcs_clock_mhz"), "protocol.pcs_clock_mhz"
+                ),
+                "pcs_implementation": _string(
+                    protocol.get("pcs_implementation"),
+                    "protocol.pcs_implementation",
+                ),
+            }
+        )
+        if (
+            normalized_protocol["pcs_data_width"] != 64
+            or normalized_protocol["pcs_header_width"] != 2
+            or normalized_protocol["encoding"] != "64b66b"
+            or normalized_protocol["pcs_implementation"]
+            != "emuflow-in-tree-corundum-10gbase-r"
+        ):
+            raise ValidationError("serial PHY v3 PCS boundary is incompatible")
+        expected_line_rate = (
+            normalized_protocol["pcs_clock_mhz"] * 66.0 / 1000.0
+        )
+        if abs(
+            normalized_protocol["line_rate_gbps_per_lane"] - expected_line_rate
+        ) > 1e-9:
+            raise ValidationError(
+                "serial PHY v3 line rate must equal pcs_clock_mhz * 66 bits"
+            )
     payload_width = normalized_protocol["payload_bits_per_lane_per_cycle"]
     if (
         isinstance(payload_width, bool)
@@ -334,7 +381,7 @@ def validate_serial_phy_provider(
                 normalized_implementation["reference_clock_instance"]
             ),
         }
-        if schema == SERIAL_PHY_PROVIDER_V2_SCHEMA:
+        if schema != SERIAL_PHY_PROVIDER_SCHEMA:
             required_instances[normalized_implementation["common_primitive"]] = (
                 normalized_implementation["common_instance"]
             )

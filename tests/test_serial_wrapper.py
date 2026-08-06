@@ -1,6 +1,8 @@
 import copy
 import hashlib
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -364,6 +366,79 @@ endmodule
                 lanes, {part: rows}
             ),
         }
+
+    def _write_v3_phy_provider(self) -> Path:
+        root = Path(self.temporary_directory.name)
+        source = root / "provider-simulation-v3.sv"
+        source_text = """module emuflow_external_serial_clock_reset #(
+  parameter integer BOARD_RESET_ACTIVE_LOW = 1
+) (input wire refclk_p, input wire refclk_n, input wire board_reset,
+   output wire phy_refclk, output wire phy_reset, output wire ready);
+  assign phy_refclk = refclk_p; assign phy_reset = board_reset;
+  assign ready = 1'b1;
+endmodule
+module emuflow_external_gty_serdes_quad #(
+  parameter [3:0] ACTIVE_CHANNEL_MASK = 4'b0000
+) (input wire phy_refclk, input wire phy_reset,
+   input wire [255:0] serdes_tx_data, input wire [7:0] serdes_tx_hdr,
+   output wire [255:0] serdes_rx_data, output wire [7:0] serdes_rx_hdr,
+   input wire [3:0] serdes_rx_bitslip, input wire [3:0] serdes_rx_reset_req,
+   output wire [3:0] tx_usrclk, output wire [3:0] rx_usrclk,
+   output wire [3:0] txp, output wire [3:0] txn,
+   input wire [3:0] rxp, input wire [3:0] rxn,
+   output wire [3:0] lane_ready, output wire common_ready);
+  assign serdes_rx_data = 256'b0; assign serdes_rx_hdr = 8'b0;
+  assign tx_usrclk = {4{phy_refclk}}; assign rx_usrclk = {4{phy_refclk}};
+  assign txp = 4'b0; assign txn = 4'b1;
+  assign lane_ready = ACTIVE_CHANNEL_MASK; assign common_ready = 1'b1;
+endmodule
+"""
+        source.write_text(source_text, encoding="utf-8")
+        manifest = root / "provider-simulation-v3.json"
+        write_json(
+            manifest,
+            {
+                "schema": "emuflow.serial-phy-provider/v3",
+                "id": "simulation_v3_fixture",
+                "qualification": "simulation_only",
+                "supported_parts": ["xcvu13p-fhga2104-1-e"],
+                "modules": {
+                    "clock_reset": "emuflow_external_serial_clock_reset",
+                    "serdes_quad": "emuflow_external_gty_serdes_quad",
+                },
+                "implementation": {"kind": "behavioral"},
+                "source_root": ".",
+                "sources": [
+                    {
+                        "path": source.name,
+                        "language": "systemverilog",
+                        "role": "parallel_66b_serdes_fixture",
+                        "sha256": hashlib.sha256(
+                            source_text.encode("utf-8")
+                        ).hexdigest(),
+                    }
+                ],
+                "protocol": {
+                    "payload_bits_per_lane_per_cycle": 64,
+                    "user_clock_mhz": 50.0,
+                    "line_rate_gbps_per_lane": 10.3125,
+                    "encoding": "64b66b",
+                    "link_training": "corundum_block_lock",
+                    "reset_sequence": "provider_defined",
+                    "pcs_data_width": 64,
+                    "pcs_header_width": 2,
+                    "pcs_clock_mhz": 156.25,
+                    "pcs_implementation": (
+                        "emuflow-in-tree-corundum-10gbase-r"
+                    ),
+                },
+                "provenance": {
+                    "license": "unit-test-only",
+                    "upstream": "repository unit test",
+                },
+            },
+        )
+        return manifest
 
     def test_wrapper_is_reproducible_and_exposes_exact_active_ports(self) -> None:
         first = build_serial_wrapper_manifest(self.platform, self.binding)
@@ -798,6 +873,132 @@ endmodule
             "[get_cells {serial_wrapper/quad_0_phy/channel_0.gty_channel}]",
             xdc,
         )
+
+    def test_v3_embeds_open_pcs_and_runtime_sync_in_wrapper(self) -> None:
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding-v3.json"
+        gt_site_map_path = root / "gt-site-map-v3.json"
+        topology_path = root / "runtime-sync-v3.json"
+        output = root / "phase6c-v3"
+        v3_binding = copy.deepcopy(self.binding)
+        lane_one = copy.deepcopy(v3_binding["entries"][0])
+        source_lane = self.platform.links[0].endpoint_binding("mps4_1").lanes[1]
+        sink_lane = self.platform.links[0].endpoint_binding("mps4_2").lanes[1]
+        lane_one.update(
+            {
+                "id": "mps4_b2b_1:mps4_1-to-mps4_2:gty-1",
+                "physical_lane": 1,
+                "logical_lanes": [64, 65],
+                "logical_bindings": ["logical-64", "logical-65"],
+                "source_ports": {
+                    "p": "gty_txp_mps4_b2b_1_mps4_2_lane1",
+                    "n": "gty_txn_mps4_b2b_1_mps4_2_lane1",
+                },
+                "sink_ports": {
+                    "p": "gty_rxp_mps4_b2b_1_mps4_1_lane1",
+                    "n": "gty_rxn_mps4_b2b_1_mps4_1_lane1",
+                },
+                "source_package_pins": {
+                    "p": source_lane.tx_package_pin_p,
+                    "n": source_lane.tx_package_pin_n,
+                },
+                "sink_package_pins": {
+                    "p": sink_lane.rx_package_pin_p,
+                    "n": sink_lane.rx_package_pin_n,
+                },
+            }
+        )
+        v3_binding["entries"].append(lane_one)
+        write_json(binding_path, v3_binding)
+        write_json(gt_site_map_path, self._gt_site_map())
+        transport_paths = {}
+        for fpga, transport in self.transports.items():
+            path = root / f"{fpga}.v3.transport.json"
+            write_json(path, transport)
+            transport_paths[fpga] = path
+        runtime_provider_path = (
+            Path(__file__).resolve().parents[1]
+            / "providers/runtime_sync_tree/provider.json"
+        )
+        runtime_provider = validate_runtime_sync_provider(
+            read_json(runtime_provider_path), runtime_provider_path
+        )["normalized"]
+        topology = build_runtime_sync_topology(self.platform, runtime_provider)
+        write_json(topology_path, topology)
+        report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            output,
+            transport_paths=transport_paths,
+            phy_provider_path=self._write_v3_phy_provider(),
+            gt_site_map_path=gt_site_map_path,
+            runtime_sync_topology_path=topology_path,
+            runtime_sync_provider_path=runtime_provider_path,
+        )
+        self.assertEqual(
+            report["hardware_release_status"],
+            "blocked_on_board_latency_and_clock_proof",
+        )
+        self.assertIn("open_pcs_rtl", report["artifacts"])
+        self.assertGreater(len(report["artifacts"]["open_pcs_rtl"]), 10)
+        manifest = read_json(output / "serial_wrapper_manifest.json")
+        self.assertEqual(
+            manifest["phy_contract"]["module"],
+            "emuflow_external_gty_serdes_quad",
+        )
+        self.assertIn(
+            "runtime_sync_control_transport_latency",
+            manifest["phy_contract"]["required_provider_fields"],
+        )
+        root_wrapper = (output / "mps4_1.serial_wrapper.sv").read_text()
+        root_shell = (
+            output / "mps4_1.serial_integration_shell.sv"
+        ).read_text()
+        self.assertIn("emuflow_external_gty_serdes_quad", root_wrapper)
+        self.assertIn("emuflow_runtime_sync_pcs_edge", root_wrapper)
+        self.assertIn("emuflow_data_pcs_edge", root_wrapper)
+        self.assertIn("emuflow_runtime_sync_tree_node", root_wrapper)
+        self.assertNotIn("emuflow_runtime_sync_tree_node", root_shell)
+        self.assertIn("assign links_ready = local_links_ready", root_shell)
+        leaf = next(
+            item for item in manifest["fpgas"] if item["fpga"] == "mps4_3"
+        )
+        self.assertEqual(len(leaf["runtime_sync_edges"]), 1)
+        self.assertEqual(leaf["runtime_sync_edges"][0]["role"], "child")
+        self.assertGreater(leaf["active_transceiver_sites"], 0)
+        iverilog = shutil.which("iverilog")
+        if iverilog is not None:
+            source_files = [
+                root / "provider-simulation-v3.sv",
+                *(
+                    output / relative
+                    for relative in report["artifacts"]["runtime_sync_rtl"]
+                ),
+                *(
+                    output / relative
+                    for relative in report["artifacts"]["open_pcs_rtl"]
+                ),
+                output / "mps4_1.serial_wrapper.sv",
+            ]
+            completed = subprocess.run(
+                [
+                    iverilog,
+                    "-g2012",
+                    "-s",
+                    "emuflow_serial_wrapper_mps4_1",
+                    "-o",
+                    str(root / "v3-wrapper.vvp"),
+                    *(str(path) for path in source_files),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stdout + completed.stderr,
+            )
 
 
 if __name__ == "__main__":

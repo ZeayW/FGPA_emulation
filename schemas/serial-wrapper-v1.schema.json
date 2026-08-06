@@ -94,10 +94,12 @@
           "board_service_constraints_status",
           "gt_site_constraints_status",
           "transceiver_quads",
+          "runtime_sync_edges",
           "sites"
         ],
         "properties": {
-          "transceiver_quads": {"type": "array"}
+          "transceiver_quads": {"type": "array"},
+          "runtime_sync_edges": {"type": "array"}
         }
       }
     },

@@ -18,11 +18,13 @@ from .physical_pins import (
 from .platform import BoardLink, Platform
 from .serial_contract import (
     SERIAL_CLOCK_RESET_MODULE,
+    SERIAL_GTY_SERDES_QUAD_MODULE,
     SERIAL_PHY_MODULE,
     SERIAL_PHY_QUAD_MODULE,
 )
 from .serial_phy_provider import (
     SERIAL_PHY_PROVIDER_V2_SCHEMA,
+    SERIAL_PHY_PROVIDER_V3_SCHEMA,
     validate_serial_phy_provider,
 )
 from .runtime_sync import (
@@ -218,6 +220,112 @@ def _incident_links(platform: Platform, fpga: str) -> Sequence[BoardLink]:
     )
 
 
+def _activate_runtime_sync_tree_lanes(
+    platform: Platform,
+    sites: Mapping[str, list[Dict[str, Any]]],
+    topology: Optional[Mapping[str, Any]],
+) -> Dict[str, list[Dict[str, Any]]]:
+    """Reserve one full-duplex physical lane for every sync-tree edge."""
+    result: Dict[str, list[Dict[str, Any]]] = {
+        fpga.id: [] for fpga in platform.fpgas
+    }
+    if topology is None:
+        return result
+    links = {link.id: link for link in platform.links}
+    nodes = {node["fpga"]: node for node in topology["nodes"]}
+    site_maps = {
+        fpga: {(site["link"], site["physical_lane"]): site for site in records}
+        for fpga, records in sites.items()
+    }
+    for child_id, child_node in sorted(nodes.items()):
+        parent_id = child_node["parent"]
+        link_id = child_node["parent_link"]
+        if parent_id is None:
+            continue
+        link = links[link_id]
+        common_lanes = sorted(
+            lane
+            for lane in range(link.data_lanes_per_direction)
+            if (link_id, lane) in site_maps[parent_id]
+            and (link_id, lane) in site_maps[child_id]
+        )
+        if not common_lanes:
+            lane = 0
+            for fpga_id, peer_id in (
+                (parent_id, child_id),
+                (child_id, parent_id),
+            ):
+                key = (link_id, lane)
+                if key in site_maps[fpga_id]:
+                    continue
+                endpoint = link.endpoint_binding(fpga_id)
+                site = {
+                    "id": f"{link_id}:{fpga_id}:site-{lane}",
+                    "link": link_id,
+                    "fpga": fpga_id,
+                    "peer": peer_id,
+                    "physical_lane": lane,
+                    "payload_width": link.payload_bits_per_lane_per_cycle,
+                    "connector": endpoint.connector,
+                    "mgt_group": endpoint.mgt,
+                    "tx": None,
+                    "rx": None,
+                    "transceiver_site_status": "unresolved",
+                }
+                sites[fpga_id].append(site)
+                site_maps[fpga_id][key] = site
+        else:
+            lane = common_lanes[0]
+        for fpga_id, peer_id, role in (
+            (parent_id, child_id, "parent"),
+            (child_id, parent_id, "child"),
+        ):
+            site = site_maps[fpga_id][(link_id, lane)]
+            endpoint = link.endpoint_binding(fpga_id)
+            lane_binding = endpoint.lanes[lane]
+            if site["tx"] is None:
+                site["tx"] = {
+                    "ports": {
+                        polarity: _serial_port(
+                            link_id, peer_id, "tx", polarity, lane
+                        )
+                        for polarity in ("p", "n")
+                    },
+                    "package_pins": {
+                        "p": lane_binding.tx_package_pin_p,
+                        "n": lane_binding.tx_package_pin_n,
+                    },
+                    "activation": "runtime_sync_control_plane",
+                }
+            if site["rx"] is None:
+                site["rx"] = {
+                    "ports": {
+                        polarity: _serial_port(
+                            link_id, peer_id, "rx", polarity, lane
+                        )
+                        for polarity in ("p", "n")
+                    },
+                    "package_pins": {
+                        "p": lane_binding.rx_package_pin_p,
+                        "n": lane_binding.rx_package_pin_n,
+                    },
+                    "activation": "runtime_sync_control_plane",
+                }
+            result[fpga_id].append(
+                {
+                    "link": link_id,
+                    "peer": peer_id,
+                    "physical_lane": lane,
+                    "role": role,
+                }
+            )
+    for records in result.values():
+        records.sort(key=lambda item: (item["link"], item["physical_lane"]))
+    for records in sites.values():
+        records.sort(key=lambda item: item["id"])
+    return result
+
+
 def _transceiver_quad_groups(
     sites: Sequence[Mapping[str, Any]],
 ) -> list[Dict[str, Any]]:
@@ -356,6 +464,29 @@ module emuflow_external_serial_phy_quad #(
   output wire                         common_ready
 );
 endmodule
+
+(* black_box *)
+module emuflow_external_gty_serdes_quad #(
+  parameter [3:0] ACTIVE_CHANNEL_MASK = 4'b0000
+) (
+  input  wire         phy_refclk,
+  input  wire         phy_reset,
+  input  wire [255:0] serdes_tx_data,
+  input  wire [7:0]   serdes_tx_hdr,
+  output wire [255:0] serdes_rx_data,
+  output wire [7:0]   serdes_rx_hdr,
+  input  wire [3:0]   serdes_rx_bitslip,
+  input  wire [3:0]   serdes_rx_reset_req,
+  output wire [3:0]   tx_usrclk,
+  output wire [3:0]   rx_usrclk,
+  output wire [3:0]   txp,
+  output wire [3:0]   txn,
+  input  wire [3:0]   rxp,
+  input  wire [3:0]   rxn,
+  output wire [3:0]   lane_ready,
+  output wire         common_ready
+);
+endmodule
 """
 
 
@@ -435,6 +566,404 @@ def serial_gt_site_xdc(
     return "\n".join(lines) + "\n"
 
 
+def _serial_wrapper_v3_rtl(
+    platform: Platform,
+    fpga: str,
+    sites: Sequence[Mapping[str, Any]],
+    board_services: Mapping[str, Any],
+    transceiver_quads: Sequence[Mapping[str, Any]],
+    runtime_sync_node: Mapping[str, Any],
+    runtime_sync_parameters: Mapping[str, Any],
+    runtime_sync_edges: Sequence[Mapping[str, Any]],
+) -> str:
+    """Generate the open-PCS wrapper around a parallel 66-bit GT boundary."""
+    incident = _incident_links(platform, fpga)
+    site_by_key = {
+        (site["link"], site["physical_lane"]): site for site in sites
+    }
+    site_index_by_key = {
+        (site["link"], site["physical_lane"]): index
+        for index, site in enumerate(sites)
+    }
+    edge_by_key = {
+        (edge["link"], edge["physical_lane"]): edge
+        for edge in runtime_sync_edges
+    }
+    if len(edge_by_key) != len(runtime_sync_edges):
+        raise ValidationError("runtime synchronization repeats a physical lane")
+    quads = list(transceiver_quads)
+    covered_sites = {
+        channel["site_index"]
+        for quad in quads
+        for channel in quad["channels"]
+    }
+    if covered_sites != set(range(len(sites))):
+        raise ValidationError(
+            "open-PCS serial wrapper requires a complete GT common map"
+        )
+    if len(platform.fpgas) > 1 and not runtime_sync_edges:
+        raise ValidationError("open-PCS serial wrapper requires runtime sync edges")
+
+    ports = ["  input  wire fabric_clk", "  input  wire reset"]
+    for link in incident:
+        peer = link.endpoints[1] if link.endpoints[0] == fpga else link.endpoints[0]
+        width = link.transport_bits_per_cycle_per_direction
+        suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
+        ports.extend(
+            [
+                f"  input  wire [{width - 1}:0] tx_{suffix}",
+                f"  output wire [{width - 1}:0] rx_{suffix}",
+            ]
+        )
+    for clock in board_services["reference_clocks"]:
+        p, n = _clock_ports(clock["id"])
+        ports.extend((f"  input  wire {p}", f"  input  wire {n}"))
+    for reset_binding in board_services["resets"]:
+        ports.append(f"  input  wire {_reset_port(reset_binding['id'])}")
+    for site in sites:
+        for direction in ("tx", "rx"):
+            record = site[direction]
+            if record is None:
+                continue
+            io = "output wire" if direction == "tx" else "input  wire"
+            ports.extend(
+                f"  {io} {record['ports'][polarity]}"
+                for polarity in ("p", "n")
+            )
+    ports.append("  output wire links_ready")
+    lines = [
+        "// Generated open-PCS wrapper; only the parallel GT SerDes is external.",
+        f"module {_wrapper_module_name(fpga)} (",
+        ",\n".join(ports),
+        ");",
+        "",
+    ]
+
+    ready_terms = []
+    domain_wires = {}
+    for index, domain in enumerate(board_services["clock_reset_domains"]):
+        stem = f"service_{index}"
+        clock = next(
+            item
+            for item in board_services["reference_clocks"]
+            if item["id"] == domain["reference_clock_binding"]
+        )
+        reset_binding = next(
+            item
+            for item in board_services["resets"]
+            if item["id"] == domain["reset_binding"]
+        )
+        clock_p, clock_n = _clock_ports(clock["id"])
+        reset_port = _reset_port(reset_binding["id"])
+        active_low = 1 if reset_binding["polarity"] == "active_low" else 0
+        lines.extend(
+            [
+                f"  wire {stem}_phy_refclk;",
+                f"  wire {stem}_phy_reset;",
+                f"  wire {stem}_ready;",
+                f"  {SERIAL_CLOCK_RESET_MODULE} #(",
+                f"    .BOARD_RESET_ACTIVE_LOW({active_low})",
+                f"  ) {stem}_clock_reset (",
+                f"    .refclk_p({clock_p}), .refclk_n({clock_n}),",
+                f"    .board_reset({reset_port}),",
+                f"    .phy_refclk({stem}_phy_refclk),",
+                f"    .phy_reset({stem}_phy_reset), .ready({stem}_ready)",
+                "  );",
+                "",
+            ]
+        )
+        domain_wires[domain["id"]] = stem
+        ready_terms.append(f"{stem}_ready")
+
+    children = runtime_sync_node["children"]
+    child_ports = max(1, len(children))
+    child_index = {child: index for index, child in enumerate(children)}
+    active_mask = (1 << len(children)) - 1
+    epoch_bits = runtime_sync_parameters["epoch_bits"]
+    lines.extend(
+        [
+            "  wire local_phy_ready;",
+            f"  wire [{child_ports - 1}:0] sync_child_subtree_ready;",
+            "  wire sync_parent_start_valid;",
+            f"  wire [{epoch_bits - 1}:0] sync_parent_start_epoch;",
+            "  wire sync_subtree_ready;",
+            "  wire sync_child_start_valid;",
+            f"  wire [{epoch_bits - 1}:0] sync_child_start_epoch;",
+            "  wire sync_global_ready;",
+            "  wire sync_faulted;",
+            f"  wire [{epoch_bits - 1}:0] sync_epoch_debug;",
+            "",
+        ]
+    )
+    if not children:
+        lines.append("  assign sync_child_subtree_ready = 1'b0;")
+    if runtime_sync_node["parent"] is None:
+        lines.extend(
+            [
+                "  assign sync_parent_start_valid = 1'b0;",
+                f"  assign sync_parent_start_epoch = {epoch_bits}'b0;",
+            ]
+        )
+    lines.extend(
+        [
+            "  (* keep_hierarchy = \"yes\", dont_touch = \"yes\" *)",
+            f"  {RUNTIME_SYNC_NODE_MODULE} #(",
+            f"    .EPOCH_BITS({epoch_bits}), .CHILD_PORTS({child_ports}),",
+            f"    .ACTIVE_CHILD_MASK({child_ports}'h{active_mask:x}),",
+            f"    .IS_ROOT({1 if runtime_sync_node['role'] == 'root' else 0}),",
+            f"    .START_MARGIN_CYCLES({runtime_sync_parameters['start_margin_cycles']}),",
+            f"    .READY_STABLE_CYCLES({runtime_sync_parameters['ready_stable_cycles']})",
+            "  ) runtime_sync (",
+            "    .fabric_clk(fabric_clk), .reset(reset),",
+            "    .local_ready(local_phy_ready),",
+            "    .child_subtree_ready(sync_child_subtree_ready),",
+            "    .parent_start_valid(sync_parent_start_valid),",
+            "    .parent_start_epoch(sync_parent_start_epoch),",
+            "    .subtree_ready(sync_subtree_ready),",
+            "    .child_start_valid(sync_child_start_valid),",
+            "    .child_start_epoch(sync_child_start_epoch),",
+            "    .global_ready(sync_global_ready),",
+            "    .faulted(sync_faulted), .epoch(sync_epoch_debug)",
+            "  );",
+            "  assign links_ready = sync_global_ready;",
+            "",
+        ]
+    )
+
+    for quad_index, quad in enumerate(quads):
+        stem = f"quad_{quad_index}"
+        channel_by_index = {
+            channel["channel_index"]: channel for channel in quad["channels"]
+        }
+        active_channel_mask = sum(1 << index for index in channel_by_index)
+        domain_stem = domain_wires.get(quad.get("clock_reset_domain"))
+        phy_refclk = (
+            f"{domain_stem}_phy_refclk" if domain_stem is not None else "1'b0"
+        )
+        phy_reset = (
+            f"{domain_stem}_phy_reset" if domain_stem is not None else "reset"
+        )
+        rxp_pieces = []
+        rxn_pieces = []
+        for channel_index in reversed(range(4)):
+            channel = channel_by_index.get(channel_index)
+            if channel is None:
+                rxp_pieces.append("1'b0")
+                rxn_pieces.append("1'b0")
+                continue
+            site = sites[channel["site_index"]]
+            rxp_pieces.append(
+                site["rx"]["ports"]["p"] if site["rx"] is not None else "1'b0"
+            )
+            rxn_pieces.append(
+                site["rx"]["ports"]["n"] if site["rx"] is not None else "1'b0"
+            )
+        lines.extend(
+            [
+                f"  wire [255:0] {stem}_serdes_tx_data;",
+                f"  wire [7:0] {stem}_serdes_tx_hdr;",
+                f"  wire [255:0] {stem}_serdes_rx_data;",
+                f"  wire [7:0] {stem}_serdes_rx_hdr;",
+                f"  wire [3:0] {stem}_rx_bitslip;",
+                f"  wire [3:0] {stem}_rx_reset_req;",
+                f"  wire [3:0] {stem}_tx_usrclk;",
+                f"  wire [3:0] {stem}_rx_usrclk;",
+                f"  wire [3:0] {stem}_txp;",
+                f"  wire [3:0] {stem}_txn;",
+                f"  wire [3:0] {stem}_rxp = {{{', '.join(rxp_pieces)}}};",
+                f"  wire [3:0] {stem}_rxn = {{{', '.join(rxn_pieces)}}};",
+                f"  wire [3:0] {stem}_lane_ready;",
+                f"  wire {stem}_common_ready;",
+                f"  {SERIAL_GTY_SERDES_QUAD_MODULE} #(",
+                f"    .ACTIVE_CHANNEL_MASK(4'b{active_channel_mask:04b})",
+                f"  ) {stem}_phy (",
+                f"    .phy_refclk({phy_refclk}), .phy_reset({phy_reset}),",
+                f"    .serdes_tx_data({stem}_serdes_tx_data),",
+                f"    .serdes_tx_hdr({stem}_serdes_tx_hdr),",
+                f"    .serdes_rx_data({stem}_serdes_rx_data),",
+                f"    .serdes_rx_hdr({stem}_serdes_rx_hdr),",
+                f"    .serdes_rx_bitslip({stem}_rx_bitslip),",
+                f"    .serdes_rx_reset_req({stem}_rx_reset_req),",
+                f"    .tx_usrclk({stem}_tx_usrclk), .rx_usrclk({stem}_rx_usrclk),",
+                f"    .txp({stem}_txp), .txn({stem}_txn),",
+                f"    .rxp({stem}_rxp), .rxn({stem}_rxn),",
+                f"    .lane_ready({stem}_lane_ready),",
+                f"    .common_ready({stem}_common_ready)",
+                "  );",
+                "",
+            ]
+        )
+        ready_terms.append(f"{stem}_common_ready")
+        for channel_index, channel in sorted(channel_by_index.items()):
+            site_index = channel["site_index"]
+            site = sites[site_index]
+            link = next(item for item in incident if item.id == site["link"])
+            suffix = f"{_sv_name(link.id)}_{_sv_name(site['peer'])}"
+            lower = site["physical_lane"] * 64
+            edge = edge_by_key.get((site["link"], site["physical_lane"]))
+            tx_data_active = (
+                site["tx"] is not None
+                and site["tx"].get("activation") != "runtime_sync_control_plane"
+            )
+            rx_data_active = (
+                site["rx"] is not None
+                and site["rx"].get("activation") != "runtime_sync_control_plane"
+            )
+            tx_valid_constant = "1'b1" if tx_data_active else "1'b0"
+            lines.extend(
+                [
+                    f"  reg [15:0] site_{site_index}_tx_sequence;",
+                    f"  wire site_{site_index}_tx_ready;",
+                    f"  wire site_{site_index}_rx_valid;",
+                    f"  wire [15:0] site_{site_index}_rx_sequence;",
+                    f"  wire [63:0] site_{site_index}_rx_data;",
+                    f"  wire site_{site_index}_pcs_ready;",
+                    f"  wire site_{site_index}_release_started;",
+                    f"  wire site_{site_index}_edge_error;",
+                    "  always @(posedge fabric_clk) begin",
+                    "    if (reset) "
+                    f"site_{site_index}_tx_sequence <= 16'b0;",
+                    f"    else if (sync_global_ready && {tx_valid_constant} && site_{site_index}_tx_ready) ",
+                    f"site_{site_index}_tx_sequence <= site_{site_index}_tx_sequence + 1'b1;",
+                    "  end",
+                ]
+            )
+            module = (
+                "emuflow_runtime_sync_pcs_edge"
+                if edge is not None
+                else "emuflow_data_pcs_edge"
+            )
+            if edge is not None:
+                edge_lines = [
+                    f"  wire site_{site_index}_remote_subtree_ready;",
+                    f"  wire site_{site_index}_remote_start_valid;",
+                    f"  wire [31:0] site_{site_index}_remote_start_epoch;",
+                ]
+                if edge["role"] == "parent":
+                    local_subtree = "1'b0"
+                    local_start_valid = "sync_child_start_valid"
+                    local_start_epoch = "sync_child_start_epoch"
+                    edge_lines.append(
+                        f"  assign sync_child_subtree_ready[{child_index[edge['peer']]}] = site_{site_index}_remote_subtree_ready;"
+                    )
+                else:
+                    local_subtree = "sync_subtree_ready"
+                    local_start_valid = "1'b0"
+                    local_start_epoch = "32'b0"
+                    edge_lines.extend(
+                        [
+                            f"  assign sync_parent_start_valid = site_{site_index}_remote_start_valid;",
+                            f"  assign sync_parent_start_epoch = site_{site_index}_remote_start_epoch;",
+                        ]
+                    )
+                edge_lines.append(
+                    "  (* keep_hierarchy = \"yes\", dont_touch = \"yes\" *)"
+                )
+                edge_lines.append(
+                    f"  {module} #(.ROLE_PARENT({1 if edge['role'] == 'parent' else 0})) site_{site_index}_pcs ("
+                )
+                lines.extend(edge_lines)
+            else:
+                lines.extend(
+                    [
+                        "  (* keep_hierarchy = \"yes\", dont_touch = \"yes\" *)",
+                        f"  {module} site_{site_index}_pcs (",
+                    ]
+                )
+            lines.extend(
+                [
+                    "    .fabric_clk(fabric_clk), .fabric_reset(reset),",
+                    f"    .data_tx_valid(sync_global_ready && {tx_valid_constant}),",
+                    f"    .data_tx_ready(site_{site_index}_tx_ready),",
+                    f"    .data_tx_sequence(site_{site_index}_tx_sequence),",
+                    "    .data_tx_payload("
+                    + (f"tx_{suffix}[{lower} +: 64]" if tx_data_active else "64'b0")
+                    + "),",
+                    f"    .data_rx_valid(site_{site_index}_rx_valid),",
+                    "    .data_rx_ready(1'b1),",
+                    f"    .data_rx_sequence(site_{site_index}_rx_sequence),",
+                    f"    .data_rx_payload(site_{site_index}_rx_data),",
+                ]
+            )
+            if edge is not None:
+                lines.extend(
+                    [
+                        f"    .local_subtree_ready({local_subtree}),",
+                        f"    .local_start_valid({local_start_valid}),",
+                        f"    .local_start_epoch({local_start_epoch}),",
+                        f"    .remote_subtree_ready(site_{site_index}_remote_subtree_ready),",
+                        f"    .remote_start_valid(site_{site_index}_remote_start_valid),",
+                        f"    .remote_start_epoch(site_{site_index}_remote_start_epoch),",
+                    ]
+                )
+            lines.extend(
+                [
+                    f"    .pcs_tx_clk({stem}_tx_usrclk[{channel_index}]),",
+                    f"    .pcs_tx_reset({phy_reset}),",
+                    f"    .pcs_rx_clk({stem}_rx_usrclk[{channel_index}]),",
+                    f"    .pcs_rx_reset({phy_reset}),",
+                    f"    .serdes_tx_data({stem}_serdes_tx_data[{channel_index * 64} +: 64]),",
+                    f"    .serdes_tx_hdr({stem}_serdes_tx_hdr[{channel_index * 2} +: 2]),",
+                    f"    .serdes_rx_data({stem}_serdes_rx_data[{channel_index * 64} +: 64]),",
+                    f"    .serdes_rx_hdr({stem}_serdes_rx_hdr[{channel_index * 2} +: 2]),",
+                    f"    .serdes_rx_bitslip({stem}_rx_bitslip[{channel_index}]),",
+                    f"    .serdes_rx_reset_req({stem}_rx_reset_req[{channel_index}]),",
+                    f"    .link_ready(site_{site_index}_pcs_ready),",
+                    f"    .release_started(site_{site_index}_release_started),",
+                    f"    .edge_error(site_{site_index}_edge_error)",
+                    "  );",
+                    "",
+                ]
+            )
+            if site["tx"] is not None:
+                lines.extend(
+                    [
+                        f"  assign {site['tx']['ports']['p']} = {stem}_txp[{channel_index}];",
+                        f"  assign {site['tx']['ports']['n']} = {stem}_txn[{channel_index}];",
+                    ]
+                )
+            # An RX-active data lane, and every control lane, must establish PCS lock.
+            if rx_data_active or edge is not None:
+                ready_terms.append(f"site_{site_index}_pcs_ready")
+            ready_terms.extend(
+                [
+                    f"{stem}_lane_ready[{channel_index}]",
+                    f"~site_{site_index}_edge_error",
+                ]
+            )
+            lines.append("")
+
+    for link in incident:
+        peer = link.endpoints[1] if link.endpoints[0] == fpga else link.endpoints[0]
+        suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
+        pieces = []
+        for lane in reversed(range(link.data_lanes_per_direction)):
+            site = site_by_key.get((link.id, lane))
+            if site is None:
+                pieces.append("64'b0")
+                continue
+            index = site_index_by_key[(link.id, lane)]
+            data_rx_active = (
+                site["rx"] is not None
+                and site["rx"].get("activation") != "runtime_sync_control_plane"
+            )
+            pieces.append(
+                f"(site_{index}_rx_valid ? site_{index}_rx_data : 64'b0)"
+                if data_rx_active
+                else "64'b0"
+            )
+        lines.append(f"  assign rx_{suffix} = {{{', '.join(pieces)}}};")
+    lines.extend(
+        [
+            f"  assign local_phy_ready = {' & '.join(ready_terms)};",
+            "",
+            "endmodule",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def serial_wrapper_rtl(
     platform: Platform,
     fpga: str,
@@ -442,10 +971,26 @@ def serial_wrapper_rtl(
     board_services: Optional[Mapping[str, Any]] = None,
     provider_schema: Optional[str] = None,
     transceiver_quads: Optional[Sequence[Mapping[str, Any]]] = None,
+    runtime_sync_node: Optional[Mapping[str, Any]] = None,
+    runtime_sync_parameters: Optional[Mapping[str, Any]] = None,
+    runtime_sync_edges: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> str:
     board_services = board_services or {
         "reference_clocks": [], "resets": [], "clock_reset_domains": []
     }
+    if provider_schema == SERIAL_PHY_PROVIDER_V3_SCHEMA:
+        if runtime_sync_node is None or runtime_sync_parameters is None:
+            raise ValidationError("serial PHY v3 requires runtime sync topology")
+        return _serial_wrapper_v3_rtl(
+            platform,
+            fpga,
+            sites,
+            board_services,
+            list(transceiver_quads or []),
+            runtime_sync_node,
+            runtime_sync_parameters,
+            list(runtime_sync_edges or []),
+        )
     incident = _incident_links(platform, fpga)
     site_by_key = {
         (site["link"], site["physical_lane"]): site for site in sites
@@ -777,7 +1322,11 @@ def _validate_transport_connections(
     site_kinds: Dict[Tuple[str, str], set[str]] = defaultdict(set)
     for site in sites:
         for kind in ("tx", "rx"):
-            if site[kind] is not None:
+            if (
+                site[kind] is not None
+                and site[kind].get("activation")
+                != "runtime_sync_control_plane"
+            ):
                 site_kinds[(site["link"], site["peer"])].add(kind)
     if kinds != site_kinds:
         raise ValidationError(
@@ -810,6 +1359,7 @@ def serial_integration_shell_rtl(
     board_services: Optional[Mapping[str, Any]] = None,
     runtime_sync_node: Optional[Mapping[str, Any]] = None,
     runtime_sync_parameters: Optional[Mapping[str, Any]] = None,
+    runtime_sync_embedded: bool = False,
 ) -> str:
     board_services = board_services or {
         "reference_clocks": [], "resets": [], "clock_reset_domains": []
@@ -829,7 +1379,7 @@ def serial_integration_shell_rtl(
         f"  output wire [{slot_bits - 1}:0] slot_debug",
         "  output wire links_ready_debug",
     ]
-    if runtime_sync_node is not None:
+    if runtime_sync_node is not None and not runtime_sync_embedded:
         if runtime_sync_parameters is None:
             raise ValidationError("runtime sync node requires topology parameters")
         child_ports = max(1, len(runtime_sync_node["children"]))
@@ -869,7 +1419,7 @@ def serial_integration_shell_rtl(
         "  wire local_links_ready;",
         "  wire links_ready;",
     ]
-    if runtime_sync_node is None:
+    if runtime_sync_node is None or runtime_sync_embedded:
         lines.extend(["  assign links_ready = local_links_ready;", ""])
     else:
         child_ports = max(1, len(runtime_sync_node["children"]))
@@ -1007,6 +1557,17 @@ def build_serial_wrapper_manifest(
             node["fpga"]: node for node in runtime_sync_topology["nodes"]
         }
     sites = _binding_sites(platform, binding)
+    provider_schema = phy_provider.get("schema") if phy_provider is not None else None
+    if provider_schema == SERIAL_PHY_PROVIDER_V3_SCHEMA:
+        if runtime_sync_topology is None:
+            raise ValidationError(
+                "serial PHY v3 requires a bound runtime synchronization topology"
+            )
+        runtime_sync_edges = _activate_runtime_sync_tree_lanes(
+            platform, sites, runtime_sync_topology
+        )
+    else:
+        runtime_sync_edges = {fpga.id: [] for fpga in platform.fpgas}
     overlay_result = (
         validate_board_support_overlay(board_overlay, platform)
         if board_overlay is not None
@@ -1159,8 +1720,18 @@ def build_serial_wrapper_manifest(
             link_sites = [
                 site for site in fpga_sites if site["link"] == link.id
             ]
-            tx_active = any(site["tx"] is not None for site in link_sites)
-            rx_active = any(site["rx"] is not None for site in link_sites)
+            tx_active = any(
+                site["tx"] is not None
+                and site["tx"].get("activation")
+                != "runtime_sync_control_plane"
+                for site in link_sites
+            )
+            rx_active = any(
+                site["rx"] is not None
+                and site["rx"].get("activation")
+                != "runtime_sync_control_plane"
+                for site in link_sites
+            )
             transport_connections.append(
                 {
                     "link": link.id,
@@ -1192,6 +1763,7 @@ def build_serial_wrapper_manifest(
                 "board_service_constraints_status": constraints_status,
                 "gt_site_constraints_status": gt_site_constraints_status,
                 "transceiver_quads": transceiver_quads,
+                "runtime_sync_edges": runtime_sync_edges[fpga.id],
                 "sites": fpga_sites,
                 **(
                     {"runtime_sync": runtime_sync_nodes[fpga.id]}
@@ -1237,7 +1809,8 @@ def build_serial_wrapper_manifest(
     )
     provider_hardware_source_bound = (
         phy_provider is not None
-        and phy_provider.get("schema") == SERIAL_PHY_PROVIDER_V2_SCHEMA
+        and phy_provider.get("schema")
+        in {SERIAL_PHY_PROVIDER_V2_SCHEMA, SERIAL_PHY_PROVIDER_V3_SCHEMA}
         and phy_provider.get("qualification") == "editable_source_hardware"
         and sum(len(item["transceiver_quads"]) for item in fpgas) > 0
         and trusted_resolved_sites == active_sites
@@ -1245,7 +1818,8 @@ def build_serial_wrapper_manifest(
     provider_bound_modules = (
         sum(len(item["transceiver_quads"]) for item in fpgas)
         if phy_provider is not None
-        and phy_provider.get("schema") == SERIAL_PHY_PROVIDER_V2_SCHEMA
+        and phy_provider.get("schema")
+        in {SERIAL_PHY_PROVIDER_V2_SCHEMA, SERIAL_PHY_PROVIDER_V3_SCHEMA}
         else active_sites
     )
     active_phy_modules = provider_bound_modules
@@ -1265,10 +1839,10 @@ def build_serial_wrapper_manifest(
                 "link_training",
             ]
         )
-        if (
-            phy_provider is not None
-            and phy_provider.get("schema") != SERIAL_PHY_PROVIDER_V2_SCHEMA
-        ):
+        if phy_provider is not None and phy_provider.get("schema") not in {
+            SERIAL_PHY_PROVIDER_V2_SCHEMA,
+            SERIAL_PHY_PROVIDER_V3_SCHEMA,
+        }:
             required_provider_fields.append("quad_shared_common")
     required_provider_fields.extend(
         ["fabric_clock_phase_alignment", "synchronous_reset_release"]
@@ -1276,7 +1850,11 @@ def build_serial_wrapper_manifest(
     if runtime_sync_topology is None:
         required_provider_fields.append("global_ready_consensus")
     else:
-        required_provider_fields.append("runtime_sync_control_transport")
+        required_provider_fields.append(
+            "runtime_sync_control_transport_latency"
+            if provider_schema == SERIAL_PHY_PROVIDER_V3_SCHEMA
+            else "runtime_sync_control_transport"
+        )
     implementation_status = (
         "editable_source_bound_pending_tool_validation"
         if provider_hardware_source_bound
@@ -1296,9 +1874,11 @@ def build_serial_wrapper_manifest(
         "binding_provider": SERIAL_TRANSCEIVER_PROVIDER,
         "phy_contract": {
             "module": (
-                SERIAL_PHY_QUAD_MODULE
+                SERIAL_GTY_SERDES_QUAD_MODULE
+                if provider_schema == SERIAL_PHY_PROVIDER_V3_SCHEMA
+                else SERIAL_PHY_QUAD_MODULE
                 if phy_provider is not None
-                and phy_provider.get("schema") == SERIAL_PHY_PROVIDER_V2_SCHEMA
+                and provider_schema == SERIAL_PHY_PROVIDER_V2_SCHEMA
                 else SERIAL_PHY_MODULE
             ),
             "rtl": "external_serial_phy_contract.sv",
@@ -1492,6 +2072,13 @@ def run_phase6c(
                 phy_provider["schema"] if phy_provider is not None else None
             ),
             transceiver_quads=record["transceiver_quads"],
+            runtime_sync_node=record.get("runtime_sync"),
+            runtime_sync_parameters=(
+                runtime_sync_topology["parameters"]
+                if runtime_sync_topology is not None
+                else None
+            ),
+            runtime_sync_edges=record["runtime_sync_edges"],
         )
         wrapper_path = output_dir / record["rtl"]
         wrapper_path.write_text(wrapper, encoding="utf-8")
@@ -1509,6 +2096,10 @@ def run_phase6c(
                     runtime_sync_topology["parameters"]
                     if runtime_sync_topology is not None
                     else None
+                ),
+                runtime_sync_embedded=(
+                    phy_provider is not None
+                    and phy_provider["schema"] == SERIAL_PHY_PROVIDER_V3_SCHEMA
                 ),
             )
             shell_path = output_dir / record["integration_shell"]
@@ -1561,6 +2152,7 @@ def run_phase6c(
         manifest["vivado_gt_site_map_sha256"] = gt_site_map_digest
         rebuilt["vivado_gt_site_map_sha256"] = gt_site_map_digest
         write_json(output_dir / "vivado_pin_site_map.bound.json", gt_site_map)
+    runtime_sync_rtl = []
     if runtime_sync_topology_path is not None:
         topology_digest = hashlib.sha256(
             runtime_sync_topology_path.read_bytes()
@@ -1592,6 +2184,36 @@ def run_phase6c(
                 sync_source.read_text(encoding="utf-8"), encoding="utf-8"
             )
             runtime_sync_rtl.append(relative.as_posix())
+    open_pcs_rtl = []
+    if (
+        phy_provider is not None
+        and phy_provider["schema"] == SERIAL_PHY_PROVIDER_V3_SCHEMA
+    ):
+        repository_root = Path(__file__).resolve().parents[2]
+        open_pcs_sources = sorted(
+            (repository_root / "engines/corundum_eth/rtl").glob("*.v")
+        )
+        open_pcs_sources.append(
+            repository_root
+            / "engines/corundum_eth/lib/axis/rtl/axis_async_fifo.v"
+        )
+        open_pcs_sources.extend(
+            sorted((repository_root / "rtl/pcs").glob("*.sv"))
+        )
+        if not open_pcs_sources or any(
+            not source.is_file() for source in open_pcs_sources
+        ):
+            raise ValidationError("in-tree open PCS source closure is incomplete")
+        for source in open_pcs_sources:
+            relative = Path("open_pcs_sources") / source.relative_to(
+                repository_root
+            )
+            destination = output_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(
+                source.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            open_pcs_rtl.append(relative.as_posix())
     write_json(output_dir / "serial_wrapper_manifest.json", manifest)
     if read_json(output_dir / "serial_wrapper_manifest.json") != rebuilt:
         raise ValidationError("serial wrapper manifest is not reproducible")
@@ -1606,6 +2228,9 @@ def run_phase6c(
             if not manifest["phy_contract"]["required_provider_fields"]
             and manifest["phy_contract"]["implementation_status"]
             == "editable_source_bound_pending_tool_validation"
+            else "blocked_on_board_latency_and_clock_proof"
+            if phy_provider is not None
+            and phy_provider["schema"] == SERIAL_PHY_PROVIDER_V3_SCHEMA
             else "blocked_on_external_phy_provider"
         ),
         "validation": dict(manifest["metrics"]),
@@ -1619,6 +2244,11 @@ def run_phase6c(
                     )
                 }
                 if phy_provider is not None
+                else {}
+            ),
+            **(
+                {"open_pcs_rtl": open_pcs_rtl}
+                if open_pcs_rtl
                 else {}
             ),
             **(

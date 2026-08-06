@@ -68,6 +68,7 @@ class SerialPhyElaborationTest(unittest.TestCase):
         self.assertIn("common_locs=$actual_common_locs", script)
         self.assertIn("channel_cells=$actual_channel_cells", script)
         self.assertIn("common_cells=$actual_common_cells", script)
+        self.assertIn("NAME =~ */runtime_sync", script)
         self.assertIn("exit 10", script)
         self.assertIn("exit 6", script)
 
