@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Sequence
 from .architecture import ArchitectureDB
 from .benchmark import run_benchmark
 from .board_arm_mps4 import materialize_arm_mps4_boarddb
+from .board_support import validate_board_support_overlay_file
 from .bsp import run_phase8a
 from .cross_stage import (
     evaluate_cross_stage_candidate,
@@ -170,6 +171,13 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_mps4.add_argument(
         "--utilization-limit", type=float, default=0.75
     )
+    platform_overlay = platform_subparsers.add_parser(
+        "overlay-validate",
+        help="validate board-specific site, reference-clock, and reset bindings",
+    )
+    platform_overlay.add_argument("--platform", type=Path, required=True)
+    platform_overlay.add_argument("--overlay", type=Path, required=True)
+    platform_overlay.add_argument("--normalized-out", type=Path)
 
     contest_parser = subparsers.add_parser(
         "contest", help="public multi-FPGA contest format adapters"
@@ -1551,6 +1559,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6c.add_argument(
         "--transport", action="append", default=[], metavar="FPGA=PATH"
     )
+    phase6c.add_argument(
+        "--board-overlay",
+        type=Path,
+        help="validated board-specific GT site, reference-clock, and reset bindings",
+    )
     phase6c.add_argument("--out", type=Path, required=True)
 
     package_pin = subparsers.add_parser(
@@ -1671,6 +1684,14 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 latency_cycles=args.latency_cycles,
                 utilization_limit=args.utilization_limit,
+            )
+            _print_json(report)
+            return 0
+        if args.platform_command == "overlay-validate":
+            report = validate_board_support_overlay_file(
+                platform_path=args.platform,
+                overlay_path=args.overlay,
+                normalized_out=args.normalized_out,
             )
             _print_json(report)
             return 0
@@ -2525,6 +2546,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 if args.transport
                 else None
             ),
+            board_overlay_path=args.board_overlay,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.board_arm_mps4 import materialize_arm_mps4_boarddb
+from emuflow.board_support import BOARD_SUPPORT_OVERLAY_SCHEMA
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.physical_pins import (
@@ -126,6 +127,59 @@ class SerialWrapperTest(unittest.TestCase):
                 ),
             }
             for fpga in ("mps4_1", "mps4_2", "mps4_3")
+        }
+        self.overlay = {
+            "schema": BOARD_SUPPORT_OVERLAY_SCHEMA,
+            "platform": self.platform.name,
+            "qualification": "source_backed_hardware_definition",
+            "provenance": {
+                "sources": [
+                    {
+                        "title": "Unit-test board definition",
+                        "uri": "https://example.invalid/unit-test-board",
+                        "locator": "synthetic test fixture only",
+                    }
+                ]
+            },
+            "reference_clocks": [
+                {
+                    "id": f"{fpga}_refclk0",
+                    "fpga": fpga,
+                    "board_service": "b2b_mgt_refclk_pool",
+                    "selected_signal": "B2B_CLK[0]",
+                    "package_pins": {
+                        "p": f"{fpga.upper()}_REFP",
+                        "n": f"{fpga.upper()}_REFN",
+                    },
+                    "frequency_mhz": 156.25,
+                    "frequency_basis": "documented",
+                }
+                for fpga in ("mps4_1", "mps4_2")
+            ],
+            "resets": [
+                {
+                    "id": f"{fpga}_reset",
+                    "fpga": fpga,
+                    "board_service": "cb_npor",
+                    "package_pin": f"{fpga.upper()}_RST",
+                }
+                for fpga in ("mps4_1", "mps4_2")
+            ],
+            "transceiver_sites": [
+                {
+                    "fpga": fpga,
+                    "link": "mps4_b2b_1",
+                    "connector": connector,
+                    "mgt_group": mgt,
+                    "physical_lane": 0,
+                    "site": site,
+                    "reference_clock_binding": f"{fpga}_refclk0",
+                }
+                for fpga, connector, mgt, site in (
+                    ("mps4_1", "J49", "MGT0", "GTYE4_CHANNEL_X0Y0"),
+                    ("mps4_2", "J48", "MGT1", "GTYE4_CHANNEL_X0Y1"),
+                )
+            ],
         }
 
     def tearDown(self) -> None:
@@ -268,6 +322,71 @@ class SerialWrapperTest(unittest.TestCase):
         self.assertNotIn(".rx_mps4_b2b_1_mps4_2(", source_transport)
         self.assertIn(".rx_mps4_b2b_1_mps4_1(", sink_transport)
         self.assertNotIn(".tx_mps4_b2b_1_mps4_1(", sink_transport)
+
+    def test_source_backed_overlay_resolves_site_and_refclk_data_only(self) -> None:
+        manifest = build_serial_wrapper_manifest(
+            self.platform, self.binding, board_overlay=self.overlay
+        )
+        self.assertEqual(
+            manifest["metrics"]["source_backed_resolved_transceiver_sites"], 2
+        )
+        self.assertEqual(manifest["metrics"]["unresolved_transceiver_sites"], 0)
+        self.assertNotIn(
+            "transceiver_site",
+            manifest["phy_contract"]["required_provider_fields"],
+        )
+        self.assertIn(
+            "reset_synchronization",
+            manifest["phy_contract"]["required_provider_fields"],
+        )
+        source = next(
+            item for item in manifest["fpgas"] if item["fpga"] == "mps4_1"
+        )
+        self.assertEqual(
+            source["sites"][0]["transceiver_site_status"],
+            "resolved_source_backed",
+        )
+        self.assertEqual(
+            source["sites"][0]["transceiver_site"],
+            "GTYE4_CHANNEL_X0Y0",
+        )
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding-overlay.json"
+        overlay_path = root / "overlay.json"
+        output = root / "phase6c-overlay"
+        write_json(binding_path, self.binding)
+        write_json(overlay_path, self.overlay)
+        report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            output,
+            board_overlay_path=overlay_path,
+        )
+        self.assertEqual(
+            report["hardware_release_status"],
+            "blocked_on_external_phy_provider",
+        )
+        written = read_json(output / "serial_wrapper_manifest.json")
+        self.assertEqual(len(written["board_overlay_sha256"]), 64)
+
+    def test_unverified_overlay_does_not_reduce_hardware_gaps(self) -> None:
+        overlay = copy.deepcopy(self.overlay)
+        overlay["qualification"] = "user_supplied_unverified"
+        manifest = build_serial_wrapper_manifest(
+            self.platform, self.binding, board_overlay=overlay
+        )
+        self.assertEqual(
+            manifest["metrics"]["overlay_bound_transceiver_sites"], 2
+        )
+        self.assertEqual(
+            manifest["metrics"]["source_backed_resolved_transceiver_sites"],
+            0,
+        )
+        self.assertEqual(manifest["metrics"]["unresolved_transceiver_sites"], 2)
+        self.assertIn(
+            "transceiver_site",
+            manifest["phy_contract"]["required_provider_fields"],
+        )
 
 
 if __name__ == "__main__":

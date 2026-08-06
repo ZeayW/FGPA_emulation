@@ -29,7 +29,8 @@
         "implementation_status",
         "required_provider_fields",
         "internal_reset",
-        "board_service_candidates"
+        "board_service_candidates",
+        "board_support_overlay"
       ],
       "properties": {
         "implementation_status": {"const": "black_box_unresolved"},
@@ -49,6 +50,10 @@
             "reference_clocks": {"type": "array"},
             "resets": {"type": "array"}
           }
+        },
+        "board_support_overlay": {
+          "type": "object",
+          "required": ["status"]
         }
       }
     },
@@ -72,6 +77,10 @@
     },
     "metrics": {"type": "object"},
     "binding_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "board_overlay_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     }

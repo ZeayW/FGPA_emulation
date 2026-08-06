@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from .board_support import validate_board_support_overlay
 from .errors import ValidationError
 from .io import read_json, write_json
 from .physical_pins import (
@@ -536,8 +537,41 @@ def build_serial_wrapper_manifest(
     platform: Platform,
     binding: Mapping[str, Any],
     transports: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    board_overlay: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     sites = _binding_sites(platform, binding)
+    overlay_result = (
+        validate_board_support_overlay(board_overlay, platform)
+        if board_overlay is not None
+        else None
+    )
+    overlay = overlay_result["normalized"] if overlay_result is not None else None
+    overlay_sites = (
+        {
+            (item["fpga"], item["link"], item["physical_lane"]): item
+            for item in overlay["transceiver_sites"]
+        }
+        if overlay is not None
+        else {}
+    )
+    resolved_sites = 0
+    for fpga_sites in sites.values():
+        for site in fpga_sites:
+            resolved = overlay_sites.get(
+                (site["fpga"], site["link"], site["physical_lane"])
+            )
+            if resolved is None:
+                continue
+            site["transceiver_site"] = resolved["site"]
+            site["reference_clock_binding"] = resolved[
+                "reference_clock_binding"
+            ]
+            site["transceiver_site_status"] = (
+                "resolved_source_backed"
+                if overlay_result["hardware_qualification"] == "source_backed"
+                else "resolved_unverified"
+            )
+            resolved_sites += 1
     if transports is not None and set(transports) != set(sites):
         raise ValidationError(
             "serial wrapper transports must cover every FPGA exactly once"
@@ -605,6 +639,30 @@ def build_serial_wrapper_manifest(
             _validate_transport_connections(
                 platform, fpga.id, fpga_sites, transports[fpga.id]
             )
+    active_sites = sum(item["active_transceiver_sites"] for item in fpgas)
+    source_backed_site_resolution = (
+        overlay_result is not None
+        and overlay_result["hardware_qualification"] == "source_backed"
+        and resolved_sites == active_sites
+    )
+    source_backed_resolved_sites = (
+        resolved_sites
+        if overlay_result is not None
+        and overlay_result["hardware_qualification"] == "source_backed"
+        else 0
+    )
+    required_provider_fields = [
+        "reset_synchronization",
+        "line_encoding",
+        "reset_sequence",
+        "link_training",
+    ]
+    if not source_backed_site_resolution:
+        required_provider_fields[0:0] = [
+            "transceiver_site",
+            "reference_clock_selection",
+            "reference_clock_package_binding",
+        ]
     return {
         "schema": SERIAL_WRAPPER_SCHEMA,
         "status": "awaiting_external_phy_provider",
@@ -615,15 +673,7 @@ def build_serial_wrapper_manifest(
             "module": SERIAL_PHY_MODULE,
             "rtl": "external_serial_phy_contract.sv",
             "implementation_status": "black_box_unresolved",
-            "required_provider_fields": [
-                "transceiver_site",
-                "reference_clock_selection",
-                "reference_clock_package_binding",
-                "reset_synchronization",
-                "line_encoding",
-                "reset_sequence",
-                "link_training",
-            ],
+            "required_provider_fields": required_provider_fields,
             "internal_reset": {
                 "signal": "reset",
                 "polarity": "active_high",
@@ -635,6 +685,24 @@ def build_serial_wrapper_manifest(
                 ],
                 "resets": [reset.to_dict() for reset in platform.resets],
             },
+            "board_support_overlay": (
+                {
+                    "status": "validated",
+                    "qualification": overlay["qualification"],
+                    "hardware_qualification": overlay_result[
+                        "hardware_qualification"
+                    ],
+                    "reference_clock_bindings": overlay[
+                        "reference_clocks"
+                    ],
+                    "reset_bindings": overlay["resets"],
+                    "transceiver_site_bindings": len(
+                        overlay["transceiver_sites"]
+                    ),
+                }
+                if overlay is not None
+                else {"status": "not_provided"}
+            ),
         },
         "fpgas": fpgas,
         "metrics": {
@@ -648,9 +716,14 @@ def build_serial_wrapper_manifest(
             "active_rx_directions": sum(
                 item["active_rx_directions"] for item in fpgas
             ),
-            "unresolved_phy_modules": sum(
-                item["active_transceiver_sites"] for item in fpgas
+            "overlay_bound_transceiver_sites": resolved_sites,
+            "source_backed_resolved_transceiver_sites": (
+                source_backed_resolved_sites
             ),
+            "unresolved_transceiver_sites": (
+                active_sites - source_backed_resolved_sites
+            ),
+            "unresolved_phy_modules": active_sites,
             "integrated_transport_shells": (
                 len(fpgas) if transports is not None else 0
             ),
@@ -663,6 +736,7 @@ def run_phase6c(
     binding_path: Path,
     output_dir: Path,
     transport_paths: Optional[Mapping[str, Path]] = None,
+    board_overlay_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
     binding = read_json(binding_path)
@@ -674,7 +748,12 @@ def run_phase6c(
         if transport_paths is not None
         else None
     )
-    manifest = build_serial_wrapper_manifest(platform, binding, transports)
+    board_overlay = (
+        read_json(board_overlay_path) if board_overlay_path is not None else None
+    )
+    manifest = build_serial_wrapper_manifest(
+        platform, binding, transports, board_overlay
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     contract = serial_phy_contract_rtl()
     contract_path = output_dir / "external_serial_phy_contract.sv"
@@ -707,8 +786,15 @@ def run_phase6c(
     digest = hashlib.sha256(binding_path.read_bytes()).hexdigest()
     manifest["binding_sha256"] = digest
     write_json(output_dir / "serial_wrapper_manifest.json", manifest)
-    rebuilt = build_serial_wrapper_manifest(platform, binding, transports)
+    rebuilt = build_serial_wrapper_manifest(
+        platform, binding, transports, board_overlay
+    )
     rebuilt["binding_sha256"] = digest
+    if board_overlay_path is not None:
+        overlay_digest = hashlib.sha256(board_overlay_path.read_bytes()).hexdigest()
+        manifest["board_overlay_sha256"] = overlay_digest
+        rebuilt["board_overlay_sha256"] = overlay_digest
+        write_json(output_dir / "serial_wrapper_manifest.json", manifest)
     if read_json(output_dir / "serial_wrapper_manifest.json") != rebuilt:
         raise ValidationError("serial wrapper manifest is not reproducible")
     report = {

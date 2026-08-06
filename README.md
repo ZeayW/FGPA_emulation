@@ -809,6 +809,34 @@ documented 25-Gbps raw ceiling, but requires that implementation to close a
 domain. In either case the model provenance remains
 `configured_model_not_hardware_measured` until hardware characterization.
 
+Missing board-vendor details are supplied through a separate
+`board-support-overlay/v1`, rather than by editing or overstating the public
+BoardDB. The open validator checks every selected clock against the BoardDB
+clock pool, every GT site against its connector/MGT/lane endpoint, reference
+ownership, and package-pin/site uniqueness:
+
+```bash
+emuflow platform overlay-validate \
+  --platform build/platforms/arm-mps4-3board.json \
+  --overlay local/mps4-board-support.json \
+  --normalized-out build/platforms/mps4-board-support.normalized.json
+
+emuflow phase6c \
+  --platform build/platforms/arm-mps4-3board.json \
+  --binding build/phase6b/package_pin_binding.json \
+  --board-overlay local/mps4-board-support.json \
+  --out build/phase6c
+```
+
+An overlay is either explicitly `user_supplied_unverified` or
+`source_backed_hardware_definition`, and Phase 6C hash-binds it into the
+manifest. A complete source-backed overlay can resolve the data fields for GT
+sites and reference clocks. It still cannot resolve the external PHY RTL,
+reset synchronization, encoding, reset sequence, or link training, so the
+hardware-release status remains blocked until those editable-source providers
+are compiled and checked. No private overlay or experimental record is stored
+in this repository.
+
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
 validation, not XCVU13P sign-off. A board-runnable MPS4 result still requires
