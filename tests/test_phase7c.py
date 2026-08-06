@@ -750,6 +750,7 @@ class Phase7CTest(unittest.TestCase):
                 "platform": self.platform.to_dict(),
                 "physical": self._physical_summary(),
                 "routes": self.routes,
+                "link_timing": build_board_link_timing_model(self.platform),
             }.items():
                 paths[name] = root / f"{name}.json"
                 paths[name].write_text(json.dumps(value), encoding="utf-8")
@@ -775,9 +776,16 @@ class Phase7CTest(unittest.TestCase):
                 root / "closed",
                 physical_summary_path=paths["physical"],
                 routes_path=paths["routes"],
+                board_link_timing_path=paths["link_timing"],
             )
             self.assertEqual(closed["status"], "pass")
             self.assertIn("system_timing", closed)
+            self.assertEqual(
+                closed["system_timing"]["paths"][0][
+                    "scheduled_link_tdm_model"
+                ],
+                "board-link-timing-db",
+            )
             for filename in closed["artifacts"].values():
                 self.assertTrue((root / "closed" / filename).is_file())
 

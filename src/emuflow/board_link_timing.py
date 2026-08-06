@@ -170,3 +170,32 @@ def validate_board_link_timing(
         ),
         "final_link_timing_signoff": final_signoff,
     }
+
+
+def directed_route_link_delays(
+    database: Mapping[str, Any], platform: Platform
+) -> Tuple[Dict[str, Dict[str, Dict[str, float]]], Dict[str, Any]]:
+    """Project BoardLinkTimingDB into direction-exact route constraints."""
+    validation = validate_board_link_timing(database, platform)
+    projected: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for record in sorted(
+        database["links"],
+        key=lambda item: (item["link"], item["from"], item["to"]),
+    ):
+        projected.setdefault(record["link"], {}).setdefault(
+            record["from"], {}
+        )[record["to"]] = float(record["delay_bound_ns"])
+    return projected, {
+        "status": "pass",
+        "projection": "direction-exact-link-upper-bounds",
+        "directed_links": validation["directed_links"],
+        "maximum_route_link_delay_ns": max(
+            (
+                delay
+                for by_source in projected.values()
+                for by_sink in by_source.values()
+                for delay in by_sink.values()
+            ),
+            default=0.0,
+        ),
+    }

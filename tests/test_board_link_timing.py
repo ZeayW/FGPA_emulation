@@ -3,6 +3,7 @@ import unittest
 
 from emuflow.board_link_timing import (
     build_board_link_timing_model,
+    directed_route_link_delays,
     validate_board_link_timing,
 )
 from emuflow.errors import ValidationError
@@ -87,6 +88,20 @@ class BoardLinkTimingTest(unittest.TestCase):
         broken["links"][0]["latency_cycles"] = 5
         with self.assertRaisesRegex(ValidationError, "contract"):
             validate_board_link_timing(broken, self.platform)
+
+    def test_route_projection_preserves_directional_asymmetry(self):
+        database = build_board_link_timing_model(self.platform)
+        database["links"][0]["delay_bound_ns"] = 19.0
+        delays, report = directed_route_link_delays(
+            database, self.platform
+        )
+        self.assertEqual(
+            delays["link0"][database["links"][0]["from"]][
+                database["links"][0]["to"]
+            ],
+            19.0,
+        )
+        self.assertEqual(report["projection"], "direction-exact-link-upper-bounds")
 
 
 if __name__ == "__main__":

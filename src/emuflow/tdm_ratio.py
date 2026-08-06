@@ -16,6 +16,7 @@ from .routing import (
     SYSTEM_ROUTES_SCHEMA,
     build_directed_graph,
     normalize_route_constraints,
+    route_link_delay_ns,
 )
 from .tdm import RUNTIME_BARRIER_SLOTS
 
@@ -35,15 +36,21 @@ def _hop_key(
 def _link_delay_model(
     platform: Platform,
     constraints: Mapping[str, Any],
-) -> Dict[str, Tuple[float, float]]:
+) -> Dict[Tuple[str, str, str], Tuple[float, float]]:
     result = {}
     for link in platform.links:
         slot_ns = 1000.0 / link.fabric_clock_mhz
-        base_ns = constraints["link_delay_ns"].get(
-            link.id,
-            link.latency_cycles * slot_ns,
-        )
-        result[link.id] = (float(base_ns), slot_ns)
+        left, right = link.endpoints
+        directions = [(left, right)]
+        if link.direction in {"full_duplex", "half_duplex"}:
+            directions.append((right, left))
+        for source, sink in directions:
+            result[(link.id, source, sink)] = (
+                route_link_delay_ns(
+                    platform, link.id, source, sink, constraints
+                ),
+                slot_ns,
+            )
     return result
 
 
@@ -144,7 +151,9 @@ def _prepare_model(
                     f"route {route['id']!r}: unknown edge {arc_key}"
                 )
             arc = arcs[arc_key]
-            base_ns, beta_ns = link_delays[edge["link"]]
+            base_ns, beta_ns = link_delays[
+                (edge["link"], edge["from"], edge["to"])
+            ]
             raw_hops.append(
                 {
                     "key": key,

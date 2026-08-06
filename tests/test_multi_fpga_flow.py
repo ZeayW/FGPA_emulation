@@ -7,13 +7,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
     run_multi_fpga_flow,
     validate_multi_fpga_flow_report,
 )
 from emuflow.platform import Platform
+from emuflow.tdm import reconstruct_tdm_schedule_timing_paths
 from tests.native_build import tdm_ratio_optimizer, tlr_router
 
 
@@ -121,6 +123,11 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 encoding="utf-8",
             )
             fake_sta.chmod(fake_sta.stat().st_mode | stat.S_IXUSR)
+            platform = Platform.load(PLATFORM)
+            link_timing = build_board_link_timing_model(platform)
+            link_timing["links"][0]["delay_bound_ns"] = 12.0
+            link_timing_path = root / "board-link-timing.json"
+            write_json(link_timing_path, link_timing)
             output = root / "multi"
             report = run_multi_fpga_flow(
                 platform_path=PLATFORM,
@@ -130,6 +137,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 clocks=["clk"],
                 partition_provider="greedy",
                 timing_driven=True,
+                board_link_timing_db=link_timing_path,
                 clock_periods={"clk": 10.0},
                 opensta=str(fake_sta),
                 router=str(tlr_router()),
@@ -139,6 +147,42 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 equivalence_cycles=2,
             )
             self.assertEqual(report["timing"]["status"], "pass")
+            self.assertEqual(
+                report["board_link_timing"]["routing_projection"][
+                    "maximum_route_link_delay_ns"
+                ],
+                12.0,
+            )
+            routes = read_json(output / "system-route/routes.json")
+            self.assertEqual(
+                routes["constraints"]["directed_link_delay_ns"]
+                [platform.links[0].id][link_timing["links"][0]["from"]]
+                [link_timing["links"][0]["to"]],
+                12.0,
+            )
+            schedule = read_json(output / "tdm/schedule.json")
+            ratio_plan = read_json(output / "tdm/ratio_plan.json")
+            delay_by_arc = {
+                (item["link"], item["from"], item["to"]): item[
+                    "delay_bound_ns"
+                ]
+                for item in link_timing["links"]
+            }
+            for hop in ratio_plan["hops"]:
+                self.assertEqual(
+                    hop["base_delay_ns"],
+                    delay_by_arc[(hop["link"], hop["from"], hop["to"])],
+                )
+            reconstructed = reconstruct_tdm_schedule_timing_paths(
+                routes, platform, schedule
+            )
+            self.assertTrue(reconstructed)
+            for path in reconstructed:
+                for hop in path["scheduled_hops"]:
+                    self.assertEqual(
+                        hop["base_link_delay_ns"],
+                        delay_by_arc[(hop["link"], hop["from"], hop["to"])],
+                    )
             self.assertFalse(
                 report["timing"]["partition_weights_applied"]
             )
@@ -168,6 +212,8 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 "timing/path-database.json",
                 "timing/partition-net-weights.json",
                 "timing/cut-timing-paths.json",
+                "timing/board-link-timing.json",
+                "timing/board-link-route-constraints.json",
                 "frame-search/frame-search-report.json",
                 "runtime/runtime_contract.json",
             ):

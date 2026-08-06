@@ -7,6 +7,10 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+from .board_link_timing import (
+    directed_route_link_delays,
+    validate_board_link_timing,
+)
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
     run_frame_length_search,
@@ -29,6 +33,7 @@ from .phase5 import run_phase5
 from .phase6 import run_phase6
 from .phase7c import run_phase7c
 from .platform import Platform
+from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from .sta import (
     derive_partition_net_weights,
     project_sta_path_database,
@@ -113,6 +118,35 @@ def validate_multi_fpga_flow_report(
         if runtime.get("physical", {}).get("status") != "pass":
             raise ValidationError(
                 "multi-FPGA runtime is not closed against physical results"
+            )
+    link_timing = report.get("board_link_timing")
+    if link_timing is not None:
+        link_validation = (
+            link_timing.get("validation")
+            if isinstance(link_timing, dict)
+            else None
+        )
+        route_projection = (
+            link_timing.get("routing_projection")
+            if isinstance(link_timing, dict)
+            else None
+        )
+        if (
+            not isinstance(link_timing, dict)
+            or link_timing.get("status") != "pass"
+            or not isinstance(link_validation, dict)
+            or link_validation.get("status") != "pass"
+            or not isinstance(route_projection, dict)
+            or route_projection.get("status") != "pass"
+            or link_timing.get("applied_to")
+            != [
+                "phase4-system-routing",
+                "phase5-tdm-ratio-and-schedule-timing",
+                "phase7c-system-timing-when-physical",
+            ]
+        ):
+            raise ValidationError(
+                "multi-FPGA BoardLinkTimingDB application is invalid"
             )
     hardware_bsp = report.get("hardware_bsp")
     if hardware_bsp is not None:
@@ -214,6 +248,7 @@ def run_multi_fpga_flow(
     timing_criticality_scale: float = 9.0,
     timing_criticality_exponent: float = 2.0,
     route_constraints: Optional[Path] = None,
+    board_link_timing_db: Optional[Path] = None,
     timing_paths: Optional[Path] = None,
     router: Optional[str] = None,
     frame_slots: Optional[int] = None,
@@ -275,6 +310,11 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "--timing-driven/--architecture-timing-db cannot be combined "
             "with externally projected --timing-paths"
+        )
+    if board_link_timing_db is not None and not timing_driven:
+        raise EmuFlowError(
+            "--board-link-timing-db requires --timing-driven so its bounds "
+            "participate in partition-crossing route/TDM optimization"
         )
     if timing_driven and not clock_periods:
         raise EmuFlowError(
@@ -462,6 +502,45 @@ def run_multi_fpga_flow(
             "partition_weights_applied": partition_provider != "greedy",
         }
 
+    effective_route_constraints = route_constraints
+    link_timing_report = None
+    copied_link_timing_path = None
+    effective_route_constraints_path = None
+    if board_link_timing_db is not None:
+        platform = Platform.load(platform_path)
+        database = read_json(board_link_timing_db.resolve())
+        validation = validate_board_link_timing(database, platform)
+        link_delays, projection = directed_route_link_delays(
+            database, platform
+        )
+        timing_root.mkdir(parents=True, exist_ok=True)
+        copied_link_timing_path = timing_root / "board-link-timing.json"
+        write_json(copied_link_timing_path, database)
+        raw_constraints = (
+            read_json(route_constraints.resolve())
+            if route_constraints is not None
+            else {"schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA}
+        )
+        if not isinstance(raw_constraints, dict):
+            raise ValidationError("route constraints must be an object")
+        raw_constraints = dict(raw_constraints)
+        raw_constraints["directed_link_delay_ns"] = link_delays
+        effective_route_constraints_path = (
+            timing_root / "board-link-route-constraints.json"
+        )
+        write_json(effective_route_constraints_path, raw_constraints)
+        effective_route_constraints = effective_route_constraints_path
+        link_timing_report = {
+            "status": "pass",
+            "validation": validation,
+            "routing_projection": projection,
+            "applied_to": [
+                "phase4-system-routing",
+                "phase5-tdm-ratio-and-schedule-timing",
+                "phase7c-system-timing-when-physical",
+            ],
+        }
+
     phase3_root = output_dir / "partition"
     phase3_report = run_phase3(
         ir_path,
@@ -516,7 +595,7 @@ def run_multi_fpga_flow(
             phase4_root,
             phase5_root,
             max_frame_slots=frame_slots,
-            route_constraints=route_constraints,
+            route_constraints=effective_route_constraints,
             route_max_iterations=route_max_iterations,
             router=router,
             ratio_optimizer=ratio_optimizer,
@@ -529,7 +608,7 @@ def run_multi_fpga_flow(
             assignment_path,
             platform_path,
             phase4_root,
-            constraints_path=route_constraints,
+            constraints_path=effective_route_constraints,
             frame_slots=frame_slots,
             max_iterations=route_max_iterations,
             timing_paths_path=projected_timing_paths,
@@ -600,6 +679,11 @@ def run_multi_fpga_flow(
         runtime_root,
         physical_summary_path=physical_summary_path,
         routes_path=routes_path if physical_summary_path is not None else None,
+        board_link_timing_path=(
+            copied_link_timing_path
+            if physical_summary_path is not None
+            else None
+        ),
     )
     if physical and runtime_report.get("status") != "pass":
         raise ValidationError(
@@ -612,6 +696,11 @@ def run_multi_fpga_flow(
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
         **({"timing": timing_report} if timing_report is not None else {}),
+        **(
+            {"board_link_timing": link_timing_report}
+            if link_timing_report is not None
+            else {}
+        ),
         **(
             {"frame_search": frame_search_report}
             if frame_search_report is not None
@@ -676,6 +765,23 @@ def run_multi_fpga_flow(
                     },
                 }
                 if physical_report is not None
+                else {}
+            ),
+            **(
+                {
+                    "board_link_timing": {
+                        "path": "timing/board-link-timing.json",
+                        "sha256": _sha256(copied_link_timing_path),
+                    },
+                    "board_link_route_constraints": {
+                        "path": "timing/board-link-route-constraints.json",
+                        "sha256": _sha256(
+                            effective_route_constraints_path
+                        ),
+                    },
+                }
+                if copied_link_timing_path is not None
+                and effective_route_constraints_path is not None
                 else {}
             ),
             **(

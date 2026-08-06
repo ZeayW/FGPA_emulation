@@ -20,6 +20,7 @@ from .routing import (
     demands_from_assignment,
     estimate_tdm_ratio,
     normalize_route_constraints,
+    route_link_delay_ns,
     validate_system_routes,
 )
 
@@ -402,18 +403,6 @@ def load_sta_paths(
     return compress_sta_paths(normalize_sta_paths(value, demands))
 
 
-def _link_delay_ns(
-    platform: Platform,
-    link_id: str,
-    constraints: Mapping[str, Any],
-) -> float:
-    overrides = constraints.get("link_delay_ns", {})
-    if link_id in overrides:
-        return float(overrides[link_id])
-    link = next(link for link in platform.links if link.id == link_id)
-    return link.latency_cycles * 1000.0 / link.fabric_clock_mhz
-
-
 def _static_predicted_delay(
     source: str,
     sinks: Sequence[str],
@@ -431,8 +420,12 @@ def _static_predicted_delay(
             if current != distance.get(node):
                 continue
             for arc in adjacency.get(node, []):
-                candidate = current + _link_delay_ns(
-                    platform, arc["link"], constraints
+                candidate = current + route_link_delay_ns(
+                    platform,
+                    arc["link"],
+                    node,
+                    arc["to"],
+                    constraints,
                 )
                 if candidate < distance.get(arc["to"], float("inf")):
                     distance[arc["to"]] = candidate
@@ -491,7 +484,13 @@ def _prepare_native_model(
                 "opposite_arc": arc_index.get(opposite_key, -1),
                 "capacity": capacities[arc["capacity_key"]]["capacity_bits"],
                 "lanes": link.transport_bits_per_cycle_per_direction,
-                "delay_ns": _link_delay_ns(platform, link.id, constraints),
+                "delay_ns": route_link_delay_ns(
+                    platform,
+                    link.id,
+                    arc["from"],
+                    arc["to"],
+                    constraints,
+                ),
                 "beta_ns": 1000.0 / link.fabric_clock_mhz,
                 "is_sll": link.id in sll_links,
             }
@@ -949,7 +948,9 @@ def reconstruct_system_route_timing(
             for sink, link_id in graph[node]:
                 delay_by_node[sink] = (
                     delay_by_node[node]
-                    + _link_delay_ns(platform, link_id, constraints)
+                    + route_link_delay_ns(
+                        platform, link_id, node, sink, constraints
+                    )
                 )
                 queue.append(sink)
         route_delay_by_net[route["net"]] = max(
@@ -989,7 +990,9 @@ def reconstruct_system_route_timing(
                 link = link_by_id[link_id]
                 delay_by_node[sink] = (
                     delay_by_node[node]
-                    + _link_delay_ns(platform, link_id, constraints)
+                    + route_link_delay_ns(
+                        platform, link_id, node, sink, constraints
+                    )
                     + (
                         0.0
                         if link_id in constraints["sll_links"]
@@ -1000,7 +1003,13 @@ def reconstruct_system_route_timing(
                 queue.append(sink)
         if constraints.get("tree_edge_sum_tdm", False):
             route_tdm_delay_by_net[route["net"]] = sum(
-                _link_delay_ns(platform, edge["link"], constraints)
+                route_link_delay_ns(
+                    platform,
+                    edge["link"],
+                    edge["from"],
+                    edge["to"],
+                    constraints,
+                )
                 + (
                     0.0
                     if edge["link"] in constraints["sll_links"]
@@ -1228,8 +1237,8 @@ def validate_native_system_routes(
         while queue:
             node = queue.popleft()
             for sink, link_id in graph[node]:
-                delay_by_node[sink] = delay_by_node[node] + _link_delay_ns(
-                    platform, link_id, constraints
+                delay_by_node[sink] = delay_by_node[node] + route_link_delay_ns(
+                    platform, link_id, node, sink, constraints
                 )
                 queue.append(sink)
         predicted_delay = max(
@@ -1301,14 +1310,22 @@ def validate_native_system_routes(
                 link = link_by_id[link_id]
                 delay_by_node[sink] = (
                     delay_by_node[node]
-                    + _link_delay_ns(platform, link_id, constraints)
+                    + route_link_delay_ns(
+                        platform, link_id, node, sink, constraints
+                    )
                     + (1000.0 / link.fabric_clock_mhz)
                     * (ratios[capacity_key] - 1)
                 )
                 queue.append(sink)
         if constraints.get("tree_edge_sum_tdm", False):
             route_tdm_delay_by_net[net] = sum(
-                _link_delay_ns(platform, edge["link"], constraints)
+                route_link_delay_ns(
+                    platform,
+                    edge["link"],
+                    edge["from"],
+                    edge["to"],
+                    constraints,
+                )
                 + (
                     0.0
                     if edge["link"] in constraints["sll_links"]

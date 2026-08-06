@@ -484,7 +484,12 @@ per legal directed BoardDB arc. The contract preserves the functional
 the nanosecond upper bound to advance independently from `model-only` to
 vendor-characterized and finally hardware-measured evidence. A cycle-count
 change invalidates the existing schedule rather than silently altering only
-the final timing report.
+the final timing report. The main timing-driven compile accepts this database
+as an explicit input and projects its bounds into the Phase 4 route cost and
+Phase 5 TDM objective/reconstruction before retaining the original directed
+records for Phase 7C. The route constraints and both C++ providers preserve
+the full `(link, source, sink)` identity, so asymmetric full-duplex link bounds
+remain direction-exact through optimization and final timing.
 
 When the observation-only `shadow_values` top port is removed, Phase 6 keeps
 the shadow-register net's internal sinks. This preserves the registered

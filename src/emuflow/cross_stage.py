@@ -31,7 +31,7 @@ from .phase3 import run_phase3
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .platform import Platform
-from .routing import validate_system_routes
+from .routing import route_link_delay_ns, validate_system_routes
 from .runtime import build_virtual_runtime, validate_virtual_runtime
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
@@ -96,35 +96,6 @@ def _normalize_feedback_steps(
     return tuple(steps)
 
 
-def _link_delay_ns(
-    platform: Platform,
-    link_id: str,
-    constraints: Mapping[str, Any],
-) -> float:
-    overrides = constraints.get("link_delay_ns", {})
-    if not isinstance(overrides, dict):
-        raise ValidationError("routes.constraints.link_delay_ns is invalid")
-    if link_id in overrides:
-        value = overrides[link_id]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or float(value) < 0.0
-        ):
-            raise ValidationError(
-                f"routes.constraints link delay {link_id!r} is invalid"
-            )
-        return float(value)
-    link = next(
-        (candidate for candidate in platform.links if candidate.id == link_id),
-        None,
-    )
-    if link is None:
-        raise ValidationError(f"route references unknown link {link_id!r}")
-    return link.latency_cycles * 1000.0 / link.fabric_clock_mhz
-
-
 def _scheduled_transport_delay_by_net(
     routes: Mapping[str, Any],
     schedule: Mapping[str, Any],
@@ -183,8 +154,12 @@ def _scheduled_transport_delay_by_net(
                         f"schedule routed hop {key} has negative wait"
                     )
                 link = link_by_id[edge["link"]]
-                edge_delay = _link_delay_ns(
-                    platform, edge["link"], constraints
+                edge_delay = route_link_delay_ns(
+                    platform,
+                    edge["link"],
+                    edge["from"],
+                    edge["to"],
+                    constraints,
                 )
                 edge_delay += (
                     1000.0 / link.fabric_clock_mhz

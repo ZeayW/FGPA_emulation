@@ -1,3 +1,4 @@
+import math
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
@@ -81,6 +82,7 @@ def normalize_route_constraints(
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
             or float(value) < 0.0
         ):
             raise ValidationError(
@@ -88,6 +90,49 @@ def normalize_route_constraints(
                 "expected a non-negative number"
             )
         link_delays[link_id] = float(value)
+
+    raw_directed_delays = raw.get("directed_link_delay_ns", {})
+    if not isinstance(raw_directed_delays, dict):
+        raise ValidationError(
+            "route constraints.directed_link_delay_ns: expected an object"
+        )
+    legal_arcs = set()
+    for link in platform.links:
+        left, right = link.endpoints
+        legal_arcs.add((link.id, left, right))
+        if link.direction in {"full_duplex", "half_duplex"}:
+            legal_arcs.add((link.id, right, left))
+    directed_delays: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for link_id, by_source in raw_directed_delays.items():
+        if not isinstance(link_id, str) or not isinstance(by_source, dict):
+            raise ValidationError(
+                "route constraints.directed_link_delay_ns: invalid link map"
+            )
+        for source, by_sink in by_source.items():
+            if not isinstance(source, str) or not isinstance(by_sink, dict):
+                raise ValidationError(
+                    "route constraints.directed_link_delay_ns: "
+                    "invalid source map"
+                )
+            for sink, value in by_sink.items():
+                if (link_id, source, sink) not in legal_arcs:
+                    raise ValidationError(
+                        "route constraints.directed_link_delay_ns: "
+                        f"unknown arc {(link_id, source, sink)}"
+                    )
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) < 0.0
+                ):
+                    raise ValidationError(
+                        "route constraints.directed_link_delay_ns: "
+                        f"invalid delay for {(link_id, source, sink)}"
+                    )
+                directed_delays.setdefault(link_id, {}).setdefault(
+                    source, {}
+                )[sink] = float(value)
 
     raw_sll_links = raw.get("sll_links", [])
     if not isinstance(raw_sll_links, list) or not all(
@@ -180,6 +225,13 @@ def normalize_route_constraints(
         "max_iterations": raw_iterations,
         "unavailable_links": sorted(set(raw_unavailable)),
         "link_delay_ns": dict(sorted(link_delays.items())),
+        "directed_link_delay_ns": {
+            link_id: {
+                source: dict(sorted(by_sink.items()))
+                for source, by_sink in sorted(by_source.items())
+            }
+            for link_id, by_source in sorted(directed_delays.items())
+        },
         "sll_links": sorted(set(raw_sll_links)),
         "shared_capacity_links": sorted(
             set(raw_shared_links) | boarddb_shared_links
@@ -188,6 +240,25 @@ def normalize_route_constraints(
         "hard_sll_capacity": hard_sll_capacity,
         **optimization_values,
     }
+
+
+def route_link_delay_ns(
+    platform: Platform,
+    link_id: str,
+    source: str,
+    sink: str,
+    constraints: Mapping[str, Any],
+) -> float:
+    """Return a direction-exact delay override with legacy fallback."""
+    directed = constraints.get("directed_link_delay_ns", {})
+    override = directed.get(link_id, {}).get(source, {}).get(sink)
+    if override is not None:
+        return float(override)
+    link_override = constraints.get("link_delay_ns", {}).get(link_id)
+    if link_override is not None:
+        return float(link_override)
+    link = next(link for link in platform.links if link.id == link_id)
+    return link.latency_cycles * 1000.0 / link.fabric_clock_mhz
 
 
 def load_route_constraints(

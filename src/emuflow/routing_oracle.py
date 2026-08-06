@@ -22,19 +22,8 @@ from .routing import (
     demands_from_assignment,
     estimate_tdm_ratio,
     normalize_route_constraints,
+    route_link_delay_ns,
 )
-
-
-def _link_delay_ns(
-    platform: Platform,
-    link_id: str,
-    constraints: Mapping[str, Any],
-) -> float:
-    override = constraints["link_delay_ns"].get(link_id)
-    if override is not None:
-        return float(override)
-    link = next(item for item in platform.links if item.id == link_id)
-    return link.latency_cycles * 1000.0 / link.fabric_clock_mhz
 
 
 def _tree_distances(
@@ -152,7 +141,10 @@ def exact_route_tree_selection(
     lock_choices = itertools.product((0, 1), repeat=len(half_duplex))
     link_by_id = {link.id: link for link in platform.links}
     edge_delay = {
-        key: _link_delay_ns(platform, key[0], constraints) for key in arcs
+        key: route_link_delay_ns(
+            platform, key[0], key[1], key[2], constraints
+        )
+        for key in arcs
     }
     sll_links = set(constraints["sll_links"])
     best = None

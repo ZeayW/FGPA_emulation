@@ -96,6 +96,76 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_cpp_router_preserves_direction_exact_link_delays(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "asymmetric_diamond",
+                ["a", "b", "c", "d"],
+                [
+                    _link("ab", "a", "b"),
+                    _link("bd", "b", "d"),
+                    _link("ac", "a", "c"),
+                    _link("cd", "c", "d"),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [("forward", "a", ["d"]), ("reverse", "d", ["a"])],
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": net,
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 10.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": [net],
+                        }
+                        for net in ("forward", "reverse")
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 32,
+                "directed_link_delay_ns": {
+                    "ab": {"a": {"b": 1.0}, "b": {"a": 5.0}},
+                    "bd": {"b": {"d": 1.0}, "d": {"b": 5.0}},
+                    "ac": {"a": {"c": 5.0}, "c": {"a": 1.0}},
+                    "cd": {"c": {"d": 5.0}, "d": {"c": 1.0}},
+                },
+            },
+            platform,
+        )
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider="timing-aware-route-tdm-cooptimized-v1",
+        )
+        by_net = {route["net"]: route for route in routes["routes"]}
+        self.assertEqual(
+            {edge["link"] for edge in by_net["forward"]["tree_edges"]},
+            {"ab", "bd"},
+        )
+        self.assertEqual(
+            {edge["link"] for edge in by_net["reverse"]["tree_edges"]},
+            {"ac", "cd"},
+        )
+        self.assertEqual(by_net["forward"]["predicted_max_delay_ns"], 2.0)
+        self.assertEqual(by_net["reverse"]["predicted_max_delay_ns"], 2.0)
+
     def test_tree_edge_sum_tdm_counts_each_multicast_edge_once(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

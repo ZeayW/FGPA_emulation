@@ -11,6 +11,16 @@
     "architecture_policy": {"const": "provider-neutral"},
     "runtime": {"type": "object"},
     "physical": {"type": "object"},
+    "board_link_timing": {
+      "type": "object",
+      "properties": {
+        "status": {"const": "pass"},
+        "validation": {"type": "object"},
+        "routing_projection": {"type": "object"},
+        "applied_to": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["status", "validation", "routing_projection", "applied_to"]
+    },
     "hardware_bsp": {
       "type": "object",
       "properties": {

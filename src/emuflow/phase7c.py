@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .board_link_timing import validate_board_link_timing
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
@@ -27,6 +28,7 @@ def run_phase7c(
     output_dir: Path,
     physical_summary_path: Optional[Path] = None,
     routes_path: Optional[Path] = None,
+    board_link_timing_path: Optional[Path] = None,
     simulation_frames: int = 12,
 ) -> Dict[str, Any]:
     schedule = read_json(schedule_path)
@@ -42,6 +44,15 @@ def run_phase7c(
         raise ValidationError(
             "physical Phase 7C closure requires the Phase 4 routes artifact"
         )
+    if board_link_timing_path is not None:
+        if physical_summary is None:
+            raise ValidationError(
+                "BoardLinkTimingDB requires a physical summary for Phase 7C"
+            )
+        board_link_timing = read_json(board_link_timing_path)
+        validate_board_link_timing(board_link_timing, platform)
+        physical_summary = dict(physical_summary)
+        physical_summary["board_link_timing"] = board_link_timing
     routes = read_json(routes_path) if routes_path is not None else None
     qor = aggregate_qor(
         runtime,

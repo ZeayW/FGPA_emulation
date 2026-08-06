@@ -337,13 +337,24 @@ emuflow platform link-timing-model \
 emuflow platform link-timing-validate \
   --platform build/platforms/arm-mps4-3board.json \
   --input build/platforms/arm-mps4-link-timing.json
+
+emuflow multi-fpga compile design.v --top top \
+  --platform build/platforms/arm-mps4-3board.json \
+  --timing-driven --clock-period clk=10 \
+  --board-link-timing-db build/platforms/arm-mps4-link-timing.json \
+  --out build/full-flow
 ```
 
 `BoardLinkTimingDB` covers every legal link direction and distinguishes
 `model-only`, `characterized-upper-bound`, and `measured-upper-bound` evidence.
 Its functional `latency_cycles` must match BoardDB; a different cycle count
 requires regenerating the TDM schedule and transport RTL rather than changing
-only a timing report.
+only a timing report. During compilation, these bounds are applied to both the
+C++ timing-aware system router and C++ TDM-ratio optimizer, inherited by the
+concrete schedule timing checker, and retained for Phase 7C physical timing.
+The routing constraints, Phase 4 C++ router, Phase 5 C++ optimizer, independent
+checkers, and Phase 7C all preserve direction-exact bounds, including
+asymmetric full-duplex links.
 
 `emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
 physical backend. It binds synthesis, baseline VPR packing and

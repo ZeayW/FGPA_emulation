@@ -706,6 +706,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timing-criticality-exponent", type=float, default=2.0
     )
     multi_fpga_compile.add_argument("--route-constraints", type=Path)
+    multi_fpga_compile.add_argument(
+        "--board-link-timing-db",
+        type=Path,
+        help=(
+            "apply versioned board-link delay bounds to timing-driven "
+            "system routing, TDM, and physical system timing"
+        ),
+    )
     multi_fpga_compile.add_argument("--timing-paths", type=Path)
     multi_fpga_compile.add_argument("--router")
     multi_fpga_compile.add_argument("--frame-slots", type=int)
@@ -2501,6 +2509,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.timing_criticality_exponent
             ),
             route_constraints=args.route_constraints,
+            board_link_timing_db=args.board_link_timing_db,
             timing_paths=args.timing_paths,
             router=args.router,
             frame_slots=args.frame_slots,
