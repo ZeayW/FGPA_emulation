@@ -65,6 +65,7 @@ class SerialPhyProviderTest(unittest.TestCase):
                 "clock_reset": "emuflow_external_serial_clock_reset",
                 "lane": "emuflow_external_serial_phy_lane",
             },
+            "implementation": {"kind": "behavioral"},
             "source_root": ".",
             "sources": [
                 {
@@ -163,6 +164,11 @@ class SerialPhyProviderTest(unittest.TestCase):
         self.source_path.write_text(source_text, encoding="utf-8")
         hardware = copy.deepcopy(self.manifest)
         hardware["qualification"] = "editable_source_hardware"
+        hardware["implementation"] = {
+            "kind": "amd_ultrascale_plus_gty",
+            "channel_primitive": "GTYE4_CHANNEL",
+            "reference_clock_primitive": "IBUFDS_GTE4",
+        }
         hardware["sources"][0]["sha256"] = hashlib.sha256(
             source_text.encode("utf-8")
         ).hexdigest()

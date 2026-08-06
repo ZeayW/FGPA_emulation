@@ -3,7 +3,7 @@
   "$id": "https://emuflow.dev/schema/serial-phy-provider-v1.schema.json",
   "title": "EmuFlow editable-source serial PHY provider v1",
   "type": "object",
-  "required": ["schema", "id", "qualification", "supported_parts", "modules", "source_root", "sources", "protocol", "provenance"],
+  "required": ["schema", "id", "qualification", "supported_parts", "modules", "implementation", "source_root", "sources", "protocol", "provenance"],
   "properties": {
     "schema": {"const": "emuflow.serial-phy-provider/v1"},
     "id": {"type": "string", "minLength": 1},
@@ -17,6 +17,15 @@
         "lane": {"const": "emuflow_external_serial_phy_lane"}
       },
       "additionalProperties": false
+    },
+    "implementation": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["behavioral", "amd_ultrascale_plus_gty"]},
+        "channel_primitive": {"type": "string", "minLength": 1},
+        "reference_clock_primitive": {"type": "string", "minLength": 1}
+      }
     },
     "source_root": {"type": "string", "minLength": 1},
     "sources": {

@@ -222,6 +222,15 @@ endmodule
                     "clock_reset": "emuflow_external_serial_clock_reset",
                     "lane": "emuflow_external_serial_phy_lane",
                 },
+                "implementation": (
+                    {
+                        "kind": "amd_ultrascale_plus_gty",
+                        "channel_primitive": "GTYE4_CHANNEL",
+                        "reference_clock_primitive": "IBUFDS_GTE4",
+                    }
+                    if qualification == "editable_source_hardware"
+                    else {"kind": "behavioral"}
+                ),
                 "source_root": ".",
                 "sources": [
                     {

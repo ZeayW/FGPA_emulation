@@ -864,6 +864,10 @@ structural/equivalence tests but can never authorize hardware release;
 `editable_source_hardware` means the implementation is source-visible, not
 that Vivado elaboration, GT placement, timing, DRC, bitstream generation, or
 board training has already passed. Those remain separate checked gates.
+An editable UltraScale+ provider must additionally declare its channel and
+reference-clock primitives (normally `GTYE4_CHANNEL` and `IBUFDS_GTE4`);
+simulation providers declare a behavioral implementation instead. A hardware
+provider containing `(* black_box *)` modules is rejected.
 When Phase 6C consumes the provider, it hash-binds both the provider manifest
 and every inventoried source into its output. A simulation provider leaves the
 release blocked. An editable hardware provider combined with a complete
@@ -895,9 +899,12 @@ report inventories and hashes all inputs and logs, but is deliberately marked
 not validate vendor primitives, GT LOCs, timing, electrical DRC, or a board.
 Replacing `--yosys ...` with `--vivado ...` runs the same source-bound inputs
 through an in-memory, part-specific Vivado RTL elaboration and rejects any
-remaining black boxes. Its qualification is `vivado_rtl_elaboration_only` and
-it has the same non-release boundary; a successful XCVU13P elaboration is not
-GT placement, routing, timing, or electrical sign-off.
+remaining black boxes. For an UltraScale+ hardware provider it also requires
+one declared channel primitive per active transceiver site and one declared
+reference-clock primitive per generated clock/reset domain. Its qualification
+is `vivado_rtl_elaboration_only` and it has the same non-release boundary;
+primitive presence is still not GT LOC coverage, placement, routing, timing,
+protocol correctness, or electrical sign-off.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model

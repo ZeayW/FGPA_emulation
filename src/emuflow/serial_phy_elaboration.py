@@ -59,15 +59,20 @@ def _tcl_quote(value: str) -> str:
 
 
 def build_vivado_elaboration_tcl(
-    sources: Sequence[Path], top: str, part: str, utilization_report: Path
+    sources: Sequence[Path],
+    top: str,
+    part: str,
+    utilization_report: Path,
+    primitive_contract: Optional[Mapping[str, str]] = None,
+    expected_channel_primitives: int = 0,
+    expected_reference_clock_primitives: int = 0,
 ) -> str:
     if not sources:
         raise ValidationError("serial PHY elaboration source list is empty")
     if not top or not part:
         raise ValidationError("Vivado elaboration top/part is invalid")
     source_list = " ".join(_tcl_quote(str(path)) for path in sources)
-    return "\n".join(
-        [
+    lines = [
             "create_project -in_memory -part " + _tcl_quote(part) + " emuflow_phy",
             "foreach source [list " + source_list + "] {",
             "  read_verilog -sv $source",
@@ -82,6 +87,29 @@ def build_vivado_elaboration_tcl(
             "  puts stderr \"EMUFLOW_PHY_ELAB black_boxes=$black_boxes\"",
             "  exit 3",
             "}",
+    ]
+    if primitive_contract is not None:
+        channel_primitive = primitive_contract["channel_primitive"]
+        refclk_primitive = primitive_contract["reference_clock_primitive"]
+        lines.extend(
+            [
+                "set channel_primitives [get_cells -quiet -hier -filter "
+                + _tcl_quote(f"REF_NAME == {channel_primitive}")
+                + "]",
+                "set refclk_primitives [get_cells -quiet -hier -filter "
+                + _tcl_quote(f"REF_NAME == {refclk_primitive}")
+                + "]",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "set channel_primitives [list]",
+                "set refclk_primitives [list]",
+            ]
+        )
+    lines.extend(
+        [
             "set report_handle [open "
             + _tcl_quote(str(utilization_report))
             + " w]",
@@ -89,12 +117,42 @@ def build_vivado_elaboration_tcl(
             "puts $report_handle \"part=" + part + "\"",
             "puts $report_handle \"cells=[llength [get_cells -hier]]\"",
             "puts $report_handle \"black_boxes=[llength $black_boxes]\"",
+            "puts $report_handle \"channel_primitives=[llength $channel_primitives]\"",
+            "puts $report_handle \"reference_clock_primitives=[llength $refclk_primitives]\"",
             "close $report_handle",
+        ]
+    )
+    if primitive_contract is not None:
+        lines.extend(
+            [
+                "if {[llength $channel_primitives] != "
+                + str(expected_channel_primitives)
+                + "} {",
+                "  puts stderr \"EMUFLOW_PHY_ELAB channel_primitive_count="
+                "[llength $channel_primitives] expected="
+                + str(expected_channel_primitives)
+                + "\"",
+                "  exit 4",
+                "}",
+                "if {[llength $refclk_primitives] != "
+                + str(expected_reference_clock_primitives)
+                + "} {",
+                "  puts stderr \"EMUFLOW_PHY_ELAB refclk_primitive_count="
+                "[llength $refclk_primitives] expected="
+                + str(expected_reference_clock_primitives)
+                + "\"",
+                "  exit 5",
+                "}",
+            ]
+        )
+    lines.extend(
+        [
             "puts \"EMUFLOW_PHY_ELAB status=pass top=" + top + " part=" + part + "\"",
             "exit 0",
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def run_serial_phy_elaboration(
@@ -215,7 +273,18 @@ def run_serial_phy_elaboration(
             script_path = output_dir / f"{fpga}.vivado.tcl"
             script_path.write_text(
                 build_vivado_elaboration_tcl(
-                    sources, top, parts[fpga], utilization_path
+                    sources,
+                    top,
+                    parts[fpga],
+                    utilization_path,
+                    (
+                        provider["implementation"]
+                        if provider["implementation"]["kind"]
+                        == "amd_ultrascale_plus_gty"
+                        else None
+                    ),
+                    record["active_transceiver_sites"],
+                    len(record["board_services"]["clock_reset_domains"]),
                 ),
                 encoding="utf-8",
             )

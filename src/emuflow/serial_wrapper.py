@@ -920,6 +920,7 @@ def build_serial_wrapper_manifest(
                     "qualification": phy_provider["qualification"],
                     "supported_parts": phy_provider["supported_parts"],
                     "modules": phy_provider["modules"],
+                    "implementation": phy_provider["implementation"],
                     "protocol": phy_provider["protocol"],
                     "sources": phy_provider["sources"],
                     "provenance": phy_provider["provenance"],

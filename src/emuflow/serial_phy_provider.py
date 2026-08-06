@@ -126,6 +126,40 @@ def validate_serial_phy_provider(
         raise ValidationError("serial PHY clock/reset module name is incompatible")
     if modules.get("lane") != SERIAL_PHY_MODULE:
         raise ValidationError("serial PHY lane module name is incompatible")
+    implementation = manifest.get("implementation")
+    if not isinstance(implementation, dict):
+        raise ValidationError("serial PHY implementation record is missing")
+    implementation_kind = implementation.get("kind")
+    if qualification == "editable_source_hardware":
+        if implementation_kind != "amd_ultrascale_plus_gty":
+            raise ValidationError(
+                "hardware PHY provider must declare amd_ultrascale_plus_gty"
+            )
+        normalized_implementation = {
+            "kind": implementation_kind,
+            "channel_primitive": _string(
+                implementation.get("channel_primitive"),
+                "implementation.channel_primitive",
+            ),
+            "reference_clock_primitive": _string(
+                implementation.get("reference_clock_primitive"),
+                "implementation.reference_clock_primitive",
+            ),
+        }
+        if any(
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", primitive) is None
+            for primitive in (
+                normalized_implementation["channel_primitive"],
+                normalized_implementation["reference_clock_primitive"],
+            )
+        ):
+            raise ValidationError("hardware PHY primitive name is invalid")
+    else:
+        if implementation_kind != "behavioral":
+            raise ValidationError(
+                "simulation PHY provider implementation must be behavioral"
+            )
+        normalized_implementation = {"kind": "behavioral"}
 
     protocol = manifest.get("protocol")
     if not isinstance(protocol, dict):
@@ -237,6 +271,7 @@ def validate_serial_phy_provider(
             "clock_reset": SERIAL_CLOCK_RESET_MODULE,
             "lane": SERIAL_PHY_MODULE,
         },
+        "implementation": normalized_implementation,
         "source_root": raw_root,
         "sources": sorted(inventory, key=lambda item: item["path"]),
         "protocol": normalized_protocol,

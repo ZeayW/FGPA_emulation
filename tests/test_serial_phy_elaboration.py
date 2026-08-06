@@ -33,6 +33,12 @@ class SerialPhyElaborationTest(unittest.TestCase):
             "emuflow_partition_shell_mps4_1",
             "xcvu13p-fhga2104-1-e",
             Path("utilization.rpt"),
+            {
+                "channel_primitive": "GTYE4_CHANNEL",
+                "reference_clock_primitive": "IBUFDS_GTE4",
+            },
+            38,
+            1,
         )
         self.assertIn("create_project -in_memory", script)
         self.assertIn("xcvu13p-fhga2104-1-e", script)
@@ -40,6 +46,9 @@ class SerialPhyElaborationTest(unittest.TestCase):
         self.assertIn("IS_BLACKBOX == 1", script)
         self.assertIn("cells=[llength [get_cells -hier]]", script)
         self.assertIn("black_boxes=[llength $black_boxes]", script)
+        self.assertIn("REF_NAME == GTYE4_CHANNEL", script)
+        self.assertIn("channel_primitive_count", script)
+        self.assertIn("expected=38", script)
 
 
 if __name__ == "__main__":
