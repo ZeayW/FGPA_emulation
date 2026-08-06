@@ -276,7 +276,9 @@ endmodule
         }
         for lane in lanes:
             offset = 20 if lane["connector"] == "J49" else 36
-            site = f"GTYE4_CHANNEL_X0Y{offset + lane['physical_lane']}"
+            channel_y = offset + lane["physical_lane"]
+            site = f"GTYE4_CHANNEL_X0Y{channel_y}"
+            common_site = f"GTYE4_COMMON_X0Y{channel_y // 4}"
             for role, pin in lane["package_pins"].items():
                 rows.setdefault(
                     pin,
@@ -286,6 +288,7 @@ endmodule
                             f"{lane['physical_lane'] % 4}_129"
                         ),
                         "site": site,
+                        "common_site": common_site,
                     },
                 )
         part = next(iter(pins_by_part))
@@ -606,6 +609,7 @@ endmodule
         self.assertEqual(
             report["validation"]["vendor_derived_transceiver_sites"], 2
         )
+        self.assertEqual(report["validation"]["active_transceiver_quads"], 2)
         self.assertEqual(report["validation"]["unresolved_transceiver_sites"], 0)
         manifest = read_json(output / "serial_wrapper_manifest.json")
         self.assertNotIn(
@@ -615,6 +619,14 @@ endmodule
         self.assertIn(
             "reference_clock_package_binding",
             manifest["phy_contract"]["required_provider_fields"],
+        )
+        self.assertEqual(
+            {
+                quad["common_site"]
+                for fpga in manifest["fpgas"]
+                for quad in fpga["transceiver_quads"]
+            },
+            {"GTYE4_COMMON_X0Y5", "GTYE4_COMMON_X0Y9"},
         )
         gt_xdc = (output / "mps4_1.gt_sites.xdc").read_text()
         self.assertIn(

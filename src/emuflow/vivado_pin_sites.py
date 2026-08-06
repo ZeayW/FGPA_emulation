@@ -14,7 +14,7 @@ from .io import read_json, write_json
 from .platform import Platform
 
 
-VIVADO_PIN_SITE_MAP_SCHEMA = "emuflow.vivado-pin-site-map/v1"
+VIVADO_PIN_SITE_MAP_SCHEMA = "emuflow.vivado-pin-site-map/v2"
 _PIN_NAME = re.compile(r"[A-Za-z0-9_]+")
 _EXPECTED_FUNCTION = {
     "tx_p": re.compile(r"MGT[YH]TXP\d+_\d+"),
@@ -23,6 +23,7 @@ _EXPECTED_FUNCTION = {
     "rx_n": re.compile(r"MGT[YH]RXN\d+_\d+"),
 }
 _GT_SITE = re.compile(r"GT[YH]E4_CHANNEL_X\d+Y\d+")
+_GT_COMMON_SITE = re.compile(r"GT[YH]E4_COMMON_X\d+Y\d+")
 
 
 def _sha256(path: Path) -> str:
@@ -105,8 +106,17 @@ def build_vivado_pin_site_tcl(
             "[llength $sites]\"",
             "    exit 4",
             "  }",
+            "  set channel_site [lindex $sites 0]",
+            "  set tile [get_tiles -quiet -of_objects $channel_site]",
+            "  set common_sites [get_sites -quiet -of_objects $tile "
+            "-filter {SITE_TYPE =~ GT*E4_COMMON}]",
+            "  if {[llength $common_sites] != 1} {",
+            "    puts stderr \"EMUFLOW_PIN_SITE pin=$pin common_site_count="
+            "[llength $common_sites]\"",
+            "    exit 5",
+            "  }",
             "  puts $report_handle \"$pin\\t[get_property PIN_FUNC $package_pin]"
-            "\\t[lindex $sites 0]\"",
+            "\\t$channel_site\\t[lindex $common_sites 0]\"",
             "}",
             "close $report_handle",
             "puts \"EMUFLOW_PIN_SITE status=pass pins="
@@ -128,14 +138,18 @@ def parse_vivado_pin_site_report(
     rows: Dict[str, Dict[str, str]] = {}
     for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         fields = raw.split("\t")
-        if len(fields) != 3 or any(not field for field in fields):
+        if len(fields) != 4 or any(not field for field in fields):
             raise ValidationError(
                 f"{path}:{line_number}: malformed Vivado package-pin row"
             )
-        pin, function, site = fields
+        pin, function, site, common_site = fields
         if pin in rows:
             raise ValidationError(f"{path}:{line_number}: duplicate package pin")
-        rows[pin] = {"pin_function": function, "site": site}
+        rows[pin] = {
+            "pin_function": function,
+            "site": site,
+            "common_site": common_site,
+        }
     if set(rows) != set(expected_pins):
         raise ValidationError("Vivado package-pin site report coverage mismatch")
     return rows
@@ -151,6 +165,7 @@ def validate_lane_site_mapping(
         if part_rows is None:
             raise ValidationError("Vivado site result is missing a device part")
         sites = set()
+        common_sites = set()
         pin_functions = {}
         for role, pin in lane["package_pins"].items():
             row = part_rows.get(pin)
@@ -158,6 +173,7 @@ def validate_lane_site_mapping(
                 raise ValidationError("Vivado site result is missing a package pin")
             function = row["pin_function"]
             site = row["site"]
+            common_site = row.get("common_site")
             if (
                 not isinstance(function, str)
                 or _EXPECTED_FUNCTION[role].fullmatch(function) is None
@@ -168,17 +184,31 @@ def validate_lane_site_mapping(
                 )
             if not isinstance(site, str) or _GT_SITE.fullmatch(site) is None:
                 raise ValidationError("package pin does not map to a GTHE4/GTYE4 site")
+            if (
+                not isinstance(common_site, str)
+                or _GT_COMMON_SITE.fullmatch(common_site) is None
+            ):
+                raise ValidationError(
+                    "package pin GT channel does not map to a GTHE4/GTYE4 common"
+                )
             sites.add(site)
+            common_sites.add(common_site)
             pin_functions[role] = function
         if len(sites) != 1:
             raise ValidationError(
                 f"{lane['fpga']} {lane['link']} lane "
                 f"{lane['physical_lane']}: differential pins span GT sites"
             )
+        if len(common_sites) != 1:
+            raise ValidationError(
+                f"{lane['fpga']} {lane['link']} lane "
+                f"{lane['physical_lane']}: differential pins span GT commons"
+            )
         result.append(
             {
                 **dict(lane),
                 "site": sites.pop(),
+                "common_site": common_sites.pop(),
                 "pin_functions": pin_functions,
             }
         )
@@ -219,12 +249,14 @@ def validate_vivado_pin_site_map(
             or record.get("package_pins") != expected["package_pins"]
             or not isinstance(record.get("pin_functions"), dict)
             or not isinstance(record.get("site"), str)
+            or not isinstance(record.get("common_site"), str)
         ):
             raise ValidationError("Vivado package-pin site lane payload mismatch")
         for role, pin in expected["package_pins"].items():
             row = {
                 "pin_function": record["pin_functions"].get(role),
                 "site": record["site"],
+                "common_site": record["common_site"],
             }
             prior = rows_by_part[expected["part"]].get(pin)
             if prior is not None and prior != row:
@@ -321,6 +353,9 @@ def derive_vivado_pin_sites(
                 "sites": len(
                     {row["site"] for row in rows_by_part[part].values()}
                 ),
+                "common_sites": len(
+                    {row["common_site"] for row in rows_by_part[part].values()}
+                ),
                 "script": script_path.name,
                 "script_sha256": _sha256(script_path),
                 "raw_report": report_path.name,
@@ -353,6 +388,7 @@ def derive_vivado_pin_sites(
             "package_pins": sum(len(pins) for pins in pins_by_part.values()),
             "pin_function_mismatches": 0,
             "cross_site_lane_mismatches": 0,
+            "cross_common_lane_mismatches": 0,
         },
     }
     write_json(output_dir / "vivado_pin_site_map.json", report)

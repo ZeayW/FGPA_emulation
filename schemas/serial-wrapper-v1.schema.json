@@ -36,10 +36,15 @@
         "provider"
       ],
       "properties": {
-        "implementation_status": {"const": "black_box_unresolved"},
+        "implementation_status": {
+          "enum": [
+            "black_box_unresolved",
+            "simulation_source_bound",
+            "editable_source_bound_pending_tool_validation"
+          ]
+        },
         "required_provider_fields": {
           "type": "array",
-          "minItems": 1,
           "items": {"type": "string", "minLength": 1}
         },
         "internal_reset": {
@@ -81,8 +86,12 @@
           "board_services",
           "board_service_constraints_status",
           "gt_site_constraints_status",
+          "transceiver_quads",
           "sites"
-        ]
+        ],
+        "properties": {
+          "transceiver_quads": {"type": "array"}
+        }
       }
     },
     "metrics": {"type": "object"},

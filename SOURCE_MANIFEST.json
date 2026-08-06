@@ -294,6 +294,29 @@
         "externally-installed-vivado"
       ],
       "integration": "in-tree-python"
+    },
+    {
+      "id": "optional-vivado-gty-recipe",
+      "stage": "Phase 6C commercial serial PHY preparation",
+      "source_paths": [
+        "src/emuflow/serial_phy_recipe.py",
+        "src/emuflow/vivado_pin_sites.py",
+        "src/emuflow/serial_wrapper.py",
+        "schemas/serial-phy-recipe-v1.schema.json",
+        "schemas/vivado-pin-site-map-v2.schema.json",
+        "providers/vivado_gty_10g/generate_gty_ip.tcl",
+        "providers/vivado_gty_10g/recipe.json",
+        "providers/vivado_gty_10g/LICENSE"
+      ],
+      "build_targets": [
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow",
+        "externally-installed-vivado",
+        "local-vivado-generated-gty-products"
+      ],
+      "integration": "in-tree-python"
     }
   ],
   "open_path_blockers": [
@@ -322,6 +345,7 @@
       "uses": [
         "architecture comparison",
         "common TimingPathDB production",
+        "GT Wizard product generation from the in-tree editable Tcl recipe",
         "per-FPGA synthesis, placement, routing, and timing",
         "route and DRC comparison",
         "bitstream generation"

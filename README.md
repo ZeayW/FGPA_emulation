@@ -109,6 +109,11 @@
 >   plus AMD
 >   [DS890](https://docs.amd.com/r/en-US/ds890-ultrascale-overview/Virtex-UltraScale-FPGA-Feature-Summary)
 >   for XCVU13P resource capacity
+> - Optional commercial serial-PHY recipe:
+>   the in-tree Tcl is adapted from
+>   [Taxi's UltraScale+ 10G GTY recipe](https://github.com/fpganinja/taxi/blob/d5d38d824149b68f7c9e0c3df24f337df6bf23de/src/eth/rtl/us/taxi_eth_phy_10g_us_gty_156.tcl)
+>   under CERN-OHL-S-2.0; it generates vendor-controlled products with Vivado
+>   and therefore does not count as an open-flow implementation
 > - CI:
 >   [actions/checkout](https://github.com/actions/checkout) and
 >   [actions/setup-python](https://github.com/actions/setup-python)
@@ -794,8 +799,12 @@ from those source-backed records. The BoardDB itself deliberately leaves the
 exact `GTYE4_CHANNEL_X*Y*` site unresolved because the cited manual does not
 specify that mapping. The optional command above queries the selected Vivado
 device database for all package pins, checks TX/RX polarity and direction, and
-requires all four pins of every physical lane to map to one GTYE4 channel. Its
-hash-bound result is explicitly qualified as vendor-device-DB-derived, not as
+requires all four pins of every physical lane to map to one GTYE4 channel and
+that channel to map through its device tile to exactly one `GTYE4_COMMON`.
+Phase 6C groups active channels by that device-derived COMMON site, enforces
+at most four unique channel slots per quad, and records the quad inventory for
+the hardware PHY provider. Its hash-bound result is explicitly qualified as
+vendor-device-DB-derived, not as
 an Arm-published board definition. The BoardDB separately records the ten
 `B2B_CLK[9:0]` differential MGT-clock candidates at their documented default
 156.25 MHz, plus the active-low `IOFPGA_nRST` and `CB_nPOR` reset semantics.
@@ -868,6 +877,28 @@ emuflow phy-provider validate \
   --platform build/platforms/arm-mps4-3board.json \
   --normalized-out build/providers/serial-phy-provider.normalized.json
 ```
+
+The repository also includes an optional, source-visible Vivado GT Wizard
+recipe for 10GBASE-R GTY channels. It is a commercial-path preparation step,
+not an `editable_source_hardware` provider and not part of the fully open
+backend:
+
+```bash
+emuflow phy-provider materialize-recipe \
+  --manifest providers/vivado_gty_10g/recipe.json \
+  --part xcvu13p-fhga2104-1-e \
+  --vivado /path/to/Vivado/bin/vivado \
+  --out build/providers/vivado-gty-10g
+```
+
+The command verifies the recipe hash and upstream provenance, creates the
+declared IPs for the selected part, requires generated HDL to contain both
+`GTYE4_CHANNEL` and `GTYE4_COMMON`, and inventories the generated XCI files.
+Its report always records `counts_as_open_flow_implementation: false` and
+`hardware_release_authorized: false`. Generated vendor files remain build
+artifacts and must not be committed. An EmuFlow contract adapter, real MPS4
+reference-clock/reset bindings, full implementation, and hardware training
+are still required.
 
 Provider qualification is explicit: `simulation_only` is useful for
 structural/equivalence tests but can never authorize hardware release;

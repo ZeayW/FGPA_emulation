@@ -41,7 +41,9 @@ class VivadoPinSitesTest(unittest.TestCase):
         }
         for lane in self.lanes:
             offset = 0 if lane["connector"] == "J49" else 24
-            site = f"GTYE4_CHANNEL_X0Y{offset + lane['physical_lane']}"
+            channel_y = offset + lane["physical_lane"]
+            site = f"GTYE4_CHANNEL_X0Y{channel_y}"
+            common_site = f"GTYE4_COMMON_X0Y{channel_y // 4}"
             bank = 100 + lane["physical_lane"] // 4
             channel = lane["physical_lane"] % 4
             for role, pin in lane["package_pins"].items():
@@ -50,6 +52,7 @@ class VivadoPinSitesTest(unittest.TestCase):
                     {
                         "pin_function": f"{function_stem[role]}{channel}_{bank}",
                         "site": site,
+                        "common_site": common_site,
                     },
                 )
         return {next(iter(self.pins_by_part)): rows}
@@ -73,6 +76,7 @@ class VivadoPinSitesTest(unittest.TestCase):
         self.assertIn("synth_design -rtl -mode out_of_context", script)
         self.assertIn("get_package_pins -quiet $pin", script)
         self.assertIn("get_sites -quiet -of_objects $package_pin", script)
+        self.assertIn("SITE_TYPE =~ GT*E4_COMMON", script)
         self.assertIn("get_property PIN_FUNC", script)
         self.assertIn("package_pin_count", script)
         self.assertIn("site_count", script)
@@ -82,6 +86,12 @@ class VivadoPinSitesTest(unittest.TestCase):
         self.assertEqual(len(mapped), 72)
         self.assertTrue(
             all(record["site"].startswith("GTYE4_CHANNEL_") for record in mapped)
+        )
+        self.assertTrue(
+            all(
+                record["common_site"].startswith("GTYE4_COMMON_")
+                for record in mapped
+            )
         )
         rows = self._rows()
         part = next(iter(rows))
@@ -98,15 +108,24 @@ class VivadoPinSitesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "span GT sites"):
             validate_lane_site_mapping(self.lanes, rows)
 
+    def test_rejects_cross_common_differential_lane(self) -> None:
+        rows = self._rows()
+        part = next(iter(rows))
+        first_pin = self.lanes[0]["package_pins"]["rx_p"]
+        rows[part][first_pin]["common_site"] = "GTYE4_COMMON_X0Y99"
+        with self.assertRaisesRegex(ValidationError, "span GT commons"):
+            validate_lane_site_mapping(self.lanes, rows)
+
     def test_parses_exact_vivado_report_coverage(self) -> None:
         report = Path(self.temporary_directory.name) / "pin_sites.tsv"
         report.write_text(
-            "AC40\tMGTYTXP0_129\tGTYE4_CHANNEL_X0Y36\n"
-            "AC41\tMGTYTXN0_129\tGTYE4_CHANNEL_X0Y36\n",
+            "AC40\tMGTYTXP0_129\tGTYE4_CHANNEL_X0Y36\tGTYE4_COMMON_X0Y9\n"
+            "AC41\tMGTYTXN0_129\tGTYE4_CHANNEL_X0Y36\tGTYE4_COMMON_X0Y9\n",
             encoding="utf-8",
         )
         rows = parse_vivado_pin_site_report(report, ["AC40", "AC41"])
         self.assertEqual(rows["AC40"]["site"], "GTYE4_CHANNEL_X0Y36")
+        self.assertEqual(rows["AC40"]["common_site"], "GTYE4_COMMON_X0Y9")
         with self.assertRaisesRegex(ValidationError, "coverage"):
             parse_vivado_pin_site_report(report, ["AC40"])
 

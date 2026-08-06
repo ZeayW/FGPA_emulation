@@ -24,6 +24,7 @@ their own licenses.
 
 | Local path | Component and upstream source | Pinned revision/version | License | Use |
 | --- | --- | --- | --- | --- |
+| `providers/vivado_gty_10g` | Adapted [Taxi UltraScale+ 10G GTY generation recipe](https://github.com/fpganinja/taxi/blob/d5d38d824149b68f7c9e0c3df24f337df6bf23de/src/eth/rtl/us/taxi_eth_phy_10g_us_gty_156.tcl) | `d5d38d824149b68f7c9e0c3df24f337df6bf23de` | CERN-OHL-S-2.0 | Optional Vivado GT Wizard recipe; generated vendor products stay outside source control and do not count as the open flow |
 | `engines/capnproto` | [Cap'n Proto](https://github.com/capnproto/capnproto) | `373e61ec89e2359f1c362e9b2eadc552f4779306` / v1.5.0 | Apache-2.0 | Build and parse FPGA Interchange messages |
 | `engines/fpga-interchange-schema` | [FPGA Interchange Schema](https://github.com/chipsalliance/fpga-interchange-schema) | `c985b4648e66414b250261c1ba4cbe45a2971b1c` | Apache-2.0 | Open logical-netlist and device-resource contracts |
 | `engines/fpga-interchange-schema/third_party/capnproto-java` | [capnproto-java schema](https://github.com/capnproto/capnproto-java) | `1a0ac9d2e0e607ccae7ca83cb3aacce93b065dd7` | MIT | Vendored `java.capnp` import required by the schema |

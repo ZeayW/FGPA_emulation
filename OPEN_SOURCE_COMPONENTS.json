@@ -14,6 +14,14 @@
       "license": "Apache-2.0"
     },
     {
+      "id": "taxi-gty-generation-recipe",
+      "path": "providers/vivado_gty_10g",
+      "upstream": "https://github.com/fpganinja/taxi",
+      "version_or_revision": "d5d38d824149b68f7c9e0c3df24f337df6bf23de",
+      "license": "CERN-OHL-S-2.0",
+      "build_status": "optional-vivado-generated-hardware-recipe"
+    },
+    {
       "id": "capnproto",
       "path": "engines/capnproto",
       "upstream": "https://github.com/capnproto/capnproto",

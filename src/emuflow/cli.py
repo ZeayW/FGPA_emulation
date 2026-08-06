@@ -104,6 +104,7 @@ from .sta import (
 from .serial_wrapper import run_phase6c
 from .serial_phy_provider import validate_serial_phy_provider_file
 from .serial_phy_elaboration import run_serial_phy_elaboration
+from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
 from .timing_routing import (
@@ -219,6 +220,17 @@ def _build_parser() -> argparse.ArgumentParser:
     elaborate_tool.add_argument("--yosys", type=Path)
     elaborate_tool.add_argument("--vivado", type=Path)
     phy_provider_elaborate.add_argument("--out", type=Path, required=True)
+    phy_provider_materialize = phy_provider_subparsers.add_parser(
+        "materialize-recipe",
+        help="materialize a source-visible vendor GT recipe into a build directory",
+    )
+    phy_provider_materialize.add_argument(
+        "--manifest", type=Path, required=True
+    )
+    phy_provider_materialize.add_argument("--part", required=True)
+    phy_provider_materialize.add_argument("--vivado", type=Path, required=True)
+    phy_provider_materialize.add_argument("--platform", type=Path)
+    phy_provider_materialize.add_argument("--out", type=Path, required=True)
 
     contest_parser = subparsers.add_parser(
         "contest", help="public multi-FPGA contest format adapters"
@@ -1761,6 +1773,16 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "phy-provider":
+        if args.phy_provider_command == "materialize-recipe":
+            report = materialize_serial_phy_recipe(
+                manifest_path=args.manifest,
+                part=args.part,
+                vivado_executable=args.vivado,
+                output_dir=args.out,
+                platform_path=args.platform,
+            )
+            _print_json(report)
+            return 0
         if args.phy_provider_command == "elaborate":
             report = run_serial_phy_elaboration(
                 platform_path=args.platform,

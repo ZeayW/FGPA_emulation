@@ -23,6 +23,8 @@ from .vivado_pin_sites import validate_vivado_pin_site_map
 
 SERIAL_WRAPPER_SCHEMA = "emuflow.serial-wrapper/v1"
 SERIAL_WRAPPER_REPORT_SCHEMA = "emuflow.phase6c-report/v1"
+_GT_CHANNEL_SITE = re.compile(r"GT([YH])E4_CHANNEL_X(\d+)Y(\d+)")
+_GT_COMMON_SITE = re.compile(r"GT([YH])E4_COMMON_X(\d+)Y(\d+)")
 
 
 def _sv_name(value: str) -> str:
@@ -202,6 +204,68 @@ def _incident_links(platform: Platform, fpga: str) -> Sequence[BoardLink]:
         (link for link in platform.links if fpga in link.endpoints),
         key=lambda link: link.id,
     )
+
+
+def _transceiver_quad_groups(
+    sites: Sequence[Mapping[str, Any]],
+) -> list[Dict[str, Any]]:
+    if not sites or any(
+        not isinstance(site.get("transceiver_common_site"), str)
+        for site in sites
+    ):
+        return []
+    grouped: Dict[str, list[Dict[str, Any]]] = defaultdict(list)
+    occupied = set()
+    for site in sites:
+        channel_name = site.get("transceiver_site")
+        common_name = site["transceiver_common_site"]
+        channel_match = (
+            _GT_CHANNEL_SITE.fullmatch(channel_name)
+            if isinstance(channel_name, str)
+            else None
+        )
+        common_match = _GT_COMMON_SITE.fullmatch(common_name)
+        if channel_match is None or common_match is None:
+            raise ValidationError("transceiver quad site name is malformed")
+        channel_family, channel_x, channel_y_text = channel_match.groups()
+        common_family, common_x, common_y_text = common_match.groups()
+        channel_y = int(channel_y_text)
+        common_y = int(common_y_text)
+        channel_index = channel_y % 4
+        if (
+            channel_family != common_family
+            or channel_x != common_x
+            or channel_y // 4 != common_y
+        ):
+            raise ValidationError("GT channel/common topology is inconsistent")
+        slot = (common_name, channel_index)
+        if slot in occupied:
+            raise ValidationError("GT quad channel slot is duplicated")
+        occupied.add(slot)
+        grouped[common_name].append(
+            {
+                "site_id": site["id"],
+                "channel_site": channel_name,
+                "channel_index": channel_index,
+                "link": site["link"],
+                "physical_lane": site["physical_lane"],
+            }
+        )
+    quads = []
+    for common_name, channels in sorted(grouped.items()):
+        channels.sort(key=lambda item: item["channel_index"])
+        if len(channels) > 4:
+            raise ValidationError("GT quad contains more than four channels")
+        quads.append(
+            {
+                "id": common_name,
+                "common_site": common_name,
+                "channel_count": len(channels),
+                "channels": channels,
+                "qualification": "vendor_device_db_same_tile_grouping",
+            }
+        )
+    return quads
 
 
 def _wrapper_module_name(fpga: str) -> str:
@@ -736,6 +800,7 @@ def build_serial_wrapper_manifest(
                 raise ValidationError("board overlay and Vivado GT site map disagree")
             if derived is not None:
                 site["transceiver_site"] = derived["site"]
+                site["transceiver_common_site"] = derived["common_site"]
                 site["transceiver_site_status"] = "resolved_vendor_device_db"
                 vendor_derived_sites += 1
             if resolved is not None:
@@ -766,6 +831,7 @@ def build_serial_wrapper_manifest(
     )
     for fpga in sorted(platform.fpgas, key=lambda item: item.id):
         fpga_sites = sites[fpga.id]
+        transceiver_quads = _transceiver_quad_groups(fpga_sites)
         service_pairs = sorted(
             {
                 (site["reference_clock_binding"], site["reset_binding"])
@@ -874,6 +940,7 @@ def build_serial_wrapper_manifest(
                 "board_services": fpga_board_services,
                 "board_service_constraints_status": constraints_status,
                 "gt_site_constraints_status": gt_site_constraints_status,
+                "transceiver_quads": transceiver_quads,
                 "sites": fpga_sites,
                 **(
                     {
@@ -1005,6 +1072,9 @@ def build_serial_wrapper_manifest(
             "fpgas": len(fpgas),
             "active_transceiver_sites": sum(
                 item["active_transceiver_sites"] for item in fpgas
+            ),
+            "active_transceiver_quads": sum(
+                len(item["transceiver_quads"]) for item in fpgas
             ),
             "active_tx_directions": sum(
                 item["active_tx_directions"] for item in fpgas
