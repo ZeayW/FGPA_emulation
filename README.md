@@ -23,6 +23,9 @@
 >   [Munkres](https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/ppl/src/munkres),
 >   and [Material Design Icons](https://github.com/google/material-design-icons)
 > - Placement: [OpenPARF](https://github.com/PKU-IDEA/OpenPARF)
+> - Open serial PCS and CDC:
+>   [Corundum/verilog-ethernet](https://github.com/corundum/corundum/tree/1ca0151b97af85aa5dd306d74b6bcec65904d2ce/fpga/lib/eth)
+>   10GBASE-R PCS and Gray-pointer asynchronous FIFO, under MIT
 > - Default open academic backend:
 >   [VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing)
 >   editable pack/place/route source plus the flagship heterogeneous XML,
@@ -986,6 +989,17 @@ Its qualification is `vivado_ooc_synthesis_structure_validation` and it has
 the same non-release boundary; these checks are still not placement, routing,
 timing, protocol correctness, or electrical sign-off.
 
+The in-tree open PCS layer uses the pinned, unmodified Corundum 10GBASE-R
+encoder/decoder, scrambler, block-lock, BER/watchdog, and asynchronous FIFO
+sources. EmuFlow adds a three-block XGMII record envelope carrying a typed
+record, 16-bit sequence, 64-bit payload, and CRC-16. At 156.25 MHz it sustains
+52.08 million records/s, enough for one record per 50-MHz fabric cycle. The
+receive path remains elastic through CDC and then enters a sequence-checked
+prefill/de-jitter buffer before deterministic fabric-cycle release. This layer
+is source-visible and simulator-validated, but is not yet a board-ready PHY:
+the GT adapter, in-band runtime-sync control binding, measured latency bound,
+and physical clock/reset proof remain required.
+
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model
 validation, not XCVU13P sign-off. A board-runnable MPS4 result still requires
@@ -1336,11 +1350,12 @@ schemas/           versioned artifact schemas
 platforms/         board-independent virtual multi-FPGA platforms
 rtl/transport/     reusable TDM datapath and frame-barrier RTL
 rtl/runtime_sync/  source-visible multi-FPGA startup synchronization RTL
+rtl/pcs/           record framing, PCS adapters, CDC, and de-jitter RTL
 providers/         editable-source provider manifests and vendor recipes
 benchmarks/        benchmark catalog and run configurations
 examples/          small reproducible RTL and artifact fixtures
 scripts/           provider integration and reusable flow utilities
-engines/           root-built Yosys, OpenROAD, RePart, OpenPARF, VPR, and CUDD source
+engines/           root-built EDA engines and pinned open PCS source
 third_party/       external RTL benchmarks and retained upstream patch records
 tests/             unit, adversarial, and flow-level regression tests
 docs/              architecture, algorithm, and benchmark plans

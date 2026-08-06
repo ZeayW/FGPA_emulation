@@ -22,6 +22,14 @@
       "build_status": "optional-vivado-generated-hardware-recipe"
     },
     {
+      "id": "corundum-verilog-ethernet-10g-pcs-subset",
+      "path": "engines/corundum_eth",
+      "upstream": "https://github.com/corundum/corundum",
+      "version_or_revision": "1ca0151b97af85aa5dd306d74b6bcec65904d2ce",
+      "license": "MIT",
+      "build_status": "in-tree-source-visible-serial-pcs-and-cdc"
+    },
+    {
       "id": "capnproto",
       "path": "engines/capnproto",
       "upstream": "https://github.com/capnproto/capnproto",

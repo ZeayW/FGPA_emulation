@@ -23,14 +23,24 @@ def virtual_runtime_controller_to_systemverilog() -> str:
   output logic virtual_clock_enable,
   output logic [SLOT_BITS-1:0] slot
 );
+  logic started;
+
   always_comb begin
     virtual_clock_enable =
-      !reset && links_ready && (slot == FRAME_SLOTS - 1);
+      !reset && started && links_ready && (slot == FRAME_SLOTS - 1);
   end
 
   always_ff @(posedge fabric_clk) begin
     if (reset) begin
       slot <= '0;
+      started <= 1'b0;
+    end else if (!started) begin
+      // No TDM work may execute before the distributed startup barrier.
+      // The first complete frame begins only after global readiness.
+      slot <= '0;
+      if (links_ready) begin
+        started <= 1'b1;
+      end
     end else begin
       if (slot == FRAME_SLOTS - 1) begin
         if (links_ready) begin
@@ -149,6 +159,7 @@ def build_virtual_runtime(
             "ready_scope": "global-consensus-across-all-fpgas",
             "stall_slot": release_slot,
             "stall_behavior": "hold-slot-and-suppress-dut-clock-enable",
+            "startup_behavior": "hold-slot-zero-until-global-ready",
             "lockstep_requirements": [
                 "common fabric-clock frequency",
                 "phase-aligned fabric clocks or trained slot alignment",
@@ -295,7 +306,7 @@ def runtime_controller_testbench(
         f"  localparam integer TARGET_FRAMES = {frames};",
         "  logic fabric_clk = 1'b0;",
         "  logic reset = 1'b1;",
-        "  logic links_ready = 1'b1;",
+        "  logic links_ready = 1'b0;",
     ]
     for index, fpga_id in enumerate(fpga_ids):
         lines.extend(
@@ -322,6 +333,15 @@ def runtime_controller_testbench(
             "  initial begin",
             "    repeat (3) @(posedge fabric_clk);",
             "    #1 reset = 1'b0;",
+            "    repeat (3) begin",
+            "      @(posedge fabric_clk); #1;",
+            "      if (slot_0 !== 0 || virtual_clock_enable_0)",
+            '        $fatal(1, "controller advanced before global ready");',
+            "    end",
+            "    @(negedge fabric_clk); links_ready = 1'b1;",
+            "    @(posedge fabric_clk); #1;",
+            "    if (slot_0 !== 0 || virtual_clock_enable_0)",
+            '      $fatal(1, "startup barrier did not begin at slot zero");',
             "    while (pulses < TARGET_FRAMES) begin",
             "      @(negedge fabric_clk);",
             "      previous_slot = slot_0;",

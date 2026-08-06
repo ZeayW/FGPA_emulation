@@ -226,6 +226,22 @@
       "integration": "default-in-tree-build"
     },
     {
+      "id": "open-serial-pcs-cdc",
+      "stage": "Phase 6C serial transport implementation",
+      "source_paths": [
+        "engines/corundum_eth",
+        "rtl/pcs",
+        "tests/rtl/pcs_record_link_tb.sv"
+      ],
+      "build_targets": [
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "synthesizable Verilog/SystemVerilog"
+      ],
+      "integration": "source-present-ultrascale-plus-integration-pending"
+    },
+    {
       "id": "fpga-placement",
       "stage": "Phase 2 / Phase 7",
       "source_paths": [
