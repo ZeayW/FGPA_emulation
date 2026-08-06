@@ -121,6 +121,7 @@ from .vtr_architecture import (
     validate_vtr_timing_db_file,
 )
 from .vpr import run_vpr, run_vpr_route_packed, run_vtr_yosys
+from .vivado_pin_sites import derive_vivado_pin_sites
 
 
 def _print_json(value: Dict[str, Any]) -> None:
@@ -180,6 +181,13 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_overlay.add_argument("--platform", type=Path, required=True)
     platform_overlay.add_argument("--overlay", type=Path, required=True)
     platform_overlay.add_argument("--normalized-out", type=Path)
+    platform_gt_sites = platform_subparsers.add_parser(
+        "vivado-derive-gt-sites",
+        help="derive GT sites from BoardDB package pins using a Vivado device DB",
+    )
+    platform_gt_sites.add_argument("--platform", type=Path, required=True)
+    platform_gt_sites.add_argument("--vivado", type=Path, required=True)
+    platform_gt_sites.add_argument("--out", type=Path, required=True)
 
     phy_provider = subparsers.add_parser(
         "phy-provider", help="editable-source serial PHY provider operations"
@@ -1730,6 +1738,14 @@ def _dispatch(args: argparse.Namespace) -> int:
                 platform_path=args.platform,
                 overlay_path=args.overlay,
                 normalized_out=args.normalized_out,
+            )
+            _print_json(report)
+            return 0
+        if args.platform_command == "vivado-derive-gt-sites":
+            report = derive_vivado_pin_sites(
+                platform_path=args.platform,
+                vivado_executable=args.vivado,
+                output_dir=args.out,
             )
             _print_json(report)
             return 0

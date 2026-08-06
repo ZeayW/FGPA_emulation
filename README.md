@@ -238,7 +238,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
 | TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Range-normalized KKT updates avoid numeric collapse on large timing scales. Exact/scalable legalization uses every physical lane, then global path-budget and per-domain minimax refinement cross quantization plateaus; concrete scheduling and independent checks enforce direction, ratio, collision, barrier, and transport semantics |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
-| Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins without pretending that its still-unknown transceiver sites or protocol wrapper are complete |
+| Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming that reference clocks or the protocol wrapper are complete |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
@@ -773,6 +773,11 @@ emuflow platform arm-mps4-materialize \
   --fabric-clock-mhz 50 \
   --payload-bits-per-lane-per-cycle 64 \
   --latency-cycles 4
+
+emuflow platform vivado-derive-gt-sites \
+  --platform build/platforms/arm-mps4-3board.json \
+  --vivado /opt/Xilinx/Vivado/bin/vivado \
+  --out build/platforms/mps4-gt-sites
 ```
 
 The three transport-profile arguments are explicit because the board manual
@@ -785,9 +790,13 @@ physical differential transceiver lanes. The normalized BoardDB preserves the
 J48/J49, MGT0/MGT1, and TXP/TXN/RXP/RXN package-pin records. Phase 6B projects
 each logical user bit to `(physical GTY lane, bit within the user word)`,
 deduplicates physical channels, and emits differential package-pin XDC directly
-from those source-backed records. It deliberately leaves the exact
-`GTYE4_CHANNEL_X*Y*` site unresolved because the cited manual does not specify
-that Vivado site mapping. The BoardDB separately records the ten
+from those source-backed records. The BoardDB itself deliberately leaves the
+exact `GTYE4_CHANNEL_X*Y*` site unresolved because the cited manual does not
+specify that mapping. The optional command above queries the selected Vivado
+device database for all package pins, checks TX/RX polarity and direction, and
+requires all four pins of every physical lane to map to one GTYE4 channel. Its
+hash-bound result is explicitly qualified as vendor-device-DB-derived, not as
+an Arm-published board definition. The BoardDB separately records the ten
 `B2B_CLK[9:0]` differential MGT-clock candidates at their documented default
 156.25 MHz, plus the active-low `IOFPGA_nRST` and `CB_nPOR` reset semantics.
 These are source-backed service candidates, not usable XDC bindings: the
