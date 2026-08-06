@@ -127,6 +127,7 @@ from .vtr_architecture import (
     validate_vtr_timing_db_file,
 )
 from .vpr import run_vpr, run_vpr_route_packed, run_vtr_yosys
+from .vivado_board_flow import run_vivado_board_flow
 from .vivado_pin_sites import derive_vivado_pin_sites
 
 
@@ -844,6 +845,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ready-stable-cycles", type=int, default=4
     )
     multi_fpga_bsp.add_argument("--out", type=Path, required=True)
+    multi_fpga_board = multi_fpga_subparsers.add_parser(
+        "board-implement",
+        help=(
+            "place and route each Vivado DUT+transport partition together "
+            "with its source-bound serial BSP"
+        ),
+    )
+    multi_fpga_board.add_argument("--flow", type=Path, required=True)
+    multi_fpga_board.add_argument("--bsp", type=Path, required=True)
+    multi_fpga_board.add_argument("--platform", type=Path, required=True)
+    multi_fpga_board.add_argument("--phy-provider", type=Path, required=True)
+    multi_fpga_board.add_argument("--vivado", type=Path, required=True)
+    multi_fpga_board.add_argument("--place-directive", default="Default")
+    multi_fpga_board.add_argument("--route-directive", default="Default")
+    multi_fpga_board.add_argument("--write-bitstream", action="store_true")
+    multi_fpga_board.add_argument("--out", type=Path, required=True)
     vpr_run = vpr_subparsers.add_parser(
         "run",
         help="run exact VPR pack, baseline place, route, and analysis",
@@ -2324,6 +2341,20 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "board-implement":
+            report = run_vivado_board_flow(
+                flow_root=args.flow,
+                bsp_root=args.bsp,
+                platform_path=args.platform,
+                phy_provider_path=args.phy_provider,
+                vivado_executable=args.vivado,
+                output_dir=args.out,
+                place_directive=args.place_directive,
+                route_directive=args.route_directive,
+                write_bitstream=args.write_bitstream,
+            )
+            _print_json(report["summary"])
+            return 0
         if args.multi_fpga_command == "bsp":
             report = run_multi_fpga_bsp_flow(
                 flow_root=args.flow,

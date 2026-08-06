@@ -281,6 +281,26 @@ and a separate hardware-BSP report. Successful OOC elaboration remains
 non-release validation; it does not imply board clock/reset proof, routed
 timing closure, bitstream generation, or hardware training.
 
+For a flow that already completed either physical branch, the next gate lowers
+the provider-neutral partition to Vivado when needed, then places and routes
+the DUT, TDM transport, open PCS, runtime sync, and GTY provider together
+instead of checking the serial shell separately:
+
+```bash
+emuflow multi-fpga board-implement \
+  --flow build/full-flow \
+  --bsp build/full-flow/hardware-bsp \
+  --platform build/platforms/arm-mps4-3board.json \
+  --phy-provider build/providers/vivado-gty-10g/serial_phy_provider.json \
+  --vivado /path/to/Vivado/bin/vivado \
+  --out build/board-implementation
+```
+
+This is deliberately an OOC board-integrated P&R qualification. Bitstream
+generation is rejected until fabric-clock generation, synchronous reset
+release, every remaining top-level package pin, board synchronization latency,
+and zero board-level DRC errors are source-backed.
+
 `emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
 physical backend. It binds synthesis, baseline VPR packing and
 auto-layout sizing, ArchitectureDB/TimingDB import, OpenPARF placement, final
