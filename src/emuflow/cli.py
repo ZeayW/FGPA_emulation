@@ -1610,6 +1610,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="validated board-specific GT site, reference-clock, and reset bindings",
     )
+    phase6c.add_argument(
+        "--gt-site-map",
+        type=Path,
+        help="Vivado-derived package-pin to GT channel site map",
+    )
     phase6c.add_argument("--out", type=Path, required=True)
 
     package_pin = subparsers.add_parser(
@@ -2626,6 +2631,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             board_overlay_path=args.board_overlay,
             phy_provider_path=args.phy_provider,
+            gt_site_map_path=args.gt_site_map,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

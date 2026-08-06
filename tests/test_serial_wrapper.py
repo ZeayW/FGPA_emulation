@@ -22,6 +22,11 @@ from emuflow.serial_wrapper import (
     serial_integration_shell_rtl,
     serial_wrapper_rtl,
 )
+from emuflow.vivado_pin_sites import (
+    VIVADO_PIN_SITE_MAP_SCHEMA,
+    collect_serial_pin_inventory,
+    validate_lane_site_mapping,
+)
 
 
 class SerialWrapperTest(unittest.TestCase):
@@ -259,6 +264,45 @@ endmodule
             },
         )
         return manifest
+
+    def _gt_site_map(self):
+        pins_by_part, lanes = collect_serial_pin_inventory(self.platform)
+        rows = {}
+        function_stem = {
+            "tx_p": "MGTYTXP",
+            "tx_n": "MGTYTXN",
+            "rx_p": "MGTYRXP",
+            "rx_n": "MGTYRXN",
+        }
+        for lane in lanes:
+            offset = 20 if lane["connector"] == "J49" else 36
+            site = f"GTYE4_CHANNEL_X0Y{offset + lane['physical_lane']}"
+            for role, pin in lane["package_pins"].items():
+                rows.setdefault(
+                    pin,
+                    {
+                        "pin_function": (
+                            f"{function_stem[role]}"
+                            f"{lane['physical_lane'] % 4}_129"
+                        ),
+                        "site": site,
+                    },
+                )
+        part = next(iter(pins_by_part))
+        return {
+            "schema": VIVADO_PIN_SITE_MAP_SCHEMA,
+            "status": "pass",
+            "qualification": (
+                "vendor_device_db_derived_from_source_backed_package_pins"
+            ),
+            "platform": self.platform.name,
+            "platform_sha256": hashlib.sha256(
+                self.platform_path.read_bytes()
+            ).hexdigest(),
+            "transceiver_sites": validate_lane_site_mapping(
+                lanes, {part: rows}
+            ),
+        }
 
     def test_wrapper_is_reproducible_and_exposes_exact_active_ports(self) -> None:
         first = build_serial_wrapper_manifest(self.platform, self.binding)
@@ -538,6 +582,47 @@ endmodule
             "[get_cells {serial_wrapper/site_0_phy/gty_channel}]",
             gt_xdc,
         )
+
+    def test_vivado_site_map_emits_real_loc_but_keeps_services_blocked(self) -> None:
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding-gt-map.json"
+        gt_site_map_path = root / "gt-site-map.json"
+        output = root / "phase6c-gt-map"
+        write_json(binding_path, self.binding)
+        write_json(gt_site_map_path, self._gt_site_map())
+        report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            output,
+            phy_provider_path=self._write_phy_provider(
+                "editable_source_hardware"
+            ),
+            gt_site_map_path=gt_site_map_path,
+        )
+        self.assertEqual(
+            report["hardware_release_status"],
+            "blocked_on_external_phy_provider",
+        )
+        self.assertEqual(
+            report["validation"]["vendor_derived_transceiver_sites"], 2
+        )
+        self.assertEqual(report["validation"]["unresolved_transceiver_sites"], 0)
+        manifest = read_json(output / "serial_wrapper_manifest.json")
+        self.assertNotIn(
+            "transceiver_site",
+            manifest["phy_contract"]["required_provider_fields"],
+        )
+        self.assertIn(
+            "reference_clock_package_binding",
+            manifest["phy_contract"]["required_provider_fields"],
+        )
+        gt_xdc = (output / "mps4_1.gt_sites.xdc").read_text()
+        self.assertIn(
+            "set_property LOC GTYE4_CHANNEL_X0Y20 "
+            "[get_cells {serial_wrapper/site_0_phy/gty_channel}]",
+            gt_xdc,
+        )
+        self.assertFalse((output / "mps4_1.board_services.xdc").exists())
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
-from .io import write_json
+from .io import read_json, write_json
 from .platform import Platform
 
 
@@ -158,12 +158,15 @@ def validate_lane_site_mapping(
                 raise ValidationError("Vivado site result is missing a package pin")
             function = row["pin_function"]
             site = row["site"]
-            if _EXPECTED_FUNCTION[role].fullmatch(function) is None:
+            if (
+                not isinstance(function, str)
+                or _EXPECTED_FUNCTION[role].fullmatch(function) is None
+            ):
                 raise ValidationError(
                     f"{lane['fpga']} {lane['link']} lane "
                     f"{lane['physical_lane']}: {role} pin function is inconsistent"
                 )
-            if _GT_SITE.fullmatch(site) is None:
+            if not isinstance(site, str) or _GT_SITE.fullmatch(site) is None:
                 raise ValidationError("package pin does not map to a GTHE4/GTYE4 site")
             sites.add(site)
             pin_functions[role] = function
@@ -180,6 +183,70 @@ def validate_lane_site_mapping(
             }
         )
     return result
+
+
+def validate_vivado_pin_site_map(
+    value: Mapping[str, Any], platform: Platform
+) -> Dict[str, Any]:
+    if (
+        value.get("schema") != VIVADO_PIN_SITE_MAP_SCHEMA
+        or value.get("status") != "pass"
+        or value.get("qualification")
+        != "vendor_device_db_derived_from_source_backed_package_pins"
+        or value.get("platform") != platform.name
+    ):
+        raise ValidationError("Vivado package-pin site map identity is invalid")
+    records = value.get("transceiver_sites")
+    if not isinstance(records, list) or any(
+        not isinstance(record, dict) for record in records
+    ):
+        raise ValidationError("Vivado package-pin site inventory is invalid")
+    _, expected_lanes = collect_serial_pin_inventory(platform)
+    key_fields = ("fpga", "link", "connector", "mgt_group", "physical_lane")
+    expected_by_key = {
+        tuple(record[field] for field in key_fields): record
+        for record in expected_lanes
+    }
+    actual_by_key = {}
+    rows_by_part: Dict[str, Dict[str, Dict[str, str]]] = defaultdict(dict)
+    for record in records:
+        key = tuple(record.get(field) for field in key_fields)
+        expected = expected_by_key.get(key)
+        if key in actual_by_key or expected is None:
+            raise ValidationError("Vivado package-pin site lane identity is invalid")
+        if (
+            record.get("part") != expected["part"]
+            or record.get("package_pins") != expected["package_pins"]
+            or not isinstance(record.get("pin_functions"), dict)
+            or not isinstance(record.get("site"), str)
+        ):
+            raise ValidationError("Vivado package-pin site lane payload mismatch")
+        for role, pin in expected["package_pins"].items():
+            row = {
+                "pin_function": record["pin_functions"].get(role),
+                "site": record["site"],
+            }
+            prior = rows_by_part[expected["part"]].get(pin)
+            if prior is not None and prior != row:
+                raise ValidationError("Vivado package-pin result is inconsistent")
+            rows_by_part[expected["part"]][pin] = row
+        actual_by_key[key] = record
+    if set(actual_by_key) != set(expected_by_key):
+        raise ValidationError("Vivado package-pin site lane coverage mismatch")
+    normalized_sites = validate_lane_site_mapping(expected_lanes, rows_by_part)
+    normalized = dict(value)
+    normalized["transceiver_sites"] = normalized_sites
+    return normalized
+
+
+def validate_vivado_pin_site_map_file(
+    *, platform_path: Path, site_map_path: Path
+) -> Dict[str, Any]:
+    platform = Platform.load(platform_path)
+    value = read_json(site_map_path)
+    if value.get("platform_sha256") != _sha256(platform_path):
+        raise ValidationError("Vivado package-pin site map BoardDB hash mismatch")
+    return validate_vivado_pin_site_map(value, platform)
 
 
 def derive_vivado_pin_sites(

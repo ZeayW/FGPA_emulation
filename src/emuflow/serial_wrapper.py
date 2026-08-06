@@ -18,6 +18,7 @@ from .physical_pins import (
 from .platform import BoardLink, Platform
 from .serial_contract import SERIAL_CLOCK_RESET_MODULE, SERIAL_PHY_MODULE
 from .serial_phy_provider import validate_serial_phy_provider
+from .vivado_pin_sites import validate_vivado_pin_site_map
 
 
 SERIAL_WRAPPER_SCHEMA = "emuflow.serial-wrapper/v1"
@@ -288,13 +289,17 @@ def serial_gt_site_xdc(
     fpga_record: Mapping[str, Any], implementation: Mapping[str, Any]
 ) -> str:
     lines = [
-        "# Generated source-backed GT channel placement constraints.",
+        "# Generated trusted GT channel placement constraints.",
+        "# Sites are source-backed or device-DB-derived from source-backed pins.",
         "# Cell paths are derived from the provider primitive hierarchy contract.",
     ]
     channel_instance = implementation["channel_instance"]
     for index, site in enumerate(fpga_record["sites"]):
-        if site.get("transceiver_site_status") != "resolved_source_backed":
-            raise ValidationError("GT site XDC requires source-backed site bindings")
+        if site.get("transceiver_site_status") not in {
+            "resolved_source_backed",
+            "resolved_vendor_device_db",
+        }:
+            raise ValidationError("GT site XDC requires trusted site bindings")
         cell_path = f"serial_wrapper/site_{index}_phy/{channel_instance}"
         lines.append(
             f"set_property LOC {site['transceiver_site']} "
@@ -684,6 +689,7 @@ def build_serial_wrapper_manifest(
     transports: Optional[Mapping[str, Mapping[str, Any]]] = None,
     board_overlay: Optional[Mapping[str, Any]] = None,
     phy_provider: Optional[Mapping[str, Any]] = None,
+    gt_site_map: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     sites = _binding_sites(platform, binding)
     overlay_result = (
@@ -700,25 +706,49 @@ def build_serial_wrapper_manifest(
         if overlay is not None
         else {}
     )
+    normalized_gt_site_map = (
+        validate_vivado_pin_site_map(gt_site_map, platform)
+        if gt_site_map is not None
+        else None
+    )
+    derived_sites = (
+        {
+            (item["fpga"], item["link"], item["physical_lane"]): item
+            for item in normalized_gt_site_map["transceiver_sites"]
+        }
+        if normalized_gt_site_map is not None
+        else {}
+    )
     resolved_sites = 0
+    vendor_derived_sites = 0
     for fpga_sites in sites.values():
         for site in fpga_sites:
+            key = (site["fpga"], site["link"], site["physical_lane"])
+            derived = derived_sites.get(key)
             resolved = overlay_sites.get(
-                (site["fpga"], site["link"], site["physical_lane"])
+                key
             )
-            if resolved is None:
-                continue
-            site["transceiver_site"] = resolved["site"]
-            site["reference_clock_binding"] = resolved[
-                "reference_clock_binding"
-            ]
-            site["reset_binding"] = resolved["reset_binding"]
-            site["transceiver_site_status"] = (
-                "resolved_source_backed"
-                if overlay_result["hardware_qualification"] == "source_backed"
-                else "resolved_unverified"
-            )
-            resolved_sites += 1
+            if (
+                derived is not None
+                and resolved is not None
+                and derived["site"] != resolved["site"]
+            ):
+                raise ValidationError("board overlay and Vivado GT site map disagree")
+            if derived is not None:
+                site["transceiver_site"] = derived["site"]
+                site["transceiver_site_status"] = "resolved_vendor_device_db"
+                vendor_derived_sites += 1
+            if resolved is not None:
+                site["transceiver_site"] = resolved["site"]
+                site["reference_clock_binding"] = resolved[
+                    "reference_clock_binding"
+                ]
+                site["reset_binding"] = resolved["reset_binding"]
+                if overlay_result["hardware_qualification"] == "source_backed":
+                    site["transceiver_site_status"] = "resolved_source_backed"
+                elif derived is None:
+                    site["transceiver_site_status"] = "resolved_unverified"
+                resolved_sites += 1
     if transports is not None and set(transports) != set(sites):
         raise ValidationError(
             "serial wrapper transports must cover every FPGA exactly once"
@@ -791,11 +821,12 @@ def build_serial_wrapper_manifest(
             else None
         )
         gt_site_constraints_status = (
-            "source_backed_emittable"
+            "trusted_emittable"
             if fpga_sites
             and hardware_implementation is not None
             and all(
-                site["transceiver_site_status"] == "resolved_source_backed"
+                site["transceiver_site_status"]
+                in {"resolved_source_backed", "resolved_vendor_device_db"}
                 for site in fpga_sites
             )
             else "provider_or_site_binding_unresolved"
@@ -864,16 +895,22 @@ def build_serial_wrapper_manifest(
                 platform, fpga.id, fpga_sites, transports[fpga.id]
             )
     active_sites = sum(item["active_transceiver_sites"] for item in fpgas)
-    source_backed_site_resolution = (
-        overlay_result is not None
-        and overlay_result["hardware_qualification"] == "source_backed"
-        and resolved_sites == active_sites
-    )
     source_backed_resolved_sites = (
         resolved_sites
         if overlay_result is not None
         and overlay_result["hardware_qualification"] == "source_backed"
         else 0
+    )
+    trusted_resolved_sites = sum(
+        site["transceiver_site_status"]
+        in {"resolved_source_backed", "resolved_vendor_device_db"}
+        for item in fpgas
+        for site in item["sites"]
+    )
+    source_backed_service_resolution = all(
+        item["board_service_constraints_status"] == "source_backed_emittable"
+        for item in fpgas
+        if item["active_transceiver_sites"] > 0
     )
     provider_hardware_source_bound = (
         phy_provider is not None
@@ -881,13 +918,11 @@ def build_serial_wrapper_manifest(
         and phy_provider.get("qualification") == "editable_source_hardware"
     )
     required_provider_fields = []
-    if not source_backed_site_resolution:
+    if trusted_resolved_sites != active_sites:
+        required_provider_fields.append("transceiver_site")
+    if not source_backed_service_resolution:
         required_provider_fields.extend(
-            [
-            "transceiver_site",
-            "reference_clock_selection",
-            "reference_clock_package_binding",
-            ]
+            ["reference_clock_selection", "reference_clock_package_binding"]
         )
     if not provider_hardware_source_bound:
         required_provider_fields.extend(
@@ -981,8 +1016,9 @@ def build_serial_wrapper_manifest(
             "source_backed_resolved_transceiver_sites": (
                 source_backed_resolved_sites
             ),
+            "vendor_derived_transceiver_sites": vendor_derived_sites,
             "unresolved_transceiver_sites": (
-                active_sites - source_backed_resolved_sites
+                active_sites - trusted_resolved_sites
             ),
             "unresolved_phy_modules": active_sites,
             "provider_source_bound_phy_modules": (
@@ -1002,6 +1038,7 @@ def run_phase6c(
     transport_paths: Optional[Mapping[str, Path]] = None,
     board_overlay_path: Optional[Path] = None,
     phy_provider_path: Optional[Path] = None,
+    gt_site_map_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     platform = Platform.load(platform_path)
     binding = read_json(binding_path)
@@ -1016,6 +1053,13 @@ def run_phase6c(
     board_overlay = (
         read_json(board_overlay_path) if board_overlay_path is not None else None
     )
+    gt_site_map = None
+    if gt_site_map_path is not None:
+        raw_gt_site_map = read_json(gt_site_map_path)
+        platform_digest = hashlib.sha256(platform_path.read_bytes()).hexdigest()
+        if raw_gt_site_map.get("platform_sha256") != platform_digest:
+            raise ValidationError("Vivado GT site map BoardDB hash mismatch")
+        gt_site_map = validate_vivado_pin_site_map(raw_gt_site_map, platform)
     phy_provider_result = (
         validate_serial_phy_provider(
             read_json(phy_provider_path), phy_provider_path, platform
@@ -1029,7 +1073,7 @@ def run_phase6c(
         else None
     )
     manifest = build_serial_wrapper_manifest(
-        platform, binding, transports, board_overlay, phy_provider
+        platform, binding, transports, board_overlay, phy_provider, gt_site_map
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     contract = serial_phy_contract_rtl()
@@ -1070,7 +1114,7 @@ def run_phase6c(
             service_xdc_path.write_text(service_xdc, encoding="utf-8")
             if service_xdc_path.read_text(encoding="utf-8") != service_xdc:
                 raise ValidationError("written board service XDC does not agree")
-        if record["gt_site_constraints_status"] == "source_backed_emittable":
+        if record["gt_site_constraints_status"] == "trusted_emittable":
             assert phy_provider is not None
             gt_site_xdc = serial_gt_site_xdc(
                 record, phy_provider["implementation"]
@@ -1082,7 +1126,7 @@ def run_phase6c(
     digest = hashlib.sha256(binding_path.read_bytes()).hexdigest()
     manifest["binding_sha256"] = digest
     rebuilt = build_serial_wrapper_manifest(
-        platform, binding, transports, board_overlay, phy_provider
+        platform, binding, transports, board_overlay, phy_provider, gt_site_map
     )
     rebuilt["binding_sha256"] = digest
     if board_overlay_path is not None:
@@ -1096,6 +1140,11 @@ def run_phase6c(
         write_json(
             output_dir / "serial_phy_provider.normalized.json", phy_provider
         )
+    if gt_site_map_path is not None:
+        gt_site_map_digest = hashlib.sha256(gt_site_map_path.read_bytes()).hexdigest()
+        manifest["vivado_gt_site_map_sha256"] = gt_site_map_digest
+        rebuilt["vivado_gt_site_map_sha256"] = gt_site_map_digest
+        write_json(output_dir / "vivado_pin_site_map.bound.json", gt_site_map)
     write_json(output_dir / "serial_wrapper_manifest.json", manifest)
     if read_json(output_dir / "serial_wrapper_manifest.json") != rebuilt:
         raise ValidationError("serial wrapper manifest is not reproducible")
@@ -1125,6 +1174,11 @@ def run_phase6c(
                 if phy_provider is not None
                 else {}
             ),
+            **(
+                {"gt_site_map": "vivado_pin_site_map.bound.json"}
+                if gt_site_map is not None
+                else {}
+            ),
             "wrappers": {
                 item["fpga"]: item["rtl"] for item in manifest["fpgas"]
             },
@@ -1138,7 +1192,7 @@ def run_phase6c(
                 item["fpga"]: f"{item['fpga']}.gt_sites.xdc"
                 for item in manifest["fpgas"]
                 if item["gt_site_constraints_status"]
-                == "source_backed_emittable"
+                == "trusted_emittable"
             },
             **(
                 {

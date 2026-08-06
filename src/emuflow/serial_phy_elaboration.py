@@ -326,7 +326,7 @@ def run_serial_phy_elaboration(
                 gt_site_name = gt_site_artifacts.get(fpga)
                 if (
                     record.get("gt_site_constraints_status")
-                    != "source_backed_emittable"
+                    != "trusted_emittable"
                     or not isinstance(gt_site_name, str)
                 ):
                     raise ValidationError(

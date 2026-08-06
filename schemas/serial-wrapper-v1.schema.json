@@ -97,6 +97,10 @@
     "phy_provider_manifest_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "vivado_gt_site_map_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   },
   "additionalProperties": true

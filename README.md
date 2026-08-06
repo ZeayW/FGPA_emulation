@@ -833,6 +833,7 @@ emuflow platform overlay-validate \
 emuflow phase6c \
   --platform build/platforms/arm-mps4-3board.json \
   --binding build/phase6b/package_pin_binding.json \
+  --gt-site-map build/platforms/mps4-gt-sites/vivado_pin_site_map.json \
   --board-overlay local/mps4-board-support.json \
   --phy-provider local/serial-phy-provider.json \
   --out build/phase6c
