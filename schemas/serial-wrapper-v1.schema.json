@@ -80,6 +80,7 @@
           "transport_connections",
           "board_services",
           "board_service_constraints_status",
+          "gt_site_constraints_status",
           "sites"
         ]
       }

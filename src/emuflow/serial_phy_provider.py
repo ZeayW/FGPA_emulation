@@ -145,12 +145,22 @@ def validate_serial_phy_provider(
                 implementation.get("reference_clock_primitive"),
                 "implementation.reference_clock_primitive",
             ),
+            "channel_instance": _string(
+                implementation.get("channel_instance"),
+                "implementation.channel_instance",
+            ),
+            "reference_clock_instance": _string(
+                implementation.get("reference_clock_instance"),
+                "implementation.reference_clock_instance",
+            ),
         }
         if any(
             re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", primitive) is None
             for primitive in (
                 normalized_implementation["channel_primitive"],
                 normalized_implementation["reference_clock_primitive"],
+                normalized_implementation["channel_instance"],
+                normalized_implementation["reference_clock_instance"],
             )
         ):
             raise ValidationError("hardware PHY primitive name is invalid")

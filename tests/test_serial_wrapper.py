@@ -227,6 +227,8 @@ endmodule
                         "kind": "amd_ultrascale_plus_gty",
                         "channel_primitive": "GTYE4_CHANNEL",
                         "reference_clock_primitive": "IBUFDS_GTE4",
+                        "channel_instance": "gty_channel",
+                        "reference_clock_instance": "refclk_buffer",
                     }
                     if qualification == "editable_source_hardware"
                     else {"kind": "behavioral"}
@@ -529,6 +531,12 @@ endmodule
         self.assertEqual(len(hardware_manifest["phy_provider_manifest_sha256"]), 64)
         self.assertTrue(
             (hardware_out / "serial_phy_provider.normalized.json").is_file()
+        )
+        gt_xdc = (hardware_out / "mps4_1.gt_sites.xdc").read_text()
+        self.assertIn(
+            "set_property LOC GTYE4_CHANNEL_X0Y0 "
+            "[get_cells {serial_wrapper/site_0_phy/gty_channel}]",
+            gt_xdc,
         )
 
 

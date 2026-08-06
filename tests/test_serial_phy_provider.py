@@ -168,6 +168,8 @@ class SerialPhyProviderTest(unittest.TestCase):
             "kind": "amd_ultrascale_plus_gty",
             "channel_primitive": "GTYE4_CHANNEL",
             "reference_clock_primitive": "IBUFDS_GTE4",
+            "channel_instance": "gty_channel",
+            "reference_clock_instance": "refclk_buffer",
         }
         hardware["sources"][0]["sha256"] = hashlib.sha256(
             source_text.encode("utf-8")

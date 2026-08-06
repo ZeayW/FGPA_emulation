@@ -865,9 +865,10 @@ structural/equivalence tests but can never authorize hardware release;
 that Vivado elaboration, GT placement, timing, DRC, bitstream generation, or
 board training has already passed. Those remain separate checked gates.
 An editable UltraScale+ provider must additionally declare its channel and
-reference-clock primitives (normally `GTYE4_CHANNEL` and `IBUFDS_GTE4`);
-simulation providers declare a behavioral implementation instead. A hardware
-provider containing `(* black_box *)` modules is rejected.
+reference-clock primitives (normally `GTYE4_CHANNEL` and `IBUFDS_GTE4`) and
+their stable hierarchy instance names; simulation providers declare a
+behavioral implementation instead. A hardware provider containing
+`(* black_box *)` modules is rejected.
 When Phase 6C consumes the provider, it hash-binds both the provider manifest
 and every inventoried source into its output. A simulation provider leaves the
 release blocked. An editable hardware provider combined with a complete
@@ -901,9 +902,11 @@ Replacing `--yosys ...` with `--vivado ...` runs the same source-bound inputs
 through an in-memory, part-specific Vivado RTL elaboration and rejects any
 remaining black boxes. For an UltraScale+ hardware provider it also requires
 one declared channel primitive per active transceiver site and one declared
-reference-clock primitive per generated clock/reset domain. Its qualification
-is `vivado_rtl_elaboration_only` and it has the same non-release boundary;
-primitive presence is still not GT LOC coverage, placement, routing, timing,
+reference-clock primitive per generated clock/reset domain. Phase 6C derives
+a GT LOC XDC from the source-backed board overlay and the provider hierarchy
+contract; Vivado must report that the primitive LOC set exactly matches it.
+Its qualification is `vivado_rtl_elaboration_only` and it has the same
+non-release boundary; these checks are still not placement, routing, timing,
 protocol correctness, or electrical sign-off.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical

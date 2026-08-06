@@ -66,11 +66,20 @@ def build_vivado_elaboration_tcl(
     primitive_contract: Optional[Mapping[str, str]] = None,
     expected_channel_primitives: int = 0,
     expected_reference_clock_primitives: int = 0,
+    constraint_sources: Sequence[Path] = (),
+    expected_channel_locs: Sequence[str] = (),
 ) -> str:
     if not sources:
         raise ValidationError("serial PHY elaboration source list is empty")
     if not top or not part:
         raise ValidationError("Vivado elaboration top/part is invalid")
+    if constraint_sources and primitive_contract is None:
+        raise ValidationError("GT constraints require a primitive contract")
+    if expected_channel_locs and (
+        primitive_contract is None
+        or len(expected_channel_locs) != expected_channel_primitives
+    ):
+        raise ValidationError("expected GT LOC inventory is inconsistent")
     source_list = " ".join(_tcl_quote(str(path)) for path in sources)
     lines = [
             "create_project -in_memory -part " + _tcl_quote(part) + " emuflow_phy",
@@ -142,6 +151,37 @@ def build_vivado_elaboration_tcl(
                 + str(expected_reference_clock_primitives)
                 + "\"",
                 "  exit 5",
+                "}",
+            ]
+        )
+    if constraint_sources:
+        constraint_list = " ".join(
+            _tcl_quote(str(path)) for path in constraint_sources
+        )
+        expected_locs = " ".join(
+            _tcl_quote(location) for location in expected_channel_locs
+        )
+        lines.extend(
+            [
+                "foreach constraint [list " + constraint_list + "] {",
+                "  read_xdc $constraint",
+                "}",
+                "set actual_channel_locs [list]",
+                "foreach channel_cell $channel_primitives {",
+                "  lappend actual_channel_locs [get_property LOC $channel_cell]",
+                "}",
+                "set actual_channel_locs [lsort $actual_channel_locs]",
+                "set expected_channel_locs [lsort [list " + expected_locs + "]]",
+                "set report_handle [open "
+                + _tcl_quote(str(utilization_report))
+                + " a]",
+                "puts $report_handle \"channel_locs=$actual_channel_locs\"",
+                "puts $report_handle \"expected_channel_locs=$expected_channel_locs\"",
+                "close $report_handle",
+                "if {$actual_channel_locs ne $expected_channel_locs} {",
+                "  puts stderr \"EMUFLOW_PHY_ELAB channel_locs=$actual_channel_locs "
+                "expected=$expected_channel_locs\"",
+                "  exit 6",
                 "}",
             ]
         )
@@ -271,20 +311,49 @@ def run_serial_phy_elaboration(
         else:
             utilization_path = output_dir / f"{fpga}.vivado.elaboration.rpt"
             script_path = output_dir / f"{fpga}.vivado.tcl"
+            primitive_contract = (
+                provider["implementation"]
+                if provider["implementation"]["kind"]
+                == "amd_ultrascale_plus_gty"
+                else None
+            )
+            constraint_sources = []
+            expected_channel_locs = []
+            if primitive_contract is not None:
+                gt_site_artifacts = phase6c_report.get("artifacts", {}).get(
+                    "gt_site_xdc", {}
+                )
+                gt_site_name = gt_site_artifacts.get(fpga)
+                if (
+                    record.get("gt_site_constraints_status")
+                    != "source_backed_emittable"
+                    or not isinstance(gt_site_name, str)
+                ):
+                    raise ValidationError(
+                        f"{fpga}: source-backed GT site constraints are missing"
+                    )
+                gt_site_path = phase6c_dir / gt_site_name
+                if not gt_site_path.is_file():
+                    raise ValidationError(f"{fpga}: GT site XDC is missing")
+                constraint_sources.append(gt_site_path)
+                expected_channel_locs = [
+                    site["transceiver_site"] for site in record["sites"]
+                ]
             script_path.write_text(
                 build_vivado_elaboration_tcl(
                     sources,
                     top,
                     parts[fpga],
                     utilization_path,
-                    (
-                        provider["implementation"]
-                        if provider["implementation"]["kind"]
-                        == "amd_ultrascale_plus_gty"
-                        else None
+                    primitive_contract=primitive_contract,
+                    expected_channel_primitives=record[
+                        "active_transceiver_sites"
+                    ],
+                    expected_reference_clock_primitives=len(
+                        record["board_services"]["clock_reset_domains"]
                     ),
-                    record["active_transceiver_sites"],
-                    len(record["board_services"]["clock_reset_domains"]),
+                    constraint_sources=constraint_sources,
+                    expected_channel_locs=expected_channel_locs,
                 ),
                 encoding="utf-8",
             )
@@ -323,6 +392,15 @@ def run_serial_phy_elaboration(
                         "sha256": _sha256(path),
                     }
                     for path in sources
+                ],
+                "constraints": [
+                    {
+                        "path": str(path),
+                        "sha256": _sha256(path),
+                    }
+                    for path in (
+                        constraint_sources if tool_name == "vivado" else []
+                    )
                 ],
                 "log": log_path.name,
                 "log_sha256": _sha256(log_path),

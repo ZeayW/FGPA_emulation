@@ -24,7 +24,9 @@
       "properties": {
         "kind": {"enum": ["behavioral", "amd_ultrascale_plus_gty"]},
         "channel_primitive": {"type": "string", "minLength": 1},
-        "reference_clock_primitive": {"type": "string", "minLength": 1}
+        "reference_clock_primitive": {"type": "string", "minLength": 1},
+        "channel_instance": {"type": "string", "minLength": 1},
+        "reference_clock_instance": {"type": "string", "minLength": 1}
       }
     },
     "source_root": {"type": "string", "minLength": 1},

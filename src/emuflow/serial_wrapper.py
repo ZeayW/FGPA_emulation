@@ -284,6 +284,25 @@ def serial_board_service_xdc(fpga_record: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def serial_gt_site_xdc(
+    fpga_record: Mapping[str, Any], implementation: Mapping[str, Any]
+) -> str:
+    lines = [
+        "# Generated source-backed GT channel placement constraints.",
+        "# Cell paths are derived from the provider primitive hierarchy contract.",
+    ]
+    channel_instance = implementation["channel_instance"]
+    for index, site in enumerate(fpga_record["sites"]):
+        if site.get("transceiver_site_status") != "resolved_source_backed":
+            raise ValidationError("GT site XDC requires source-backed site bindings")
+        cell_path = f"serial_wrapper/site_{index}_phy/{channel_instance}"
+        lines.append(
+            f"set_property LOC {site['transceiver_site']} "
+            f"[get_cells {{{cell_path}}}]"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def serial_wrapper_rtl(
     platform: Platform,
     fpga: str,
@@ -765,6 +784,22 @@ def build_serial_wrapper_manifest(
             if domains
             else "not_provided"
         )
+        hardware_implementation = (
+            phy_provider["implementation"]
+            if phy_provider is not None
+            and phy_provider["qualification"] == "editable_source_hardware"
+            else None
+        )
+        gt_site_constraints_status = (
+            "source_backed_emittable"
+            if fpga_sites
+            and hardware_implementation is not None
+            and all(
+                site["transceiver_site_status"] == "resolved_source_backed"
+                for site in fpga_sites
+            )
+            else "provider_or_site_binding_unresolved"
+        )
         transport_connections = []
         for link in _incident_links(platform, fpga.id):
             peer = (
@@ -807,6 +842,7 @@ def build_serial_wrapper_manifest(
                 "transport_connections": transport_connections,
                 "board_services": fpga_board_services,
                 "board_service_constraints_status": constraints_status,
+                "gt_site_constraints_status": gt_site_constraints_status,
                 "sites": fpga_sites,
                 **(
                     {
@@ -1034,6 +1070,15 @@ def run_phase6c(
             service_xdc_path.write_text(service_xdc, encoding="utf-8")
             if service_xdc_path.read_text(encoding="utf-8") != service_xdc:
                 raise ValidationError("written board service XDC does not agree")
+        if record["gt_site_constraints_status"] == "source_backed_emittable":
+            assert phy_provider is not None
+            gt_site_xdc = serial_gt_site_xdc(
+                record, phy_provider["implementation"]
+            )
+            gt_site_xdc_path = output_dir / f"{record['fpga']}.gt_sites.xdc"
+            gt_site_xdc_path.write_text(gt_site_xdc, encoding="utf-8")
+            if gt_site_xdc_path.read_text(encoding="utf-8") != gt_site_xdc:
+                raise ValidationError("written GT site XDC does not agree")
     digest = hashlib.sha256(binding_path.read_bytes()).hexdigest()
     manifest["binding_sha256"] = digest
     rebuilt = build_serial_wrapper_manifest(
@@ -1087,6 +1132,12 @@ def run_phase6c(
                 item["fpga"]: f"{item['fpga']}.board_services.xdc"
                 for item in manifest["fpgas"]
                 if item["board_service_constraints_status"]
+                == "source_backed_emittable"
+            },
+            "gt_site_xdc": {
+                item["fpga"]: f"{item['fpga']}.gt_sites.xdc"
+                for item in manifest["fpgas"]
+                if item["gt_site_constraints_status"]
                 == "source_backed_emittable"
             },
             **(
