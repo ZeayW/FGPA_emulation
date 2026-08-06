@@ -390,6 +390,20 @@ class CrossStageCandidateTest(unittest.TestCase):
                     ],
                     3600,
                 )
+                self.assertEqual(
+                    report["configuration"]["partition_seed_attempts"],
+                    1,
+                )
+                self.assertFalse(
+                    report["configuration"][
+                        "partition_repair_min_used_fpgas"
+                    ]
+                )
+                self.assertFalse(
+                    report["configuration"][
+                        "partition_repair_balance"
+                    ]
+                )
                 self.assertEqual(len(report["candidates"]), 5)
                 self.assertEqual(
                     [

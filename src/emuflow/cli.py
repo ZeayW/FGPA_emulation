@@ -1608,6 +1608,15 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
     )
+    cross_stage_optimize.add_argument(
+        "--partition-seed-attempts", type=int, default=1
+    )
+    cross_stage_optimize.add_argument(
+        "--partition-repair-min-used-fpgas", action="store_true"
+    )
+    cross_stage_optimize.add_argument(
+        "--partition-repair-balance", action="store_true"
+    )
     cross_stage_optimize.add_argument("--router")
     cross_stage_optimize.add_argument("--frame-slots", type=int)
     cross_stage_optimize.add_argument(
@@ -2784,6 +2793,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                 repart=args.repart,
                 partition_timeout_seconds=(
                     args.partition_timeout_seconds
+                ),
+                partition_seed_attempts=args.partition_seed_attempts,
+                partition_repair_min_used_fpgas=(
+                    args.partition_repair_min_used_fpgas
+                ),
+                partition_repair_balance=(
+                    args.partition_repair_balance
                 ),
                 router=args.router,
                 frame_slots=args.frame_slots,

@@ -271,7 +271,9 @@ With `--cross-stage-iterations N`, the same command runs the checked Phase
 partition—is promoted to the canonical partition, route, and schedule, then
 continues through Phase 6, the requested physical backend, and Phase 7C. The
 top-level validator requires the selected candidate's independent Phase 3/4/5
-results to match those consumed by all later stages.
+results to match those consumed by all later stages. TritonPart seed-sweep,
+minimum-partition repair, and multi-resource balance-repair settings are
+propagated unchanged from the initial partition into every feedback trial.
 
 The same command can continue through the checked serial BSP boundary after a
 provider recipe has been materialized. It then runs Phase 6B, constructs the

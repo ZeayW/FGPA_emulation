@@ -349,6 +349,10 @@ Phase 6 netlist/transport generation, the selected physical backend, and
 Phase 7C unified system timing. The aggregate validator cross-checks the
 selected candidate identity and all three independent stage validations before
 the run can pass.
+Feedback trials inherit the initial Phase 3 TritonPart seed-sweep and checked
+minimum-used-FPGA/multi-resource balance-repair policy. A trial therefore is
+not rejected merely because the outer loop silently omitted the legalization
+policy used to create its incumbent.
 
 Acceptance uses the concrete schedule rather than the analytical routing
 proxy. The candidate checker reconstructs transport delay for every path in

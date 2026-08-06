@@ -152,6 +152,9 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 cross_stage_feedback_optimizer=str(
                     tdm_partition_feedback()
                 ),
+                partition_seed_attempts=2,
+                partition_repair_min_used_fpgas=True,
+                partition_repair_balance=True,
                 equivalence_cycles=2,
             )
             self.assertEqual(report["timing"]["status"], "pass")
@@ -234,6 +237,22 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             )
             self.assertEqual(
                 report["runtime"]["validation"]["status"], "pass"
+            )
+            self.assertEqual(
+                report["cross_stage"]["configuration"][
+                    "partition_seed_attempts"
+                ],
+                2,
+            )
+            self.assertTrue(
+                report["cross_stage"]["configuration"][
+                    "partition_repair_min_used_fpgas"
+                ]
+            )
+            self.assertTrue(
+                report["cross_stage"]["configuration"][
+                    "partition_repair_balance"
+                ]
             )
             broken_cross_stage = copy.deepcopy(report)
             broken_cross_stage["cross_stage"]["selected_candidate_id"] = (

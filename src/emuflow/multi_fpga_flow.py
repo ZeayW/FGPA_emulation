@@ -659,6 +659,11 @@ def run_multi_fpga_flow(
             openroad=openroad,
             repart=repart,
             partition_timeout_seconds=partition_timeout_seconds,
+            partition_seed_attempts=partition_seed_attempts,
+            partition_repair_min_used_fpgas=(
+                partition_repair_min_used_fpgas
+            ),
+            partition_repair_balance=partition_repair_balance,
             router=router,
             frame_slots=frame_slots,
             optimize_frame_slots=optimize_frame_slots,

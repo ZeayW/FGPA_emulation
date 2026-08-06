@@ -779,6 +779,9 @@ def run_cross_stage_optimization(
     openroad: Optional[str] = None,
     repart: Optional[str] = None,
     partition_timeout_seconds: int = 3600,
+    partition_seed_attempts: int = 1,
+    partition_repair_min_used_fpgas: bool = False,
+    partition_repair_balance: bool = False,
     router: Optional[str] = None,
     frame_slots: Optional[int] = None,
     optimize_frame_slots: bool = False,
@@ -801,6 +804,20 @@ def run_cross_stage_optimization(
     ):
         raise ValidationError(
             "cross-stage max outer iterations must be non-negative"
+        )
+    if (
+        isinstance(partition_seed_attempts, bool)
+        or not isinstance(partition_seed_attempts, int)
+        or partition_seed_attempts <= 0
+    ):
+        raise ValidationError(
+            "cross-stage partition seed attempts must be positive"
+        )
+    if not isinstance(partition_repair_min_used_fpgas, bool) or not isinstance(
+        partition_repair_balance, bool
+    ):
+        raise ValidationError(
+            "cross-stage partition repair flags must be booleans"
         )
     steps = _normalize_feedback_steps(feedback_steps)
     if optimize_frame_slots and frame_slots is None:
@@ -986,6 +1003,13 @@ def run_cross_stage_optimization(
                     tritonpart_timeout_seconds=(
                         partition_timeout_seconds
                     ),
+                    tritonpart_seed_attempts=partition_seed_attempts,
+                    tritonpart_repair_min_used_fpgas=(
+                        partition_repair_min_used_fpgas
+                    ),
+                    tritonpart_repair_balance=(
+                        partition_repair_balance
+                    ),
                     repart=repart,
                     repart_timeout_seconds=partition_timeout_seconds,
                 )
@@ -1095,6 +1119,11 @@ def run_cross_stage_optimization(
             "simulation_frames": simulation_frames,
             "pair_pressure_weight": pair_pressure_weight,
             "partition_timeout_seconds": partition_timeout_seconds,
+            "partition_seed_attempts": partition_seed_attempts,
+            "partition_repair_min_used_fpgas": (
+                partition_repair_min_used_fpgas
+            ),
+            "partition_repair_balance": partition_repair_balance,
             "frame_slots": frame_slots,
             "optimize_frame_slots": optimize_frame_slots,
             "feedback_steps": list(steps),
@@ -1213,6 +1242,25 @@ def validate_cross_stage_report(
         raise ValidationError(
             "cross-stage report partition timeout is invalid"
         )
+    partition_seed_attempts = configuration.get(
+        "partition_seed_attempts"
+    )
+    if (
+        isinstance(partition_seed_attempts, bool)
+        or not isinstance(partition_seed_attempts, int)
+        or partition_seed_attempts <= 0
+    ):
+        raise ValidationError(
+            "cross-stage report partition seed attempts are invalid"
+        )
+    for name in (
+        "partition_repair_min_used_fpgas",
+        "partition_repair_balance",
+    ):
+        if not isinstance(configuration.get(name), bool):
+            raise ValidationError(
+                f"cross-stage report {name} flag is invalid"
+            )
     optimize_frame_slots = configuration.get("optimize_frame_slots")
     frame_slots = configuration.get("frame_slots")
     if not isinstance(optimize_frame_slots, bool):
