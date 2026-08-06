@@ -68,6 +68,10 @@ def build_vivado_elaboration_tcl(
     expected_reference_clock_primitives: int = 0,
     constraint_sources: Sequence[Path] = (),
     expected_channel_locs: Sequence[str] = (),
+    expected_common_primitives: int = 0,
+    expected_common_locs: Sequence[str] = (),
+    expected_channel_cells: Sequence[str] = (),
+    expected_common_cells: Sequence[str] = (),
 ) -> str:
     if not sources:
         raise ValidationError("serial PHY elaboration source list is empty")
@@ -80,6 +84,22 @@ def build_vivado_elaboration_tcl(
         or len(expected_channel_locs) != expected_channel_primitives
     ):
         raise ValidationError("expected GT LOC inventory is inconsistent")
+    if expected_common_locs and (
+        primitive_contract is None
+        or len(expected_common_locs) != expected_common_primitives
+        or not primitive_contract.get("common_primitive")
+    ):
+        raise ValidationError("expected GT common LOC inventory is inconsistent")
+    if (
+        constraint_sources
+        and len(expected_channel_cells) != expected_channel_primitives
+    ):
+        raise ValidationError("expected GT channel hierarchy inventory is inconsistent")
+    if (
+        constraint_sources
+        and len(expected_common_cells) != expected_common_primitives
+    ):
+        raise ValidationError("expected GT common hierarchy inventory is inconsistent")
     source_list = " ".join(_tcl_quote(str(path)) for path in sources)
     lines = [
             "create_project -in_memory -part " + _tcl_quote(part) + " emuflow_phy",
@@ -87,7 +107,7 @@ def build_vivado_elaboration_tcl(
             "  read_verilog -sv $source",
             "}",
             "set_property top " + _tcl_quote(top) + " [current_fileset]",
-            "synth_design -rtl -mode out_of_context -top "
+            "synth_design -mode out_of_context -flatten_hierarchy none -top "
             + _tcl_quote(top)
             + " -part "
             + _tcl_quote(part),
@@ -110,11 +130,21 @@ def build_vivado_elaboration_tcl(
                 + "]",
             ]
         )
+        common_primitive = primitive_contract.get("common_primitive")
+        if common_primitive:
+            lines.append(
+                "set common_primitives [get_cells -quiet -hier -filter "
+                + _tcl_quote(f"REF_NAME == {common_primitive}")
+                + "]"
+            )
+        else:
+            lines.append("set common_primitives [list]")
     else:
         lines.extend(
             [
                 "set channel_primitives [list]",
                 "set refclk_primitives [list]",
+                "set common_primitives [list]",
             ]
         )
     lines.extend(
@@ -127,7 +157,11 @@ def build_vivado_elaboration_tcl(
             "puts $report_handle \"cells=[llength [get_cells -hier]]\"",
             "puts $report_handle \"black_boxes=[llength $black_boxes]\"",
             "puts $report_handle \"channel_primitives=[llength $channel_primitives]\"",
+            "puts $report_handle \"channel_cells=$channel_primitives\"",
             "puts $report_handle \"reference_clock_primitives=[llength $refclk_primitives]\"",
+            "puts $report_handle \"reference_clock_cells=$refclk_primitives\"",
+            "puts $report_handle \"common_primitives=[llength $common_primitives]\"",
+            "puts $report_handle \"common_cells=$common_primitives\"",
             "close $report_handle",
         ]
     )
@@ -152,6 +186,15 @@ def build_vivado_elaboration_tcl(
                 + "\"",
                 "  exit 5",
                 "}",
+                "if {[llength $common_primitives] != "
+                + str(expected_common_primitives)
+                + "} {",
+                "  puts stderr \"EMUFLOW_PHY_ELAB common_primitive_count="
+                "[llength $common_primitives] expected="
+                + str(expected_common_primitives)
+                + "\"",
+                "  exit 7",
+                "}",
             ]
         )
     if constraint_sources:
@@ -161,8 +204,35 @@ def build_vivado_elaboration_tcl(
         expected_locs = " ".join(
             _tcl_quote(location) for location in expected_channel_locs
         )
+        expected_common = " ".join(
+            _tcl_quote(location) for location in expected_common_locs
+        )
+        expected_channel_hierarchy = " ".join(
+            _tcl_quote(cell) for cell in expected_channel_cells
+        )
+        expected_common_hierarchy = " ".join(
+            _tcl_quote(cell) for cell in expected_common_cells
+        )
         lines.extend(
             [
+                "set actual_channel_cells [lsort $channel_primitives]",
+                "set expected_channel_cells [lsort [list "
+                + expected_channel_hierarchy
+                + "]]",
+                "set actual_common_cells [lsort $common_primitives]",
+                "set expected_common_cells [lsort [list "
+                + expected_common_hierarchy
+                + "]]",
+                "if {$actual_channel_cells ne $expected_channel_cells} {",
+                "  puts stderr \"EMUFLOW_PHY_ELAB channel_cells=$actual_channel_cells "
+                "expected=$expected_channel_cells\"",
+                "  exit 9",
+                "}",
+                "if {$actual_common_cells ne $expected_common_cells} {",
+                "  puts stderr \"EMUFLOW_PHY_ELAB common_cells=$actual_common_cells "
+                "expected=$expected_common_cells\"",
+                "  exit 10",
+                "}",
                 "foreach constraint [list " + constraint_list + "] {",
                 "  read_xdc $constraint",
                 "}",
@@ -182,6 +252,23 @@ def build_vivado_elaboration_tcl(
                 "  puts stderr \"EMUFLOW_PHY_ELAB channel_locs=$actual_channel_locs "
                 "expected=$expected_channel_locs\"",
                 "  exit 6",
+                "}",
+                "set actual_common_locs [list]",
+                "foreach common_cell $common_primitives {",
+                "  lappend actual_common_locs [get_property LOC $common_cell]",
+                "}",
+                "set actual_common_locs [lsort $actual_common_locs]",
+                "set expected_common_locs [lsort [list " + expected_common + "]]",
+                "set report_handle [open "
+                + _tcl_quote(str(utilization_report))
+                + " a]",
+                "puts $report_handle \"common_locs=$actual_common_locs\"",
+                "puts $report_handle \"expected_common_locs=$expected_common_locs\"",
+                "close $report_handle",
+                "if {$actual_common_locs ne $expected_common_locs} {",
+                "  puts stderr \"EMUFLOW_PHY_ELAB common_locs=$actual_common_locs "
+                "expected=$expected_common_locs\"",
+                "  exit 8",
                 "}",
             ]
         )
@@ -319,6 +406,9 @@ def run_serial_phy_elaboration(
             )
             constraint_sources = []
             expected_channel_locs = []
+            expected_common_locs = []
+            expected_channel_cells = []
+            expected_common_cells = []
             if primitive_contract is not None:
                 gt_site_artifacts = phase6c_report.get("artifacts", {}).get(
                     "gt_site_xdc", {}
@@ -339,6 +429,31 @@ def run_serial_phy_elaboration(
                 expected_channel_locs = [
                     site["transceiver_site"] for site in record["sites"]
                 ]
+                if provider.get("schema") == "emuflow.serial-phy-provider/v2":
+                    expected_common_locs = [
+                        quad["common_site"]
+                        for quad in record["transceiver_quads"]
+                    ]
+                    for quad_index, quad in enumerate(
+                        record["transceiver_quads"]
+                    ):
+                        expected_common_cells.append(
+                            f"serial_wrapper/quad_{quad_index}_phy/"
+                            f"{primitive_contract['common_instance']}"
+                        )
+                        for channel in quad["channels"]:
+                            hierarchy = primitive_contract[
+                                "channel_instance_template"
+                            ].format(channel=channel["channel_index"])
+                            expected_channel_cells.append(
+                                f"serial_wrapper/quad_{quad_index}_phy/{hierarchy}"
+                            )
+                else:
+                    expected_channel_cells = [
+                        f"serial_wrapper/site_{index}_phy/"
+                        f"{primitive_contract['channel_instance']}"
+                        for index, _site in enumerate(record["sites"])
+                    ]
             script_path.write_text(
                 build_vivado_elaboration_tcl(
                     sources,
@@ -354,6 +469,10 @@ def run_serial_phy_elaboration(
                     ),
                     constraint_sources=constraint_sources,
                     expected_channel_locs=expected_channel_locs,
+                    expected_common_primitives=len(expected_common_locs),
+                    expected_common_locs=expected_common_locs,
+                    expected_channel_cells=expected_channel_cells,
+                    expected_common_cells=expected_common_cells,
                 ),
                 encoding="utf-8",
             )
@@ -419,7 +538,7 @@ def run_serial_phy_elaboration(
         "qualification": (
             "open_rtl_elaboration_only"
             if tool_name == "yosys"
-            else "vivado_rtl_elaboration_only"
+            else "vivado_ooc_synthesis_structure_validation"
         ),
         "design": manifest["design"],
         "platform": platform.name,
@@ -437,6 +556,7 @@ def run_serial_phy_elaboration(
         "validation": {
             "fpgas": len(fpga_results),
             "elaboration_failures": 0,
+            **({"synthesis_failures": 0} if tool_name == "vivado" else {}),
             "hardware_release_authorized": False,
         },
     }

@@ -193,18 +193,29 @@ class SerialWrapperTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def _write_phy_provider(self, qualification: str) -> Path:
+    def _write_phy_provider(
+        self, qualification: str, schema: str = "emuflow.serial-phy-provider/v1"
+    ) -> Path:
         root = Path(self.temporary_directory.name)
-        source = root / f"provider-{qualification}.sv"
-        source_text = """module emuflow_external_serial_clock_reset #(
-  parameter integer BOARD_RESET_ACTIVE_LOW = 1
-) (input wire refclk_p, input wire refclk_n, input wire board_reset,
-   output wire phy_refclk, output wire phy_reset, output wire ready);
-  assign phy_refclk = refclk_p;
-  assign phy_reset = BOARD_RESET_ACTIVE_LOW ? ~board_reset : board_reset;
-  assign ready = 1'b1;
+        suffix = "v2" if schema.endswith("/v2") else "v1"
+        source = root / f"provider-{qualification}-{suffix}.sv"
+        lane_or_quad = (
+            """module emuflow_external_serial_phy_quad #(
+  parameter integer PAYLOAD_WIDTH = 64,
+  parameter [3:0] ACTIVE_CHANNEL_MASK = 4'b0000
+) (input wire user_clk, input wire reset, input wire phy_refclk,
+   input wire phy_reset, input wire [4*PAYLOAD_WIDTH-1:0] tx_data,
+   output wire [4*PAYLOAD_WIDTH-1:0] rx_data,
+   output wire [3:0] txp, output wire [3:0] txn,
+   input wire [3:0] rxp, input wire [3:0] rxn,
+   output wire [3:0] lane_ready, output wire common_ready);
+  assign rx_data = {4*PAYLOAD_WIDTH{1'b0}};
+  assign txp = 4'b0000; assign txn = 4'b1111;
+  assign lane_ready = ACTIVE_CHANNEL_MASK; assign common_ready = 1'b1;
 endmodule
-module emuflow_external_serial_phy_lane #(
+"""
+            if schema.endswith("/v2")
+            else """module emuflow_external_serial_phy_lane #(
   parameter integer PAYLOAD_WIDTH = 64
 ) (input wire user_clk, input wire reset, input wire phy_refclk,
    input wire phy_reset, input wire [PAYLOAD_WIDTH-1:0] tx_data,
@@ -214,25 +225,68 @@ module emuflow_external_serial_phy_lane #(
   assign txp = 1'b0; assign txn = 1'b1; assign ready = 1'b1;
 endmodule
 """
+        )
+        source_text = """module emuflow_external_serial_clock_reset #(
+  parameter integer BOARD_RESET_ACTIVE_LOW = 1
+) (input wire refclk_p, input wire refclk_n, input wire board_reset,
+   output wire phy_refclk, output wire phy_reset, output wire ready);
+  assign phy_refclk = refclk_p;
+  assign phy_reset = BOARD_RESET_ACTIVE_LOW ? ~board_reset : board_reset;
+  assign ready = 1'b1;
+endmodule
+""" + lane_or_quad
+        if qualification == "editable_source_hardware":
+            source_text = source_text.replace(
+                "  assign phy_refclk = refclk_p;",
+                "  IBUFDS_GTE4 refclk_buffer ();\n"
+                "  assign phy_refclk = refclk_p;",
+            )
+            source_text = source_text.replace(
+                "  assign rx_data =",
+                (
+                    "  GTYE4_COMMON gty_common ();\n"
+                    "  GTYE4_CHANNEL gty_channel ();\n"
+                    if schema.endswith("/v2")
+                    else "  GTYE4_CHANNEL gty_channel ();\n"
+                )
+                + "  assign rx_data =",
+            )
         source.write_text(source_text, encoding="utf-8")
-        manifest = root / f"provider-{qualification}.json"
+        manifest = root / f"provider-{qualification}-{suffix}.json"
         write_json(
             manifest,
             {
-                "schema": "emuflow.serial-phy-provider/v1",
+                "schema": schema,
                 "id": f"{qualification}_fixture",
                 "qualification": qualification,
                 "supported_parts": ["xcvu13p-fhga2104-1-e"],
-                "modules": {
-                    "clock_reset": "emuflow_external_serial_clock_reset",
-                    "lane": "emuflow_external_serial_phy_lane",
-                },
+                "modules": (
+                    {
+                        "clock_reset": "emuflow_external_serial_clock_reset",
+                        "quad": "emuflow_external_serial_phy_quad",
+                    }
+                    if schema.endswith("/v2")
+                    else {
+                        "clock_reset": "emuflow_external_serial_clock_reset",
+                        "lane": "emuflow_external_serial_phy_lane",
+                    }
+                ),
                 "implementation": (
                     {
                         "kind": "amd_ultrascale_plus_gty",
                         "channel_primitive": "GTYE4_CHANNEL",
+                        **(
+                            {
+                                "common_primitive": "GTYE4_COMMON",
+                                "channel_instance_template": (
+                                    "channel_{channel}.gty_channel"
+                                ),
+                                "common_instance": "gty_common",
+                            }
+                            if schema.endswith("/v2")
+                            else {"channel_instance": "gty_channel"}
+                        ),
                         "reference_clock_primitive": "IBUFDS_GTE4",
-                        "channel_instance": "gty_channel",
                         "reference_clock_instance": "refclk_buffer",
                     }
                     if qualification == "editable_source_hardware"
@@ -563,13 +617,14 @@ endmodule
         )
         self.assertEqual(
             hardware_report["hardware_release_status"],
-            "pending_vivado_provider_validation",
+            "blocked_on_external_phy_provider",
         )
         hardware_manifest = read_json(
             hardware_out / "serial_wrapper_manifest.json"
         )
-        self.assertEqual(
-            hardware_manifest["phy_contract"]["required_provider_fields"], []
+        self.assertIn(
+            "quad_shared_common",
+            hardware_manifest["phy_contract"]["required_provider_fields"],
         )
         self.assertEqual(
             hardware_manifest["metrics"]["provider_source_bound_phy_modules"],
@@ -635,6 +690,63 @@ endmodule
             gt_xdc,
         )
         self.assertFalse((output / "mps4_1.board_services.xdc").exists())
+
+    def test_v2_provider_instantiates_one_shared_common_per_quad(self) -> None:
+        root = Path(self.temporary_directory.name)
+        binding_path = root / "binding-v2.json"
+        overlay_path = root / "overlay-v2.json"
+        gt_site_map_path = root / "gt-site-map-v2.json"
+        output = root / "phase6c-v2"
+        overlay = copy.deepcopy(self.overlay)
+        mapped_sites = {"mps4_1": "GTYE4_CHANNEL_X0Y20", "mps4_2": "GTYE4_CHANNEL_X0Y36"}
+        for record in overlay["transceiver_sites"]:
+            record["site"] = mapped_sites[record["fpga"]]
+        write_json(binding_path, self.binding)
+        write_json(overlay_path, overlay)
+        write_json(gt_site_map_path, self._gt_site_map())
+        report = run_phase6c(
+            self.platform_path,
+            binding_path,
+            output,
+            board_overlay_path=overlay_path,
+            phy_provider_path=self._write_phy_provider(
+                "editable_source_hardware", "emuflow.serial-phy-provider/v2"
+            ),
+            gt_site_map_path=gt_site_map_path,
+        )
+        self.assertEqual(
+            report["hardware_release_status"],
+            "pending_vivado_provider_validation",
+        )
+        manifest = read_json(output / "serial_wrapper_manifest.json")
+        self.assertEqual(manifest["phy_contract"]["required_provider_fields"], [])
+        self.assertEqual(
+            manifest["phy_contract"]["module"],
+            "emuflow_external_serial_phy_quad",
+        )
+        self.assertEqual(
+            manifest["metrics"]["provider_source_bound_phy_modules"], 2
+        )
+        self.assertEqual(manifest["metrics"]["active_phy_modules"], 2)
+        self.assertEqual(manifest["metrics"]["unresolved_phy_modules"], 0)
+        wrapper = (output / "mps4_1.serial_wrapper.sv").read_text()
+        self.assertEqual(
+            wrapper.count("emuflow_external_serial_phy_quad #("), 1
+        )
+        self.assertIn(".ACTIVE_CHANNEL_MASK(4'b0001)", wrapper)
+        self.assertNotIn("emuflow_external_serial_phy_lane #(", wrapper)
+        xdc = (output / "mps4_1.gt_sites.xdc").read_text()
+        self.assertNotIn("if {", xdc)
+        self.assertIn(
+            "set_property LOC GTYE4_COMMON_X0Y5 "
+            "[get_cells {serial_wrapper/quad_0_phy/gty_common}]",
+            xdc,
+        )
+        self.assertIn(
+            "set_property LOC GTYE4_CHANNEL_X0Y20 "
+            "[get_cells {serial_wrapper/quad_0_phy/channel_0.gty_channel}]",
+            xdc,
+        )
 
 
 if __name__ == "__main__":

@@ -16,8 +16,15 @@ from .physical_pins import (
     SERIAL_TRANSCEIVER_PROVIDER,
 )
 from .platform import BoardLink, Platform
-from .serial_contract import SERIAL_CLOCK_RESET_MODULE, SERIAL_PHY_MODULE
-from .serial_phy_provider import validate_serial_phy_provider
+from .serial_contract import (
+    SERIAL_CLOCK_RESET_MODULE,
+    SERIAL_PHY_MODULE,
+    SERIAL_PHY_QUAD_MODULE,
+)
+from .serial_phy_provider import (
+    SERIAL_PHY_PROVIDER_V2_SCHEMA,
+    validate_serial_phy_provider,
+)
 from .vivado_pin_sites import validate_vivado_pin_site_map
 
 
@@ -216,7 +223,7 @@ def _transceiver_quad_groups(
         return []
     grouped: Dict[str, list[Dict[str, Any]]] = defaultdict(list)
     occupied = set()
-    for site in sites:
+    for site_index, site in enumerate(sites):
         channel_name = site.get("transceiver_site")
         common_name = site["transceiver_common_site"]
         channel_match = (
@@ -245,6 +252,7 @@ def _transceiver_quad_groups(
         grouped[common_name].append(
             {
                 "site_id": site["id"],
+                "site_index": site_index,
                 "channel_site": channel_name,
                 "channel_index": channel_index,
                 "link": site["link"],
@@ -256,12 +264,21 @@ def _transceiver_quad_groups(
         channels.sort(key=lambda item: item["channel_index"])
         if len(channels) > 4:
             raise ValidationError("GT quad contains more than four channels")
+        site_domains = {
+            sites[channel["site_index"]].get("clock_reset_domain")
+            for channel in channels
+        }
+        if len(site_domains) != 1:
+            raise ValidationError(
+                "GT channels sharing a common must use one clock/reset domain"
+            )
         quads.append(
             {
                 "id": common_name,
                 "common_site": common_name,
                 "channel_count": len(channels),
                 "channels": channels,
+                "clock_reset_domain": site_domains.pop(),
                 "qualification": "vendor_device_db_same_tile_grouping",
             }
         )
@@ -314,6 +331,26 @@ module emuflow_external_serial_phy_lane #(
   output wire                     ready
 );
 endmodule
+
+(* black_box *)
+module emuflow_external_serial_phy_quad #(
+  parameter integer PAYLOAD_WIDTH = 64,
+  parameter [3:0] ACTIVE_CHANNEL_MASK = 4'b0000
+) (
+  input  wire                         user_clk,
+  input  wire                         reset,
+  input  wire                         phy_refclk,
+  input  wire                         phy_reset,
+  input  wire [4*PAYLOAD_WIDTH-1:0]   tx_data,
+  output wire [4*PAYLOAD_WIDTH-1:0]   rx_data,
+  output wire [3:0]                   txp,
+  output wire [3:0]                   txn,
+  input  wire [3:0]                   rxp,
+  input  wire [3:0]                   rxn,
+  output wire [3:0]                   lane_ready,
+  output wire                         common_ready
+);
+endmodule
 """
 
 
@@ -357,6 +394,27 @@ def serial_gt_site_xdc(
         "# Sites are source-backed or device-DB-derived from source-backed pins.",
         "# Cell paths are derived from the provider primitive hierarchy contract.",
     ]
+    is_quad = "channel_instance_template" in implementation
+    if is_quad:
+        for quad_index, quad in enumerate(fpga_record["transceiver_quads"]):
+            common_path = (
+                f"serial_wrapper/quad_{quad_index}_phy/"
+                f"{implementation['common_instance']}"
+            )
+            lines.append(
+                f"set_property LOC {quad['common_site']} "
+                f"[get_cells {{{common_path}}}]"
+            )
+            for channel in quad["channels"]:
+                hierarchy = implementation["channel_instance_template"].format(
+                    channel=channel["channel_index"]
+                )
+                channel_path = f"serial_wrapper/quad_{quad_index}_phy/{hierarchy}"
+                lines.append(
+                    f"set_property LOC {channel['channel_site']} "
+                    f"[get_cells {{{channel_path}}}]"
+                )
+        return "\n".join(lines) + "\n"
     channel_instance = implementation["channel_instance"]
     for index, site in enumerate(fpga_record["sites"]):
         if site.get("transceiver_site_status") not in {
@@ -377,6 +435,8 @@ def serial_wrapper_rtl(
     fpga: str,
     sites: Sequence[Mapping[str, Any]],
     board_services: Optional[Mapping[str, Any]] = None,
+    provider_schema: Optional[str] = None,
+    transceiver_quads: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> str:
     board_services = board_services or {
         "reference_clocks": [], "resets": [], "clock_reset_domains": []
@@ -461,72 +521,194 @@ def serial_wrapper_rtl(
         )
         domain_wires[domain["id"]] = stem
         ready_wires.append(f"{stem}_ready")
-    for index, site in enumerate(sites):
-        stem = f"site_{index}"
-        width = site["payload_width"]
-        link = next(link for link in incident if link.id == site["link"])
-        peer = site["peer"]
-        suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
-        lower = site["physical_lane"] * width
-        tx_data = (
-            f"tx_{suffix}[{lower} +: {width}]"
-            if site["tx"] is not None
-            else f"{width}'b0"
-        )
-        txp = (
-            site["tx"]["ports"]["p"]
-            if site["tx"] is not None
-            else f"{stem}_unused_txp"
-        )
-        txn = (
-            site["tx"]["ports"]["n"]
-            if site["tx"] is not None
-            else f"{stem}_unused_txn"
-        )
-        if site["tx"] is None:
-            lines.extend((f"  wire {txp};", f"  wire {txn};"))
-        domain_stem = domain_wires.get(site.get("clock_reset_domain"))
-        phy_refclk = (
-            f"{domain_stem}_phy_refclk" if domain_stem is not None else "1'b0"
-        )
-        phy_reset = (
-            f"{domain_stem}_phy_reset" if domain_stem is not None else "reset"
-        )
-        lines.extend(
-            [
-                f"  wire [{width - 1}:0] {stem}_rx_data;",
-                f"  wire {stem}_ready;",
-                f"  {SERIAL_PHY_MODULE} #(",
-                f"    .PAYLOAD_WIDTH({width})",
-                f"  ) {stem}_phy (",
-                "    .user_clk(fabric_clk),",
-                "    .reset(reset),",
-                f"    .phy_refclk({phy_refclk}),",
-                f"    .phy_reset({phy_reset}),",
-                f"    .tx_data({tx_data}),",
-                f"    .rx_data({stem}_rx_data),",
-                f"    .txp({txp}),",
-                f"    .txn({txn}),",
-                "    .rxp("
-                + (
+    quad_mode = provider_schema == SERIAL_PHY_PROVIDER_V2_SCHEMA
+    if quad_mode:
+        quads = list(transceiver_quads or [])
+        covered_sites = {
+            channel["site_index"]
+            for quad in quads
+            for channel in quad["channels"]
+        }
+        if covered_sites != set(range(len(sites))):
+            raise ValidationError(
+                "quad-aware serial wrapper requires a complete GT common map"
+            )
+        for quad_index, quad in enumerate(quads):
+            stem = f"quad_{quad_index}"
+            channel_by_index = {
+                channel["channel_index"]: channel
+                for channel in quad["channels"]
+            }
+            widths = {
+                sites[channel["site_index"]]["payload_width"]
+                for channel in quad["channels"]
+            }
+            if len(widths) != 1:
+                raise ValidationError("GT quad channels use different payload widths")
+            width = widths.pop()
+            active_mask = sum(1 << channel for channel in channel_by_index)
+            domain_stem = domain_wires.get(quad.get("clock_reset_domain"))
+            phy_refclk = (
+                f"{domain_stem}_phy_refclk"
+                if domain_stem is not None
+                else "1'b0"
+            )
+            phy_reset = (
+                f"{domain_stem}_phy_reset"
+                if domain_stem is not None
+                else "reset"
+            )
+            tx_pieces = []
+            rxp_pieces = []
+            rxn_pieces = []
+            for channel_index in reversed(range(4)):
+                channel = channel_by_index.get(channel_index)
+                if channel is None:
+                    tx_pieces.append(f"{width}'b0")
+                    rxp_pieces.append("1'b0")
+                    rxn_pieces.append("1'b0")
+                    continue
+                site = sites[channel["site_index"]]
+                link = next(item for item in incident if item.id == site["link"])
+                suffix = f"{_sv_name(link.id)}_{_sv_name(site['peer'])}"
+                lower = site["physical_lane"] * width
+                tx_pieces.append(
+                    f"tx_{suffix}[{lower} +: {width}]"
+                    if site["tx"] is not None
+                    else f"{width}'b0"
+                )
+                rxp_pieces.append(
                     site["rx"]["ports"]["p"]
                     if site["rx"] is not None
                     else "1'b0"
                 )
-                + "),",
-                "    .rxn("
-                + (
+                rxn_pieces.append(
                     site["rx"]["ports"]["n"]
                     if site["rx"] is not None
                     else "1'b0"
                 )
-                + "),",
-                f"    .ready({stem}_ready)",
-                "  );",
-                "",
-            ]
-        )
-        ready_wires.append(f"{stem}_ready")
+            lines.extend(
+                [
+                    f"  wire [{4 * width - 1}:0] {stem}_tx_data;",
+                    f"  wire [{4 * width - 1}:0] {stem}_rx_data;",
+                    f"  wire [3:0] {stem}_txp;",
+                    f"  wire [3:0] {stem}_txn;",
+                    f"  wire [3:0] {stem}_rxp;",
+                    f"  wire [3:0] {stem}_rxn;",
+                    f"  wire [3:0] {stem}_lane_ready;",
+                    f"  wire {stem}_common_ready;",
+                    f"  assign {stem}_tx_data = {{{', '.join(tx_pieces)}}};",
+                    f"  assign {stem}_rxp = {{{', '.join(rxp_pieces)}}};",
+                    f"  assign {stem}_rxn = {{{', '.join(rxn_pieces)}}};",
+                    f"  {SERIAL_PHY_QUAD_MODULE} #(",
+                    f"    .PAYLOAD_WIDTH({width}),",
+                    f"    .ACTIVE_CHANNEL_MASK(4'b{active_mask:04b})",
+                    f"  ) {stem}_phy (",
+                    "    .user_clk(fabric_clk),",
+                    "    .reset(reset),",
+                    f"    .phy_refclk({phy_refclk}),",
+                    f"    .phy_reset({phy_reset}),",
+                    f"    .tx_data({stem}_tx_data),",
+                    f"    .rx_data({stem}_rx_data),",
+                    f"    .txp({stem}_txp),",
+                    f"    .txn({stem}_txn),",
+                    f"    .rxp({stem}_rxp),",
+                    f"    .rxn({stem}_rxn),",
+                    f"    .lane_ready({stem}_lane_ready),",
+                    f"    .common_ready({stem}_common_ready)",
+                    "  );",
+                    "",
+                ]
+            )
+            ready_wires.append(f"{stem}_common_ready")
+            for channel_index, channel in sorted(channel_by_index.items()):
+                site_index = channel["site_index"]
+                site = sites[site_index]
+                lines.append(
+                    f"  wire [{width - 1}:0] site_{site_index}_rx_data;"
+                )
+                lines.append(
+                    f"  assign site_{site_index}_rx_data = "
+                    f"{stem}_rx_data[{channel_index * width} +: {width}];"
+                )
+                if site["tx"] is not None:
+                    lines.extend(
+                        [
+                            f"  assign {site['tx']['ports']['p']} = "
+                            f"{stem}_txp[{channel_index}];",
+                            f"  assign {site['tx']['ports']['n']} = "
+                            f"{stem}_txn[{channel_index}];",
+                        ]
+                    )
+                ready_wires.append(f"{stem}_lane_ready[{channel_index}]")
+            lines.append("")
+    else:
+        for index, site in enumerate(sites):
+            stem = f"site_{index}"
+            width = site["payload_width"]
+            link = next(link for link in incident if link.id == site["link"])
+            peer = site["peer"]
+            suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
+            lower = site["physical_lane"] * width
+            tx_data = (
+                f"tx_{suffix}[{lower} +: {width}]"
+                if site["tx"] is not None
+                else f"{width}'b0"
+            )
+            txp = (
+                site["tx"]["ports"]["p"]
+                if site["tx"] is not None
+                else f"{stem}_unused_txp"
+            )
+            txn = (
+                site["tx"]["ports"]["n"]
+                if site["tx"] is not None
+                else f"{stem}_unused_txn"
+            )
+            if site["tx"] is None:
+                lines.extend((f"  wire {txp};", f"  wire {txn};"))
+            domain_stem = domain_wires.get(site.get("clock_reset_domain"))
+            phy_refclk = (
+                f"{domain_stem}_phy_refclk" if domain_stem is not None else "1'b0"
+            )
+            phy_reset = (
+                f"{domain_stem}_phy_reset" if domain_stem is not None else "reset"
+            )
+            lines.extend(
+                [
+                    f"  wire [{width - 1}:0] {stem}_rx_data;",
+                    f"  wire {stem}_ready;",
+                    f"  {SERIAL_PHY_MODULE} #(",
+                    f"    .PAYLOAD_WIDTH({width})",
+                    f"  ) {stem}_phy (",
+                    "    .user_clk(fabric_clk),",
+                    "    .reset(reset),",
+                    f"    .phy_refclk({phy_refclk}),",
+                    f"    .phy_reset({phy_reset}),",
+                    f"    .tx_data({tx_data}),",
+                    f"    .rx_data({stem}_rx_data),",
+                    f"    .txp({txp}),",
+                    f"    .txn({txn}),",
+                    "    .rxp("
+                    + (
+                        site["rx"]["ports"]["p"]
+                        if site["rx"] is not None
+                        else "1'b0"
+                    )
+                    + "),",
+                    "    .rxn("
+                    + (
+                        site["rx"]["ports"]["n"]
+                        if site["rx"] is not None
+                        else "1'b0"
+                    )
+                    + "),",
+                    f"    .ready({stem}_ready)",
+                    "  );",
+                    "",
+                ]
+            )
+            ready_wires.append(f"{stem}_ready")
     for link in incident:
         peer = link.endpoints[1] if link.endpoints[0] == fpga else link.endpoints[0]
         suffix = f"{_sv_name(link.id)}_{_sv_name(peer)}"
@@ -831,7 +1013,6 @@ def build_serial_wrapper_manifest(
     )
     for fpga in sorted(platform.fpgas, key=lambda item: item.id):
         fpga_sites = sites[fpga.id]
-        transceiver_quads = _transceiver_quad_groups(fpga_sites)
         service_pairs = sorted(
             {
                 (site["reference_clock_binding"], site["reset_binding"])
@@ -860,6 +1041,7 @@ def build_serial_wrapper_manifest(
             )
             if pair in domain_by_pair:
                 site["clock_reset_domain"] = domain_by_pair[pair]
+        transceiver_quads = _transceiver_quad_groups(fpga_sites)
         fpga_board_services = {
             "reference_clocks": [
                 overlay_clock_bindings[clock_id]
@@ -981,9 +1163,18 @@ def build_serial_wrapper_manifest(
     )
     provider_hardware_source_bound = (
         phy_provider is not None
-        and phy_provider.get("schema") == "emuflow.serial-phy-provider/v1"
+        and phy_provider.get("schema") == SERIAL_PHY_PROVIDER_V2_SCHEMA
         and phy_provider.get("qualification") == "editable_source_hardware"
+        and sum(len(item["transceiver_quads"]) for item in fpgas) > 0
+        and trusted_resolved_sites == active_sites
     )
+    provider_bound_modules = (
+        sum(len(item["transceiver_quads"]) for item in fpgas)
+        if phy_provider is not None
+        and phy_provider.get("schema") == SERIAL_PHY_PROVIDER_V2_SCHEMA
+        else active_sites
+    )
+    active_phy_modules = provider_bound_modules
     required_provider_fields = []
     if trusted_resolved_sites != active_sites:
         required_provider_fields.append("transceiver_site")
@@ -1000,6 +1191,11 @@ def build_serial_wrapper_manifest(
                 "link_training",
             ]
         )
+        if (
+            phy_provider is not None
+            and phy_provider.get("schema") != SERIAL_PHY_PROVIDER_V2_SCHEMA
+        ):
+            required_provider_fields.append("quad_shared_common")
     implementation_status = (
         "editable_source_bound_pending_tool_validation"
         if provider_hardware_source_bound
@@ -1018,7 +1214,12 @@ def build_serial_wrapper_manifest(
         "platform": platform.name,
         "binding_provider": SERIAL_TRANSCEIVER_PROVIDER,
         "phy_contract": {
-            "module": SERIAL_PHY_MODULE,
+            "module": (
+                SERIAL_PHY_QUAD_MODULE
+                if phy_provider is not None
+                and phy_provider.get("schema") == SERIAL_PHY_PROVIDER_V2_SCHEMA
+                else SERIAL_PHY_MODULE
+            ),
             "rtl": "external_serial_phy_contract.sv",
             "implementation_status": implementation_status,
             "required_provider_fields": required_provider_fields,
@@ -1090,9 +1291,12 @@ def build_serial_wrapper_manifest(
             "unresolved_transceiver_sites": (
                 active_sites - trusted_resolved_sites
             ),
-            "unresolved_phy_modules": active_sites,
+            "active_phy_modules": active_phy_modules,
+            "unresolved_phy_modules": (
+                active_phy_modules if phy_provider is None else 0
+            ),
             "provider_source_bound_phy_modules": (
-                active_sites if phy_provider is not None else 0
+                provider_bound_modules if phy_provider is not None else 0
             ),
             "integrated_transport_shells": (
                 len(fpgas) if transports is not None else 0
@@ -1159,6 +1363,10 @@ def run_phase6c(
             record["fpga"],
             record["sites"],
             record["board_services"],
+            provider_schema=(
+                phy_provider["schema"] if phy_provider is not None else None
+            ),
+            transceiver_quads=record["transceiver_quads"],
         )
         wrapper_path = output_dir / record["rtl"]
         wrapper_path.write_text(wrapper, encoding="utf-8")

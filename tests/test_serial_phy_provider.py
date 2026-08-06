@@ -10,6 +10,7 @@ from emuflow.io import read_json, write_json
 from emuflow.platform import Platform
 from emuflow.serial_phy_provider import (
     SERIAL_PHY_PROVIDER_SCHEMA,
+    SERIAL_PHY_PROVIDER_V2_SCHEMA,
     validate_serial_phy_provider,
     validate_serial_phy_provider_file,
 )
@@ -34,6 +35,34 @@ module emuflow_external_serial_phy_lane #(
   assign txp = 1'b0;
   assign txn = 1'b1;
   assign ready = 1'b1;
+endmodule
+"""
+
+QUAD_PROVIDER_SOURCE = """module emuflow_external_serial_clock_reset #(
+  parameter integer BOARD_RESET_ACTIVE_LOW = 1
+) (input wire refclk_p, input wire refclk_n, input wire board_reset,
+   output wire phy_refclk, output wire phy_reset, output wire ready);
+  IBUFDS_GTE4 refclk_buffer ();
+  assign phy_refclk = refclk_p;
+  assign phy_reset = BOARD_RESET_ACTIVE_LOW ? ~board_reset : board_reset;
+  assign ready = 1'b1;
+endmodule
+
+module emuflow_external_serial_phy_quad #(
+  parameter integer PAYLOAD_WIDTH = 64,
+  parameter [3:0] ACTIVE_CHANNEL_MASK = 4'b0000
+) (input wire user_clk, input wire reset, input wire phy_refclk,
+   input wire phy_reset, input wire [4*PAYLOAD_WIDTH-1:0] tx_data,
+   output wire [4*PAYLOAD_WIDTH-1:0] rx_data,
+   output wire [3:0] txp, output wire [3:0] txn,
+   input wire [3:0] rxp, input wire [3:0] rxn,
+   output wire [3:0] lane_ready, output wire common_ready);
+  GTYE4_COMMON gty_common ();
+  GTYE4_CHANNEL gty_channel ();
+  assign rx_data = {4*PAYLOAD_WIDTH{1'b0}};
+  assign txp = 4'b0000; assign txn = 4'b1111;
+  assign lane_ready = ACTIVE_CHANNEL_MASK;
+  assign common_ready = 1'b1;
 endmodule
 """
 
@@ -176,6 +205,80 @@ class SerialPhyProviderTest(unittest.TestCase):
         ).hexdigest()
         with self.assertRaisesRegex(ValidationError, "black-box"):
             validate_serial_phy_provider(hardware, self.manifest_path)
+
+    def test_validates_quad_aware_v2_provider_contract(self) -> None:
+        source = self.root / "quad-provider.sv"
+        source.write_text(QUAD_PROVIDER_SOURCE, encoding="utf-8")
+        manifest = copy.deepcopy(self.manifest)
+        manifest.update(
+            {
+                "schema": SERIAL_PHY_PROVIDER_V2_SCHEMA,
+                "id": "quad_provider_fixture",
+                "modules": {
+                    "clock_reset": "emuflow_external_serial_clock_reset",
+                    "quad": "emuflow_external_serial_phy_quad",
+                },
+                "source_root": ".",
+                "sources": [
+                    {
+                        "path": source.name,
+                        "language": "systemverilog",
+                        "role": "quad_contract_fixture",
+                        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        )
+        result = validate_serial_phy_provider(
+            manifest, self.manifest_path, self.platform
+        )
+        self.assertEqual(result["normalized"]["schema"], SERIAL_PHY_PROVIDER_V2_SCHEMA)
+        self.assertEqual(
+            result["normalized"]["modules"]["quad"],
+            "emuflow_external_serial_phy_quad",
+        )
+
+    def test_v2_hardware_requires_common_and_channel_hierarchy(self) -> None:
+        source = self.root / "quad-hardware.sv"
+        source.write_text(QUAD_PROVIDER_SOURCE, encoding="utf-8")
+        manifest = copy.deepcopy(self.manifest)
+        manifest.update(
+            {
+                "schema": SERIAL_PHY_PROVIDER_V2_SCHEMA,
+                "qualification": "editable_source_hardware",
+                "modules": {
+                    "clock_reset": "emuflow_external_serial_clock_reset",
+                    "quad": "emuflow_external_serial_phy_quad",
+                },
+                "implementation": {
+                    "kind": "amd_ultrascale_plus_gty",
+                    "channel_primitive": "GTYE4_CHANNEL",
+                    "common_primitive": "GTYE4_COMMON",
+                    "reference_clock_primitive": "IBUFDS_GTE4",
+                    "channel_instance_template": "channel_{channel}.gty_channel",
+                    "common_instance": "gty_common",
+                    "reference_clock_instance": "refclk_buffer",
+                },
+                "source_root": ".",
+                "sources": [
+                    {
+                        "path": source.name,
+                        "language": "systemverilog",
+                        "role": "quad_hardware_fixture",
+                        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        )
+        result = validate_serial_phy_provider(manifest, self.manifest_path)
+        self.assertEqual(
+            result["normalized"]["implementation"]["common_primitive"],
+            "GTYE4_COMMON",
+        )
+        malformed = copy.deepcopy(manifest)
+        malformed["implementation"]["channel_instance_template"] = "channel/gty"
+        with self.assertRaisesRegex(ValidationError, "placeholder"):
+            validate_serial_phy_provider(malformed, self.manifest_path)
 
 
 if __name__ == "__main__":

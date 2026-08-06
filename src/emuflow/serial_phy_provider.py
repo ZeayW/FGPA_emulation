@@ -10,10 +10,15 @@ from typing import Any, Dict, Mapping, Optional
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
-from .serial_contract import SERIAL_CLOCK_RESET_MODULE, SERIAL_PHY_MODULE
+from .serial_contract import (
+    SERIAL_CLOCK_RESET_MODULE,
+    SERIAL_PHY_MODULE,
+    SERIAL_PHY_QUAD_MODULE,
+)
 
 
 SERIAL_PHY_PROVIDER_SCHEMA = "emuflow.serial-phy-provider/v1"
+SERIAL_PHY_PROVIDER_V2_SCHEMA = "emuflow.serial-phy-provider/v2"
 VALID_PROVIDER_QUALIFICATIONS = {
     "editable_source_hardware",
     "simulation_only",
@@ -103,9 +108,11 @@ def validate_serial_phy_provider(
     manifest_path: Path,
     platform: Optional[Platform] = None,
 ) -> Dict[str, Any]:
-    if manifest.get("schema") != SERIAL_PHY_PROVIDER_SCHEMA:
+    schema = manifest.get("schema")
+    if schema not in {SERIAL_PHY_PROVIDER_SCHEMA, SERIAL_PHY_PROVIDER_V2_SCHEMA}:
         raise ValidationError(
-            f"serial PHY provider schema must be {SERIAL_PHY_PROVIDER_SCHEMA!r}"
+            "serial PHY provider schema must be "
+            f"{SERIAL_PHY_PROVIDER_SCHEMA!r} or {SERIAL_PHY_PROVIDER_V2_SCHEMA!r}"
         )
     provider_id = _string(manifest.get("id"), "provider.id")
     qualification = manifest.get("qualification")
@@ -124,8 +131,24 @@ def validate_serial_phy_provider(
         raise ValidationError("serial PHY provider modules are missing")
     if modules.get("clock_reset") != SERIAL_CLOCK_RESET_MODULE:
         raise ValidationError("serial PHY clock/reset module name is incompatible")
-    if modules.get("lane") != SERIAL_PHY_MODULE:
-        raise ValidationError("serial PHY lane module name is incompatible")
+    if schema == SERIAL_PHY_PROVIDER_SCHEMA:
+        if set(modules) != {"clock_reset", "lane"}:
+            raise ValidationError("serial PHY v1 module inventory is incompatible")
+        if modules.get("lane") != SERIAL_PHY_MODULE:
+            raise ValidationError("serial PHY lane module name is incompatible")
+        normalized_modules = {
+            "clock_reset": SERIAL_CLOCK_RESET_MODULE,
+            "lane": SERIAL_PHY_MODULE,
+        }
+    else:
+        if set(modules) != {"clock_reset", "quad"}:
+            raise ValidationError("serial PHY v2 module inventory is incompatible")
+        if modules.get("quad") != SERIAL_PHY_QUAD_MODULE:
+            raise ValidationError("serial PHY quad module name is incompatible")
+        normalized_modules = {
+            "clock_reset": SERIAL_CLOCK_RESET_MODULE,
+            "quad": SERIAL_PHY_QUAD_MODULE,
+        }
     implementation = manifest.get("implementation")
     if not isinstance(implementation, dict):
         raise ValidationError("serial PHY implementation record is missing")
@@ -145,25 +168,61 @@ def validate_serial_phy_provider(
                 implementation.get("reference_clock_primitive"),
                 "implementation.reference_clock_primitive",
             ),
-            "channel_instance": _string(
-                implementation.get("channel_instance"),
-                "implementation.channel_instance",
-            ),
             "reference_clock_instance": _string(
                 implementation.get("reference_clock_instance"),
                 "implementation.reference_clock_instance",
             ),
         }
+        if schema == SERIAL_PHY_PROVIDER_SCHEMA:
+            normalized_implementation["channel_instance"] = _string(
+                implementation.get("channel_instance"),
+                "implementation.channel_instance",
+            )
+        else:
+            normalized_implementation.update(
+                {
+                    "common_primitive": _string(
+                        implementation.get("common_primitive"),
+                        "implementation.common_primitive",
+                    ),
+                    "common_instance": _string(
+                        implementation.get("common_instance"),
+                        "implementation.common_instance",
+                    ),
+                    "channel_instance_template": _string(
+                        implementation.get("channel_instance_template"),
+                        "implementation.channel_instance_template",
+                    ),
+                }
+            )
+            template = normalized_implementation["channel_instance_template"]
+            if template.count("{channel}") != 1:
+                raise ValidationError(
+                    "hardware PHY channel_instance_template must contain "
+                    "exactly one {channel} placeholder"
+                )
         if any(
             re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", primitive) is None
             for primitive in (
                 normalized_implementation["channel_primitive"],
                 normalized_implementation["reference_clock_primitive"],
-                normalized_implementation["channel_instance"],
                 normalized_implementation["reference_clock_instance"],
+                *(
+                    (normalized_implementation["channel_instance"],)
+                    if schema == SERIAL_PHY_PROVIDER_SCHEMA
+                    else (
+                        normalized_implementation["common_primitive"],
+                        normalized_implementation["common_instance"],
+                    )
+                ),
             )
         ):
             raise ValidationError("hardware PHY primitive name is invalid")
+        if schema == SERIAL_PHY_PROVIDER_V2_SCHEMA and re.fullmatch(
+            r"[A-Za-z0-9_{}./]+",
+            normalized_implementation["channel_instance_template"],
+        ) is None:
+            raise ValidationError("hardware PHY channel hierarchy template is invalid")
     else:
         if implementation_kind != "behavioral":
             raise ValidationError(
@@ -261,6 +320,40 @@ def validate_serial_phy_provider(
         raise ValidationError(
             "editable-source hardware provider cannot contain black-box modules"
         )
+    if qualification == "editable_source_hardware":
+        channel_instance = (
+            normalized_implementation["channel_instance"]
+            if schema == SERIAL_PHY_PROVIDER_SCHEMA
+            else re.split(
+                r"[/.]", normalized_implementation["channel_instance_template"]
+            )[-1]
+        )
+        required_instances = {
+            normalized_implementation["channel_primitive"]: channel_instance,
+            normalized_implementation["reference_clock_primitive"]: (
+                normalized_implementation["reference_clock_instance"]
+            ),
+        }
+        if schema == SERIAL_PHY_PROVIDER_V2_SCHEMA:
+            required_instances[normalized_implementation["common_primitive"]] = (
+                normalized_implementation["common_instance"]
+            )
+        missing_instances = sorted(
+            f"{primitive}:{instance}"
+            for primitive, instance in required_instances.items()
+            if re.search(
+                rf"\b{re.escape(primitive)}\s+"
+                rf"(?:#\s*\([^;]*?\)\s*)?{re.escape(instance)}\s*\(",
+                combined_hdl,
+                re.DOTALL,
+            )
+            is None
+        )
+        if missing_instances:
+            raise ValidationError(
+                "editable-source hardware provider omits declared primitive "
+                f"instances: {missing_instances}"
+            )
     for role, module in sorted(modules.items()):
         if re.search(rf"\bmodule\s+{re.escape(module)}\b", combined_hdl) is None:
             raise ValidationError(
@@ -273,14 +366,11 @@ def validate_serial_phy_provider(
     license_id = _string(provenance.get("license"), "provenance.license")
     upstream = _string(provenance.get("upstream"), "provenance.upstream")
     normalized = {
-        "schema": SERIAL_PHY_PROVIDER_SCHEMA,
+        "schema": schema,
         "id": provider_id,
         "qualification": qualification,
         "supported_parts": sorted(raw_parts),
-        "modules": {
-            "clock_reset": SERIAL_CLOCK_RESET_MODULE,
-            "lane": SERIAL_PHY_MODULE,
-        },
+        "modules": normalized_modules,
         "implementation": normalized_implementation,
         "source_root": raw_root,
         "sources": sorted(inventory, key=lambda item: item["path"]),

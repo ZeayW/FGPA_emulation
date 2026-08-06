@@ -247,7 +247,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
-| Hardware BSP | In-tree contract plus source-backed Arm MPS4 topology/pin inventory | MPS4 BoardDB and exact active-lane differential binding are available. Phase 6C emits a synthesizable structural wrapper around an explicit external-PHY black box; GT configuration, reference clocks/reset, protocol/training, bitstream, and hardware qualification remain open gates |
+| Hardware BSP | In-tree contract plus source-backed Arm MPS4 topology/pin inventory | MPS4 BoardDB and exact active-lane differential binding are available. Phase 6C derives channel/common quad topology and emits either the legacy lane boundary or the quad-aware provider-v2 boundary. GT implementation, real board refclk/reset bindings, protocol/training, bitstream, and hardware qualification remain open gates |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
@@ -817,10 +817,14 @@ the Phase 5 schedule and Phase 6 per-FPGA anchor files directly; `--bsp`,
 `--position-hints`, and `--pin-plan` are only needed by the optimized parallel
 I/O provider. Phase 6C then emits per-FPGA wrapper RTL whose user-side link
 ports connect directly to the generated transport module and whose scalar
-TXP/TXN/RXP/RXN ports exactly match the Phase 6B XDC. The wrapper instantiates
-an explicit `emuflow_external_serial_phy_lane` contract; that module remains a
-black box until a board-specific provider supplies the GT configuration,
-reference clock, reset sequence, encoding, and training logic. A 390.625-MHz
+TXP/TXN/RXP/RXN ports exactly match the Phase 6B XDC. Without a provider the
+wrapper exposes an explicit black-box boundary. The legacy provider-v1 lane
+contract remains supported for simulation and compatibility, but it cannot
+qualify real UltraScale+ hardware because it does not model the shared GT
+common. Provider v2 instead instantiates one
+`emuflow_external_serial_phy_quad` per device-derived `GTYE4_COMMON`, maps up
+to four active channels through an explicit mask, and requires all channels in
+that quad to share one clock/reset domain. A 390.625-MHz
 profile would reach the
 documented 25-Gbps raw ceiling, but requires that implementation to close a
 2.56-ns common clock or a future protocol wrapper with a separate GTY clock
@@ -854,7 +858,7 @@ manifest. A complete source-backed overlay can resolve the data fields for GT
 sites, reference clocks, and board reset pins. The generated wrapper exposes
 those differential clock and reset ports, instantiates one shared external
 clock/reset contract for each distinct binding pair, and connects its
-`phy_refclk`/`phy_reset` outputs to all assigned lane contracts. Phase 6C emits
+`phy_refclk`/`phy_reset` outputs to all assigned quad contracts. Phase 6C emits
 a separate source-backed board-service XDC with package pins, reset
 IOSTANDARDs, and `create_clock`; unverified overlays never emit those
 constraints. GT channel LOCs remain the PHY provider's responsibility because
@@ -864,9 +868,10 @@ or link training, so the hardware-release status remains blocked until those
 editable-source providers are compiled and checked. No private overlay or
 experimental record is stored in this repository.
 
-The next boundary is a versioned `serial-phy-provider/v1` manifest. It accepts
-only editable Verilog/SystemVerilog, Tcl, and XDC inputs; hashes every source;
-checks that both generated contract module names are actually defined; and
+The hardware boundary is the versioned `serial-phy-provider/v2` manifest; v1
+is retained as a non-hardware-ready compatibility contract. Both accept only
+editable Verilog/SystemVerilog, Tcl, and XDC inputs; hash every source; check
+that the declared contract module names are actually defined; and
 rejects checkpoints, netlists, archives, and compiled objects as substitutes
 for source. With `--platform`, it also checks the FPGA part, user-side payload
 width and clock, provider line rate, and the BoardDB line-rate ceiling:
@@ -905,15 +910,18 @@ structural/equivalence tests but can never authorize hardware release;
 `editable_source_hardware` means the implementation is source-visible, not
 that Vivado elaboration, GT placement, timing, DRC, bitstream generation, or
 board training has already passed. Those remain separate checked gates.
-An editable UltraScale+ provider must additionally declare its channel and
-reference-clock primitives (normally `GTYE4_CHANNEL` and `IBUFDS_GTE4`) and
-their stable hierarchy instance names; simulation providers declare a
+An editable UltraScale+ provider-v2 must declare and directly instantiate its
+channel, shared-common, and reference-clock primitives (normally
+`GTYE4_CHANNEL`, `GTYE4_COMMON`, and `IBUFDS_GTE4`) and provide stable common
+and per-channel hierarchy paths. Merely naming those primitives or wrapping a
+generated checkpoint is insufficient. Simulation providers declare a
 behavioral implementation instead. A hardware provider containing
-`(* black_box *)` modules is rejected.
+`(* black_box *)` modules is rejected, and provider v1 remains blocked on
+`quad_shared_common`.
 When Phase 6C consumes the provider, it hash-binds both the provider manifest
 and every inventoried source into its output. A simulation provider leaves the
-release blocked. An editable hardware provider combined with a complete
-source-backed board overlay advances only to
+release blocked. An editable provider-v2 hardware implementation combined
+with a complete source-backed board overlay advances only to
 `pending_vivado_provider_validation`; it never turns source presence into a
 hardware-pass claim. The generated black-box file remains an interface
 reference and must not be compiled together with the bound provider sources.
@@ -940,15 +948,17 @@ report inventories and hashes all inputs and logs, but is deliberately marked
 `open_rtl_elaboration_only` with `hardware_release_authorized: false`; it does
 not validate vendor primitives, GT LOCs, timing, electrical DRC, or a board.
 Replacing `--yosys ...` with `--vivado ...` runs the same source-bound inputs
-through an in-memory, part-specific Vivado RTL elaboration and rejects any
-remaining black boxes. For an UltraScale+ hardware provider it also requires
-one declared channel primitive per active transceiver site and one declared
-reference-clock primitive per generated clock/reset domain. Phase 6C derives
-a GT LOC XDC from the source-backed board overlay and the provider hierarchy
-contract; Vivado must report that the primitive LOC set exactly matches it.
-Its qualification is `vivado_rtl_elaboration_only` and it has the same
-non-release boundary; these checks are still not placement, routing, timing,
-protocol correctness, or electrical sign-off.
+through an in-memory, part-specific Vivado out-of-context synthesis with
+hierarchy preservation and rejects any remaining black boxes. For an
+UltraScale+ hardware provider it also requires
+one declared channel primitive per active transceiver site, one common
+primitive per active quad, and one reference-clock primitive per generated
+clock/reset domain. Phase 6C derives a GT LOC XDC from the source-backed or
+device-derived site map and the provider hierarchy contract; Vivado must
+report that both channel and common primitive LOC sets exactly match it.
+Its qualification is `vivado_ooc_synthesis_structure_validation` and it has
+the same non-release boundary; these checks are still not placement, routing,
+timing, protocol correctness, or electrical sign-off.
 
 This BoardDB can drive the common multi-FPGA frontend and either physical
 provider. An open VTR/OpenPARF/VPR run remains an academic physical-model

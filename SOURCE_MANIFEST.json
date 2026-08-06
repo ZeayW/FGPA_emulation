@@ -301,7 +301,13 @@
       "source_paths": [
         "src/emuflow/serial_phy_recipe.py",
         "src/emuflow/vivado_pin_sites.py",
+        "src/emuflow/serial_contract.py",
+        "src/emuflow/serial_phy_provider.py",
+        "src/emuflow/serial_phy_elaboration.py",
         "src/emuflow/serial_wrapper.py",
+        "schemas/serial-phy-provider-v1.schema.json",
+        "schemas/serial-phy-provider-v2.schema.json",
+        "schemas/serial-phy-elaboration-v1.schema.json",
         "schemas/serial-phy-recipe-v1.schema.json",
         "schemas/vivado-pin-site-map-v2.schema.json",
         "providers/vivado_gty_10g/generate_gty_ip.tcl",
