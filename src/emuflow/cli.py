@@ -128,6 +128,7 @@ from .vtr_architecture import (
 )
 from .vpr import run_vpr, run_vpr_route_packed, run_vtr_yosys
 from .vivado_board_flow import run_vivado_board_flow
+from .vivado_board_timing import run_vivado_board_timing
 from .vivado_pin_sites import derive_vivado_pin_sites
 
 
@@ -861,6 +862,23 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_board.add_argument("--route-directive", default="Default")
     multi_fpga_board.add_argument("--write-bitstream", action="store_true")
     multi_fpga_board.add_argument("--out", type=Path, required=True)
+    multi_fpga_board_timing = multi_fpga_subparsers.add_parser(
+        "board-timing",
+        help=(
+            "export routed board-checkpoint logic/boundary timing and "
+            "rebuild unified Phase 7C timing"
+        ),
+    )
+    multi_fpga_board_timing.add_argument("--flow", type=Path, required=True)
+    multi_fpga_board_timing.add_argument("--board", type=Path, required=True)
+    multi_fpga_board_timing.add_argument("--platform", type=Path, required=True)
+    multi_fpga_board_timing.add_argument("--vivado", type=Path, required=True)
+    multi_fpga_board_timing.add_argument(
+        "--hierarchy-prefix", default="mapped_partition"
+    )
+    multi_fpga_board_timing.add_argument("--workers", type=int, default=3)
+    multi_fpga_board_timing.add_argument("--resume", action="store_true")
+    multi_fpga_board_timing.add_argument("--out", type=Path, required=True)
     vpr_run = vpr_subparsers.add_parser(
         "run",
         help="run exact VPR pack, baseline place, route, and analysis",
@@ -2341,6 +2359,19 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "board-timing":
+            report = run_vivado_board_timing(
+                flow_root=args.flow,
+                board_root=args.board,
+                platform_path=args.platform,
+                vivado_executable=args.vivado,
+                output_dir=args.out,
+                hierarchy_prefix=args.hierarchy_prefix,
+                workers=args.workers,
+                resume=args.resume,
+            )
+            _print_json(report["summary"])
+            return 0
         if args.multi_fpga_command == "board-implement":
             report = run_vivado_board_flow(
                 flow_root=args.flow,

@@ -157,6 +157,32 @@ class BoundaryTimingIdentityTest(unittest.TestCase):
         )
         timing_check = validate_boundary_timing_database(timing, database)
         self.assertEqual(timing_check["maximum_delay_ns"], 1.25)
+        board_timing = build_boundary_timing_database(
+            database,
+            {
+                "tx0": {
+                    "delay_ns": 2.0,
+                    "start_object": "launch/C",
+                    "end_object": "tx-interface/D",
+                },
+                "rx0": {
+                    "delay_ns": 1.5,
+                    "start_object": "rx-interface/C",
+                    "end_object": "shadow_ff/D",
+                },
+            },
+            provider="board-timer",
+            qualification="board-integrated",
+            measurement_scope="board-integrated-interface",
+        )
+        validate_boundary_timing_database(board_timing, database)
+        board_by_id = {
+            item["id"]: item for item in board_timing["endpoints"]
+        }
+        self.assertEqual(
+            board_by_id["tx0"]["measurement"],
+            "routed-launch-through-tx-boundary-to-interface-endpoint",
+        )
 
     def test_forwarded_endpoint_binds_synthesized_transport_shadow(self):
         transport = {

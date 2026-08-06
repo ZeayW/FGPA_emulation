@@ -320,6 +320,7 @@ def build_boundary_timing_database(
     *,
     provider: str,
     qualification: str,
+    measurement_scope: str = "partition-boundary",
 ) -> Dict[str, Any]:
     """Build a complete endpoint-keyed physical timing database."""
     if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
@@ -334,6 +335,18 @@ def build_boundary_timing_database(
             "boundary timing measurement coverage disagrees: "
             f"missing={len(missing)}, extra={len(extra)}"
         )
+    measurements_by_scope = {
+        "partition-boundary": {
+            "tx": "logical-source-to-tx-port",
+            "rx": "rx-port-to-shadow-capture",
+        },
+        "board-integrated-interface": {
+            "tx": "routed-launch-through-tx-boundary-to-interface-endpoint",
+            "rx": "interface-startpoint-through-rx-boundary-to-shadow-capture",
+        },
+    }
+    if measurement_scope not in measurements_by_scope:
+        raise ValidationError("boundary timing measurement scope is invalid")
     records = []
     for endpoint_id in sorted(identity_records):
         identity = identity_records[endpoint_id]
@@ -362,11 +375,9 @@ def build_boundary_timing_database(
                 "delay_ns": float(delay),
                 "start_object": start,
                 "end_object": end,
-                "measurement": (
-                    "logical-source-to-tx-port"
-                    if identity["kind"] == "tx"
-                    else "rx-port-to-shadow-capture"
-                ),
+                "measurement": measurements_by_scope[measurement_scope][
+                    identity["kind"]
+                ],
             }
         )
     return {
@@ -377,6 +388,7 @@ def build_boundary_timing_database(
         "fpga": identities["fpga"],
         "provider": provider,
         "qualification": qualification,
+        "measurement_scope": measurement_scope,
         "coverage": {
             "endpoints": len(records),
             "tx": sum(item["kind"] == "tx" for item in records),
@@ -399,6 +411,19 @@ def validate_boundary_timing_database(
     for field in ("design", "platform", "fpga"):
         if database.get(field) != identities.get(field):
             raise ValidationError(f"boundary timing {field} disagrees")
+    measurement_scope = database.get("measurement_scope", "partition-boundary")
+    measurements_by_scope = {
+        "partition-boundary": {
+            "tx": "logical-source-to-tx-port",
+            "rx": "rx-port-to-shadow-capture",
+        },
+        "board-integrated-interface": {
+            "tx": "routed-launch-through-tx-boundary-to-interface-endpoint",
+            "rx": "interface-startpoint-through-rx-boundary-to-shadow-capture",
+        },
+    }
+    if measurement_scope not in measurements_by_scope:
+        raise ValidationError("boundary timing measurement scope is invalid")
     expected = {
         item["id"]: item for item in identities.get("endpoints", [])
     }
@@ -427,11 +452,7 @@ def validate_boundary_timing_database(
             or item["kind"] != identity["kind"]
             or item.get("schedule_entry") != identity.get("schedule_entry")
             or item.get("measurement")
-            != (
-                "logical-source-to-tx-port"
-                if item["kind"] == "tx"
-                else "rx-port-to-shadow-capture"
-            )
+            != measurements_by_scope[measurement_scope][item["kind"]]
             or not isinstance(item.get("start_object"), str)
             or not item["start_object"]
             or not isinstance(item.get("end_object"), str)

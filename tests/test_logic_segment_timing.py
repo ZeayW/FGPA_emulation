@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.logic_segment_timing import (
     _vivado_object,
@@ -304,6 +304,26 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             self.assertEqual(report["segments"], 1)
             self.assertEqual(report["maximum_delay_ns"], 3.25)
+            missing_raw = root / "missing.tsv"
+            missing_raw.write_text(
+                "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\t"
+                "end_object_hex\n",
+                encoding="utf-8",
+            )
+            partial = import_vivado_logic_segment_timing(
+                missing_raw,
+                identity_path,
+                root / "partial.json",
+                qualification="routed-board-integrated-endpoint-chain",
+                allow_missing=True,
+            )
+            self.assertEqual(partial["segments"], 0)
+            self.assertEqual(partial["missing_segments"], 1)
+            partial_database = read_json(root / "partial.json")
+            self.assertEqual(
+                partial_database["unmeasured_segments"][0]["id"],
+                segment["id"],
+            )
 
 
 if __name__ == "__main__":

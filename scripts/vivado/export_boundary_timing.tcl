@@ -1,11 +1,32 @@
 # Export one routed timing measurement for every EmuFlow TDM endpoint.
 
-if {$argc != 3} {
-  error "usage: export_boundary_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV"
+if {$argc != 3 && $argc != 4} {
+  error "usage: export_boundary_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX?"
 }
 set input_dcp [file normalize [lindex $argv 0]]
 set query_path [file normalize [lindex $argv 1]]
 set output_path [file normalize [lindex $argv 2]]
+set hierarchy_prefix ""
+if {$argc == 4} {
+  set hierarchy_prefix [string trimright [lindex $argv 3] "/"]
+}
+
+proc emuflow_hier_name {prefix name} {
+  if {$prefix eq ""} {
+    return $name
+  }
+  return "$prefix/$name"
+}
+proc emuflow_resolve_cell {name} {
+  set object [get_cells -quiet -hier [list $name]]
+  # get_cells pattern lookup can reject synthesized names containing '$' and
+  # ':' after a routed checkpoint is reopened.  Exact NAME filtering retains
+  # those legal Yosys identifiers.
+  if {[llength $object] != 1} {
+    set object [get_cells -quiet -hier -filter "NAME == $name"]
+  }
+  return $object
+}
 
 proc emuflow_hex_decode {value} {
   return [encoding convertfrom utf-8 [binary decode hex $value]]
@@ -40,14 +61,20 @@ foreach line [lrange $lines 1 end] {
   set logical_net [emuflow_hex_decode [lindex $fields 4]]
   set boundary_cell [emuflow_hex_decode [lindex $fields 5]]
   set port_bit [format {%s[%d]} $port $bit]
-  set port_object [get_ports -quiet [list $port_bit]]
+  if {$hierarchy_prefix eq ""} {
+    set port_object [get_ports -quiet [list $port_bit]]
+  } else {
+    set port_bit [emuflow_hier_name $hierarchy_prefix $port_bit]
+    set port_object [get_pins -quiet -hier [list $port_bit]]
+  }
   if {[llength $port_object] != 1} {
     error "endpoint [emuflow_hex_decode $endpoint_hex] port $port_bit is absent"
   }
 
   if {$kind eq "tx"} {
     if {$boundary_cell ne ""} {
-      set cell_object [get_cells -quiet -hier [list $boundary_cell]]
+      set boundary_cell [emuflow_hier_name $hierarchy_prefix $boundary_cell]
+      set cell_object [emuflow_resolve_cell $boundary_cell]
       set source_pin [get_pins -quiet -of_objects $cell_object \
         -filter {REF_PIN_NAME == Q}]
       if {[llength $source_pin] != 1} {
@@ -55,8 +82,13 @@ foreach line [lrange $lines 1 end] {
       }
       set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
         -from $source_pin -to $port_object]
+      if {[llength $paths] == 0 && $hierarchy_prefix ne ""} {
+        set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+          -from $source_pin -through $port_object]
+      }
       set start_object [get_property NAME $source_pin]
     } else {
+      set logical_net [emuflow_hier_name $hierarchy_prefix $logical_net]
       set net_object [get_nets -quiet -hier [list $logical_net]]
       # Synthesis can legally merge or rename a DUT net while preserving the
       # dedicated EmuFlow TX output bit.  Recover the actual routed net from
@@ -88,10 +120,23 @@ foreach line [lrange $lines 1 end] {
           set start_object [get_property STARTPOINT_PIN [lindex $paths 0]]
         }
       }
+      if {[llength $paths] == 0 && $hierarchy_prefix ne ""} {
+        set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+          -from $source_object -through $port_object]
+      }
+      if {[llength $paths] == 0 && $hierarchy_prefix ne "" && \
+          [llength $source_pin] == 1} {
+        set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+          -through $source_pin -through $port_object]
+        if {[llength $paths] == 1} {
+          set start_object [get_property STARTPOINT_PIN [lindex $paths 0]]
+        }
+      }
     }
     set end_object $port_bit
   } elseif {$kind eq "rx"} {
-    set cell_object [get_cells -quiet -hier [list $boundary_cell]]
+    set boundary_cell [emuflow_hier_name $hierarchy_prefix $boundary_cell]
+    set cell_object [emuflow_resolve_cell $boundary_cell]
     if {[llength $cell_object] != 1} {
       error "RX endpoint [emuflow_hex_decode $endpoint_hex] boundary cell is absent"
     }
@@ -102,6 +147,10 @@ foreach line [lrange $lines 1 end] {
     }
     set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
       -from $port_object -to $data_pin]
+    if {[llength $paths] == 0 && $hierarchy_prefix ne ""} {
+      set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+        -through $port_object -to $data_pin]
+    }
     set start_object $port_bit
     set end_object [get_property NAME $data_pin]
   } else {

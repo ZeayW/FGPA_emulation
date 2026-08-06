@@ -116,6 +116,10 @@ def import_vivado_boundary_timing(
     input_path: Path,
     identity_path: Path,
     output_path: Path,
+    *,
+    provider: str = "vivado-get-timing-paths-endpoint-v1",
+    qualification: str = "routed-device-endpoint-exact",
+    measurement_scope: str = "partition-boundary",
 ) -> Dict[str, Any]:
     identities = read_json(identity_path)
     lines = input_path.read_text(encoding="utf-8").splitlines()
@@ -152,8 +156,9 @@ def import_vivado_boundary_timing(
     database = build_boundary_timing_database(
         identities,
         measurements,
-        provider="vivado-get-timing-paths-endpoint-v1",
-        qualification="routed-device-endpoint-exact",
+        provider=provider,
+        qualification=qualification,
+        measurement_scope=measurement_scope,
     )
     validation = validate_boundary_timing_database(database, identities)
     write_json(output_path, database)

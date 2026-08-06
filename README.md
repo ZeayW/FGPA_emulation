@@ -179,6 +179,11 @@ flowchart TD
     VROUTE --> PPR["Common PhysicalPartitionResult"]
     XV --> PPR
     PPR --> PS["Common per-FPGA PhysicalSummary"]
+    SPLIT -. optional concrete-board continuation .-> BSP["Open PCS + runtime sync + PHY provider"]
+    BSP --> BPR["Board-integrated Vivado P&R"]
+    PPR --> BPR
+    BPR --> BTF["Routed logic/interface timing feedback"]
+    BTF --> PS
     SROUTE --> ST["Unified SystemTimingDB<br/>physical logic + interfaces + links/TDM"]
     TDM --> ST
     PS --> ST
@@ -251,7 +256,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
 | FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
-| Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology, reserves one full-duplex control lane per synchronization-tree edge, and binds the open PCS through the source-visible provider-v3 adapter to Vivado-generated GTY IP. Real board refclk/reset bindings, measured control latency, routed timing, bitstream, and hardware qualification remain open gates |
+| Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology and binds the open PCS to source-visible GTY recipes; the optional Vivado gate jointly routes DUT, TDM, PCS, sync, and GT, then feeds routed FPGA logic/boundary timing back into Phase 7C. Real refclk/reset binding, measured board-link/elastic-buffer latency, bitstream, and hardware qualification remain open gates |
 
 `emuflow multi-fpga compile` is the board-independent multi-FPGA integration
 gate. Its default public VTR mapping preserves multiplier and synchronous
@@ -294,12 +299,25 @@ emuflow multi-fpga board-implement \
   --phy-provider build/providers/vivado-gty-10g/serial_phy_provider.json \
   --vivado /path/to/Vivado/bin/vivado \
   --out build/board-implementation
+
+emuflow multi-fpga board-timing \
+  --flow build/full-flow \
+  --board build/board-implementation \
+  --platform build/platforms/arm-mps4-3board.json \
+  --vivado /path/to/Vivado/bin/vivado \
+  --out build/board-timing
 ```
 
 This is deliberately an OOC board-integrated P&R qualification. Bitstream
 generation is rejected until fabric-clock generation, synchronous reset
 release, every remaining top-level package pin, board synchronization latency,
-and zero board-level DRC errors are source-backed.
+and zero board-level DRC errors are source-backed. `board-timing` reopens those
+routed checkpoints and measures the mapped partition's logical segments and
+TX/RX boundaries. Resolvable paths use exact Vivado routed delay; paths split
+by transport staging registers are recorded explicitly and retain Phase 7C's
+conservative per-partition fallback. The result remains model-only across the
+PCB/GT/PCS link and is not final hardware timing sign-off until that latency
+is source-backed or measured.
 
 `emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
 physical backend. It binds synthesis, baseline VPR packing and

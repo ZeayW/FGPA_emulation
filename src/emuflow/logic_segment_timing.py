@@ -778,6 +778,10 @@ def import_vivado_logic_segment_timing(
     input_path: Path,
     identity_path: Path,
     output_path: Path,
+    *,
+    provider: str = "vivado-routed-logic-segment-datapath-v1",
+    qualification: str = "routed-vendor-device-endpoint-chain",
+    allow_missing: bool = False,
 ) -> Dict[str, Any]:
     identity = read_json(identity_path)
     validate_logic_segment_identity(identity)
@@ -820,30 +824,71 @@ def import_vivado_logic_segment_timing(
                 f"Vivado logic segment timing line {line_number} delay is invalid"
             )
         measurements[segment_id] = delay
-    if set(measurements) != set(expected):
-        missing = sorted(set(expected) - set(measurements))
+    missing = sorted(set(expected) - set(measurements))
+    if missing and not allow_missing:
         raise ValidationError(
             "Vivado logic segment timing coverage is incomplete: "
             f"{missing[:10]}"
         )
+    measured_segments = [
+        segment
+        for segment in identity["segments"]
+        if segment["id"] in measurements
+    ]
+    unsupported = {
+        item["path"]: item["reason"]
+        for item in identity["unsupported_member_paths"]
+    }
+    for segment_id in missing:
+        segment = expected[segment_id]
+        unsupported[segment["member_path"]] = (
+            "no-routed-vivado-board-path"
+        )
+    coverage = {
+        "segments": len(measured_segments),
+        "system_paths": len(
+            {item["system_path"] for item in measured_segments}
+        ),
+        "member_paths": len(
+            {item["member_path"] for item in measured_segments}
+        ),
+        "unsupported_member_paths": len(unsupported),
+    }
     database = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
         "status": "pass",
         "design": identity["design"],
         "platform": identity["platform"],
         "fpga": identity["fpga"],
-        "provider": "vivado-routed-logic-segment-datapath-v1",
-        "qualification": "routed-vendor-device-endpoint-chain",
-        "coverage": identity["coverage"],
-        "unsupported_member_paths": identity["unsupported_member_paths"],
+        "provider": provider,
+        "qualification": qualification,
+        "coverage": coverage,
+        "unsupported_member_paths": [
+            {"path": path, "reason": reason}
+            for path, reason in sorted(unsupported.items())
+        ],
+        "unmeasured_segments": [
+            {
+                "id": segment_id,
+                "kind": expected[segment_id]["kind"],
+                "system_path": expected[segment_id]["system_path"],
+                "member_path": expected[segment_id]["member_path"],
+                "reason": "no-routed-vivado-board-path",
+            }
+            for segment_id in missing
+        ],
         "segments": [
             {**segment, "delay_ns": measurements[segment["id"]]}
-            for segment in identity["segments"]
+            for segment in measured_segments
         ],
     }
     validation = validate_logic_segment_timing(database)
     write_json(output_path, database)
-    return {**validation, "output": str(output_path)}
+    return {
+        **validation,
+        "missing_segments": len(missing),
+        "output": str(output_path),
+    }
 
 
 def validate_logic_segment_timing(
