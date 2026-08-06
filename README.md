@@ -260,6 +260,27 @@ then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
 
+The same command can continue through the checked serial BSP boundary after a
+provider recipe has been materialized. It then runs Phase 6B, constructs the
+runtime synchronization tree, derives GT sites when needed, runs Phase 6C, and
+elaborates every FPGA shell with exactly one selected tool:
+
+```bash
+emuflow multi-fpga compile design.v --top top \
+  --platform build/platforms/arm-mps4-3board.json \
+  --serial-bsp-phy-provider build/providers/vivado-gty-10g/serial_phy_provider.json \
+  --serial-bsp-runtime-sync-provider providers/runtime_sync_tree/provider.json \
+  --serial-bsp-vivado /path/to/Vivado/bin/vivado \
+  --out build/full-flow
+```
+
+An already completed compile can be resumed with `emuflow multi-fpga bsp
+--flow build/full-flow ...` without repeating synthesis through Phase 7C. The
+integrated report preserves a hash-bound `board-independent-flow-report.json`
+and a separate hardware-BSP report. Successful OOC elaboration remains
+non-release validation; it does not imply board clock/reset proof, routed
+timing closure, bitstream generation, or hardware training.
+
 `emuflow vpr fpga-open` is the separate integration gate for one FPGA's open
 physical backend. It binds synthesis, baseline VPR packing and
 auto-layout sizing, ArchitectureDB/TimingDB import, OpenPARF placement, final

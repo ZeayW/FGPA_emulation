@@ -17,6 +17,10 @@ from .multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
+from .multi_fpga_bsp_flow import (
+    run_multi_fpga_bsp_flow,
+    validate_multi_fpga_bsp_flow_report,
+)
 from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
 from .phase1 import run_phase1
 from .phase3 import run_phase3
@@ -110,6 +114,26 @@ def validate_multi_fpga_flow_report(
             raise ValidationError(
                 "multi-FPGA runtime is not closed against physical results"
             )
+    hardware_bsp = report.get("hardware_bsp")
+    if hardware_bsp is not None:
+        bsp_validation = validate_multi_fpga_bsp_flow_report(hardware_bsp)
+        if (
+            bsp_validation["design"] != design
+            or bsp_validation["platform"] != platform
+        ):
+            raise ValidationError(
+                "multi-FPGA hardware BSP identity disagrees"
+            )
+        source_artifact = report.get("artifacts", {}).get(
+            "board_independent_flow_report", {}
+        )
+        if (
+            source_artifact.get("sha256")
+            != hardware_bsp.get("source_flow_report_sha256")
+        ):
+            raise ValidationError(
+                "multi-FPGA hardware BSP source-flow hash disagrees"
+            )
     frame_search = report.get("frame_search")
     if frame_search is not None:
         frame_validation = validate_frame_search_report(frame_search)
@@ -151,6 +175,9 @@ def validate_multi_fpga_flow_report(
         ),
         "physical_status": (
             "pass" if physical is not None else "not-requested"
+        ),
+        "hardware_bsp_status": (
+            "pass" if hardware_bsp is not None else "not-requested"
         ),
     }
 
@@ -212,6 +239,14 @@ def run_multi_fpga_flow(
     physical_vivado_max_timing_paths: int = 10000,
     physical_vivado_place_directive: str = "Default",
     physical_vivado_route_directive: str = "Default",
+    serial_bsp_phy_provider: Optional[Path] = None,
+    serial_bsp_runtime_sync_provider: Optional[Path] = None,
+    serial_bsp_board_overlay: Optional[Path] = None,
+    serial_bsp_gt_site_map: Optional[Path] = None,
+    serial_bsp_vivado: Optional[Path] = None,
+    serial_bsp_yosys: Optional[Path] = None,
+    serial_bsp_runtime_sync_root: Optional[str] = None,
+    serial_bsp_ready_stable_cycles: int = 4,
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR through the checked board-independent split."""
 
@@ -245,6 +280,33 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "timing-driven multi-FPGA compilation requires at least one "
             "--clock-period CLOCK=PERIOD_NS"
+        )
+    serial_bsp_requested = serial_bsp_phy_provider is not None
+    serial_bsp_auxiliary = any(
+        value is not None
+        for value in (
+            serial_bsp_runtime_sync_provider,
+            serial_bsp_board_overlay,
+            serial_bsp_gt_site_map,
+            serial_bsp_vivado,
+            serial_bsp_yosys,
+            serial_bsp_runtime_sync_root,
+        )
+    )
+    if serial_bsp_auxiliary and not serial_bsp_requested:
+        raise EmuFlowError(
+            "serial BSP options require --serial-bsp-phy-provider"
+        )
+    if serial_bsp_requested and serial_bsp_runtime_sync_provider is None:
+        raise EmuFlowError(
+            "serial BSP continuation requires --serial-bsp-runtime-sync-provider"
+        )
+    if serial_bsp_requested and (
+        (serial_bsp_vivado is None) == (serial_bsp_yosys is None)
+    ):
+        raise EmuFlowError(
+            "serial BSP continuation requires exactly one of "
+            "--serial-bsp-vivado or --serial-bsp-yosys"
         )
 
     output_dir = output_dir.resolve()
@@ -650,5 +712,34 @@ def run_multi_fpga_flow(
         },
     }
     report["summary"] = validate_multi_fpga_flow_report(report)
+    if serial_bsp_requested:
+        write_json(output_dir / "board-independent-flow-report.json", report)
+        assert serial_bsp_phy_provider is not None
+        assert serial_bsp_runtime_sync_provider is not None
+        bsp_report = run_multi_fpga_bsp_flow(
+            flow_root=output_dir,
+            platform_path=platform_path,
+            phy_provider_path=serial_bsp_phy_provider,
+            runtime_sync_provider_path=serial_bsp_runtime_sync_provider,
+            output_dir=output_dir / "hardware-bsp",
+            board_overlay_path=serial_bsp_board_overlay,
+            gt_site_map_path=serial_bsp_gt_site_map,
+            vivado_executable=serial_bsp_vivado,
+            yosys_executable=serial_bsp_yosys,
+            runtime_sync_root=serial_bsp_runtime_sync_root,
+            ready_stable_cycles=serial_bsp_ready_stable_cycles,
+        )
+        report["hardware_bsp"] = bsp_report
+        report["artifacts"]["board_independent_flow_report"] = {
+            "path": "board-independent-flow-report.json",
+            "sha256": _sha256(output_dir / "board-independent-flow-report.json"),
+        }
+        report["artifacts"]["hardware_bsp_flow_report"] = {
+            "path": "hardware-bsp/multi-fpga-bsp-flow-report.json",
+            "sha256": _sha256(
+                output_dir / "hardware-bsp/multi-fpga-bsp-flow-report.json"
+            ),
+        }
+        report["summary"] = validate_multi_fpga_flow_report(report)
     write_json(output_dir / "multi-fpga-flow-report.json", report)
     return report

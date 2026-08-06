@@ -48,6 +48,7 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
 from .multi_fpga_flow import run_multi_fpga_flow
+from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
 from .multi_fpga_physical_flow import run_multi_fpga_physical_flow
 from .opensta import (
     DEFAULT_TIMING_MODEL,
@@ -743,6 +744,25 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--physical-vivado-route-directive", default="Default"
     )
+    multi_fpga_compile.add_argument(
+        "--serial-bsp-phy-provider",
+        type=Path,
+        help=(
+            "continue the completed compile through serial hardware-BSP "
+            "generation using this provider manifest"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--serial-bsp-runtime-sync-provider", type=Path
+    )
+    multi_fpga_compile.add_argument("--serial-bsp-board-overlay", type=Path)
+    multi_fpga_compile.add_argument("--serial-bsp-gt-site-map", type=Path)
+    multi_fpga_compile.add_argument("--serial-bsp-vivado", type=Path)
+    multi_fpga_compile.add_argument("--serial-bsp-yosys", type=Path)
+    multi_fpga_compile.add_argument("--serial-bsp-runtime-sync-root")
+    multi_fpga_compile.add_argument(
+        "--serial-bsp-ready-stable-cycles", type=int, default=4
+    )
     multi_fpga_physical = multi_fpga_subparsers.add_parser(
         "physical",
         help=(
@@ -802,6 +822,28 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument(
         "--vivado-route-directive", default="Default"
     )
+    multi_fpga_bsp = multi_fpga_subparsers.add_parser(
+        "bsp",
+        help=(
+            "continue a completed compile through serial Phase 6B/6C, "
+            "runtime synchronization, and checked PHY elaboration"
+        ),
+    )
+    multi_fpga_bsp.add_argument("--flow", type=Path, required=True)
+    multi_fpga_bsp.add_argument("--platform", type=Path, required=True)
+    multi_fpga_bsp.add_argument("--phy-provider", type=Path, required=True)
+    multi_fpga_bsp.add_argument(
+        "--runtime-sync-provider", type=Path, required=True
+    )
+    multi_fpga_bsp.add_argument("--board-overlay", type=Path)
+    multi_fpga_bsp.add_argument("--gt-site-map", type=Path)
+    multi_fpga_bsp.add_argument("--vivado", type=Path)
+    multi_fpga_bsp.add_argument("--yosys", type=Path)
+    multi_fpga_bsp.add_argument("--runtime-sync-root")
+    multi_fpga_bsp.add_argument(
+        "--ready-stable-cycles", type=int, default=4
+    )
+    multi_fpga_bsp.add_argument("--out", type=Path, required=True)
     vpr_run = vpr_subparsers.add_parser(
         "run",
         help="run exact VPR pack, baseline place, route, and analysis",
@@ -2282,6 +2324,22 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "bsp":
+            report = run_multi_fpga_bsp_flow(
+                flow_root=args.flow,
+                platform_path=args.platform,
+                phy_provider_path=args.phy_provider,
+                runtime_sync_provider_path=args.runtime_sync_provider,
+                output_dir=args.out,
+                board_overlay_path=args.board_overlay,
+                gt_site_map_path=args.gt_site_map,
+                vivado_executable=args.vivado,
+                yosys_executable=args.yosys,
+                runtime_sync_root=args.runtime_sync_root,
+                ready_stable_cycles=args.ready_stable_cycles,
+            )
+            _print_json(report["summary"])
+            return 0
         if args.multi_fpga_command == "physical":
             report = run_multi_fpga_physical_flow(
                 split_root=args.split,
@@ -2384,6 +2442,20 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             physical_vivado_route_directive=(
                 args.physical_vivado_route_directive
+            ),
+            serial_bsp_phy_provider=args.serial_bsp_phy_provider,
+            serial_bsp_runtime_sync_provider=(
+                args.serial_bsp_runtime_sync_provider
+            ),
+            serial_bsp_board_overlay=args.serial_bsp_board_overlay,
+            serial_bsp_gt_site_map=args.serial_bsp_gt_site_map,
+            serial_bsp_vivado=args.serial_bsp_vivado,
+            serial_bsp_yosys=args.serial_bsp_yosys,
+            serial_bsp_runtime_sync_root=(
+                args.serial_bsp_runtime_sync_root
+            ),
+            serial_bsp_ready_stable_cycles=(
+                args.serial_bsp_ready_stable_cycles
             ),
         )
         _print_json(report)

@@ -1,15 +1,19 @@
 import copy
+import hashlib
 import json
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.io import write_json
 from emuflow.multi_fpga_flow import (
     run_multi_fpga_flow,
     validate_multi_fpga_flow_report,
 )
+from emuflow.platform import Platform
 from tests.native_build import tdm_ratio_optimizer, tlr_router
 
 
@@ -180,6 +184,86 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",
                 )
+
+    def test_compile_can_continue_into_checked_serial_bsp(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "multi"
+            platform_name = Platform.load(PLATFORM).name
+            bsp_report = {
+                "schema": "emuflow.multi-fpga-bsp-flow/v1",
+                "status": "pass",
+                "design": "counter",
+                "platform": platform_name,
+                "qualification": "source_bound_bsp_structure_validation",
+                "hardware_release_status": "blocked_on_board_proof",
+                "source_flow_report_sha256": "0" * 64,
+                "stages": {
+                    "phase6b": {
+                        "status": "pass",
+                        "design": "counter",
+                        "platform": platform_name,
+                    },
+                    "runtime_sync": {"status": "pass"},
+                    "phase6c": {
+                        "status": "pass",
+                        "design": "counter",
+                        "platform": platform_name,
+                    },
+                    "phy_elaboration": {
+                        "status": "pass",
+                        "design": "counter",
+                        "platform": platform_name,
+                        "tool": {"name": "yosys"},
+                    },
+                },
+                "validation": {
+                    "fpgas": 2,
+                    "elaboration_failures": 0,
+                    "hardware_release_authorized": False,
+                    "gt_site_map_status": "not-provided",
+                },
+                "artifacts": {},
+            }
+
+            def fake_bsp(**kwargs):
+                destination = kwargs["output_dir"]
+                destination.mkdir(parents=True)
+                source_report = (
+                    kwargs["flow_root"]
+                    / "board-independent-flow-report.json"
+                )
+                bsp_report["source_flow_report_sha256"] = hashlib.sha256(
+                    source_report.read_bytes()
+                ).hexdigest()
+                write_json(
+                    destination / "multi-fpga-bsp-flow-report.json",
+                    bsp_report,
+                )
+                return bsp_report
+
+            with patch(
+                "emuflow.multi_fpga_flow.run_multi_fpga_bsp_flow",
+                side_effect=fake_bsp,
+            ):
+                report = run_multi_fpga_flow(
+                    platform_path=PLATFORM,
+                    output_dir=output,
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    top="counter",
+                    clocks=["clk"],
+                    partition_provider="greedy",
+                    router=str(tlr_router()),
+                    frame_slots=32,
+                    equivalence_cycles=2,
+                    serial_bsp_phy_provider=Path("provider.json"),
+                    serial_bsp_runtime_sync_provider=Path("runtime.json"),
+                    serial_bsp_yosys=Path("yosys"),
+                )
+            self.assertEqual(report["summary"]["hardware_bsp_status"], "pass")
+            self.assertTrue(
+                (output / "board-independent-flow-report.json").is_file()
+            )
+            self.assertEqual(report["hardware_bsp"], bsp_report)
 
 
 if __name__ == "__main__":
