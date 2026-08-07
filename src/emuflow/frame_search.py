@@ -18,7 +18,7 @@ from .runtime import (
 )
 
 
-FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v2"
+FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v3"
 
 
 def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -112,6 +112,7 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "max_ratio",
         "ratio_quantum",
         "post_refinement_iterations",
+        "slot_refinement_iterations",
         "ratio_convergence",
         "simulation_frames",
     }
@@ -128,6 +129,15 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
             raise ValidationError(
                 f"frame-search configuration {name} is invalid"
             )
+    slot_iterations = configuration["slot_refinement_iterations"]
+    if (
+        isinstance(slot_iterations, bool)
+        or not isinstance(slot_iterations, int)
+        or slot_iterations < 0
+    ):
+        raise ValidationError(
+            "frame-search configuration slot_refinement_iterations is invalid"
+        )
     max_ratio = configuration["max_ratio"]
     if max_ratio is not None and (
         isinstance(max_ratio, bool)
@@ -167,11 +177,13 @@ def run_frame_length_search(
     route_max_iterations: Optional[int] = None,
     router: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
+    slot_optimizer: Optional[str] = None,
     simulation_frames: int = 16,
     ratio_max_iterations: int = 500,
     max_ratio: Optional[int] = None,
     ratio_quantum: int = 8,
     post_refinement_iterations: int = 200,
+    slot_refinement_iterations: int = 0,
     ratio_convergence: float = 1.0e-9,
 ) -> Dict[str, Any]:
     """Find the shortest feasible frame under the exact downstream checks.
@@ -220,10 +232,12 @@ def run_frame_length_search(
                 tdm_root,
                 simulation_frames=simulation_frames,
                 ratio_optimizer=ratio_optimizer,
+                slot_optimizer=slot_optimizer,
                 ratio_max_iterations=ratio_max_iterations,
                 max_ratio=max_ratio,
                 ratio_quantum=ratio_quantum,
                 post_refinement_iterations=post_refinement_iterations,
+                slot_refinement_iterations=slot_refinement_iterations,
                 convergence=ratio_convergence,
             )
             schedule = read_json(tdm_root / "schedule.json")
@@ -303,6 +317,7 @@ def run_frame_length_search(
             "max_ratio": max_ratio,
             "ratio_quantum": ratio_quantum,
             "post_refinement_iterations": post_refinement_iterations,
+            "slot_refinement_iterations": slot_refinement_iterations,
             "ratio_convergence": ratio_convergence,
             "simulation_frames": simulation_frames,
         },

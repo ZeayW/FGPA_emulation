@@ -251,7 +251,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
-| TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, concrete scheduler, and independent checkers/oracles | Range-normalized KKT updates avoid numeric collapse on large timing scales. Exact/scalable legalization uses every physical lane, then global path-budget and per-domain minimax refinement cross quantization plateaus; concrete scheduling and independent checks enforce direction, ratio, collision, barrier, and transport semantics |
+| TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, timing-path-guided slot local search, and independent checkers/oracles | Range-normalized KKT updates avoid numeric collapse on large timing scales. Exact/scalable ratio legalization is followed by a C++ concrete-slot refinement that coordinates timing paths across link domains; an exhaustive small-instance multi-round oracle and independent reconstruction check direction, ratio windows, collision, tree precedence, global barriers, and runtime-barrier reservation |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming missing reference-clock/reset package bindings |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
@@ -368,9 +368,10 @@ emuflow multi-fpga compile design.v --top top \
 `model-only`, `characterized-upper-bound`, and `measured-upper-bound` evidence.
 Its functional `latency_cycles` must match BoardDB; a different cycle count
 requires regenerating the TDM schedule and transport RTL rather than changing
-only a timing report. During compilation, these bounds are applied to both the
-C++ timing-aware system router and C++ TDM-ratio optimizer, inherited by the
-concrete schedule timing checker, and retained for Phase 7C physical timing.
+only a timing report. During compilation, these bounds are applied to the C++
+timing-aware system router, C++ TDM-ratio optimizer, and C++ timing-path-guided
+concrete-slot refinement, then independently reconstructed and retained for
+Phase 7C physical timing.
 The routing constraints, Phase 4 C++ router, Phase 5 C++ optimizer, independent
 checkers, and Phase 7C all preserve direction-exact bounds, including
 asymmetric full-duplex links.
@@ -448,6 +449,7 @@ build/native/install/bin/sta
 build/native/install/bin/openroad
 build/native/install/bin/emuflow_tlr_router
 build/native/install/bin/emuflow_tdm_ratio_optimizer
+build/native/install/bin/emuflow_tdm_slot_optimizer
 build/native/install/bin/emuflow_tdm_partition_feedback
 build/native/install/bin/emuflow_pin_planner
 build/native/install/bin/emuflow_bsp_pin_solver

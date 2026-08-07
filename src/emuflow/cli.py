@@ -727,6 +727,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--route-max-iterations", type=int)
     multi_fpga_compile.add_argument("--ratio-optimizer")
+    multi_fpga_compile.add_argument("--slot-optimizer")
+    multi_fpga_compile.add_argument(
+        "--slot-refinement-iterations", type=int, default=200
+    )
     multi_fpga_compile.add_argument(
         "--cross-stage-iterations",
         type=int,
@@ -1477,10 +1481,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     phase5.add_argument("--ratio-max-iterations", type=int, default=500)
+    phase5.add_argument(
+        "--slot-optimizer",
+        help=(
+            "explicit comparison override; defaults to the in-tree "
+            "emuflow_tdm_slot_optimizer build"
+        ),
+    )
     phase5.add_argument("--max-ratio", type=int)
     phase5.add_argument("--ratio-quantum", type=int, default=8)
     phase5.add_argument(
         "--post-refinement-iterations", type=int, default=200
+    )
+    phase5.add_argument(
+        "--slot-refinement-iterations", type=int, default=200
     )
     phase5.add_argument("--ratio-convergence", type=float, default=1.0e-9)
 
@@ -1631,6 +1645,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--route-max-iterations", type=int
     )
     cross_stage_optimize.add_argument("--ratio-optimizer")
+    cross_stage_optimize.add_argument("--slot-optimizer")
     cross_stage_optimize.add_argument("--feedback-optimizer")
     cross_stage_optimize.add_argument(
         "--simulation-frames", type=int, default=4
@@ -1644,6 +1659,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_stage_optimize.add_argument(
         "--post-refinement-iterations", type=int, default=200
+    )
+    cross_stage_optimize.add_argument(
+        "--slot-refinement-iterations", type=int, default=200
     )
     cross_stage_optimize.add_argument(
         "--ratio-convergence", type=float, default=1.0e-9
@@ -2546,6 +2564,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             optimize_frame_slots=args.optimize_frame_slots,
             route_max_iterations=args.route_max_iterations,
             ratio_optimizer=args.ratio_optimizer,
+            slot_optimizer=args.slot_optimizer,
+            slot_refinement_iterations=args.slot_refinement_iterations,
             cross_stage_iterations=args.cross_stage_iterations,
             cross_stage_feedback_optimizer=(
                 args.cross_stage_feedback_optimizer
@@ -2725,10 +2745,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             simulation_frames=args.simulation_frames,
             provider=args.provider,
             ratio_optimizer=args.ratio_optimizer,
+            slot_optimizer=args.slot_optimizer,
             ratio_max_iterations=args.ratio_max_iterations,
             max_ratio=args.max_ratio,
             ratio_quantum=args.ratio_quantum,
             post_refinement_iterations=args.post_refinement_iterations,
+            slot_refinement_iterations=args.slot_refinement_iterations,
             convergence=args.ratio_convergence,
         )
         _print_json(report)
@@ -2806,6 +2828,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 optimize_frame_slots=args.optimize_frame_slots,
                 route_max_iterations=args.route_max_iterations,
                 ratio_optimizer=args.ratio_optimizer,
+                slot_optimizer=args.slot_optimizer,
                 feedback_optimizer=args.feedback_optimizer,
                 simulation_frames=args.simulation_frames,
                 ratio_max_iterations=args.ratio_max_iterations,
@@ -2813,6 +2836,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ratio_quantum=args.ratio_quantum,
                 post_refinement_iterations=(
                     args.post_refinement_iterations
+                ),
+                slot_refinement_iterations=(
+                    args.slot_refinement_iterations
                 ),
                 ratio_convergence=args.ratio_convergence,
                 pair_pressure_weight=args.pair_pressure_weight,

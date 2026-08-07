@@ -1,4 +1,5 @@
 import hashlib
+import math
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -13,8 +14,11 @@ from .routing import (
 
 TDM_SCHEDULE_SCHEMA = "emuflow.tdm-schedule/v1"
 TDM_BASELINE_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
-TDM_ACADEMIC_SCHEDULE_PROVIDER = (
+TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER = (
     "lagrangian-kkt-ratio-aware-list-schedule-v1"
+)
+TDM_ACADEMIC_SCHEDULE_PROVIDER = (
+    "lagrangian-kkt-ratio-aware-path-local-search-v2"
 )
 COMBINATIONAL_SETTLE_SLOTS = 1
 RUNTIME_BARRIER_SLOTS = 1
@@ -398,7 +402,7 @@ def build_tdm_schedule(
         "design": routes.get("design"),
         "platform": platform.name,
         "provider": (
-            TDM_ACADEMIC_SCHEDULE_PROVIDER
+            TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER
             if ratio_plan is not None
             else TDM_BASELINE_PROVIDER
         ),
@@ -511,11 +515,13 @@ def validate_tdm_schedule(
     _, arcs, _ = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
     expected = _expected_hops(routes)
-    academic_schedule = (
-        schedule.get("provider") == TDM_ACADEMIC_SCHEDULE_PROVIDER
-    )
+    academic_schedule = schedule.get("provider") in {
+        TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
+        TDM_ACADEMIC_SCHEDULE_PROVIDER,
+    }
     extended_schedule = schedule.get("provider") in {
         TDM_BASELINE_PROVIDER,
+        TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
         TDM_ACADEMIC_SCHEDULE_PROVIDER,
     }
     planned_hops = None
@@ -794,6 +800,94 @@ def validate_tdm_schedule(
         raise ValidationError(
             "schedule.metrics does not match independently recomputed metrics"
         )
+    if schedule.get("provider") == TDM_ACADEMIC_SCHEDULE_PROVIDER:
+        optimization = schedule.get("slot_optimization")
+        if (
+            not isinstance(optimization, dict)
+            or optimization.get("provider")
+            != "timing-path-guided-local-search-v1"
+        ):
+            raise ValidationError(
+                "native TDM slot optimization metadata is invalid"
+            )
+        configuration = optimization.get("configuration")
+        maximum_iterations = (
+            configuration.get("max_iterations")
+            if isinstance(configuration, dict)
+            else None
+        )
+        metrics = optimization.get("metrics")
+        if (
+            isinstance(maximum_iterations, bool)
+            or not isinstance(maximum_iterations, int)
+            or maximum_iterations < 0
+            or not isinstance(metrics, dict)
+        ):
+            raise ValidationError(
+                "native TDM slot optimization configuration is invalid"
+            )
+        expected_metric_keys = {
+            "iterations",
+            "accepted_moves",
+            "evaluated_moves",
+            "worst_normalized_slack",
+            "completion_slot",
+            "total_wait_slots",
+            "baseline_worst_normalized_slack",
+        }
+        if set(metrics) != expected_metric_keys:
+            raise ValidationError(
+                "native TDM slot optimization metric coverage is invalid"
+            )
+        for key in ("iterations", "accepted_moves", "evaluated_moves"):
+            value = metrics[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValidationError(
+                    f"native TDM slot optimization {key} is invalid"
+                )
+        if (
+            metrics["iterations"] > maximum_iterations
+            or metrics["accepted_moves"] > metrics["iterations"]
+            or metrics["completion_slot"]
+            != expected_metrics["completion_slot"]
+            or metrics["total_wait_slots"]
+            != sum(entry["ratio_wait_slots"] for entry in raw_entries)
+        ):
+            raise ValidationError(
+                "native TDM slot optimization metrics are inconsistent"
+            )
+        timing = reconstruct_tdm_schedule_timing(
+            routes, platform, schedule
+        )
+        for key in (
+            "worst_normalized_slack",
+            "baseline_worst_normalized_slack",
+        ):
+            if (
+                isinstance(metrics[key], bool)
+                or not isinstance(metrics[key], (int, float))
+                or not math.isfinite(float(metrics[key]))
+            ):
+                raise ValidationError(
+                    f"native TDM slot optimization {key} is invalid"
+                )
+        if (
+            not math.isclose(
+                metrics["worst_normalized_slack"],
+                timing["worst_normalized_slack"],
+                rel_tol=1.0e-10,
+                abs_tol=1.0e-10,
+            )
+            or metrics["worst_normalized_slack"] + 1.0e-12
+            < metrics["baseline_worst_normalized_slack"]
+        ):
+            raise ValidationError(
+                "native TDM slot optimization timing metrics are inconsistent"
+            )
     return {
         "status": "pass",
         **expected_metrics,

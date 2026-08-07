@@ -852,10 +852,12 @@ def _run_candidate_flow(
     router: Optional[str],
     simulation_frames: int,
     ratio_optimizer: Optional[str],
+    slot_optimizer: Optional[str],
     ratio_max_iterations: int,
     max_ratio: Optional[int],
     ratio_quantum: int,
     post_refinement_iterations: int,
+    slot_refinement_iterations: int,
     ratio_convergence: float,
 ) -> Dict[str, Any]:
     iteration_root = root / f"iteration_{iteration:03d}"
@@ -885,11 +887,13 @@ def _run_candidate_flow(
             route_max_iterations=route_max_iterations,
             router=router,
             ratio_optimizer=ratio_optimizer,
+            slot_optimizer=slot_optimizer,
             simulation_frames=simulation_frames,
             ratio_max_iterations=ratio_max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
             post_refinement_iterations=post_refinement_iterations,
+            slot_refinement_iterations=slot_refinement_iterations,
             ratio_convergence=ratio_convergence,
         )
         phase4 = read_json(phase4_root / "phase4_report.json")
@@ -913,10 +917,12 @@ def _run_candidate_flow(
             simulation_frames=simulation_frames,
             provider=TDM_RATIO_PROVIDER,
             ratio_optimizer=ratio_optimizer,
+            slot_optimizer=slot_optimizer,
             ratio_max_iterations=ratio_max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
             post_refinement_iterations=post_refinement_iterations,
+            slot_refinement_iterations=slot_refinement_iterations,
             convergence=ratio_convergence,
         )
     score = evaluate_cross_stage_candidate(
@@ -980,12 +986,14 @@ def run_cross_stage_optimization(
     optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
     ratio_optimizer: Optional[str] = None,
+    slot_optimizer: Optional[str] = None,
     feedback_optimizer: Optional[str] = None,
     simulation_frames: int = 4,
     ratio_max_iterations: int = 500,
     max_ratio: Optional[int] = None,
     ratio_quantum: int = 8,
     post_refinement_iterations: int = 200,
+    slot_refinement_iterations: int = 0,
     ratio_convergence: float = 1.0e-9,
     pair_pressure_weight: float = 1.0,
     feedback_steps: Optional[Tuple[float, ...]] = None,
@@ -1134,10 +1142,12 @@ def run_cross_stage_optimization(
         router=router,
         simulation_frames=simulation_frames,
         ratio_optimizer=ratio_optimizer,
+        slot_optimizer=slot_optimizer,
         ratio_max_iterations=ratio_max_iterations,
         max_ratio=max_ratio,
         ratio_quantum=ratio_quantum,
         post_refinement_iterations=post_refinement_iterations,
+        slot_refinement_iterations=slot_refinement_iterations,
         ratio_convergence=ratio_convergence,
     )
     baseline["decision"] = {
@@ -1241,11 +1251,15 @@ def run_cross_stage_optimization(
                     router=router,
                     simulation_frames=simulation_frames,
                     ratio_optimizer=ratio_optimizer,
+                    slot_optimizer=slot_optimizer,
                     ratio_max_iterations=ratio_max_iterations,
                     max_ratio=max_ratio,
                     ratio_quantum=ratio_quantum,
                     post_refinement_iterations=(
                         post_refinement_iterations
+                    ),
+                    slot_refinement_iterations=(
+                        slot_refinement_iterations
                     ),
                     ratio_convergence=ratio_convergence,
                 )

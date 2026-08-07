@@ -298,6 +298,8 @@ def run_multi_fpga_flow(
     optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
     ratio_optimizer: Optional[str] = None,
+    slot_optimizer: Optional[str] = None,
+    slot_refinement_iterations: int = 0,
     cross_stage_iterations: int = 0,
     cross_stage_feedback_optimizer: Optional[str] = None,
     cross_stage_pair_pressure_weight: float = 1.0,
@@ -669,6 +671,8 @@ def run_multi_fpga_flow(
             optimize_frame_slots=optimize_frame_slots,
             route_max_iterations=route_max_iterations,
             ratio_optimizer=ratio_optimizer,
+            slot_optimizer=slot_optimizer,
+            slot_refinement_iterations=slot_refinement_iterations,
             feedback_optimizer=cross_stage_feedback_optimizer,
             simulation_frames=simulation_frames,
             pair_pressure_weight=cross_stage_pair_pressure_weight,
@@ -729,6 +733,8 @@ def run_multi_fpga_flow(
             route_max_iterations=route_max_iterations,
             router=router,
             ratio_optimizer=ratio_optimizer,
+            slot_optimizer=slot_optimizer,
+            slot_refinement_iterations=slot_refinement_iterations,
             simulation_frames=simulation_frames,
         )
         phase4_report = read_json(phase4_root / "phase4_report.json")
@@ -750,6 +756,8 @@ def run_multi_fpga_flow(
             phase5_root,
             simulation_frames=simulation_frames,
             ratio_optimizer=ratio_optimizer,
+            slot_optimizer=slot_optimizer,
+            slot_refinement_iterations=slot_refinement_iterations,
         )
     routes_path = phase4_root / "routes.json"
     schedule_path = phase5_root / "schedule.json"

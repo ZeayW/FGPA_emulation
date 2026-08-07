@@ -36,6 +36,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER
+  "Build the in-tree timing-path-guided TDM slot optimizer"
+  ON
+)
+option(
   EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER
   "Build the in-tree quantized-delay topology optimizer"
   ON
@@ -347,6 +352,20 @@ if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
   target_compile_options(emuflow_tdm_ratio_optimizer PRIVATE -O3)
   set_target_properties(
     emuflow_tdm_ratio_optimizer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER)
+  add_executable(
+    emuflow_tdm_slot_optimizer
+    "${CMAKE_SOURCE_DIR}/src/native/tdm_slot_optimizer.cpp"
+  )
+  target_compile_features(emuflow_tdm_slot_optimizer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_tdm_slot_optimizer PRIVATE -O3)
+  set_target_properties(
+    emuflow_tdm_slot_optimizer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -848,6 +867,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_tdm_ratio_optimizer_cli
       COMMAND "$<TARGET_FILE:emuflow_tdm_ratio_optimizer>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER)
+    add_test(
+      NAME emuflow_tdm_slot_optimizer_cli
+      COMMAND "$<TARGET_FILE:emuflow_tdm_slot_optimizer>" --help
     )
   endif()
 

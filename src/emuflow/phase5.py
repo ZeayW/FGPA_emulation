@@ -19,6 +19,7 @@ from .tdm_ratio import (
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
+from .tdm_slot import refine_tdm_schedule_native
 
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
@@ -31,12 +32,22 @@ def run_phase5(
     simulation_frames: int = 16,
     provider: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
+    slot_optimizer: Optional[str] = None,
     ratio_max_iterations: int = 500,
     max_ratio: Optional[int] = None,
     ratio_quantum: int = 8,
     post_refinement_iterations: int = 200,
+    slot_refinement_iterations: int = 0,
     convergence: float = 1.0e-9,
 ) -> Dict[str, Any]:
+    if (
+        isinstance(slot_refinement_iterations, bool)
+        or not isinstance(slot_refinement_iterations, int)
+        or slot_refinement_iterations < 0
+    ):
+        raise ValueError(
+            "slot_refinement_iterations must be a non-negative integer"
+        )
     routes = read_json(routes_path)
     platform = Platform.load(platform_path)
     if provider is None:
@@ -52,9 +63,9 @@ def run_phase5(
     timing_validation = None
     candidate_selection = None
     if provider == TDM_BASELINE_PROVIDER:
-        if ratio_optimizer is not None:
+        if ratio_optimizer is not None or slot_optimizer is not None:
             raise ValueError(
-                "--ratio-optimizer requires the academic Phase 5 provider"
+                "native TDM optimizers require the academic Phase 5 provider"
             )
     elif provider == TDM_RATIO_PROVIDER:
         candidates = []
@@ -79,6 +90,15 @@ def run_phase5(
             candidate_schedule = build_tdm_schedule(
                 routes, platform, candidate_plan
             )
+            if slot_refinement_iterations > 0:
+                candidate_schedule = refine_tdm_schedule_native(
+                    routes,
+                    platform,
+                    candidate_plan,
+                    candidate_schedule,
+                    executable=slot_optimizer,
+                    max_iterations=slot_refinement_iterations,
+                )
             candidate_validation = validate_tdm_schedule(
                 routes,
                 platform,
@@ -145,6 +165,18 @@ def run_phase5(
                     "greedy_legalized_domains": candidate["ratio_plan"][
                         "metrics"
                     ]["greedy_legalized_domains"],
+                    **(
+                        {
+                            "slot_accepted_moves": candidate["schedule"][
+                                "slot_optimization"
+                            ]["metrics"]["accepted_moves"],
+                            "slot_evaluated_moves": candidate["schedule"][
+                                "slot_optimization"
+                            ]["metrics"]["evaluated_moves"],
+                        }
+                        if "slot_optimization" in candidate["schedule"]
+                        else {}
+                    ),
                 }
                 for candidate in candidates
             ],

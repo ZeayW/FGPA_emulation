@@ -5,10 +5,11 @@ from __future__ import annotations
 import functools
 import math
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
 from .platform import Platform
+from .tdm import COMBINATIONAL_SETTLE_SLOTS, RUNTIME_BARRIER_SLOTS
 
 
 def exact_discrete_ratio_legalization(
@@ -123,43 +124,29 @@ def _normalized_slack(
     )
 
 
-def exact_single_round_slot_schedule(
+def _slot_oracle_model(
     routes: Mapping[str, Any],
     platform: Platform,
     ratio_plan: Mapping[str, Any],
-    *,
-    max_hops: int = 12,
 ) -> Dict[str, Any]:
-    """Exhaustively solve a compact time-expanded lane/slot schedule.
-
-    The oracle covers the single-round case with fixed legal lanes and ratios.
-    It enforces lane collision, tree precedence, link latency, the ratio wait
-    window, and frame arrival.  Multi-round exact scheduling is intentionally
-    a separate gate because its global barrier couples all route completions.
-    """
-
     from .routing import normalize_route_constraints
     from .tdm_ratio import validate_tdm_ratio_plan
 
     validate_tdm_ratio_plan(routes, platform, ratio_plan)
-    if any(route.get("transport_round", 0) != 0 for route in routes["routes"]):
-        raise ValidationError("slot oracle currently supports one round")
     hops = list(ratio_plan["hops"])
-    if len(hops) > max_hops:
-        raise ValidationError(
-            f"slot oracle supports at most {max_hops} routed hops"
-        )
     constraints = normalize_route_constraints(
         routes.get("constraints"), platform
     )
-    frame_slots = constraints["frame_slots"]
     link_by_id = {link.id: link for link in platform.links}
     hop_by_key = {
         (hop["demand"], hop["link"], hop["from"], hop["to"]): hop
         for hop in hops
     }
-    parent = {}
-    depth = {}
+    parent: Dict[int, Optional[int]] = {}
+    depth: Dict[int, int] = {}
+    round_by_hop: Dict[int, int] = {}
+    sink_hops_by_route: Dict[str, List[int]] = {}
+    round_by_route: Dict[str, int] = {}
     for route in routes["routes"]:
         incoming = {}
         outgoing = defaultdict(list)
@@ -181,71 +168,291 @@ def exact_single_round_slot_schedule(
             ):
                 parent[hop["index"]] = incoming.get(node)
                 depth[hop["index"]] = node_depth
+                round_by_hop[hop["index"]] = route.get(
+                    "transport_round", 0
+                )
                 queue.append((hop["to"], node_depth + 1))
+        try:
+            sink_hops_by_route[route["id"]] = [
+                incoming[sink] for sink in route["sinks"]
+            ]
+        except KeyError as error:
+            raise ValidationError(
+                "slot oracle route sink has no incoming tree hop"
+            ) from error
+        round_by_route[route["id"]] = route.get("transport_round", 0)
     if set(parent) != {hop["index"] for hop in hops}:
         raise ValidationError("slot oracle route trees are incomplete")
 
     ordered = sorted(
         (hop["index"] for hop in hops),
-        key=lambda index: (depth[index], index),
+        key=lambda index: (round_by_hop[index], depth[index], index),
     )
-    hop_by_index = {hop["index"]: hop for hop in hops}
+    return {
+        "constraints": constraints,
+        "frame_slots": constraints["frame_slots"],
+        "link_by_id": link_by_id,
+        "hop_by_index": {hop["index"]: hop for hop in hops},
+        "parent": parent,
+        "depth": depth,
+        "round_by_hop": round_by_hop,
+        "sink_hops_by_route": sink_hops_by_route,
+        "round_by_route": round_by_route,
+        "active_rounds": sorted(set(round_by_route.values())),
+        "ordered": ordered,
+    }
+
+
+def _reconstruct_slot_oracle_result(
+    model: Mapping[str, Any],
+    ratio_plan: Mapping[str, Any],
+    slots: Mapping[int, int],
+) -> Dict[str, Any]:
+    hop_by_index = model["hop_by_index"]
+    expected = set(hop_by_index)
+    if set(slots) != expected:
+        raise ValidationError("slot oracle hop coverage is not exact")
+    if any(
+        isinstance(slot, bool) or not isinstance(slot, int)
+        for slot in slots.values()
+    ):
+        raise ValidationError("slot oracle slots must be integers")
+
+    link_by_id = model["link_by_id"]
+    frame_slots = model["frame_slots"]
+    round_completion: Dict[int, int] = {}
+    round_ready: Dict[int, int] = {}
+    ready_by_hop: Dict[int, int] = {}
+    occupancy = set()
+    route_completions: Dict[str, int] = {}
+
+    for transport_round in model["active_rounds"]:
+        round_ready[transport_round] = max(
+            (
+                completion + COMBINATIONAL_SETTLE_SLOTS
+                for prior_round, completion in round_completion.items()
+                if prior_round < transport_round
+            ),
+            default=0,
+        )
+        planned_ready = ratio_plan["round_barrier_legalization"].get(
+            "source_ready_slot"
+        )
+        if (
+            transport_round == 1
+            and planned_ready is not None
+            and round_ready[transport_round] > planned_ready
+        ):
+            raise ValidationError(
+                "slot oracle exceeds the legalized round barrier"
+            )
+
+        for index in model["ordered"]:
+            if model["round_by_hop"][index] != transport_round:
+                continue
+            hop = hop_by_index[index]
+            parent = model["parent"][index]
+            ready = (
+                round_ready[transport_round]
+                if parent is None
+                else slots[parent]
+                + link_by_id[hop_by_index[parent]["link"]].latency_cycles
+                + COMBINATIONAL_SETTLE_SLOTS
+            )
+            slot = slots[index]
+            latest_exclusive = min(
+                ready + hop["discrete_ratio"],
+                frame_slots
+                - RUNTIME_BARRIER_SLOTS
+                - link_by_id[hop["link"]].latency_cycles,
+            )
+            if slot < ready or slot >= latest_exclusive:
+                raise ValidationError(
+                    f"slot oracle hop {index} violates its legal window"
+                )
+            collision = (hop["domain"], hop["lane"], slot)
+            if collision in occupancy:
+                raise ValidationError(
+                    f"slot oracle collision at hop {index}"
+                )
+            occupancy.add(collision)
+            ready_by_hop[index] = ready
+
+        completions = []
+        for route, route_round in model["round_by_route"].items():
+            if route_round != transport_round:
+                continue
+            completion = max(
+                slots[index]
+                + link_by_id[hop_by_index[index]["link"]].latency_cycles
+                for index in model["sink_hops_by_route"][route]
+            )
+            route_completions[route] = completion
+            completions.append(completion)
+        round_completion[transport_round] = max(completions)
+
+    worst = float("inf")
+    for path in ratio_plan["timing_paths"]:
+        delay = path["fixed_delay_ns"]
+        for index in path["hops"]:
+            hop = hop_by_index[index]
+            delay += hop["base_delay_ns"] + hop["beta_ns"] * (
+                slots[index] - ready_by_hop[index]
+            )
+        slack = path["clock_period_ns"] - delay
+        worst = min(
+            worst,
+            _normalized_slack(
+                path["clock_period_ns"],
+                slack,
+                ratio_plan["normalization"],
+            ),
+        )
+    completion = max(route_completions.values())
+    return {
+        "worst_normalized_slack": worst,
+        "completion_slot": completion,
+        "total_wait_slots": sum(
+            slots[index] - ready_by_hop[index] for index in slots
+        ),
+        "slot_by_hop": dict(slots),
+        "ready_by_hop": ready_by_hop,
+        "active_rounds": list(model["active_rounds"]),
+        "round_source_ready_slots": round_ready,
+        "completion_by_round": round_completion,
+        "demand_completion_slots": route_completions,
+    }
+
+
+def validate_exact_slot_schedule(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    ratio_plan: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Independently reconstruct legality and metrics for an oracle result."""
+    model = _slot_oracle_model(routes, platform, ratio_plan)
+    raw_slots = result.get("slot_by_hop")
+    if not isinstance(raw_slots, dict):
+        raise ValidationError("slot oracle result has no slot assignment")
+    reconstructed = _reconstruct_slot_oracle_result(
+        model, ratio_plan, raw_slots
+    )
+    for key, value in reconstructed.items():
+        if result.get(key) != value:
+            raise ValidationError(
+                f"slot oracle result {key} does not match reconstruction"
+            )
+    enumerated = result.get("enumerated_schedules")
+    if (
+        isinstance(enumerated, bool)
+        or not isinstance(enumerated, int)
+        or enumerated <= 0
+    ):
+        raise ValidationError(
+            "slot oracle enumerated schedule count is invalid"
+        )
+    return {
+        "status": "pass",
+        "hops": len(raw_slots),
+        "transport_rounds": len(model["active_rounds"]),
+        "enumerated_schedules": enumerated,
+    }
+
+
+def exact_multi_round_slot_schedule(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    ratio_plan: Mapping[str, Any],
+    *,
+    max_hops: int = 12,
+) -> Dict[str, Any]:
+    """Exhaustively optimize a compact multi-round time-expanded schedule.
+
+    Fixed ratio/lane assignments are honored.  The search includes lane
+    collision, multicast-tree precedence, link latency, per-hop ratio windows,
+    inter-round global barriers, and the final runtime-barrier reservation.
+    It is an exact small-instance oracle, not the scalable production solver.
+    """
+    model = _slot_oracle_model(routes, platform, ratio_plan)
+    hops = list(ratio_plan["hops"])
+    if len(hops) > max_hops:
+        raise ValidationError(
+            f"slot oracle supports at most {max_hops} routed hops"
+        )
+    frame_slots = model["frame_slots"]
+    link_by_id = model["link_by_id"]
+    hop_by_index = model["hop_by_index"]
     occupancy = set()
     slot_by_hop: Dict[int, int] = {}
-    ready_by_hop: Dict[int, int] = {}
     best = None
     explored = 0
 
-    def score_complete() -> Tuple[Any, ...]:
-        worst = float("inf")
-        for path in ratio_plan["timing_paths"]:
-            delay = path["fixed_delay_ns"]
-            for hop_index in path["hops"]:
-                hop = hop_by_index[hop_index]
-                wait = slot_by_hop[hop_index] - ready_by_hop[hop_index]
-                delay += hop["base_delay_ns"] + hop["beta_ns"] * wait
-            slack = path["clock_period_ns"] - delay
-            worst = min(
-                worst,
-                _normalized_slack(
-                    path["clock_period_ns"],
-                    slack,
-                    ratio_plan["normalization"],
-                ),
-            )
-        completion = max(
-            slot_by_hop[index]
-            + link_by_id[hop_by_index[index]["link"]].latency_cycles
-            for index in slot_by_hop
-        )
-        total_wait = sum(
-            slot_by_hop[index] - ready_by_hop[index]
-            for index in slot_by_hop
-        )
-        slots = tuple(slot_by_hop[index] for index in sorted(slot_by_hop))
-        return worst, -completion, -total_wait, tuple(-slot for slot in slots)
-
     def search(position: int) -> None:
         nonlocal best, explored
-        if position == len(ordered):
+        if position == len(model["ordered"]):
             explored += 1
-            score = score_complete()
+            reconstructed = _reconstruct_slot_oracle_result(
+                model, ratio_plan, slot_by_hop
+            )
+            slots = tuple(
+                slot_by_hop[index] for index in sorted(slot_by_hop)
+            )
+            score = (
+                reconstructed["worst_normalized_slack"],
+                -reconstructed["completion_slot"],
+                -reconstructed["total_wait_slots"],
+                tuple(-slot for slot in slots),
+            )
             if best is None or score > best[0]:
-                best = (score, dict(slot_by_hop), dict(ready_by_hop))
+                best = (score, dict(slot_by_hop), reconstructed)
             return
-        index = ordered[position]
+        index = model["ordered"][position]
         hop = hop_by_index[index]
-        parent_index = parent[index]
-        ready = (
-            0
-            if parent_index is None
-            else slot_by_hop[parent_index]
-            + link_by_id[hop_by_index[parent_index]["link"]].latency_cycles
-            + 1
-        )
+        parent_index = model["parent"][index]
+        transport_round = model["round_by_hop"][index]
+        if parent_index is None:
+            prior_completions = []
+            for route, route_round in model["round_by_route"].items():
+                if route_round >= transport_round:
+                    continue
+                prior_completions.append(
+                    max(
+                        slot_by_hop[sink_hop]
+                        + link_by_id[
+                            hop_by_index[sink_hop]["link"]
+                        ].latency_cycles
+                        for sink_hop in model["sink_hops_by_route"][route]
+                    )
+                )
+            ready = max(
+                (
+                    completion + COMBINATIONAL_SETTLE_SLOTS
+                    for completion in prior_completions
+                ),
+                default=0,
+            )
+            planned_ready = ratio_plan[
+                "round_barrier_legalization"
+            ].get("source_ready_slot")
+            if (
+                transport_round == 1
+                and planned_ready is not None
+                and ready > planned_ready
+            ):
+                return
+        else:
+            ready = (
+                slot_by_hop[parent_index]
+                + link_by_id[
+                    hop_by_index[parent_index]["link"]
+                ].latency_cycles
+                + COMBINATIONAL_SETTLE_SLOTS
+            )
         latest = min(
             ready + hop["discrete_ratio"],
             frame_slots
+            - RUNTIME_BARRIER_SLOTS
             - link_by_id[hop["link"]].latency_cycles,
         )
         key_prefix = (hop["domain"], hop["lane"])
@@ -255,21 +462,35 @@ def exact_single_round_slot_schedule(
                 continue
             occupancy.add(occupancy_key)
             slot_by_hop[index] = slot
-            ready_by_hop[index] = ready
             search(position + 1)
             del slot_by_hop[index]
-            del ready_by_hop[index]
             occupancy.remove(occupancy_key)
 
     search(0)
     if best is None:
         raise ValidationError("slot oracle found no legal schedule")
-    score, slots, ready = best
-    return {
-        "worst_normalized_slack": score[0],
-        "completion_slot": -score[1],
-        "total_wait_slots": -score[2],
-        "slot_by_hop": slots,
-        "ready_by_hop": ready,
+    _score, _slots, reconstructed = best
+    result = {
+        **reconstructed,
         "enumerated_schedules": explored,
     }
+    validate_exact_slot_schedule(routes, platform, ratio_plan, result)
+    return result
+
+
+def exact_single_round_slot_schedule(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    ratio_plan: Mapping[str, Any],
+    *,
+    max_hops: int = 12,
+) -> Dict[str, Any]:
+    """Compatibility wrapper for the original single-round oracle."""
+    if any(
+        route.get("transport_round", 0) != 0
+        for route in routes["routes"]
+    ):
+        raise ValidationError("slot oracle wrapper supports one round")
+    return exact_multi_round_slot_schedule(
+        routes, platform, ratio_plan, max_hops=max_hops
+    )

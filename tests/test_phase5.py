@@ -23,12 +23,19 @@ from emuflow.tdm_ratio import (
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
+from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.tdm_oracle import (
     exact_discrete_ratio_legalization,
+    exact_multi_round_slot_schedule,
     exact_single_round_slot_schedule,
+    validate_exact_slot_schedule,
 )
 from emuflow.timing_routing import route_system_native
-from tests.native_build import tdm_ratio_optimizer, tlr_router
+from tests.native_build import (
+    tdm_ratio_optimizer,
+    tdm_slot_optimizer,
+    tlr_router,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -420,17 +427,27 @@ class Phase5Test(unittest.TestCase):
                 output_dir=root / "phase5",
                 simulation_frames=7,
                 ratio_optimizer=str(executable),
+                slot_optimizer=str(tdm_slot_optimizer()),
                 max_ratio=16,
                 post_refinement_iterations=20,
+                slot_refinement_iterations=20,
             )
             self.assertEqual(
                 report["optimization_provider"],
                 "lagrangian-kkt-timing-aware-v1",
             )
-            self.assertEqual(
-                report["timing_validation"],
-                timing_validation,
+            self.assertGreaterEqual(
+                report["timing_validation"][
+                    "worst_normalized_slack"
+                ],
+                timing_validation["worst_normalized_slack"],
             )
+            optimized_schedule = json.loads(
+                (root / "phase5" / "schedule.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertIn("slot_optimization", optimized_schedule)
             self.assertEqual(
                 report["candidate_selection"]["selected"],
                 "exact-displacement-dp",
@@ -591,6 +608,201 @@ class Phase5Test(unittest.TestCase):
             self.assertEqual(
                 schedule["metrics"]["completion_slot"],
                 slot_oracle["completion_slot"],
+            )
+
+    def test_native_slot_refinement_matches_exact_path_balance(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "path_balance",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=1, latency=1),
+                    _link("bc", "b", "c", lanes=1, latency=1),
+                ],
+            )
+        )
+        routes = _routes(
+            platform,
+            [
+                *[(f"ab{index}", "a", ["b"]) for index in range(3)],
+                *[(f"bc{index}", "b", ["c"]) for index in range(3)],
+            ],
+            frame_slots=10,
+        )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 40.0,
+            },
+            "compression": {
+                "original_paths": 2,
+                "compressed_paths": 2,
+            },
+            "paths": [
+                {
+                    "path": "p0",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 40.0,
+                    "fixed_delay_ns": 2.0,
+                    "cut_nets": ["ab2", "bc0"],
+                    "cut_transitions": [
+                        {"net": "ab2", "from": "a", "to": "b"},
+                        {"net": "bc0", "from": "b", "to": "c"},
+                    ],
+                },
+                {
+                    "path": "p1",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 40.0,
+                    "fixed_delay_ns": 5.0,
+                    "cut_nets": ["ab1", "bc1"],
+                    "cut_transitions": [
+                        {"net": "ab1", "from": "a", "to": "b"},
+                        {"net": "bc1", "from": "b", "to": "c"},
+                    ],
+                },
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=4,
+            ratio_quantum=2,
+            post_refinement_iterations=30,
+        )
+        baseline = build_tdm_schedule(routes, platform, plan)
+        baseline_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, baseline
+        )
+        refined = refine_tdm_schedule_native(
+            routes,
+            platform,
+            plan,
+            baseline,
+            executable=str(tdm_slot_optimizer()),
+            max_iterations=20,
+        )
+        refined_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, refined
+        )
+        oracle = exact_multi_round_slot_schedule(
+            routes, platform, plan, max_hops=6
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, platform, refined, plan)[
+                "status"
+            ],
+            "pass",
+        )
+        self.assertGreater(
+            refined_timing["worst_normalized_slack"],
+            baseline_timing["worst_normalized_slack"],
+        )
+        self.assertAlmostEqual(
+            refined_timing["worst_normalized_slack"],
+            oracle["worst_normalized_slack"],
+        )
+        self.assertEqual(
+            refined["metrics"]["completion_slot"],
+            oracle["completion_slot"],
+        )
+        self.assertGreater(
+            refined["slot_optimization"]["metrics"]["accepted_moves"],
+            0,
+        )
+
+    def test_exact_multi_round_slot_oracle_models_global_barrier(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "multi_round_oracle",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [(f"n{index}", "a", ["b"]) for index in range(4)],
+            frame_slots=8,
+        )
+        for route in routes["routes"]:
+            route["transport_round"] = (
+                0 if route["net"] in {"n0", "n1"} else 1
+            )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 20.0,
+            },
+            "compression": {
+                "original_paths": 4,
+                "compressed_paths": 4,
+            },
+            "paths": [
+                {
+                    "path": f"path_{index}",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 20.0,
+                    "fixed_delay_ns": float(index),
+                    "cut_nets": [f"n{index}"],
+                }
+                for index in range(4)
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=4,
+            ratio_quantum=2,
+            post_refinement_iterations=0,
+        )
+        oracle = exact_multi_round_slot_schedule(
+            routes, platform, plan, max_hops=4
+        )
+        validation = validate_exact_slot_schedule(
+            routes, platform, plan, oracle
+        )
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(oracle["active_rounds"], [0, 1])
+        self.assertEqual(oracle["round_source_ready_slots"][0], 0)
+        self.assertEqual(
+            oracle["round_source_ready_slots"][1],
+            oracle["completion_by_round"][0] + 1,
+        )
+
+        schedule = build_tdm_schedule(routes, platform, plan)
+        schedule_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, schedule
+        )
+        self.assertGreaterEqual(
+            oracle["worst_normalized_slack"],
+            schedule_timing["worst_normalized_slack"],
+        )
+        if oracle["worst_normalized_slack"] == schedule_timing[
+            "worst_normalized_slack"
+        ]:
+            self.assertLessEqual(
+                oracle["completion_slot"],
+                schedule["metrics"]["completion_slot"],
+            )
+
+        with self.assertRaisesRegex(
+            ValidationError, "wrapper supports one round"
+        ):
+            exact_single_round_slot_schedule(routes, platform, plan)
+        corrupted = copy.deepcopy(oracle)
+        first = min(corrupted["ready_by_hop"])
+        corrupted["ready_by_hop"][first] += 1
+        with self.assertRaisesRegex(
+            ValidationError, "ready_by_hop does not match"
+        ):
+            validate_exact_slot_schedule(
+                routes, platform, plan, corrupted
             )
 
     def test_exact_displacement_dp_scales_beyond_legacy_limit(self) -> None:

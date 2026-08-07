@@ -384,13 +384,14 @@ and an explicitly infeasible frame immediately below the selected minimum.
 
 ### Phase 5 — TDM scheduling and cycle-accurate transport (scheduling increment implemented)
 
-Implement:
+Implemented model:
 
-- time-expanded link model;
-- OR-Tools CP-SAT provider plus dependency-free heuristic fallback;
+- time-expanded links with fixed legal ratio/lane groups;
+- C++ timing-path-guided concrete-slot local search;
+- exhaustive multi-round small-instance oracle for optimality comparison;
 - static schedule ROM generation;
 - TX/RX, shadow-register, barrier, and virtual-clock-enable RTL;
-- multi-partition Verilator simulation harness.
+- multi-partition event and generated-SystemVerilog simulation.
 
 Acceptance:
 
@@ -399,10 +400,15 @@ Acceptance:
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
 
-The dependency-free lane/slot scheduler, independent collision/precedence
-checker, schedule ROM table, transport manifest, generic link/barrier RTL,
-Python event model, and generated SystemVerilog transport simulation are
-implemented.
+The initial dependency-free list schedule is refined by an in-tree C++ engine.
+It moves hops that block the current worst timing path and accepts a move only
+when independently reconstructed worst normalized slack, completion, or total
+wait improves lexicographically. The exact oracle covers fixed ratio/lane
+assignments across multiple transport rounds, including multicast-tree
+precedence, link latency, ratio windows, lane collision, global round barriers,
+and the reserved runtime-barrier slot. It is deliberately limited to small
+instances and is a correctness/QoR reference, not the scalable production
+solver.
 
 The one-command flow can also treat `frame_slots` as a feasible upper bound
 and run checked monotone bisection across the actual Phase 4/5 providers. Each
