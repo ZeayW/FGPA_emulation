@@ -878,6 +878,7 @@ def _round_barrier_legalize(
 
     return {
         "active_rounds": rounds,
+        "source_ready_semantics": "capacity_split_estimate",
         "source_ready_slot": (
             source_ready_slot if len(rounds) == 2 else None
         ),
@@ -1255,6 +1256,10 @@ def validate_tdm_ratio_plan(
     ) != active_rounds:
         raise ValidationError(
             "ratio plan round-barrier active rounds are inconsistent"
+        )
+    if barrier.get("source_ready_semantics") != "capacity_split_estimate":
+        raise ValidationError(
+            "ratio plan round-barrier source-ready semantics are invalid"
         )
     promoted_hops = barrier.get("promoted_hops")
     rebalanced_hops = barrier.get(

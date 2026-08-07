@@ -339,18 +339,6 @@ def _reconstruct_slot_oracle_result(
             ),
             default=0,
         )
-        planned_ready = ratio_plan["round_barrier_legalization"].get(
-            "source_ready_slot"
-        )
-        if (
-            transport_round == 1
-            and planned_ready is not None
-            and round_ready[transport_round] > planned_ready
-        ):
-            raise ValidationError(
-                "slot oracle exceeds the legalized round barrier"
-            )
-
         for index in model["ordered"]:
             if model["round_by_hop"][index] != transport_round:
                 continue
@@ -536,15 +524,6 @@ def exact_multi_round_slot_schedule(
                 ),
                 default=0,
             )
-            planned_ready = ratio_plan[
-                "round_barrier_legalization"
-            ].get("source_ready_slot")
-            if (
-                transport_round == 1
-                and planned_ready is not None
-                and ready > planned_ready
-            ):
-                return
         else:
             ready = (
                 slot_by_hop[parent_index]

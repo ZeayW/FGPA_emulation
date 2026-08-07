@@ -1037,6 +1037,94 @@ class Phase5Test(unittest.TestCase):
                 routes, platform, plan, corrupted
             )
 
+    def test_capacity_split_estimate_is_not_a_hard_multihop_barrier(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "multihop_barrier",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=1, latency=1),
+                    _link("bc", "b", "c", lanes=1, latency=1),
+                ],
+            )
+        )
+        routes = _routes(
+            platform,
+            [
+                ("round0_a", "a", ["c"]),
+                ("round0_b", "a", ["c"]),
+                ("round1", "c", ["a"]),
+            ],
+            frame_slots=10,
+        )
+        for route in routes["routes"]:
+            route["transport_round"] = (
+                1 if route["net"] == "round1" else 0
+            )
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 20.0,
+            },
+            "compression": {
+                "original_paths": 3,
+                "compressed_paths": 3,
+            },
+            "paths": [
+                {
+                    "path": f"path_{net}",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 20.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": [net],
+                }
+                for net in ("round0_a", "round0_b", "round1")
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=4,
+            ratio_quantum=2,
+            post_refinement_iterations=0,
+        )
+        plan["round_barrier_legalization"]["source_ready_slot"] = 3
+        validate_tdm_ratio_plan(routes, platform, plan)
+
+        schedule = build_tdm_schedule(routes, platform, plan)
+        validation = validate_tdm_schedule(
+            routes, platform, schedule, plan
+        )
+        realization = schedule["round_barrier_realization"]
+        self.assertEqual(realization["capacity_split_slot"], 3)
+        self.assertEqual(realization["source_ready_slot"], 5)
+        self.assertEqual(realization["shift_slots"], 2)
+        self.assertEqual(validation["status"], "pass")
+
+        oracle = exact_multi_round_slot_schedule(
+            routes, platform, plan, max_hops=6
+        )
+        self.assertEqual(oracle["round_source_ready_slots"][1], 5)
+        refined = refine_tdm_schedule_native(
+            routes,
+            platform,
+            plan,
+            schedule,
+            executable=str(tdm_slot_optimizer()),
+            max_iterations=1,
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, platform, refined, plan)[
+                "status"
+            ],
+            "pass",
+        )
+
     def test_exact_displacement_dp_scales_beyond_legacy_limit(self) -> None:
         compiler = shutil.which("g++") or shutil.which("clang++")
         if compiler is None:

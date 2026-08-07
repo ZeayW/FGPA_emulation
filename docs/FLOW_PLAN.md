@@ -412,6 +412,13 @@ and the reserved runtime-barrier slot. It is deliberately limited to small
 instances and is a correctness/QoR reference, not the scalable production
 solver.
 
+The ratio legalizer's round split is explicitly a capacity-only estimate; it
+does not claim to include multicast-tree precedence. Concrete scheduling
+records the realized inter-round source-ready slot, its shift from that
+estimate, and checks the resulting precedence, ratio windows, collisions, and
+final runtime-barrier reservation. The C++ slot refiner is constrained by this
+realized barrier rather than by the relaxed capacity estimate.
+
 The timing-DAG provider builds an exact prefix DAG from ordered compressed STA
 paths. Its C++ continuous core implements ASP-DAC 2026 Eqs. 8, 13, 15--17,
 19, and 20: forward arrival propagation, normalized path duals, reverse

@@ -89,9 +89,12 @@ def _write_native_input(
 
     normalization = ratio_plan["normalization"]
     frame_slots = schedule["route_constraints"]["frame_slots"]
-    planned_ready = ratio_plan["round_barrier_legalization"].get(
-        "source_ready_slot"
-    )
+    realization = schedule.get("round_barrier_realization")
+    if not isinstance(realization, dict):
+        raise ValidationError(
+            "academic TDM schedule has no round-barrier realization"
+        )
+    planned_ready = realization.get("source_ready_slot")
     lines = [
         "EMUFLOW_TDM_SLOT_INPUT_V1",
         (
@@ -202,6 +205,7 @@ def _apply_native_schedule(
         COMBINATIONAL_SETTLE_SLOTS,
         TDM_ACADEMIC_SCHEDULE_PROVIDER,
         _domain_schedule_records,
+        _round_barrier_realization,
         _round_order,
         _route_hops,
         reconstruct_tdm_schedule_timing,
@@ -281,6 +285,13 @@ def _apply_native_schedule(
     refined["demand_completions"] = sorted(
         completions, key=lambda item: item["demand"]
     )
+    refined["round_barrier_realization"] = _round_barrier_realization(
+        _active_rounds,
+        completion_by_round,
+        ratio_plan["round_barrier_legalization"].get(
+            "source_ready_slot"
+        ),
+    )
     refined["domain_schedules"] = _domain_schedule_records(
         platform,
         refined["route_constraints"],
@@ -348,6 +359,9 @@ def refine_tdm_schedule_native(
         raise ValidationError(
             "TDM slot max_iterations must be a non-negative integer"
         )
+    from .tdm import validate_tdm_schedule
+
+    validate_tdm_schedule(routes, platform, schedule, ratio_plan)
     resolved = resolve_native_executable(
         "emuflow_tdm_slot_optimizer", executable
     )

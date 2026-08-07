@@ -116,6 +116,41 @@ def _round_order(
     return ordered, active_rounds
 
 
+def _round_barrier_realization(
+    active_rounds: Sequence[int],
+    completion_by_round: Mapping[int, int],
+    planned_source_ready_slot: Optional[int],
+) -> Dict[str, Any]:
+    """Describe the concrete barrier realized by a legal slot schedule.
+
+    The ratio planner's source-ready slot is a capacity-split estimate.  It
+    deliberately ignores multicast-tree precedence and therefore cannot be a
+    hard upper bound on the concrete schedule.  The schedule is the
+    authoritative realization and is checked independently below.
+    """
+    realized = None
+    if len(active_rounds) > 1:
+        second_round = active_rounds[1]
+        realized = max(
+            (
+                completion + COMBINATIONAL_SETTLE_SLOTS
+                for transport_round, completion in completion_by_round.items()
+                if transport_round < second_round
+            ),
+            default=0,
+        )
+    return {
+        "active_rounds": list(active_rounds),
+        "capacity_split_slot": planned_source_ready_slot,
+        "source_ready_slot": realized,
+        "shift_slots": (
+            realized - planned_source_ready_slot
+            if realized is not None and planned_source_ready_slot is not None
+            else 0
+        ),
+    }
+
+
 def build_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -193,16 +228,6 @@ def build_tdm_schedule(
             ),
             default=0,
         )
-        if (
-            transport_round == 1
-            and planned_round_one_ready is not None
-            and source_ready_slot > planned_round_one_ready
-        ):
-            raise ValidationError(
-                "TDM ratio schedule exceeded its legalized round barrier: "
-                f"actual={source_ready_slot}, "
-                f"planned={planned_round_one_ready}"
-            )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
             arc_key = (edge["link"], edge["from"], edge["to"])
@@ -397,7 +422,7 @@ def build_tdm_schedule(
                 ),
             }
         )
-    return {
+    result = {
         "schema": TDM_SCHEDULE_SCHEMA,
         "design": routes.get("design"),
         "platform": platform.name,
@@ -440,6 +465,13 @@ def build_tdm_schedule(
         "domain_schedules": domain_schedules,
         "metrics": metrics,
     }
+    if ratio_plan is not None:
+        result["round_barrier_realization"] = _round_barrier_realization(
+            active_rounds,
+            completion_by_round,
+            planned_round_one_ready,
+        )
+    return result
 
 
 def _domain_schedule_records(
@@ -753,6 +785,19 @@ def validate_tdm_schedule(
         raise ValidationError(
             "schedule.demand_completions does not match recomputed values"
         )
+    if academic_schedule:
+        expected_realization = _round_barrier_realization(
+            active_rounds,
+            completion_by_round,
+            ratio_plan["round_barrier_legalization"].get(
+                "source_ready_slot"
+            ),
+        )
+        if schedule.get("round_barrier_realization") != expected_realization:
+            raise ValidationError(
+                "schedule.round_barrier_realization does not match "
+                "recomputed values"
+            )
 
     expected_domains = _domain_schedule_records(
         platform, constraints, raw_entries
