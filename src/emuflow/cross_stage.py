@@ -984,6 +984,8 @@ def run_cross_stage_optimization(
     repart: Optional[str] = None,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
+    partition_num_initial_solutions: int = 50,
+    partition_num_best_initial_solutions: int = 10,
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
     router: Optional[str] = None,
@@ -1020,6 +1022,19 @@ def run_cross_stage_optimization(
     ):
         raise ValidationError(
             "cross-stage partition seed attempts must be positive"
+        )
+    if (
+        isinstance(partition_num_initial_solutions, bool)
+        or not isinstance(partition_num_initial_solutions, int)
+        or partition_num_initial_solutions <= 0
+        or isinstance(partition_num_best_initial_solutions, bool)
+        or not isinstance(partition_num_best_initial_solutions, int)
+        or partition_num_best_initial_solutions <= 0
+        or partition_num_best_initial_solutions
+        > partition_num_initial_solutions
+    ):
+        raise ValidationError(
+            "cross-stage TritonPart search effort is invalid"
         )
     if not isinstance(partition_repair_min_used_fpgas, bool) or not isinstance(
         partition_repair_balance, bool
@@ -1236,6 +1251,12 @@ def run_cross_stage_optimization(
                         partition_timeout_seconds
                     ),
                     tritonpart_seed_attempts=partition_seed_attempts,
+                    tritonpart_num_initial_solutions=(
+                        partition_num_initial_solutions
+                    ),
+                    tritonpart_num_best_initial_solutions=(
+                        partition_num_best_initial_solutions
+                    ),
                     tritonpart_repair_min_used_fpgas=(
                         partition_repair_min_used_fpgas
                     ),
@@ -1244,6 +1265,9 @@ def run_cross_stage_optimization(
                     ),
                     repart=repart,
                     repart_timeout_seconds=partition_timeout_seconds,
+                    route_constraints_path=(
+                        effective_route_constraints_path
+                    ),
                 )
                 candidate = _run_candidate_flow(
                     root=output_dir,
@@ -1385,6 +1409,12 @@ def run_cross_stage_optimization(
             "pair_pressure_weight": pair_pressure_weight,
             "partition_timeout_seconds": partition_timeout_seconds,
             "partition_seed_attempts": partition_seed_attempts,
+            "partition_num_initial_solutions": (
+                partition_num_initial_solutions
+            ),
+            "partition_num_best_initial_solutions": (
+                partition_num_best_initial_solutions
+            ),
             "partition_repair_min_used_fpgas": (
                 partition_repair_min_used_fpgas
             ),
@@ -1518,6 +1548,25 @@ def validate_cross_stage_report(
     ):
         raise ValidationError(
             "cross-stage report partition seed attempts are invalid"
+        )
+    partition_num_initial_solutions = configuration.get(
+        "partition_num_initial_solutions"
+    )
+    partition_num_best_initial_solutions = configuration.get(
+        "partition_num_best_initial_solutions"
+    )
+    if (
+        isinstance(partition_num_initial_solutions, bool)
+        or not isinstance(partition_num_initial_solutions, int)
+        or partition_num_initial_solutions <= 0
+        or isinstance(partition_num_best_initial_solutions, bool)
+        or not isinstance(partition_num_best_initial_solutions, int)
+        or partition_num_best_initial_solutions <= 0
+        or partition_num_best_initial_solutions
+        > partition_num_initial_solutions
+    ):
+        raise ValidationError(
+            "cross-stage report TritonPart search effort is invalid"
         )
     for name in (
         "partition_repair_min_used_fpgas",

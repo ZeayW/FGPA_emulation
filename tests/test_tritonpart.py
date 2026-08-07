@@ -137,6 +137,53 @@ class TritonPartTest(unittest.TestCase):
                 f"-balance_constraint {expected:.9g}",
                 tcl,
             )
+            self.assertIn("-num_initial_solutions 50", tcl)
+            self.assertIn("-num_best_initial_solutions 10", tcl)
+            self.assertEqual(
+                artifact["search_effort"],
+                {
+                    "num_initial_solutions": 50,
+                    "num_best_initial_solutions": 10,
+                },
+            )
+
+    def test_export_records_bounded_validation_search_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            artifact = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                output,
+                num_initial_solutions=4,
+                num_best_initial_solutions=2,
+            )
+            tcl = (output / "run_tritonpart.tcl").read_text()
+        self.assertIn("-num_initial_solutions 4", tcl)
+        self.assertIn("-num_best_initial_solutions 2", tcl)
+        self.assertEqual(
+            artifact["search_effort"],
+            {
+                "num_initial_solutions": 4,
+                "num_best_initial_solutions": 2,
+            },
+        )
+
+    def test_export_rejects_invalid_search_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                ValidationError, "num_best_initial_solutions"
+            ):
+                export_tritonpart_inputs(
+                    self.ir,
+                    self.platform,
+                    self.clusters,
+                    self.constraints,
+                    Path(temporary_directory),
+                    num_initial_solutions=2,
+                    num_best_initial_solutions=3,
+                )
 
     def test_solution_parser_rejects_invalid_part(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

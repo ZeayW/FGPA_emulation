@@ -278,6 +278,8 @@ def run_multi_fpga_flow(
     repart: Optional[str] = None,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
+    partition_num_initial_solutions: int = 50,
+    partition_num_best_initial_solutions: int = 10,
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
     timing_driven: bool = False,
@@ -564,7 +566,6 @@ def run_multi_fpga_flow(
             "backend": timing_backend,
             "sta": sta_report,
             "partition_weights": weights_report,
-            "partition_weights_applied": partition_provider != "greedy",
         }
 
     effective_route_constraints = route_constraints
@@ -606,6 +607,36 @@ def run_multi_fpga_flow(
             ],
         }
 
+    if timing_report is not None:
+        provider_consumes_weights = partition_provider != "greedy"
+        hop_refiner_consumes_weights = False
+        if effective_route_constraints is not None:
+            raw_route_constraints = read_json(
+                effective_route_constraints.resolve()
+            )
+            if not isinstance(raw_route_constraints, dict):
+                raise ValidationError("route constraints must be an object")
+            hop_refiner_consumes_weights = (
+                raw_route_constraints.get("max_route_hops") is not None
+            )
+        consumers = []
+        if provider_consumes_weights:
+            consumers.append("phase3-provider")
+        if hop_refiner_consumes_weights:
+            consumers.append("phase3-hop-refinement")
+        timing_report.update(
+            {
+                "partition_weights_applied": bool(consumers),
+                "partition_provider_weights_applied": (
+                    provider_consumes_weights
+                ),
+                "hop_refinement_weights_applied": (
+                    hop_refiner_consumes_weights
+                ),
+                "partition_weight_consumers": consumers,
+            }
+        )
+
     phase3_root = output_dir / "partition"
     phase3_report = run_phase3(
         ir_path,
@@ -619,6 +650,10 @@ def run_multi_fpga_flow(
         openroad=openroad,
         tritonpart_timeout_seconds=partition_timeout_seconds,
         tritonpart_seed_attempts=partition_seed_attempts,
+        tritonpart_num_initial_solutions=partition_num_initial_solutions,
+        tritonpart_num_best_initial_solutions=(
+            partition_num_best_initial_solutions
+        ),
         tritonpart_repair_min_used_fpgas=(
             partition_repair_min_used_fpgas
         ),
@@ -627,9 +662,10 @@ def run_multi_fpga_flow(
         repart_timeout_seconds=partition_timeout_seconds,
         net_weights_path=(
             net_weights_path
-            if timing_driven and partition_provider != "greedy"
+            if timing_driven
             else None
         ),
+        route_constraints_path=effective_route_constraints,
     )
     assignment_path = phase3_root / "assignment.json"
 
@@ -658,7 +694,7 @@ def run_multi_fpga_flow(
             phase3_constraints_path=(
                 phase3_root / "constraints.normalized.json"
             ),
-            route_constraints_path=route_constraints,
+            route_constraints_path=effective_route_constraints,
             board_link_timing_path=board_link_timing_db,
             phase3_provider=partition_provider,
             max_outer_iterations=cross_stage_iterations,
@@ -669,6 +705,10 @@ def run_multi_fpga_flow(
             repart=repart,
             partition_timeout_seconds=partition_timeout_seconds,
             partition_seed_attempts=partition_seed_attempts,
+            partition_num_initial_solutions=partition_num_initial_solutions,
+            partition_num_best_initial_solutions=(
+                partition_num_best_initial_solutions
+            ),
             partition_repair_min_used_fpgas=(
                 partition_repair_min_used_fpgas
             ),

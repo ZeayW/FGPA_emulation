@@ -135,6 +135,7 @@ def _prepare_model(
     raw_hops = []
     route_by_net = {}
     route_hop_keys: Dict[str, List[HopKey]] = {}
+    direction_pairs_by_capacity = {}
     for route in sorted(routes["routes"], key=lambda item: item["id"]):
         if route["net"] in route_by_net:
             raise ValidationError(
@@ -171,6 +172,9 @@ def _prepare_model(
                     "beta_ns": beta_ns,
                 }
             )
+            direction_pairs_by_capacity.setdefault(
+                arc["capacity_key"], set()
+            ).add((edge["from"], edge["to"]))
             route_hop_keys[route["id"]].append(key)
     if not raw_hops:
         raise ValidationError("TDM ratio optimization has no routed hops")
@@ -182,13 +186,7 @@ def _prepare_model(
     }
     direction_index = {}
     for capacity_key in capacity_keys:
-        pairs = sorted(
-            {
-                hop["direction_pair"]
-                for hop in raw_hops
-                if hop["capacity_key"] == capacity_key
-            }
-        )
+        pairs = sorted(direction_pairs_by_capacity[capacity_key])
         for index, pair in enumerate(pairs):
             direction_index[(capacity_key, pair)] = index
 
@@ -254,6 +252,7 @@ def _prepare_model(
         }
 
     timing_paths = []
+    route_net_names = set(route_by_net)
     for index, path in enumerate(timing["paths"]):
         raw_cut_nets = path.get("cut_nets")
         if (
@@ -264,7 +263,7 @@ def _prepare_model(
             raise ValidationError(
                 f"routes.timing.paths[{index}].cut_nets: invalid"
             )
-        unknown = sorted(set(raw_cut_nets) - set(route_by_net))
+        unknown = sorted(set(raw_cut_nets) - route_net_names)
         if unknown:
             raise ValidationError(
                 f"routes.timing.paths[{index}]: unknown cut nets {unknown}"
@@ -377,39 +376,42 @@ def _write_native_input(
     continuous_seed: Optional[Sequence[float]] = None,
 ) -> None:
     normalization = model["normalization"]
-    lines = [
-        (
-            "EMUFLOW_TDM_RATIO_INPUT_V4"
-            if continuous_seed is not None
-            else "EMUFLOW_TDM_RATIO_INPUT_V2"
-        ),
-        (
+    header = (
+        "EMUFLOW_TDM_RATIO_INPUT_V4"
+        if continuous_seed is not None
+        else "EMUFLOW_TDM_RATIO_INPUT_V2"
+    )
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(header + "\n")
+        stream.write(
             f"PARAM {max_iterations} {max_ratio} {ratio_quantum} "
             f"{post_refinement_iterations} {exact_domain_limit} "
             f"{convergence:.17g} "
             f"{normalization['positive_slack_scale_ns']:.17g} "
             f"{normalization['negative_slack_scale_ns']:.17g} "
-            f"{normalization['max_clock_period_ns']:.17g}"
-        ),
-    ]
-    for domain in model["domains"]:
-        lines.append(f"DOMAIN {domain['index']} {domain['lanes']}")
-    for hop in model["hops"]:
-        lines.append(
+            f"{normalization['max_clock_period_ns']:.17g}\n"
+        )
+        stream.writelines(
+            f"DOMAIN {domain['index']} {domain['lanes']}\n"
+            for domain in model["domains"]
+        )
+        stream.writelines(
             f"HOP {hop['index']} {hop['domain']} {hop['direction']} "
-            f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g}"
+            f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g}\n"
+            for hop in model["hops"]
         )
-    for timing_path in model["timing_paths"]:
-        hops = ",".join(str(hop) for hop in timing_path["hops"])
-        lines.append(
-            f"PATH {timing_path['index']} "
-            f"{timing_path['clock_period_ns']:.17g} "
-            f"{timing_path['fixed_delay_ns']:.17g} {hops}"
-        )
-    if continuous_seed is not None:
-        for index, ratio in enumerate(continuous_seed):
-            lines.append(f"SEED {index} {ratio:.17g}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for timing_path in model["timing_paths"]:
+            hops = ",".join(str(hop) for hop in timing_path["hops"])
+            stream.write(
+                f"PATH {timing_path['index']} "
+                f"{timing_path['clock_period_ns']:.17g} "
+                f"{timing_path['fixed_delay_ns']:.17g} {hops}\n"
+            )
+        if continuous_seed is not None:
+            stream.writelines(
+                f"SEED {index} {ratio:.17g}\n"
+                for index, ratio in enumerate(continuous_seed)
+            )
 
 
 def _parse_native_output(
@@ -648,23 +650,183 @@ def _round_barrier_legalize(
         counts: Mapping[Tuple[int, int, int], Mapping[int, int]],
     ) -> Tuple[Tuple[int, int, int, int, int], int, Dict[int, int]]:
         if len(rounds) == 1:
-            source_ready_values = [0]
-        else:
-            minimum_latency = max(latency_by_domain.values())
-            source_ready_values = range(
-                minimum_latency + 1,
-                frame_slots - RUNTIME_BARRIER_SLOTS - minimum_latency,
-            )
-        best = None
-        midpoint = frame_slots // 2
-        for source_ready in source_ready_values:
-            required = {}
-            for domain in domain_by_index:
-                required[domain] = sum(
-                    lane_need(key, count, source_ready)
+            required = {
+                domain: sum(
+                    lane_need(key, count, 0)
                     for key, count in counts.items()
                     if key[0] == domain
                 )
+                for domain in domain_by_index
+            }
+            excesses = [
+                max(0, required[domain] - domain_by_index[domain]["lanes"])
+                for domain in required
+            ]
+            return (
+                (
+                    max(excesses, default=0),
+                    sum(excesses),
+                    max(required.values(), default=0),
+                    sum(required.values()),
+                    abs(frame_slots // 2),
+                ),
+                0,
+                required,
+            )
+
+        minimum_latency = max(latency_by_domain.values())
+        first_source_ready = minimum_latency + 1
+        last_source_ready = (
+            frame_slots
+            - RUNTIME_BARRIER_SLOTS
+            - minimum_latency
+            - 1
+        )
+        if first_source_ready > last_source_ready:
+            raise ValidationError(
+                "TDM round-barrier legalization has no boundary candidate"
+            )
+
+        # Each bucket contributes
+        # max(base, ceil(round0 / left_slots), ceil(round1 / right_slots)).
+        # The left term is monotone decreasing and the right term monotone
+        # increasing.  Accumulate their quotient-constant intervals into
+        # per-domain difference arrays instead of evaluating every
+        # slot/domain/bucket combination.
+        required_differences = {
+            domain: [0] * (frame_slots + 1)
+            for domain in domain_by_index
+        }
+
+        def add_interval(
+            differences: List[int], start: int, stop: int, value: int
+        ) -> None:
+            if start > stop:
+                return
+            differences[start] += value
+            differences[stop + 1] -= value
+
+        def add_decreasing_ceil(
+            differences: List[int],
+            start: int,
+            stop: int,
+            *,
+            numerator: int,
+            denominator_offset: int,
+            floor: int,
+        ) -> None:
+            slot = start
+            while slot <= stop:
+                denominator = slot - denominator_offset
+                quotient = math.ceil(numerator / denominator)
+                value = max(floor, quotient)
+                if quotient <= floor or quotient <= 1:
+                    add_interval(differences, slot, stop, value)
+                    break
+                last_denominator = (numerator - 1) // (quotient - 1)
+                last_slot = min(stop, denominator_offset + last_denominator)
+                add_interval(differences, slot, last_slot, value)
+                slot = last_slot + 1
+
+        def add_increasing_ceil(
+            differences: List[int],
+            start: int,
+            stop: int,
+            *,
+            numerator: int,
+            denominator_sum: int,
+            floor: int,
+        ) -> None:
+            # Traverse increasing denominators in reverse slot order, then
+            # map each quotient-constant denominator interval back to slots.
+            denominator = denominator_sum - stop
+            maximum_denominator = denominator_sum - start
+            while denominator <= maximum_denominator:
+                quotient = math.ceil(numerator / denominator)
+                value = max(floor, quotient)
+                if quotient <= floor or quotient <= 1:
+                    add_interval(differences, start, denominator_sum - denominator, value)
+                    break
+                last_denominator = min(
+                    maximum_denominator,
+                    (numerator - 1) // (quotient - 1),
+                )
+                add_interval(
+                    differences,
+                    denominator_sum - last_denominator,
+                    denominator_sum - denominator,
+                    value,
+                )
+                denominator = last_denominator + 1
+
+        for key, count in counts.items():
+            domain, _direction, ratio = key
+            latency = latency_by_domain[domain]
+            denominator_sum = (
+                frame_slots - RUNTIME_BARRIER_SLOTS - latency
+            )
+            total_slots = frame_slots - RUNTIME_BARRIER_SLOTS - 2 * latency
+            base = math.ceil(sum(count.values()) / min(ratio, total_slots))
+            round_zero = count.get(0, 0)
+            round_one = count.get(1, 0)
+
+            def left_dominates(source_ready: int) -> bool:
+                left = max(
+                    base,
+                    math.ceil(round_zero / (source_ready - latency)),
+                )
+                right = math.ceil(
+                    round_one / (denominator_sum - source_ready)
+                )
+                return left >= right
+
+            low = first_source_ready
+            high = last_source_ready
+            crossover = first_source_ready - 1
+            while low <= high:
+                middle = (low + high) // 2
+                if left_dominates(middle):
+                    crossover = middle
+                    low = middle + 1
+                else:
+                    high = middle - 1
+
+            differences = required_differences[domain]
+            add_decreasing_ceil(
+                differences,
+                first_source_ready,
+                crossover,
+                numerator=round_zero,
+                denominator_offset=latency,
+                floor=base,
+            )
+            add_increasing_ceil(
+                differences,
+                crossover + 1,
+                last_source_ready,
+                numerator=round_one,
+                denominator_sum=denominator_sum,
+                floor=base,
+            )
+
+        required_by_slot = {}
+        for domain, differences in required_differences.items():
+            running = 0
+            values = [0] * frame_slots
+            for slot in range(first_source_ready, last_source_ready + 1):
+                running += differences[slot]
+                values[slot] = running
+            required_by_slot[domain] = values
+
+        best = None
+        midpoint = frame_slots // 2
+        for source_ready in range(
+            first_source_ready, last_source_ready + 1
+        ):
+            required = {
+                domain: required_by_slot[domain][source_ready]
+                for domain in domain_by_index
+            }
             excesses = [
                 max(
                     0,
@@ -706,11 +868,33 @@ def _round_barrier_legalize(
             if required > domain_by_index[domain]["lanes"]
         }
         current_buckets = buckets()
-        current_ratios = [
-            hop["discrete_ratio"] for hop in hop_records
-        ]
-        _current_timing, current_worst = _discrete_timing_records(
+        current_timing, current_worst = _discrete_timing_records(
             model, hop_records
+        )
+        hop_by_index = {hop["index"]: hop for hop in hop_records}
+        path_impacts_by_bucket: Dict[
+            Tuple[int, int, int], List[Tuple[int, float]]
+        ] = defaultdict(list)
+        for path_position, timing_path in enumerate(model["timing_paths"]):
+            beta_by_bucket: Dict[Tuple[int, int, int], float] = (
+                defaultdict(float)
+            )
+            for hop_index in timing_path["hops"]:
+                hop = hop_by_index[hop_index]
+                beta_by_bucket[
+                    (
+                        hop["domain"],
+                        hop["direction"],
+                        hop["discrete_ratio"],
+                    )
+                ] += hop["beta_ns"]
+            for bucket_key, beta in beta_by_bucket.items():
+                path_impacts_by_bucket[bucket_key].append(
+                    (path_position, beta)
+                )
+        timing_order = sorted(
+            range(len(current_timing)),
+            key=lambda index: current_timing[index]["normalized_slack"],
         )
         candidates = []
         for key in sorted(current_buckets):
@@ -747,30 +931,59 @@ def _round_barrier_legalize(
             higher = sorted(
                 existing_higher | ratio_thresholds | {max_ratio}
             )
+            path_impacts = path_impacts_by_bucket.get(key, ())
+            affected_paths = {
+                path_position for path_position, _beta in path_impacts
+            }
+            unaffected_worst = next(
+                (
+                    current_timing[path_position]["normalized_slack"]
+                    for path_position in timing_order
+                    if path_position not in affected_paths
+                ),
+                float("inf"),
+            )
             for target in higher:
-                simulated_counts = {
-                    bucket_key: Counter(count)
-                    for bucket_key, count in current_counts.items()
-                }
-                moved = simulated_counts.pop(key)
-                simulated_counts.setdefault(
-                    (domain, direction, target), Counter()
-                ).update(moved)
-                after = sum(
-                    lane_need(bucket_key, count, source_ready_slot)
-                    for bucket_key, count in simulated_counts.items()
-                    if bucket_key[0] == domain
+                target_key = (domain, direction, target)
+                target_count = current_counts.get(target_key)
+                merged_count = Counter(count)
+                if target_count is not None:
+                    merged_count.update(target_count)
+                after = (
+                    before
+                    - lane_need(key, count, source_ready_slot)
+                    - (
+                        lane_need(
+                            target_key,
+                            target_count,
+                            source_ready_slot,
+                        )
+                        if target_count is not None
+                        else 0
+                    )
+                    + lane_need(
+                        target_key,
+                        merged_count,
+                        source_ready_slot,
+                    )
                 )
                 saving = before - after
                 if saving <= 0:
                     continue
-                for hop in current_buckets[key]:
-                    hop["discrete_ratio"] = target
-                _candidate_timing, candidate_worst = (
-                    _discrete_timing_records(model, hop_records)
-                )
-                for hop, original in zip(hop_records, current_ratios):
-                    hop["discrete_ratio"] = original
+                candidate_worst = unaffected_worst
+                ratio_delta = target - ratio
+                for path_position, beta in path_impacts:
+                    timing_path = current_timing[path_position]
+                    delay = timing_path["delay_ns"] + beta * ratio_delta
+                    slack = timing_path["clock_period_ns"] - delay
+                    candidate_worst = min(
+                        candidate_worst,
+                        _normalized_slack(
+                            timing_path["clock_period_ns"],
+                            slack,
+                            model["normalization"],
+                        ),
+                    )
                 loss = max(0.0, current_worst - candidate_worst)
                 candidates.append(
                     (
@@ -903,8 +1116,13 @@ def build_tdm_ratio_plan(
     continuous_seed: Optional[Sequence[float]] = None,
     provider: str = TDM_RATIO_PROVIDER,
     provider_metadata: Optional[Mapping[str, Any]] = None,
+    prepared_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    model = _prepare_model(routes, platform)
+    model = (
+        prepared_model
+        if prepared_model is not None
+        else _prepare_model(routes, platform)
+    )
     if max_ratio is None:
         link_by_id = {link.id: link for link in platform.links}
         usable_slots = min(
@@ -1067,7 +1285,9 @@ def build_tdm_ratio_plan(
     }
     if provider_metadata is not None:
         plan["algorithm"] = dict(provider_metadata)
-    validate_tdm_ratio_plan(routes, platform, plan)
+    validate_tdm_ratio_plan(
+        routes, platform, plan, prepared_model=model
+    )
     return plan
 
 
@@ -1098,6 +1318,8 @@ def validate_tdm_ratio_plan(
     routes: Mapping[str, Any],
     platform: Platform,
     plan: Mapping[str, Any],
+    *,
+    prepared_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if plan.get("schema") != TDM_RATIO_PLAN_SCHEMA:
         raise ValidationError(
@@ -1125,7 +1347,11 @@ def validate_tdm_ratio_plan(
         raise ValidationError("ratio plan.design does not match routes")
     if plan.get("platform") != platform.name:
         raise ValidationError("ratio plan.platform does not match BoardDB")
-    model = _prepare_model(routes, platform)
+    model = (
+        prepared_model
+        if prepared_model is not None
+        else _prepare_model(routes, platform)
+    )
     if plan.get("normalization") != model["normalization"]:
         raise ValidationError(
             "ratio plan.normalization does not match routes"

@@ -195,16 +195,23 @@ research is optional and follows stable LUT/FF mapping.
 The current union-find clustering is a correctness-preserving flat-netlist
 transformation. It does not provide adaptive hierarchical flattening, clock
 modeling, path-aware net construction, or a controlled tradeoff between
-hypergraph size and lost partition freedom.
+hypergraph size and lost partition freedom. Because only sequential boundary
+classes are transportable today, a large combinational connected component
+can also force an explicitly reported balance relaxation. No downstream
+partitioner can repair that loss of freedom without extending the runtime and
+equivalence semantics for controlled combinational cuts.
 
 ### Technical route
 
 1. Separate semantic atomicity from scalability clustering.
    Semantic clusters preserve state, combinational-cut policy, macros, and
    user groups; scalability clusters remain reversible.
-2. Reproduce the ASP-DAC 2025 adaptive hierarchical flattening and parallel
+2. Define a controlled combinational-cut contract with multi-phase settling,
+   deterministic scheduling, and cycle-equivalence checks before allowing
+   those cuts to create new partition freedom.
+3. Reproduce the ASP-DAC 2025 adaptive hierarchical flattening and parallel
    clock-modeling methods for large hierarchical RTL.
-3. Represent:
+4. Represent:
    - multi-dimensional FPGA resources;
    - ordered timing paths;
    - clock domains;
@@ -212,7 +219,7 @@ hypergraph size and lost partition freedom.
    - fixed and grouped cells;
    - topology candidate sets; and
    - transportable versus forbidden cuts.
-4. Preserve a lossless map from every hypergraph vertex and hyperedge back to
+5. Preserve a lossless map from every hypergraph vertex and hyperedge back to
    EmuIR.
 
 ### Acceptance gate
@@ -250,6 +257,21 @@ hypergraph size and lost partition freedom.
 - in-tree TritonPart multilevel hypergraph mode;
 - in-tree RePart unique-owner mode;
 - exact ILP/CP-SAT oracle for small hypergraphs.
+
+### Implemented topology-feasibility increment
+
+The common Phase-3 adapter now derives directed shortest-hop domains from
+BoardDB whenever `max_route_hops` is present. The greedy baseline uses those
+domains during initialization, and all providers pass through a native C++
+topology-constrained FM audit/refinement with best-prefix rollback, pairwise
+swaps, and a small exact fallback. Its objective is lexicographic feasibility
+before weighted hop and cut cost; an independent checker reconstructs every
+cut-net endpoint distance. This is a TopoPart/DATE-2024-informed enabling
+increment, not the selected MFSPart reproduction. It becomes the legality
+gate that the multilevel candidate-propagation work below must preserve.
+The current FM move search is intentionally capped at 50,000 clusters for an
+illegal input; larger assignments must arrive hop-legal from the constructive
+provider rather than silently entering a quadratic post-repair pass.
 
 ### Selected primary route
 
@@ -436,6 +458,16 @@ minimum-wire construction to bound runtime.
 Independent exhaustive Python oracles verify the exact displacement objective
 on small domains and the realized timing optimum of compact single-round
 lane/slot schedules.
+
+For scalable two-round realization, the capacity-only barrier estimate is
+computed exactly from monotone `ceil(count / slots)` intervals and per-domain
+difference arrays rather than a slot-by-bucket scan. If a native ratio plan
+must be promoted to satisfy the split, each candidate uses an incremental
+capacity delta and recomputes normalized slack only for paths containing the
+promoted bucket; the minimum slack of unaffected paths is retained explicitly.
+Small-instance tests compare the selected boundary against exhaustive slot
+enumeration, and the independent serialized-artifact validator remains the
+acceptance gate.
 
 Exact ratio displacement is not assumed to imply a better concrete schedule.
 The Phase 5 driver evaluates both the exact-DP and scalable minimum-wire

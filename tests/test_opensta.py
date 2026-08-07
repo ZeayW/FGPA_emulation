@@ -145,6 +145,105 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("pin (A__0)", liberty)
         self.assertIn(".\\A__1 ", verilog)
 
+    def test_vtr_timing_db_normalizes_xilinx_lut_and_ff_names(self) -> None:
+        source = {
+            "creator": "OpenSTA Xilinx primitive normalization test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "clk": {"direction": "input", "bits": [2]},
+                        "a": {"direction": "input", "bits": [3, 4, 5]},
+                        "q": {"direction": "output", "bits": [9, 10]},
+                    },
+                    "cells": {
+                        "lut": {
+                            "type": "LUT3",
+                            "parameters": {},
+                            "port_directions": {
+                                "I0": "input",
+                                "I1": "input",
+                                "I2": "input",
+                                "O": "output",
+                            },
+                            "connections": {
+                                "I0": [3],
+                                "I1": [4],
+                                "I2": [5],
+                                "O": [6],
+                            },
+                        },
+                        "ff_clear": {
+                            "type": "FDCE",
+                            "parameters": {},
+                            "port_directions": {
+                                "C": "input",
+                                "CE": "input",
+                                "CLR": "input",
+                                "D": "input",
+                                "Q": "output",
+                            },
+                            "connections": {
+                                "C": [2],
+                                "CE": ["1"],
+                                "CLR": ["0"],
+                                "D": [6],
+                                "Q": [9],
+                            },
+                        },
+                        "ff_reset": {
+                            "type": "FDRE",
+                            "parameters": {},
+                            "port_directions": {
+                                "C": "input",
+                                "CE": "input",
+                                "D": "input",
+                                "Q": "output",
+                                "R": "input",
+                            },
+                            "connections": {
+                                "C": [2],
+                                "CE": ["1"],
+                                "D": [6],
+                                "Q": [10],
+                                "R": ["0"],
+                            },
+                        },
+                    },
+                    "netnames": {
+                        "clk": {"bits": [2]},
+                        "a": {"bits": [3, 4, 5]},
+                        "n": {"bits": [6]},
+                        "q": {"bits": [9, 10]},
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            yosys_path = root / "mapped.json"
+            architecture_path = root / "architecture.json"
+            timing_path = root / "timing.json"
+            yosys_path.write_text(json.dumps(source), encoding="utf-8")
+            ir = import_yosys_json(yosys_path, top="top", clocks=["clk"])
+            run_vtr_architecture_import(
+                input_path=VTR_FIXTURE,
+                architecture_output_path=architecture_path,
+                timing_output_path=timing_path,
+                architecture_id="fixture-k6",
+                width=24,
+                height=24,
+                executable=str(vtr_architecture_importer()),
+            )
+            model, cell_types = build_vtr_opensta_timing_model(ir, timing_path)
+        self.assertEqual(cell_types["lut"], "EMUFLOW_VTR_LUT3")
+        self.assertEqual(cell_types["ff_clear"], "EMUFLOW_VTR_FDCE")
+        self.assertEqual(cell_types["ff_reset"], "EMUFLOW_VTR_FDRE")
+        self.assertIn("EMUFLOW_VTR_LUT3", model["cells"])
+        self.assertIn("EMUFLOW_VTR_FDCE", model["cells"])
+        self.assertIn("EMUFLOW_VTR_FDRE", model["cells"])
+        self.assertEqual(model["cells"]["EMUFLOW_VTR_FDCE"]["clock"], "C")
+
     def test_runner_imports_and_independently_checks_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

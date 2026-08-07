@@ -156,7 +156,7 @@ flowchart TD
     RTL["Synchronous RTL"] --> SYN["Yosys/ABC synthesis<br/>EmuIR import"]
 
     SYN --> IR["Versioned EmuIR"]
-    IR --> PART["Multi-resource partitioning<br/>optional timing-driven weights<br/>OpenROAD/TritonPart or RePart"]
+    IR --> PART["Multi-resource partitioning<br/>timing weights + BoardDB hop domains<br/>OpenROAD/TritonPart, RePart, or baseline"]
 
     IR -. optional timing analysis .-> TP{"Timing provider"}
     PUBARCH["Public VTR ArchitectureDB / TimingDB"] --> OSTA["OpenSTA"]
@@ -248,7 +248,13 @@ checkers between stages. This makes it possible to:
 The current semantic model supports a single virtual DUT clock, synchronous
 reset, deterministic static communication schedules, and lockstep execution
 with a global frame barrier. Partition cuts are restricted to safe sequential
-boundaries; combinational loops and hard macros remain atomic.
+boundaries; combinational loops and hard macros remain atomic. Consequently,
+a large combinational connected component can become one indivisible
+partition vertex. The reports expose any balance relaxation needed to place
+such a vertex; a run with relaxed balance is a legal capacity/topology result,
+not evidence of high-quality balanced partitioning. Supporting controlled
+combinational cuts requires an explicit multi-phase settling and equivalence
+contract and is a planned semantic extension, not a partitioner tuning flag.
 
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
@@ -537,6 +543,25 @@ cells/LUT/FF/BRAM/DSP balance bounds by default; pass
 For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.
+
+When route constraints define `max_route_hops`, Phase 3 loads the BoardDB
+topology instead of waiting for Phase 4 to discover an infeasible cut. The
+baseline initializer restricts candidate FPGA domains against already
+assigned neighbors. Every initial provider then passes through the
+source-built C++ `topology-constrained-fm-v1` audit/refiner; an already legal
+assignment remains unchanged. Its
+lexicographic objective first removes unreachable and over-hop source/sink
+pairs, then minimizes weighted hop distance and cut cost while preserving
+fixed/group, capacity, multi-resource balance, and minimum-used-FPGA
+constraints. A separate Python checker reconstructs all cut-net hop distances.
+To prevent accidental quadratic repair on large illegal assignments, the
+current post-refiner rejects move search above 50,000 clusters; large designs
+must be made hop-legal by the topology-aware constructive provider. This
+explicit scale gate will be removed when multilevel candidate propagation
+replaces post-partition repair.
+This is a TopoPart/DATE-2024-informed constrained-FM increment, not a claim of
+faithful TopoPart, MaPart, MFSPart, or HoPart reproduction; multilevel
+candidate propagation and paper-level ablations remain on the roadmap.
 
 ### Automatic validation archives
 
@@ -854,9 +879,11 @@ The command writes both `rtl-boarddb.json` and
 `rtl-boarddb.route_constraints.json`. The BoardDB preserves the official
 vertices, edges, external limits, and eight-resource records as provenance;
 the companion constraints file makes the contest's maximum hop count an
-operational Phase-4 constraint. The C++ router searches only source-to-sink
-paths within that bound, and the independent route checker recomputes the hop
-depth. Device capacity comes from the selected FPGA template;
+operational Phase-3 and Phase-4 constraint. Phase 3 restricts candidate FPGA
+domains, runs native constrained-FM legality refinement, and independently
+audits every cut-net sink. The C++ router then searches only source-to-sink
+paths within the same bound, and the route checker recomputes the hop depth.
+Device capacity comes from the selected FPGA template;
 `--lanes-per-edge` remains visibly qualified as a configured academic
 parameter. Use at least two lanes when an arbitrary RTL workload must carry
 both directions on an edge, because each scheduled lane group has one fixed
@@ -1331,7 +1358,11 @@ OpenSTA queries up to 200,000 endpoint paths by default and reports
 `path_limit_reached`; raise `--max-paths` when that flag is true.
 Timing-weighted TritonPart automatically includes a same-seed unweighted
 baseline candidate and selects the lowest independently recomputed weighted
-cut objective; `--tritonpart-seed-attempts` adds weighted candidates.
+cut objective; `--tritonpart-seed-attempts` adds weighted candidates. The
+upstream search effort defaults to 50 initial solutions and 10 retained
+solutions. `--tritonpart-num-initial-solutions` and
+`--tritonpart-num-best-initial-solutions` expose and record smaller validation
+profiles without silently changing the release-quality defaults.
 
 The counter fixture avoids requiring synthesis for the first run. The
 following command is retained only for the optional UltraScale+/Vivado
@@ -1444,6 +1475,10 @@ The academic Phase 5 provider is likewise rooted in editable C++17 source at
 versioned timing model, realizes the optimized ratio/lane groups as an exact
 slot schedule, and independently checks capacity, ratio legality, timing,
 collisions, precedence, round barriers, and transported values.
+Its multi-round legalizer evaluates the exact capacity boundary through
+monotone quotient intervals and scores ratio promotions from incremental
+domain and affected-path deltas, avoiding frame-slot-by-bucket and
+candidate-by-full-path rescans on large routed designs.
 For an apples-to-apples QoR comparison, it additionally reconstructs path
 delay from each concrete scheduled wait for both the baseline and academic
 providers; ratio-based slack is reported separately as a conservative bound.

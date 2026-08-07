@@ -17,6 +17,7 @@ from .tdm_ratio import (
     DEFAULT_EXACT_DOMAIN_LIMIT,
     TDM_RATIO_PROVIDER,
     TDM_TIMING_DAG_RATIO_PROVIDER,
+    _prepare_model,
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
@@ -83,6 +84,7 @@ def run_phase5(
                 "timing_dag_optimizer requires the timing-DAG Phase 5 "
                 "provider"
             )
+        prepared_ratio_model = _prepare_model(routes, platform)
         candidates = []
         for strategy, exact_domain_limit in (
             ("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT),
@@ -99,6 +101,7 @@ def run_phase5(
                     post_refinement_iterations=post_refinement_iterations,
                     exact_domain_limit=exact_domain_limit,
                     convergence=convergence,
+                    prepared_model=prepared_ratio_model,
                 )
             else:
                 candidate_plan = build_timing_dag_ratio_plan(
@@ -114,12 +117,19 @@ def run_phase5(
                     ),
                     exact_domain_limit=exact_domain_limit,
                     convergence=convergence,
+                    prepared_model=prepared_ratio_model,
                 )
             candidate_ratio_validation = validate_tdm_ratio_plan(
-                routes, platform, candidate_plan
+                routes,
+                platform,
+                candidate_plan,
+                prepared_model=prepared_ratio_model,
             )
             candidate_schedule = build_tdm_schedule(
-                routes, platform, candidate_plan
+                routes,
+                platform,
+                candidate_plan,
+                prepared_ratio_model=prepared_ratio_model,
             )
             if slot_refinement_iterations > 0:
                 candidate_schedule = refine_tdm_schedule_native(
@@ -129,15 +139,20 @@ def run_phase5(
                     candidate_schedule,
                     executable=slot_optimizer,
                     max_iterations=slot_refinement_iterations,
+                    prepared_ratio_model=prepared_ratio_model,
                 )
             candidate_validation = validate_tdm_schedule(
                 routes,
                 platform,
                 candidate_schedule,
                 candidate_plan,
+                prepared_ratio_model=prepared_ratio_model,
             )
             candidate_timing = reconstruct_tdm_schedule_timing(
-                routes, platform, candidate_schedule
+                routes,
+                platform,
+                candidate_schedule,
+                model=prepared_ratio_model,
             )
             score = (
                 candidate_timing["worst_normalized_slack"],

@@ -226,7 +226,27 @@ def export_tritonpart_inputs(
     constraints: Mapping[str, Any],
     output_dir: Path,
     net_weights: Optional[Mapping[str, float]] = None,
+    num_initial_solutions: int = 50,
+    num_best_initial_solutions: int = 10,
 ) -> Dict[str, Any]:
+    if (
+        isinstance(num_initial_solutions, bool)
+        or not isinstance(num_initial_solutions, int)
+        or num_initial_solutions <= 0
+    ):
+        raise ValidationError(
+            "TritonPart num_initial_solutions must be a positive integer"
+        )
+    if (
+        isinstance(num_best_initial_solutions, bool)
+        or not isinstance(num_best_initial_solutions, int)
+        or num_best_initial_solutions <= 0
+        or num_best_initial_solutions > num_initial_solutions
+    ):
+        raise ValidationError(
+            "TritonPart num_best_initial_solutions must be in [1, "
+            "num_initial_solutions]"
+        )
     clusters = sorted(clusters_artifact["clusters"], key=lambda item: item["id"])
     if len(clusters) < len(platform.fpgas):
         raise ValidationError(
@@ -367,6 +387,11 @@ def export_tritonpart_inputs(
         f"  -base_balance {tcl_list([f'{value:.12g}' for value in base_balance])} \\",
         f"  -scale_factor {tcl_list([1.0] * len(fpga_ids))} \\",
         f"  -seed 0 \\",
+        f"  -num_initial_solutions {num_initial_solutions} \\",
+        (
+            "  -num_best_initial_solutions "
+            f"{num_best_initial_solutions} \\"
+        ),
         f"  -vertex_dimension {len(dimensions)} \\",
         "  -hyperedge_dimension 1 \\",
         f"  -v_wt_factors {tcl_list([1.0] * len(dimensions))} \\",
@@ -391,6 +416,10 @@ def export_tritonpart_inputs(
         "effective_balance_percent": effective_balance,
         "tritonpart_ubfactor_percent_points": tritonpart_ubfactor,
         "balance_auto_relaxed": effective_balance > requested_balance + 1e-9,
+        "search_effort": {
+            "num_initial_solutions": num_initial_solutions,
+            "num_best_initial_solutions": num_best_initial_solutions,
+        },
         "files": {
             "hypergraph": hypergraph_path.name,
             "unweighted_baseline_hypergraph": (
@@ -462,10 +491,44 @@ def _repair_min_used_fpgas(
         for field, value in clusters[cluster_id]["resources"].items():
             loads[fpga_id][field] += value
 
-    incident_edges: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
-    for edge in hyperedges:
-        for cluster_id in edge["clusters"]:
-            incident_edges[cluster_id].append(edge)
+    # Maintain the partition multiplicity of every incident hyperedge.  The
+    # previous implementation rebuilt two Python sets over the complete
+    # hyperedge for every candidate move.  That is exact but becomes
+    # prohibitively expensive on contest-scale netlists (hundreds of
+    # thousands of clusters and many high-fanout nets).  Partition counts
+    # make the same cut-connectivity delta O(incident edges), independent of
+    # hyperedge cardinality.
+    edge_clusters = [list(edge["clusters"]) for edge in hyperedges]
+    edge_weights = [float(edge["weight"]) for edge in hyperedges]
+    incident_edges: Dict[str, List[int]] = defaultdict(list)
+    edge_part_counts: List[Dict[str, int]] = []
+    for edge_index, cluster_ids in enumerate(edge_clusters):
+        counts: Dict[str, int] = defaultdict(int)
+        for cluster_id in cluster_ids:
+            incident_edges[cluster_id].append(edge_index)
+            counts[assignment[cluster_id]] += 1
+        edge_part_counts.append(dict(counts))
+
+    def cut_delta(cluster_id: str, source: str, target: str) -> float:
+        delta = 0.0
+        for edge_index in incident_edges.get(cluster_id, []):
+            counts = edge_part_counts[edge_index]
+            before_parts = len(counts)
+            after_parts = before_parts
+            if counts[source] == 1:
+                after_parts -= 1
+            if counts.get(target, 0) == 0:
+                after_parts += 1
+            delta += (after_parts - before_parts) * edge_weights[edge_index]
+        return delta
+
+    def apply_edge_move(cluster_id: str, source: str, target: str) -> None:
+        for edge_index in incident_edges.get(cluster_id, []):
+            counts = edge_part_counts[edge_index]
+            counts[source] -= 1
+            if counts[source] == 0:
+                del counts[source]
+            counts[target] = counts.get(target, 0) + 1
 
     moves = []
     while sum(count > 0 for count in cluster_counts.values()) < constraints[
@@ -485,28 +548,12 @@ def _repair_min_used_fpgas(
                 for field, limit in capacity[target].items()
             ):
                 continue
-            cut_delta = 0.0
-            for edge in incident_edges.get(cluster_id, []):
-                before = {
-                    assignment[edge_cluster]
-                    for edge_cluster in edge["clusters"]
-                }
-                after = {
-                    (
-                        target
-                        if edge_cluster == cluster_id
-                        else assignment[edge_cluster]
-                    )
-                    for edge_cluster in edge["clusters"]
-                }
-                cut_delta += (
-                    len(after) - len(before)
-                ) * float(edge["weight"])
+            estimated_delta = cut_delta(cluster_id, source, target)
             candidates.append(
                 (
                     len(cluster["instances"]),
                     sum(resources.values()),
-                    cut_delta,
+                    estimated_delta,
                     cluster_id,
                     source,
                 )
@@ -518,6 +565,7 @@ def _repair_min_used_fpgas(
             )
         instance_count, _, cut_delta, cluster_id, source = min(candidates)
         resources = clusters[cluster_id]["resources"]
+        apply_edge_move(cluster_id, source, target)
         assignment[cluster_id] = target
         cluster_counts[source] -= 1
         cluster_counts[target] += 1
@@ -659,6 +707,15 @@ def _repair_multi_resource_balance(
     for edge_index, vertices in enumerate(edge_vertices):
         for vertex in vertices:
             incident_edges[vertex].append(edge_index)
+    edge_part_counts: List[Dict[int, int]] = []
+    for vertices in edge_vertices:
+        counts: Dict[int, int] = defaultdict(int)
+        for vertex in vertices:
+            counts[labels[vertex]] += 1
+        edge_part_counts.append(dict(counts))
+    vertices_by_part: List[List[int]] = [[] for _ in range(num_parts)]
+    for vertex, part in enumerate(labels):
+        vertices_by_part[part].append(vertex)
 
     def overload(part: int) -> List[int]:
         return [
@@ -676,22 +733,31 @@ def _repair_multi_resource_balance(
     def cut_delta(vertex: int, source: int, target: int) -> float:
         delta = 0.0
         for edge_index in incident_edges[vertex]:
-            vertices = edge_vertices[edge_index]
-            before = {labels[item] for item in vertices}
-            after = {
-                target if item == vertex else labels[item]
-                for item in vertices
-            }
+            counts = edge_part_counts[edge_index]
+            before_parts = len(counts)
+            after_parts = before_parts
+            if counts[source] == 1:
+                after_parts -= 1
+            if counts.get(target, 0) == 0:
+                after_parts += 1
             delta += (
-                int(len(after) > 1) - int(len(before) > 1)
+                int(after_parts > 1) - int(before_parts > 1)
             ) * edge_weights[edge_index]
         return delta
+
+    def apply_edge_move(vertex: int, source: int, target: int) -> None:
+        for edge_index in incident_edges[vertex]:
+            counts = edge_part_counts[edge_index]
+            counts[source] -= 1
+            if counts[source] == 0:
+                del counts[source]
+            counts[target] = counts.get(target, 0) + 1
 
     def cut_summary() -> Tuple[int, float]:
         cut_edges = 0
         cut_weight = 0.0
-        for vertices, weight in zip(edge_vertices, edge_weights):
-            if len({labels[vertex] for vertex in vertices}) > 1:
+        for counts, weight in zip(edge_part_counts, edge_weights):
+            if len(counts) > 1:
                 cut_edges += 1
                 cut_weight += weight
         return cut_edges, cut_weight
@@ -721,11 +787,10 @@ def _repair_multi_resource_balance(
         )
         source_overload = overload(source)
         ranked: List[Tuple[float, float, float, int]] = []
-        for vertex, (part, weights) in enumerate(
-            zip(labels, vertex_weights)
-        ):
-            if part != source:
+        for vertex in vertices_by_part[source]:
+            if labels[vertex] != source:
                 continue
+            weights = vertex_weights[vertex]
             cluster_id = cluster_order[vertex]
             if clusters[cluster_id]["fixed_fpga"] is not None:
                 continue
@@ -790,6 +855,7 @@ def _repair_multi_resource_balance(
             if not choices:
                 continue
             delta, _, target = min(choices)
+            apply_edge_move(vertex, source, target)
             labels[vertex] = target
             for dimension, weight in enumerate(weights):
                 loads[source][dimension] -= weight
@@ -887,6 +953,8 @@ def run_tritonpart(
     net_weights: Optional[Mapping[str, float]] = None,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
+    num_initial_solutions: int = 50,
+    num_best_initial_solutions: int = 10,
     repair_min_used_fpgas: bool = False,
     repair_balance: bool = False,
 ) -> Dict[str, Any]:
@@ -903,6 +971,8 @@ def run_tritonpart(
         constraints,
         output_dir,
         net_weights=net_weights,
+        num_initial_solutions=num_initial_solutions,
+        num_best_initial_solutions=num_best_initial_solutions,
     )
     tcl_path = output_dir / tritonpart_input["files"]["tcl"]
     tcl_template = tcl_path.read_text(encoding="utf-8")
@@ -1263,6 +1333,7 @@ def run_tritonpart(
             ],
             "balance_auto_relaxed": tritonpart_input["balance_auto_relaxed"],
             "seed_attempts": attempts,
+            "search_effort": tritonpart_input["search_effort"],
             "min_used_fpgas_repair": {
                 "enabled": repair_min_used_fpgas,
                 "moves": selected_repair_moves,

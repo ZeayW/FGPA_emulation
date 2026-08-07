@@ -232,7 +232,8 @@ Implement:
 - fixed/group constraints for hard IP and board shells;
 - TritonPart adapter with multi-dimensional resource weights;
 - in-tree RePart multilevel partitioning with legal LUT replication;
-- topology-aware refinement and utilization headroom.
+- BoardDB-derived candidate FPGA domains, native topology-constrained FM
+  refinement, and utilization headroom.
 
 Acceptance:
 
@@ -240,6 +241,7 @@ Acceptance:
 - all group and fixed constraints hold;
 - no forbidden combinational cut exists;
 - every FPGA satisfies its effective resource capacities;
+- every routed cut endpoint satisfies `max_route_hops` before Phase 4;
 - cut and timing metrics are reproducible for a fixed seed.
 
 OpenROAD/TritonPart is the default Phase 3 provider. EmuFlow exports each
@@ -250,6 +252,16 @@ partitioner, and imports the solution into the common assignment schema. The
 dependency-free greedy provider remains available explicitly as a fallback
 and A/B baseline.
 
+The cycle-correct runtime contract currently transports register-input and
+register-output boundaries only. Nets outside those classes are unioned into
+semantic atomic clusters, so an RTL design may contain a cluster larger than
+the requested per-partition balance target. Phase 3 records both requested
+and effective balance and never presents an automatically relaxed result as a
+strictly balanced one. Multilevel partitioning cannot recover freedom that
+semantic clustering removed; controlled combinational cuts, multi-phase
+settling, and corresponding cycle-equivalence checks are therefore a separate
+prerequisite milestone.
+
 The RePart replication provider adds a versioned replication artifact without
 changing the unique-owner primary assignment. A C++-kernel replicability mask
 prevents stateful or unsupported vertices from entering the replication move
@@ -257,9 +269,30 @@ queue. Independent checks prove mapped LUT-only, acyclic, fanin-closed replica
 clusters; charge every copy to target-FPGA capacity; recompute effective cut
 demands; and require Phase 6 to materialize and cycle-check the copies.
 
+When route constraints contain `max_route_hops`, Phase 3 computes directed
+shortest-hop distances from BoardDB. The greedy baseline restricts candidate
+FPGA domains during initial assignment. A common source-built C++17
+`topology-constrained-fm-v1` pass then audits or refines the output of every
+provider with a feasibility-first objective: unreachable pairs, hop-limit
+violations, weighted excess hops, weighted hops, then cut cost. Moves and
+pairwise swaps preserve fixed clusters, hard capacity, independently checked
+multi-resource balance, and minimum partition use; small instances also have
+an exact fallback. Python independently reconstructs cut-net source/sink hop
+legality. Illegal inputs above 50,000 clusters stop at an explicit scale gate
+instead of entering the current quadratic repair search; the topology-aware
+constructive provider is required at that scale until multilevel candidate
+propagation is implemented. This increment is informed by TopoPart and the
+DATE-2024 inter-block-constraint formulation. It is not a faithful reproduction of
+TopoPart, MaPart, MFSPart, or HoPart; topology-aware multilevel propagation
+and paper-level ablations remain planned.
+
+TritonPart search effort is explicit in both its Tcl and provider metadata.
+The default remains upstream's 50 initial/10 retained solutions; bounded
+validation runs may select smaller values through the common Phase-3,
+multi-FPGA compile, and cross-stage interfaces.
+
 Vivado/OpenSTA-derived timing weights, topology-aware repartition feedback,
-and resource-specific heterogeneous FPGA capacity ratios remain QoR
-extensions.
+and resource-specific heterogeneous FPGA capacity ratios are QoR extensions.
 
 ### Phase 4 — Board-level route/TDM co-optimization
 
@@ -430,6 +463,24 @@ normalization, Eq. 16/17 flow, capacity, and the final worst delay. The same
 TODAES-style discrete legalizer and schedule checker are used for both
 continuous providers, enabling controlled A/B comparison.
 
+For large routed designs, Phase 5 constructs the route/hop/timing model once
+per invocation and shares that immutable model across continuous optimization,
+discrete legalization, concrete scheduling, candidate comparison, and the
+in-process checker. Capacity-direction and routed-net membership indices are
+built in single passes rather than rescanning all hops or nets for every
+domain or timing path. The separately invoked validation command still
+rebuilds the model from serialized artifacts, preserving an independent
+post-run acceptance gate.
+
+Multi-round ratio legalization also avoids frame-size and candidate-count
+cross products. The exact capacity-split boundary is evaluated from the
+monotone quotient intervals of the two round occupancies with per-domain
+difference arrays. Promotion candidates use incremental domain-capacity
+deltas and pre-index each bucket's affected timing paths and delay slopes;
+unaffected-path slack remains part of the exact candidate score. These
+indices change only execution cost, while the serialized plan is still
+accepted by the independent ratio and concrete-schedule checkers.
+
 The one-command flow can also treat `frame_slots` as a feasible upper bound
 and run checked monotone bisection across the actual Phase 4/5 providers. Each
 candidate must pass routing capacity, ratio legalization, concrete schedule,
@@ -545,7 +596,8 @@ the full `(link, source, sink)` identity, so asymmetric full-duplex link bounds
 remain direction-exact through optimization and final timing.
 
 `system-route-constraints/v1` also carries an optional positive
-`max_route_hops`. When present, the native C++ router performs hop-bounded
+`max_route_hops`. When present, Phase 3 first enforces the same bound on
+partition cut endpoints. The native C++ router then performs hop-bounded
 source-to-sink search and falls back from an over-depth multicast candidate to
 a legal bounded tree. The independent route checker recomputes tree depth and
 rejects any violation. The EDA 2024 BoardDB materializer emits this companion

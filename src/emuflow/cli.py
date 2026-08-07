@@ -732,6 +732,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--partition-seed-attempts", type=int, default=1
     )
     multi_fpga_compile.add_argument(
+        "--partition-num-initial-solutions", type=int, default=50
+    )
+    multi_fpga_compile.add_argument(
+        "--partition-num-best-initial-solutions", type=int, default=10
+    )
+    multi_fpga_compile.add_argument(
         "--partition-repair-min-used-fpgas",
         action="store_true",
         help=(
@@ -1327,6 +1333,14 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--platform", type=Path, required=True)
     phase3.add_argument("--out", type=Path, required=True)
     phase3.add_argument("--constraints", type=Path)
+    phase3.add_argument(
+        "--route-constraints",
+        type=Path,
+        help=(
+            "optional system-route constraints; max_route_hops activates "
+            "topology-constrained Phase 3 refinement"
+        ),
+    )
     phase3.add_argument("--seed", type=int, default=0)
     phase3.add_argument("--min-used-fpgas", type=int)
     phase3.add_argument("--balance-tolerance", type=float)
@@ -1368,6 +1382,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     phase3.add_argument(
+        "--tritonpart-num-initial-solutions", type=int, default=50
+    )
+    phase3.add_argument(
+        "--tritonpart-num-best-initial-solutions", type=int, default=10
+    )
+    phase3.add_argument(
         "--tritonpart-repair-min-used-fpgas",
         action="store_true",
         help=(
@@ -1402,6 +1422,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--repart-timeout-seconds",
         type=int,
         default=3600,
+    )
+    phase3.add_argument(
+        "--hop-refiner",
+        help=(
+            "explicit comparison override; defaults to the in-tree C++ "
+            "topology-constrained FM refiner"
+        ),
     )
 
     sta_parser = subparsers.add_parser(
@@ -1746,6 +1773,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_stage_optimize.add_argument(
         "--partition-seed-attempts", type=int, default=1
+    )
+    cross_stage_optimize.add_argument(
+        "--partition-num-initial-solutions", type=int, default=50
+    )
+    cross_stage_optimize.add_argument(
+        "--partition-num-best-initial-solutions", type=int, default=10
     )
     cross_stage_optimize.add_argument(
         "--partition-repair-min-used-fpgas", action="store_true"
@@ -2691,6 +2724,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             repart=args.repart,
             partition_timeout_seconds=args.partition_timeout_seconds,
             partition_seed_attempts=args.partition_seed_attempts,
+            partition_num_initial_solutions=(
+                args.partition_num_initial_solutions
+            ),
+            partition_num_best_initial_solutions=(
+                args.partition_num_best_initial_solutions
+            ),
             partition_repair_min_used_fpgas=(
                 args.partition_repair_min_used_fpgas
             ),
@@ -2830,6 +2869,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             net_weights_path=args.net_weights,
             tritonpart_timeout_seconds=args.tritonpart_timeout_seconds,
             tritonpart_seed_attempts=args.tritonpart_seed_attempts,
+            tritonpart_num_initial_solutions=(
+                args.tritonpart_num_initial_solutions
+            ),
+            tritonpart_num_best_initial_solutions=(
+                args.tritonpart_num_best_initial_solutions
+            ),
             tritonpart_repair_min_used_fpgas=(
                 args.tritonpart_repair_min_used_fpgas
             ),
@@ -2837,6 +2882,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             repart=args.repart,
             repart_solution=args.repart_solution,
             repart_timeout_seconds=args.repart_timeout_seconds,
+            route_constraints_path=args.route_constraints,
+            hop_refiner=args.hop_refiner,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
@@ -3003,6 +3050,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.partition_timeout_seconds
                 ),
                 partition_seed_attempts=args.partition_seed_attempts,
+                partition_num_initial_solutions=(
+                    args.partition_num_initial_solutions
+                ),
+                partition_num_best_initial_solutions=(
+                    args.partition_num_best_initial_solutions
+                ),
                 partition_repair_min_used_fpgas=(
                     args.partition_repair_min_used_fpgas
                 ),

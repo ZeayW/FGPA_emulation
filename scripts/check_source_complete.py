@@ -124,6 +124,8 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "schemas/physical-region-sidecar-v1.schema.json",
     "scripts/rapidwright/export_physical_regions.py",
     "src/native/tlr_router.cpp",
+    "src/native/hop_partition_refiner.cpp",
+    "src/emuflow/partition_hops.py",
     "src/native/tdm_ratio_optimizer.cpp",
     "src/native/tdm_partition_feedback.cpp",
     "src/native/placement_aware_pin_planner.cpp",

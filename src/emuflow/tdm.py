@@ -155,6 +155,8 @@ def build_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
     ratio_plan: Optional[Mapping[str, Any]] = None,
+    *,
+    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
         raise ValidationError(
@@ -176,7 +178,12 @@ def build_tdm_schedule(
             validate_tdm_ratio_plan,
         )
 
-        validate_tdm_ratio_plan(routes, platform, ratio_plan)
+        validate_tdm_ratio_plan(
+            routes,
+            platform,
+            ratio_plan,
+            prepared_model=prepared_ratio_model,
+        )
         planned_hops = ratio_plan_by_hop(ratio_plan)
         planned_round_one_ready = ratio_plan[
             "round_barrier_legalization"
@@ -527,6 +534,8 @@ def validate_tdm_schedule(
     platform: Platform,
     schedule: Mapping[str, Any],
     ratio_plan: Optional[Mapping[str, Any]] = None,
+    *,
+    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError(
@@ -567,7 +576,12 @@ def validate_tdm_schedule(
             validate_tdm_ratio_plan,
         )
 
-        validate_tdm_ratio_plan(routes, platform, ratio_plan)
+        validate_tdm_ratio_plan(
+            routes,
+            platform,
+            ratio_plan,
+            prepared_model=prepared_ratio_model,
+        )
         expected_ratio_assignment = {
             "schema": ratio_plan["schema"],
             "provider": ratio_plan["provider"],
@@ -906,7 +920,10 @@ def validate_tdm_schedule(
                 "native TDM slot optimization metrics are inconsistent"
             )
         timing = reconstruct_tdm_schedule_timing(
-            routes, platform, schedule
+            routes,
+            platform,
+            schedule,
+            model=prepared_ratio_model,
         )
         for key in (
             "worst_normalized_slack",
@@ -946,6 +963,8 @@ def reconstruct_tdm_schedule_timing(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
+    *,
+    model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Reconstruct scheduled transport delay on every imported STA path.
 
@@ -955,7 +974,8 @@ def reconstruct_tdm_schedule_timing(
     """
     from .tdm_ratio import _normalized_slack, _prepare_model
 
-    model = _prepare_model(routes, platform)
+    if model is None:
+        model = _prepare_model(routes, platform)
     entries = {}
     for entry in schedule["entries"]:
         key = _hop_key(

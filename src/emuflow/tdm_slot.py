@@ -200,6 +200,8 @@ def _apply_native_schedule(
     ratio_plan: Mapping[str, Any],
     schedule: Mapping[str, Any],
     native: Mapping[str, Any],
+    *,
+    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     from .tdm import (
         COMBINATIONAL_SETTLE_SLOTS,
@@ -304,7 +306,7 @@ def _apply_native_schedule(
         entry["ratio_wait_slots"] for entry in refined["entries"]
     )
     baseline_timing = reconstruct_tdm_schedule_timing(
-        routes, platform, schedule
+        routes, platform, schedule, model=prepared_ratio_model
     )
     refined["provider"] = TDM_ACADEMIC_SCHEDULE_PROVIDER
     refined["slot_optimization"] = {
@@ -319,8 +321,16 @@ def _apply_native_schedule(
             ],
         },
     }
-    validate_tdm_schedule(routes, platform, refined, ratio_plan)
-    timing = reconstruct_tdm_schedule_timing(routes, platform, refined)
+    validate_tdm_schedule(
+        routes,
+        platform,
+        refined,
+        ratio_plan,
+        prepared_ratio_model=prepared_ratio_model,
+    )
+    timing = reconstruct_tdm_schedule_timing(
+        routes, platform, refined, model=prepared_ratio_model
+    )
     metrics = native["metrics"]
     if (
         not math.isclose(
@@ -349,6 +359,7 @@ def refine_tdm_schedule_native(
     *,
     executable: Optional[str] = None,
     max_iterations: int = 200,
+    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run the in-tree C++ path-guided slot local-search engine."""
     if (
@@ -361,7 +372,13 @@ def refine_tdm_schedule_native(
         )
     from .tdm import validate_tdm_schedule
 
-    validate_tdm_schedule(routes, platform, schedule, ratio_plan)
+    validate_tdm_schedule(
+        routes,
+        platform,
+        schedule,
+        ratio_plan,
+        prepared_ratio_model=prepared_ratio_model,
+    )
     resolved = resolve_native_executable(
         "emuflow_tdm_slot_optimizer", executable
     )
@@ -394,5 +411,10 @@ def refine_tdm_schedule_native(
         )
     native["configuration"] = {"max_iterations": max_iterations}
     return _apply_native_schedule(
-        routes, platform, ratio_plan, schedule, native
+        routes,
+        platform,
+        ratio_plan,
+        schedule,
+        native,
+        prepared_ratio_model=prepared_ratio_model,
     )

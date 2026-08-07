@@ -197,6 +197,16 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             self.assertFalse(
                 report["timing"]["partition_weights_applied"]
             )
+            self.assertFalse(
+                report["timing"]["partition_provider_weights_applied"]
+            )
+            self.assertFalse(
+                report["timing"]["hop_refinement_weights_applied"]
+            )
+            self.assertEqual(
+                report["timing"]["partition_weight_consumers"],
+                [],
+            )
             self.assertGreater(
                 report["timing"]["cut_path_projection"][
                     "projected_paths"

@@ -56,6 +56,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_HOP_PARTITION_REFINER
+  "Build the in-tree topology-constrained FM partition refiner"
+  ON
+)
+option(
   EMUFLOW_BUILD_PIN_PLANNER
   "Build the in-tree placement-aware TDM grouping and pin planner"
   ON
@@ -415,6 +420,22 @@ if(EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK)
   target_compile_options(emuflow_tdm_partition_feedback PRIVATE -O3)
   set_target_properties(
     emuflow_tdm_partition_feedback
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
+  add_executable(
+    emuflow_hop_partition_refiner
+    "${CMAKE_SOURCE_DIR}/src/native/hop_partition_refiner.cpp"
+  )
+  target_compile_features(
+    emuflow_hop_partition_refiner PRIVATE cxx_std_17
+  )
+  target_compile_options(emuflow_hop_partition_refiner PRIVATE -O3)
+  set_target_properties(
+    emuflow_hop_partition_refiner
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -916,6 +937,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_tdm_partition_feedback_cli
       COMMAND "$<TARGET_FILE:emuflow_tdm_partition_feedback>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
+    add_test(
+      NAME emuflow_hop_partition_refiner_cli
+      COMMAND "$<TARGET_FILE:emuflow_hop_partition_refiner>" --help
     )
   endif()
 

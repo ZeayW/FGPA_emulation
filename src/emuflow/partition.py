@@ -1,7 +1,7 @@
 import fnmatch
 import hashlib
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -419,6 +419,34 @@ def _cluster_adjacency(
     return adjacency
 
 
+def _cluster_transport_arcs(
+    ir: EmuIR,
+    cluster_by_instance: Mapping[str, str],
+) -> Dict[str, Set[Tuple[str, bool]]]:
+    """Return neighbor arcs and whether the keyed cluster drives the arc."""
+    arcs: Dict[str, Set[Tuple[str, bool]]] = defaultdict(set)
+    for net in ir.value["nets"]:
+        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+            continue
+        driver_clusters = {
+            cluster_by_instance[endpoint["instance"]]
+            for endpoint in net["drivers"]
+            if endpoint["instance"] is not None
+        }
+        sink_clusters = {
+            cluster_by_instance[endpoint["instance"]]
+            for endpoint in net["sinks"]
+            if endpoint["instance"] is not None
+        }
+        for driver_cluster in driver_clusters:
+            for sink_cluster in sink_clusters:
+                if driver_cluster == sink_cluster:
+                    continue
+                arcs[driver_cluster].add((sink_cluster, True))
+                arcs[sink_cluster].add((driver_cluster, False))
+    return arcs
+
+
 def _resource_add(
     left: Mapping[str, int], right: Mapping[str, int]
 ) -> Dict[str, int]:
@@ -436,12 +464,47 @@ def _seeded_tie(seed: int, cluster_id: str) -> str:
     return hashlib.sha256(f"{seed}:{cluster_id}".encode("utf-8")).hexdigest()
 
 
+def _partition_hop_distances(
+    platform: Platform,
+    route_constraints: Mapping[str, Any],
+) -> Dict[str, Dict[str, Optional[int]]]:
+    # Import locally because routing owns the canonical directed BoardDB graph
+    # and imports the partition artifact schema at module initialization.
+    from .routing import (
+        SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
+        build_directed_graph,
+        normalize_route_constraints,
+    )
+
+    raw_constraints = dict(route_constraints)
+    raw_constraints.setdefault("schema", SYSTEM_ROUTE_CONSTRAINTS_SCHEMA)
+    normalized = normalize_route_constraints(raw_constraints, platform)
+    adjacency, _, _ = build_directed_graph(platform, normalized)
+    result: Dict[str, Dict[str, Optional[int]]] = {}
+    for source in sorted(adjacency):
+        distance = {source: 0}
+        queue = deque([source])
+        while queue:
+            node = queue.popleft()
+            for arc in adjacency[node]:
+                neighbor = arc["to"]
+                if neighbor in distance:
+                    continue
+                distance[neighbor] = distance[node] + 1
+                queue.append(neighbor)
+        result[source] = {
+            sink: distance.get(sink) for sink in sorted(adjacency)
+        }
+    return result
+
+
 def assign_clusters(
     ir: EmuIR,
     platform: Platform,
     clusters_artifact: Mapping[str, Any],
     constraints: Mapping[str, Any],
     seed: int = 0,
+    route_constraints: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValidationError("partition seed: expected a non-negative integer")
@@ -460,6 +523,17 @@ def assign_clusters(
         for instance_id in cluster["instances"]
     }
     adjacency = _cluster_adjacency(ir, cluster_by_instance)
+    transport_arcs = _cluster_transport_arcs(ir, cluster_by_instance)
+    hop_limit = (
+        route_constraints.get("max_route_hops")
+        if route_constraints is not None
+        else None
+    )
+    hop_distances = (
+        _partition_hop_distances(platform, route_constraints)
+        if hop_limit is not None
+        else None
+    )
     fpga_ids = [fpga.id for fpga in platform.fpgas]
     effective_capacity = {
         fpga.id: fpga.effective_capacity for fpga in platform.fpgas
@@ -494,7 +568,9 @@ def assign_clusters(
             field_tolerance = dimension_tolerances.get(field, tolerance)
             soft_caps[fpga_id][field] = min(
                 capacities[fpga_id],
-                math.ceil(proportional * (1.0 + field_tolerance)),
+                math.floor(
+                    proportional * (1.0 + field_tolerance) + 1e-9
+                ),
             )
 
     def dominant_size(cluster: Mapping[str, Any]) -> float:
@@ -512,6 +588,9 @@ def assign_clusters(
     order = sorted(
         clusters,
         key=lambda cluster_id: (
+            -sum(adjacency.get(cluster_id, {}).values())
+            if hop_limit is not None
+            else 0,
             -dominant_size(clusters[cluster_id]),
             -len(clusters[cluster_id]["instances"]),
             _seeded_tie(seed, cluster_id),
@@ -519,6 +598,22 @@ def assign_clusters(
         ),
     )
     assignment: Dict[str, str] = {}
+
+    def hop_legal(cluster_id: str, fpga_id: str) -> bool:
+        if hop_limit is None or hop_distances is None:
+            return True
+        for neighbor, cluster_is_driver in transport_arcs.get(
+            cluster_id, set()
+        ):
+            if neighbor not in assignment:
+                continue
+            if cluster_is_driver:
+                distance = hop_distances[fpga_id][assignment[neighbor]]
+            else:
+                distance = hop_distances[assignment[neighbor]][fpga_id]
+            if distance is None or distance > hop_limit:
+                return False
+        return True
 
     def place(cluster_id: str, fpga_id: str) -> None:
         cluster_resources = ResourceVector.from_mapping(
@@ -548,6 +643,7 @@ def assign_clusters(
                 cluster_id
                 for cluster_id in order
                 if cluster_id not in assignment
+                and hop_legal(cluster_id, fpga_id)
                 and _fits(
                     _resource_add(
                         loads[fpga_id],
@@ -560,6 +656,24 @@ def assign_clusters(
             ),
             None,
         )
+        if candidate is None and hop_limit is not None:
+            candidate = next(
+                (
+                    cluster_id
+                    for cluster_id in order
+                    if cluster_id not in assignment
+                    and _fits(
+                        _resource_add(
+                            loads[fpga_id],
+                            ResourceVector.from_mapping(
+                                clusters[cluster_id]["resources"]
+                            ).to_dict(),
+                        ),
+                        effective_capacity[fpga_id],
+                    )
+                ),
+                None,
+            )
         if candidate is None:
             raise ValidationError(
                 f"cannot populate required FPGA {fpga_id!r} within capacity"
@@ -573,7 +687,7 @@ def assign_clusters(
         resources = ResourceVector.from_mapping(
             clusters[cluster_id]["resources"]
         ).to_dict()
-        actual_candidates = [
+        capacity_candidates = [
             fpga_id
             for fpga_id in fpga_ids
             if _fits(
@@ -581,11 +695,17 @@ def assign_clusters(
                 effective_capacity[fpga_id],
             )
         ]
-        if not actual_candidates:
+        if not capacity_candidates:
             raise ValidationError(
                 f"cluster {cluster_id!r} cannot fit any FPGA; resources "
                 f"{clusters[cluster_id]['resources']}"
             )
+        topology_candidates = [
+            fpga_id
+            for fpga_id in capacity_candidates
+            if hop_legal(cluster_id, fpga_id)
+        ]
+        actual_candidates = topology_candidates or capacity_candidates
         balanced_candidates = [
             fpga_id
             for fpga_id in actual_candidates
@@ -938,6 +1058,10 @@ def validate_cluster_assignment_balance(
 
     violations = []
     maximum_ratio = 0.0
+    allowed_loads = {
+        fpga_id: {dimension: 0.0 for dimension in dimensions}
+        for fpga_id in fpga_ids
+    }
     for fpga_id in fpga_ids:
         for dimension in dimensions:
             total = totals[dimension]
@@ -948,6 +1072,7 @@ def validate_cluster_assignment_balance(
             allowed_share = target_share * (
                 1.0 + effective_percent_by_dimension[dimension] / 100.0
             )
+            allowed_loads[fpga_id][dimension] = total * allowed_share
             ratio = actual_share / allowed_share
             maximum_ratio = max(maximum_ratio, ratio)
             if ratio > 1.0 + 1e-9:
@@ -984,6 +1109,8 @@ def validate_cluster_assignment_balance(
             for dimension in dimensions
         ),
         "balance_dimensions": dimensions,
+        "balance_loads": loads,
+        "balance_allowed_loads": allowed_loads,
         "max_balance_limit_ratio": maximum_ratio,
         "balance_violations": 0,
     }

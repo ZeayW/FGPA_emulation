@@ -1,10 +1,13 @@
 import copy
 import json
+import math
 import shutil
 import subprocess
 import tempfile
 import unittest
+from collections import Counter, defaultdict
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
@@ -209,6 +212,29 @@ class Phase5Test(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "Eq. 16/17"):
             validate_timing_dag_seed(model, _build_dag(model), corrupted)
 
+    def test_timing_dag_capacity_check_scans_hops_once(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        result = build_timing_dag_ratio_seed(
+            routes,
+            platform,
+            executable=str(tdm_timing_dag_optimizer()),
+        )
+        model = _prepare_model(routes, platform)
+        dag = _build_dag(model)
+
+        class CountedHops(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        counted = CountedHops(model["hops"])
+        model["hops"] = counted
+        validation = validate_timing_dag_seed(model, dag, result)
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(counted.iterations, 1)
+
     def test_timing_dag_residual_scaling_honors_nonunit_min_ratio(self) -> None:
         model = {
             "domains": [{"index": 0, "lanes": 1}],
@@ -322,17 +348,29 @@ class Phase5Test(unittest.TestCase):
             platform_path.write_text(
                 json.dumps(platform_value), encoding="utf-8"
             )
-            report = run_phase5(
-                routes_path,
-                platform_path,
-                root / "phase5",
-                simulation_frames=2,
-                provider="aspdac26-timing-dag-lagrangian-v1",
-                ratio_optimizer=str(tdm_ratio_optimizer()),
-                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
-                max_ratio=32,
-                post_refinement_iterations=20,
-            )
+            with mock.patch(
+                "emuflow.phase5._prepare_model", wraps=_prepare_model
+            ) as prepare_model, mock.patch(
+                "emuflow.tdm_ratio._prepare_model",
+                side_effect=AssertionError("ratio model rebuilt"),
+            ), mock.patch(
+                "emuflow.tdm_timing_dag._prepare_model",
+                side_effect=AssertionError("timing-DAG model rebuilt"),
+            ):
+                report = run_phase5(
+                    routes_path,
+                    platform_path,
+                    root / "phase5",
+                    simulation_frames=2,
+                    provider="aspdac26-timing-dag-lagrangian-v1",
+                    ratio_optimizer=str(tdm_ratio_optimizer()),
+                    timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                    slot_optimizer=str(tdm_slot_optimizer()),
+                    max_ratio=32,
+                    post_refinement_iterations=20,
+                    slot_refinement_iterations=1,
+                )
+            self.assertEqual(prepare_model.call_count, 1)
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
                 report["optimization_provider"],
@@ -570,6 +608,75 @@ class Phase5Test(unittest.TestCase):
                 plan["round_barrier_legalization"][
                     "source_ready_slot"
                 ]
+            )
+            domain_by_index = {
+                domain["index"]: domain for domain in plan["domains"]
+            }
+            latency_by_link = {
+                link.id: link.latency_cycles for link in platform.links
+            }
+            bucket_counts = defaultdict(Counter)
+            for hop in plan["hops"]:
+                bucket_counts[
+                    (
+                        hop["domain"],
+                        hop["direction"],
+                        hop["discrete_ratio"],
+                    )
+                ][hop["transport_round"]] += 1
+            frame_slots = routes["constraints"]["frame_slots"]
+            minimum_latency = max(latency_by_link.values())
+            brute_candidates = []
+            for source_ready in range(
+                minimum_latency + 1,
+                frame_slots - 1 - minimum_latency,
+            ):
+                required = {}
+                for domain, domain_record in domain_by_index.items():
+                    latency = latency_by_link[domain_record["link"]]
+                    total_slots = frame_slots - 1 - 2 * latency
+                    required[domain] = sum(
+                        max(
+                            math.ceil(
+                                sum(counts.values())
+                                / min(ratio, total_slots)
+                            ),
+                            math.ceil(
+                                counts.get(0, 0)
+                                / (source_ready - latency)
+                            ),
+                            math.ceil(
+                                counts.get(1, 0)
+                                / (frame_slots - 1 - latency - source_ready)
+                            ),
+                        )
+                        for (bucket_domain, _direction, ratio), counts
+                        in bucket_counts.items()
+                        if bucket_domain == domain
+                    )
+                excesses = [
+                    max(
+                        0,
+                        required[domain]
+                        - domain_by_index[domain]["lanes"],
+                    )
+                    for domain in required
+                ]
+                brute_candidates.append(
+                    (
+                        (
+                            max(excesses, default=0),
+                            sum(excesses),
+                            max(required.values(), default=0),
+                            sum(required.values()),
+                            abs(source_ready - frame_slots // 2),
+                        ),
+                        source_ready,
+                    )
+                )
+            self.assertEqual(
+                plan["round_barrier_legalization"]["source_ready_slot"],
+                min(brute_candidates)[1],
             )
             by_net = {hop["net"]: hop for hop in plan["hops"]}
             self.assertEqual(by_net["n16"]["discrete_ratio"], 1)

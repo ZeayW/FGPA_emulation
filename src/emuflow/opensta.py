@@ -513,8 +513,15 @@ def _vtr_timing_cell_type(
     if kind == "$lut":
         lut_width = _integer_parameter(instance, "WIDTH", width("A"))
         return f"EMUFLOW_VTR_LUT{lut_width}"
+    if kind.startswith("LUT") and kind[3:].isdigit():
+        return f"EMUFLOW_VTR_LUT{int(kind[3:])}"
     if kind.startswith("$_DFF_"):
         return "EMUFLOW_VTR_DFF"
+    if kind in {"FDCE", "FDPE", "FDRE", "FDSE"}:
+        # Keep control-pin variants as distinct Liberty cells.  They share
+        # the public VTR DFF setup/clock-to-Q characterization, but merging
+        # them would create an inconsistent pin contract (CLR/PRE/R/S).
+        return f"EMUFLOW_VTR_{kind}"
     if kind == "VTR_MULTIPLY":
         return (
             "EMUFLOW_VTR_MULTIPLY_"
@@ -659,11 +666,17 @@ def build_vtr_opensta_timing_model(
                 f"VTR timing cell {timing_type!r} has inconsistent pin widths"
             )
         kind = representative["type"]
-        if kind == "$lut":
-            width = _integer_parameter(
-                representative,
-                "WIDTH",
-                len([pin for pin in inputs if pin.startswith("A")]),
+        if kind == "$lut" or (
+            kind.startswith("LUT") and kind[3:].isdigit()
+        ):
+            width = (
+                int(kind[3:])
+                if kind != "$lut"
+                else _integer_parameter(
+                    representative,
+                    "WIDTH",
+                    len([pin for pin in inputs if pin.startswith("A")]),
+                )
             )
             compatible = [
                 cell for candidate_width, cell in lut_cells.items()
@@ -685,7 +698,12 @@ def build_vtr_opensta_timing_model(
                 "outputs": outputs,
                 "delay_ns": (cell_delay + interconnect_seconds) * 1.0e9,
             }
-        elif kind.startswith("$_DFF_"):
+        elif kind.startswith("$_DFF_") or kind in {
+            "FDCE",
+            "FDPE",
+            "FDRE",
+            "FDSE",
+        }:
             setup = maximum(setup_by_cell["DFF"], "DFF setup")
             clock_to_q = maximum(
                 clock_to_q_by_cell["DFF"], "DFF clock-to-Q"

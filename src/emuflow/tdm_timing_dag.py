@@ -114,29 +114,31 @@ def _write_native_input(
     max_ratio: float,
     convergence: float,
 ) -> None:
-    lines = [
-        "EMUFLOW_TDM_TIMING_DAG_INPUT_V1",
-        (
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write("EMUFLOW_TDM_TIMING_DAG_INPUT_V1\n")
+        stream.write(
             f"PARAM {max_iterations} {min_ratio:.17g} {max_ratio:.17g} "
-            f"{convergence:.17g} {dag['source']} {dag['sink']}"
-        ),
-    ]
-    for domain in model["domains"]:
-        lines.append(f"DOMAIN {domain['index']} {domain['lanes']:.17g}")
-    for hop in model["hops"]:
-        lines.append(f"HOP {hop['index']} {hop['domain']}")
-    for edge in dag["edges"]:
-        lines.append(
+            f"{convergence:.17g} {dag['source']} {dag['sink']}\n"
+        )
+        stream.writelines(
+            f"DOMAIN {domain['index']} {domain['lanes']:.17g}\n"
+            for domain in model["domains"]
+        )
+        stream.writelines(
+            f"HOP {hop['index']} {hop['domain']}\n"
+            for hop in model["hops"]
+        )
+        stream.writelines(
             f"EDGE {edge['index']} {edge['from']} {edge['to']} "
             f"{edge['hop']} {edge['base_delay_ns']:.17g} "
-            f"{edge['beta_ns']:.17g}"
+            f"{edge['beta_ns']:.17g}\n"
+            for edge in dag["edges"]
         )
-    for timing_path in dag["paths"]:
-        lines.append(
+        stream.writelines(
             f"PATH {timing_path['index']} "
-            f"{timing_path['terminal_edge']}"
+            f"{timing_path['terminal_edge']}\n"
+            for timing_path in dag["paths"]
         )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _parse_native_output(
@@ -410,16 +412,13 @@ def validate_timing_dag_seed(
         )
     ):
         raise ValidationError("timing-DAG arrival/flow metrics mismatch")
-    usages = []
+    usages = [0.0] * len(model["domains"])
+    for hop in model["hops"]:
+        usages[hop["domain"]] += 1.0 / ratios[hop["index"]]
     for domain in model["domains"]:
-        usage = sum(
-            1.0 / ratios[hop["index"]]
-            for hop in model["hops"]
-            if hop["domain"] == domain["index"]
-        )
+        usage = usages[domain["index"]]
         if usage > domain["lanes"] + 1.0e-8:
             raise ValidationError("timing-DAG ratio capacity is exceeded")
-        usages.append(usage)
     return {
         "status": "pass",
         "nodes": dag["nodes"],
@@ -558,8 +557,13 @@ def build_timing_dag_ratio_plan(
     post_refinement_iterations: int = 200,
     exact_domain_limit: int = 2048,
     convergence: float = 1.0e-9,
+    prepared_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    model = _prepare_model(routes, platform)
+    model = (
+        prepared_model
+        if prepared_model is not None
+        else _prepare_model(routes, platform)
+    )
     if max_ratio is None:
         link_by_id = {link.id: link for link in platform.links}
         usable_slots = min(
@@ -603,4 +607,5 @@ def build_timing_dag_ratio_plan(
         continuous_seed=seed["continuous_ratios"],
         provider=TDM_TIMING_DAG_RATIO_PROVIDER,
         provider_metadata=evidence,
+        prepared_model=model,
     )

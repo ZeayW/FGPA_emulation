@@ -9,9 +9,11 @@ from .partition import (
     load_partition_constraints,
     validate_partition_artifacts,
 )
+from .partition_hops import refine_partition_hops
 from .platform import Platform
 from .repart import run_repart
 from .tritonpart import load_partition_net_weights, run_tritonpart
+from .routing import load_route_constraints
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -31,11 +33,15 @@ def run_phase3(
     net_weights_path: Optional[Path] = None,
     tritonpart_timeout_seconds: int = 3600,
     tritonpart_seed_attempts: int = 1,
+    tritonpart_num_initial_solutions: int = 50,
+    tritonpart_num_best_initial_solutions: int = 10,
     tritonpart_repair_min_used_fpgas: bool = False,
     tritonpart_repair_balance: bool = False,
     repart: Optional[str] = None,
     repart_solution: Optional[Path] = None,
     repart_timeout_seconds: int = 3600,
+    route_constraints_path: Optional[Path] = None,
+    hop_refiner: Optional[str] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -47,6 +53,9 @@ def run_phase3(
         balance_tolerance=balance_tolerance,
     )
     clusters = build_clusters(ir, constraints)
+    route_constraints = load_route_constraints(
+        route_constraints_path, platform
+    )
     if provider == "greedy":
         assignment = assign_clusters(
             ir,
@@ -54,6 +63,7 @@ def run_phase3(
             clusters,
             constraints,
             seed=seed,
+            route_constraints=route_constraints,
         )
     elif provider == "tritonpart":
         assignment = run_tritonpart(
@@ -68,6 +78,10 @@ def run_phase3(
             net_weights=load_partition_net_weights(net_weights_path),
             timeout_seconds=tritonpart_timeout_seconds,
             seed_attempts=tritonpart_seed_attempts,
+            num_initial_solutions=tritonpart_num_initial_solutions,
+            num_best_initial_solutions=(
+                tritonpart_num_best_initial_solutions
+            ),
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
             repair_balance=tritonpart_repair_balance,
         )
@@ -90,6 +104,17 @@ def run_phase3(
             "expected 'repart-replication', 'repart', 'tritonpart', "
             "or 'greedy'"
         )
+    assignment, hop_refinement = refine_partition_hops(
+        ir,
+        platform,
+        clusters,
+        constraints,
+        assignment,
+        output_dir / "hop-refinement",
+        route_constraints_path=route_constraints_path,
+        net_weights_path=net_weights_path,
+        executable=hop_refiner,
+    )
     validation = validate_partition_artifacts(
         ir,
         platform,
@@ -105,6 +130,7 @@ def run_phase3(
         "provider": assignment["provider"],
         "seed": assignment["seed"],
         "validation": validation,
+        "hop_refinement": hop_refinement,
         "partitions": [
             {
                 key: value
@@ -126,6 +152,10 @@ def run_phase3(
         report["artifacts"]["repart"] = "repart/repart_input.json"
         if provider == "repart-replication":
             report["artifacts"]["replication"] = "replication.json"
+    if hop_refinement["enabled"]:
+        report["artifacts"]["hop_refinement"] = (
+            "hop-refinement/hop_refinement.json"
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "clusters.json", clusters)
@@ -133,6 +163,11 @@ def run_phase3(
     write_json(output_dir / "assignment.json", assignment)
     if "replication" in assignment:
         write_json(output_dir / "replication.json", assignment["replication"])
+    if hop_refinement["enabled"]:
+        write_json(
+            output_dir / "hop-refinement" / "hop_refinement.json",
+            hop_refinement,
+        )
     write_json(output_dir / "phase3_report.json", report)
     return report
 
