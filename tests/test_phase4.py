@@ -145,6 +145,29 @@ class Phase4Test(unittest.TestCase):
             validate_system_routes(assignment, platform, bounded)["status"],
             "pass",
         )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "n0_path",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 10.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["n0"],
+                        }
+                    ],
+                },
+                bounded["demands"],
+            )
+        )
+        oracle = exact_route_tree_selection(
+            assignment, platform, bounded["constraints"], timing
+        )
+        self.assertEqual(oracle["trees"]["n0"], [["ad", "a", "d"]])
 
         forged = copy.deepcopy(unconstrained)
         forged["constraints"] = normalize_route_constraints(
@@ -153,6 +176,31 @@ class Phase4Test(unittest.TestCase):
         forged["metrics"]["max_route_hops_observed"] = 3
         with self.assertRaisesRegex(ValidationError, "above maximum"):
             validate_system_routes(assignment, platform, forged)
+
+        line_platform = Platform.from_dict(
+            _platform_value(
+                "hop_bounded_infeasible",
+                ["a", "b", "c", "d"],
+                [
+                    _link("ab", "a", "b", lanes=4),
+                    _link("bc", "b", "c", lanes=4),
+                    _link("cd", "c", "d", lanes=4),
+                ],
+            )
+        )
+        with self.assertRaisesRegex(EmuFlowError, "infeasible"):
+            route_system_native(
+                _assignment(line_platform, [("n0", "a", ["d"])]),
+                line_platform,
+                normalize_route_constraints(
+                    {
+                        "schema": "emuflow.system-route-constraints/v1",
+                        "max_route_hops": 2,
+                    },
+                    line_platform,
+                ),
+                executable=str(tlr_router()),
+            )
 
     def test_route_constraint_rejects_invalid_hop_limit(self) -> None:
         platform = Platform.from_dict(

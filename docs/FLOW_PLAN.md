@@ -537,6 +537,13 @@ records for Phase 7C. The route constraints and both C++ providers preserve
 the full `(link, source, sink)` identity, so asymmetric full-duplex link bounds
 remain direction-exact through optimization and final timing.
 
+`system-route-constraints/v1` also carries an optional positive
+`max_route_hops`. When present, the native C++ router performs hop-bounded
+source-to-sink search and falls back from an over-depth multicast candidate to
+a legal bounded tree. The independent route checker recomputes tree depth and
+rejects any violation. The EDA 2024 BoardDB materializer emits this companion
+constraint directly from the public case's maximum-hop field.
+
 When the observation-only `shadow_values` top port is removed, Phase 6 keeps
 the shadow-register net's internal sinks. This preserves the registered
 RX-to-next-hop-TX connection on routing-only FPGAs instead of allowing physical

@@ -843,12 +843,26 @@ emuflow contest eda2024-materialize-boarddb \
   --output build/benchmarks/repart/case05/rtl-boarddb.json
 ```
 
-The output preserves the official vertices, edges, maximum-hop constraint,
-external limits, and eight-resource records as provenance. Device capacity
-comes from the selected FPGA template; `--lanes-per-edge` remains visibly
-qualified as a configured academic parameter. Use at least two lanes when an
-arbitrary RTL workload must carry both directions on an edge, because each
-scheduled lane group has one fixed direction.
+The command writes both `rtl-boarddb.json` and
+`rtl-boarddb.route_constraints.json`. The BoardDB preserves the official
+vertices, edges, external limits, and eight-resource records as provenance;
+the companion constraints file makes the contest's maximum hop count an
+operational Phase-4 constraint. The C++ router searches only source-to-sink
+paths within that bound, and the independent route checker recomputes the hop
+depth. Device capacity comes from the selected FPGA template;
+`--lanes-per-edge` remains visibly qualified as a configured academic
+parameter. Use at least two lanes when an arbitrary RTL workload must carry
+both directions on an edge, because each scheduled lane group has one fixed
+direction. Pass the generated constraint into a full RTL run with:
+
+```bash
+emuflow multi-fpga compile design.v --top top --clock clk \
+  --platform build/benchmarks/repart/case05/rtl-boarddb.json \
+  --route-constraints \
+    build/benchmarks/repart/case05/rtl-boarddb.route_constraints.json \
+  --physical --physical-backend open \
+  --out build/eda2024-case05-rtl
+```
 
 Add `--physical` to select the default open physical provider and feed routed
 timing back into Phase 7C:

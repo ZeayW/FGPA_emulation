@@ -44,6 +44,23 @@ def _tree_distances(
     return distances
 
 
+def _tree_hops(
+    source: str,
+    edges: Sequence[ArcKey],
+) -> Dict[str, int]:
+    graph: Dict[str, List[str]] = defaultdict(list)
+    for _link, start, end in edges:
+        graph[start].append(end)
+    hops = {source: 0}
+    queue = deque([source])
+    while queue:
+        node = queue.popleft()
+        for sink in graph[node]:
+            hops[sink] = hops[node] + 1
+            queue.append(sink)
+    return hops
+
+
 def _is_arborescence(
     source: str,
     sinks: Sequence[str],
@@ -170,6 +187,17 @@ def exact_route_tree_selection(
                 sorted(allowed),
                 len(platform.fpgas),
             )
+            maximum_hops = constraints.get("max_route_hops")
+            if maximum_hops is not None:
+                candidates = [
+                    tree
+                    for tree in candidates
+                    if max(
+                        _tree_hops(demand["source"], tree)[sink]
+                        for sink in demand["sinks"]
+                    )
+                    <= maximum_hops
+                ]
             if not candidates:
                 candidates_by_demand = []
                 break
