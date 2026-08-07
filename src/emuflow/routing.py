@@ -52,6 +52,17 @@ def normalize_route_constraints(
             "route constraints.max_iterations: expected a positive integer"
         )
 
+    raw_max_route_hops = raw.get("max_route_hops")
+    if raw_max_route_hops is not None and (
+        isinstance(raw_max_route_hops, bool)
+        or not isinstance(raw_max_route_hops, int)
+        or raw_max_route_hops <= 0
+    ):
+        raise ValidationError(
+            "route constraints.max_route_hops: expected null or a positive "
+            "integer"
+        )
+
     raw_unavailable = raw.get("unavailable_links", [])
     if not isinstance(raw_unavailable, list) or not all(
         isinstance(link_id, str) for link_id in raw_unavailable
@@ -223,6 +234,7 @@ def normalize_route_constraints(
         "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
         "frame_slots": raw_frame_slots,
         "max_iterations": raw_iterations,
+        "max_route_hops": raw_max_route_hops,
         "unavailable_links": sorted(set(raw_unavailable)),
         "link_delay_ns": dict(sorted(link_delays.items())),
         "directed_link_delay_ns": {
@@ -482,7 +494,7 @@ def _link_utilization_records(
 def _validate_route_tree(
     route: Mapping[str, Any],
     arcs: Mapping[ArcKey, Mapping[str, Any]],
-) -> Tuple[List[ArcKey], int]:
+) -> Tuple[List[ArcKey], int, int]:
     raw_edges = route.get("tree_edges")
     if not isinstance(raw_edges, list):
         raise ValidationError(
@@ -515,6 +527,7 @@ def _validate_route_tree(
     reachable = {source}
     queue = deque([source])
     latency = {source: 0}
+    hops = {source: 0}
     while queue:
         node = queue.popleft()
         for sink in sorted(graph.get(node, [])):
@@ -525,6 +538,7 @@ def _validate_route_tree(
                 )
             reachable.add(sink)
             latency[sink] = latency[node] + latency_by_edge[(node, sink)]
+            hops[sink] = hops[node] + 1
             queue.append(sink)
 
     edge_nodes = {node for key in edge_keys for node in (key[1], key[2])}
@@ -543,7 +557,8 @@ def _validate_route_tree(
                 f"route {route.get('id')!r}: node {node!r} has indegree {count}"
             )
     max_latency = max((latency[sink] for sink in route["sinks"]), default=0)
-    return edge_keys, max_latency
+    max_hops = max((hops[sink] for sink in route["sinks"]), default=0)
+    return edge_keys, max_latency, max_hops
 
 
 def validate_system_routes(
@@ -579,6 +594,7 @@ def validate_system_routes(
     usage = {key: 0 for key in capacities}
     routed_sinks = 0
     tree_edge_count = 0
+    maximum_observed_hops = 0
     for demand_id in sorted(expected_by_id):
         route = route_by_id[demand_id]
         demand = expected_by_id[demand_id]
@@ -594,7 +610,13 @@ def validate_system_routes(
             raise ValidationError(
                 f"route {demand_id!r}.transport_round: does not match demand"
             )
-        edge_keys, max_latency = _validate_route_tree(route, arcs)
+        edge_keys, max_latency, max_hops = _validate_route_tree(route, arcs)
+        hop_limit = constraints.get("max_route_hops")
+        if hop_limit is not None and max_hops > hop_limit:
+            raise ValidationError(
+                f"route {demand_id!r}: source-to-sink path uses {max_hops} "
+                f"hops, above maximum {hop_limit}"
+            )
         if route.get("max_latency_cycles") != max_latency:
             raise ValidationError(
                 f"route {demand_id!r}.max_latency_cycles: expected "
@@ -604,6 +626,7 @@ def validate_system_routes(
             usage[arcs[key]["capacity_key"]] += demand["width_bits"]
         routed_sinks += len(demand["sinks"])
         tree_edge_count += len(edge_keys)
+        maximum_observed_hops = max(maximum_observed_hops, max_hops)
 
     expected_utilization = _link_utilization_records(capacities, usage)
     if routes_artifact.get("link_utilization") != expected_utilization:
@@ -628,6 +651,8 @@ def validate_system_routes(
         ),
         "total_link_bit_hops": sum(usage.values()),
     }
+    if constraints.get("max_route_hops") is not None:
+        expected_metrics["max_route_hops_observed"] = maximum_observed_hops
     metrics = routes_artifact.get("metrics")
     if not isinstance(metrics, dict):
         raise ValidationError("routes.metrics: expected an object")

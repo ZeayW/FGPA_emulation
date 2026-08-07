@@ -96,6 +96,80 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_cpp_router_enforces_source_to_sink_hop_limit(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "hop_bounded_routes",
+                ["a", "b", "c", "d"],
+                [
+                    _link("ab", "a", "b", lanes=4),
+                    _link("bc", "b", "c", lanes=4),
+                    _link("cd", "c", "d", lanes=4),
+                    _link("ad", "a", "d", lanes=4),
+                ],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["d"])])
+        base = {
+            "schema": "emuflow.system-route-constraints/v1",
+            "frame_slots": 8,
+            "link_delay_ns": {
+                "ab": 1.0,
+                "bc": 1.0,
+                "cd": 1.0,
+                "ad": 10.0,
+            },
+        }
+        unconstrained = route_system_native(
+            assignment,
+            platform,
+            normalize_route_constraints(base, platform),
+            executable=str(tlr_router()),
+        )
+        self.assertEqual(len(unconstrained["routes"][0]["tree_edges"]), 3)
+
+        bounded = route_system_native(
+            assignment,
+            platform,
+            normalize_route_constraints(
+                {**base, "max_route_hops": 2}, platform
+            ),
+            executable=str(tlr_router()),
+        )
+        self.assertEqual(
+            [edge["link"] for edge in bounded["routes"][0]["tree_edges"]],
+            ["ad"],
+        )
+        self.assertEqual(bounded["metrics"]["max_route_hops_observed"], 1)
+        self.assertEqual(
+            validate_system_routes(assignment, platform, bounded)["status"],
+            "pass",
+        )
+
+        forged = copy.deepcopy(unconstrained)
+        forged["constraints"] = normalize_route_constraints(
+            {**base, "max_route_hops": 2}, platform
+        )
+        forged["metrics"]["max_route_hops_observed"] = 3
+        with self.assertRaisesRegex(ValidationError, "above maximum"):
+            validate_system_routes(assignment, platform, forged)
+
+    def test_route_constraint_rejects_invalid_hop_limit(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value("hop_limit", ["a", "b"], [_link("ab", "a", "b")])
+        )
+        for invalid in (0, -1, True, 1.5, "2"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                ValidationError, "max_route_hops"
+            ):
+                normalize_route_constraints(
+                    {
+                        "schema": "emuflow.system-route-constraints/v1",
+                        "max_route_hops": invalid,
+                    },
+                    platform,
+                )
+
     def test_cpp_router_preserves_direction_exact_link_delays(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

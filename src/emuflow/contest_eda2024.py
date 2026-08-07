@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 from .contest_boarddb import materialize_homogeneous_boarddb
 from .errors import ValidationError
 from .io import write_json
+from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 
 
 EDA2024_EVALUATION_SCHEMA = "emuflow.contest-eda2024-evaluation/v1"
@@ -156,6 +157,7 @@ def materialize_eda2024_rtl_boarddb(
     fabric_clock_mhz: float = 50.0,
     latency_cycles: int = 2,
     link_mode: str = "abstract",
+    route_constraints_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Populate a 2024 contest topology with an RTL-capable device template.
 
@@ -238,6 +240,16 @@ def materialize_eda2024_rtl_boarddb(
             }
         },
     )
+    constraints_output = route_constraints_path or output_path.with_name(
+        f"{output_path.stem}.route_constraints.json"
+    )
+    write_json(
+        constraints_output,
+        {
+            "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
+            "max_route_hops": max_hop,
+        },
+    )
     return {
         "schema": EDA2024_BOARDDB_MATERIALIZATION_SCHEMA,
         "status": "pass",
@@ -253,6 +265,7 @@ def materialize_eda2024_rtl_boarddb(
         "maximum_legal_hop_distance": max_hop,
         "capacity_semantics": "not-specified-by-contest",
         "output": str(output_path),
+        "route_constraints": str(constraints_output),
     }
 
 

@@ -22,6 +22,7 @@ from .routing import (
     normalize_route_constraints,
     route_link_delay_ns,
     validate_system_routes,
+    _validate_route_tree,
 )
 
 
@@ -565,7 +566,7 @@ def _write_native_input(
 ) -> None:
     normalization = model["normalization"]
     with path.open("w", encoding="utf-8") as stream:
-        stream.write("EMUFLOW_TLR_INPUT_V6\n")
+        stream.write("EMUFLOW_TLR_INPUT_V7\n")
         stream.write(
             "PARAM "
             f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
@@ -582,7 +583,8 @@ def _write_native_input(
             f"{normalization['max_clock_period_ns']:.17g} "
             f"{int(constraints.get('tree_edge_sum_tdm', False))} "
             f"{constraints.get('tdm_min_ratio', 1)} "
-            f"{int(constraints.get('hard_sll_capacity', False))}\n"
+            f"{int(constraints.get('hard_sll_capacity', False))} "
+            f"{constraints.get('max_route_hops') or 0}\n"
         )
         for arc in model["arcs"]:
             stream.write(
@@ -761,6 +763,7 @@ def route_system_native(
     _, arcs, capacities = build_directed_graph(platform, constraints)
     routes = []
     usage = {key: 0 for key in capacities}
+    maximum_observed_hops = 0
     for demand_index, demand in enumerate(model["demands"]):
         native_route = native["routes"].pop(demand_index)
         edge_keys = [
@@ -779,6 +782,8 @@ def route_system_native(
             ),
             "predicted_max_delay_ns": native_route["max_delay_ns"],
         }
+        _, _, route_hops = _validate_route_tree(route, arcs)
+        maximum_observed_hops = max(maximum_observed_hops, route_hops)
         routes.append(route)
 
     utilization = []
@@ -850,6 +855,11 @@ def route_system_native(
             "estimated_max_tdm_ratio": native["metrics"][
                 "estimated_max_tdm_ratio"
             ],
+            **(
+                {"max_route_hops_observed": maximum_observed_hops}
+                if constraints.get("max_route_hops") is not None
+                else {}
+            ),
         },
         **(
             {

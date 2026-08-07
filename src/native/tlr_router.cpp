@@ -93,6 +93,9 @@ struct Input {
   double max_clock_period_ns = 1.0;
   bool tree_edge_sum_tdm = false;
   bool hard_sll_capacity = false;
+  // Zero means unconstrained.  Positive values bound every source-to-sink
+  // route-tree path by its number of board links.
+  int max_route_hops = 0;
   std::vector<Arc> arcs;
   std::vector<Demand> demands;
   std::vector<TimingPath> paths;
@@ -120,10 +123,11 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
+  const bool input_v7 = magic == "EMUFLOW_TLR_INPUT_V7";
   const bool input_v6 = magic == "EMUFLOW_TLR_INPUT_V6";
   const bool input_v5 = magic == "EMUFLOW_TLR_INPUT_V5";
   const bool input_v4 = magic == "EMUFLOW_TLR_INPUT_V4";
-  if (!input_v6 && !input_v5 && !input_v4 &&
+  if (!input_v7 && !input_v6 && !input_v5 && !input_v4 &&
       magic != "EMUFLOW_TLR_INPUT_V3") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
@@ -145,7 +149,7 @@ Input read_input(const std::string& path) {
           model.lambda_tdm >> model.ratio_quantum >> model.frame_slots >>
           model.slack_positive_scale >> model.slack_negative_scale >>
           model.max_clock_period_ns;
-      if (input_v4 || input_v5 || input_v6) {
+      if (input_v4 || input_v5 || input_v6 || input_v7) {
         int tree_edge_sum_tdm = 0;
         stream >> tree_edge_sum_tdm;
         if (tree_edge_sum_tdm != 0 && tree_edge_sum_tdm != 1) {
@@ -154,10 +158,10 @@ Input read_input(const std::string& path) {
         }
         model.tree_edge_sum_tdm = tree_edge_sum_tdm != 0;
       }
-      if (input_v5 || input_v6) {
+      if (input_v5 || input_v6 || input_v7) {
         stream >> model.min_ratio;
       }
-      if (input_v6) {
+      if (input_v6 || input_v7) {
         int hard_sll_capacity = 0;
         stream >> hard_sll_capacity;
         if (hard_sll_capacity != 0 && hard_sll_capacity != 1) {
@@ -165,6 +169,13 @@ Input read_input(const std::string& path) {
               "hard SLL capacity flag must be zero or one");
         }
         model.hard_sll_capacity = hard_sll_capacity != 0;
+      }
+      if (input_v7) {
+        stream >> model.max_route_hops;
+        if (model.max_route_hops < 0) {
+          throw std::runtime_error(
+              "maximum route hops must be zero or positive");
+        }
       }
     } else if (kind == "ARC") {
       int index = -1;
@@ -637,6 +648,9 @@ class Router {
 
   Route shortest_path_tree(int demand_index,
                            const std::set<int>& discouraged) const {
+    if (model_.max_route_hops > 0) {
+      return hop_bounded_shortest_path_tree(demand_index, discouraged);
+    }
     const Demand& demand = model_.demands[demand_index];
     using QueueItem = std::pair<double, int>;
     std::priority_queue<QueueItem, std::vector<QueueItem>,
@@ -724,6 +738,191 @@ class Router {
     route.arcs.assign(tree_arcs.begin(), tree_arcs.end());
     route.max_delay_ns = max_delay;
     return route;
+  }
+
+  double routing_arc_cost(int demand_index, int arc_index,
+                          const std::set<int>& discouraged) const {
+    const Demand& demand = model_.demands[demand_index];
+    const Arc& arc = model_.arcs[arc_index];
+    const double projected =
+        static_cast<double>(usage_[arc.capacity_domain] + demand.width) /
+        arc.capacity;
+    const double timing_weight =
+        1.0 + model_.lambda_timing * demand_criticality_[demand_index];
+    const double load_pressure = model_.hard_sll_capacity
+        ? std::max(0.0, (projected - 0.1) / 0.9)
+        : projected;
+    double edge_cost = timing_weight * arc.delay_ns +
+        model_.lambda_load * load_pressure +
+        model_.lambda_history * history_[arc.capacity_domain];
+    if (!arc.is_sll) {
+      const int projected_ratio =
+          estimated_tdm_ratio(arc.capacity_domain, demand.width);
+      edge_cost += model_.lambda_tdm * timing_weight *
+          arc.beta_ns * (projected_ratio - 1);
+    }
+    if (discouraged.count(arc_index)) {
+      edge_cost += model_.lambda_timing * std::max(1.0, arc.delay_ns) *
+          (1.0 + demand_criticality_[demand_index]);
+    }
+    return edge_cost;
+  }
+
+  Route hop_bounded_shortest_path_tree(
+      int demand_index, const std::set<int>& discouraged) const {
+    const Demand& demand = model_.demands[demand_index];
+    const int stride = model_.max_route_hops + 1;
+    const int state_count = model_.node_count * stride;
+    using QueueItem = std::pair<double, int>;
+    std::priority_queue<QueueItem, std::vector<QueueItem>,
+                        std::greater<QueueItem>> queue;
+    std::vector<double> distance(state_count, kInf);
+    std::vector<int> predecessor_state(state_count, -1);
+    std::vector<int> predecessor_arc(state_count, -1);
+    const int source_state = demand.source * stride;
+    distance[source_state] = 0.0;
+    queue.emplace(0.0, source_state);
+
+    while (!queue.empty()) {
+      const auto [current, state] = queue.top();
+      queue.pop();
+      if (current != distance[state]) {
+        continue;
+      }
+      const int node = state / stride;
+      const int hops = state % stride;
+      if (hops == model_.max_route_hops) {
+        continue;
+      }
+      for (int arc_index : adjacency_[node]) {
+        const Arc& arc = model_.arcs[arc_index];
+        if (!direction_allowed(arc_index)) {
+          continue;
+        }
+        if (model_.hard_sll_capacity && arc.is_sll &&
+            usage_[arc.capacity_domain] + demand.width > arc.capacity) {
+          continue;
+        }
+        const int next_state = arc.to * stride + hops + 1;
+        const double candidate = current +
+            routing_arc_cost(demand_index, arc_index, discouraged);
+        if (candidate + kEps < distance[next_state] ||
+            (std::abs(candidate - distance[next_state]) <= kEps &&
+             arc_index < predecessor_arc[next_state])) {
+          distance[next_state] = candidate;
+          predecessor_state[next_state] = state;
+          predecessor_arc[next_state] = arc_index;
+          queue.emplace(candidate, next_state);
+        }
+      }
+    }
+
+    // Union one legal path per sink, then extract a deterministic
+    // source-rooted minimum-hop arborescence.  This removes duplicate parents
+    // that can arise when the same physical vertex has different layered
+    // states while preserving the hop bound for every sink.
+    std::set<int> union_arcs;
+    for (int sink : demand.sinks) {
+      int best_state = -1;
+      for (int hops = 0; hops <= model_.max_route_hops; ++hops) {
+        const int state = sink * stride + hops;
+        if (best_state < 0 || distance[state] < distance[best_state]) {
+          best_state = state;
+        }
+      }
+      if (best_state < 0 || !std::isfinite(distance[best_state])) {
+        throw std::runtime_error("demand has no path within maximum hops");
+      }
+      for (int state = best_state; state != source_state;) {
+        const int arc_index = predecessor_arc[state];
+        if (arc_index < 0) {
+          throw std::runtime_error("broken hop-bounded predecessor");
+        }
+        union_arcs.insert(arc_index);
+        state = predecessor_state[state];
+      }
+    }
+
+    std::vector<std::vector<int>> union_adjacency(model_.node_count);
+    for (int arc_index : union_arcs) {
+      union_adjacency[model_.arcs[arc_index].from].push_back(arc_index);
+    }
+    for (auto& outgoing : union_adjacency) {
+      std::sort(outgoing.begin(), outgoing.end());
+    }
+    std::vector<int> tree_predecessor(model_.node_count, -1);
+    std::vector<int> hop_depth(model_.node_count, -1);
+    hop_depth[demand.source] = 0;
+    std::queue<int> breadth_first;
+    breadth_first.push(demand.source);
+    while (!breadth_first.empty()) {
+      const int node = breadth_first.front();
+      breadth_first.pop();
+      for (int arc_index : union_adjacency[node]) {
+        const int sink = model_.arcs[arc_index].to;
+        if (hop_depth[sink] >= 0) {
+          continue;
+        }
+        hop_depth[sink] = hop_depth[node] + 1;
+        tree_predecessor[sink] = arc_index;
+        breadth_first.push(sink);
+      }
+    }
+
+    std::set<int> tree_arcs;
+    double max_delay = 0.0;
+    for (int sink : demand.sinks) {
+      if (hop_depth[sink] < 0 ||
+          hop_depth[sink] > model_.max_route_hops) {
+        throw std::runtime_error("hop-bounded tree does not span sink");
+      }
+      double delay = 0.0;
+      for (int node = sink; node != demand.source;) {
+        const int arc_index = tree_predecessor[node];
+        if (arc_index < 0) {
+          throw std::runtime_error("broken hop-bounded tree");
+        }
+        tree_arcs.insert(arc_index);
+        delay += model_.arcs[arc_index].delay_ns;
+        node = model_.arcs[arc_index].from;
+      }
+      max_delay = std::max(max_delay, delay);
+    }
+    Route route;
+    route.arcs.assign(tree_arcs.begin(), tree_arcs.end());
+    route.max_delay_ns = max_delay;
+    return route;
+  }
+
+  int maximum_route_hops(const Route& route, const Demand& demand) const {
+    std::vector<std::vector<int>> tree(model_.node_count);
+    for (int arc_index : route.arcs) {
+      tree[model_.arcs[arc_index].from].push_back(arc_index);
+    }
+    std::vector<int> depth(model_.node_count, -1);
+    depth[demand.source] = 0;
+    std::queue<int> queue;
+    queue.push(demand.source);
+    while (!queue.empty()) {
+      const int node = queue.front();
+      queue.pop();
+      for (int arc_index : tree[node]) {
+        const int sink = model_.arcs[arc_index].to;
+        if (depth[sink] >= 0) {
+          continue;
+        }
+        depth[sink] = depth[node] + 1;
+        queue.push(sink);
+      }
+    }
+    int result = 0;
+    for (int sink : demand.sinks) {
+      if (depth[sink] < 0) {
+        throw std::runtime_error("route tree does not span sink");
+      }
+      result = std::max(result, depth[sink]);
+    }
+    return result;
   }
 
   Route delay_demand_balanced_tree(
@@ -882,6 +1081,10 @@ class Router {
             "delay-demand-balanced tree does not span all sinks");
       }
       route.max_delay_ns = std::max(route.max_delay_ns, tree_delay[sink]);
+    }
+    if (model_.max_route_hops > 0 &&
+        maximum_route_hops(route, demand) > model_.max_route_hops) {
+      return hop_bounded_shortest_path_tree(demand_index, discouraged);
     }
     return route;
   }

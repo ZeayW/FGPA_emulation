@@ -128,6 +128,8 @@ class Eda2024ContestCheckerTest(unittest.TestCase):
             self.assertEqual(report["links"], 2)
             self.assertEqual(report["data_lanes"], 8)
             self.assertEqual(report["maximum_legal_hop_distance"], 2)
+            constraints = read_json(Path(report["route_constraints"]))
+            self.assertEqual(constraints["max_route_hops"], 2)
 
             boarddb = read_json(output)
             self.assertEqual(
