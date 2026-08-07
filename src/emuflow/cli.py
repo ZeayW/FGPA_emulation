@@ -115,7 +115,7 @@ from .serial_phy_provider import validate_serial_phy_provider_file
 from .serial_phy_elaboration import run_serial_phy_elaboration
 from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER
-from .tdm_ratio import TDM_RATIO_PROVIDER
+from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     NATIVE_ROUTER_PROVIDER,
     ROUTE_TDM_PROVIDER,
@@ -726,8 +726,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_compile.add_argument("--route-max-iterations", type=int)
+    multi_fpga_compile.add_argument(
+        "--tdm-provider",
+        choices=(TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER),
+    )
     multi_fpga_compile.add_argument("--ratio-optimizer")
+    multi_fpga_compile.add_argument("--timing-dag-optimizer")
     multi_fpga_compile.add_argument("--slot-optimizer")
+    multi_fpga_compile.add_argument(
+        "--ratio-max-iterations", type=int, default=500
+    )
+    multi_fpga_compile.add_argument("--max-ratio", type=int)
+    multi_fpga_compile.add_argument(
+        "--ratio-quantum", type=int, default=8
+    )
+    multi_fpga_compile.add_argument(
+        "--post-refinement-iterations", type=int, default=200
+    )
     multi_fpga_compile.add_argument(
         "--slot-refinement-iterations", type=int, default=200
     )
@@ -1466,7 +1481,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase5.add_argument("--simulation-frames", type=int, default=16)
     phase5.add_argument(
         "--provider",
-        choices=(TDM_RATIO_PROVIDER, TDM_BASELINE_PROVIDER),
+        choices=(
+            TDM_RATIO_PROVIDER,
+            TDM_TIMING_DAG_RATIO_PROVIDER,
+            TDM_BASELINE_PROVIDER,
+        ),
         default=None,
         help=(
             "defaults to the academic provider when routes contain timing, "
@@ -1478,6 +1497,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "explicit comparison override; defaults to the in-tree "
             "emuflow_tdm_ratio_optimizer build"
+        ),
+    )
+    phase5.add_argument(
+        "--timing-dag-optimizer",
+        help=(
+            "explicit comparison override; defaults to the in-tree "
+            "emuflow_tdm_timing_dag_optimizer build"
         ),
     )
     phase5.add_argument("--ratio-max-iterations", type=int, default=500)
@@ -1644,7 +1670,12 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--route-max-iterations", type=int
     )
+    cross_stage_optimize.add_argument(
+        "--tdm-provider",
+        choices=(TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER),
+    )
     cross_stage_optimize.add_argument("--ratio-optimizer")
+    cross_stage_optimize.add_argument("--timing-dag-optimizer")
     cross_stage_optimize.add_argument("--slot-optimizer")
     cross_stage_optimize.add_argument("--feedback-optimizer")
     cross_stage_optimize.add_argument(
@@ -2563,8 +2594,16 @@ def _dispatch(args: argparse.Namespace) -> int:
             frame_slots=args.frame_slots,
             optimize_frame_slots=args.optimize_frame_slots,
             route_max_iterations=args.route_max_iterations,
+            tdm_provider=args.tdm_provider,
             ratio_optimizer=args.ratio_optimizer,
+            timing_dag_optimizer=args.timing_dag_optimizer,
             slot_optimizer=args.slot_optimizer,
+            ratio_max_iterations=args.ratio_max_iterations,
+            max_ratio=args.max_ratio,
+            ratio_quantum=args.ratio_quantum,
+            post_refinement_iterations=(
+                args.post_refinement_iterations
+            ),
             slot_refinement_iterations=args.slot_refinement_iterations,
             cross_stage_iterations=args.cross_stage_iterations,
             cross_stage_feedback_optimizer=(
@@ -2745,6 +2784,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             simulation_frames=args.simulation_frames,
             provider=args.provider,
             ratio_optimizer=args.ratio_optimizer,
+            timing_dag_optimizer=args.timing_dag_optimizer,
             slot_optimizer=args.slot_optimizer,
             ratio_max_iterations=args.ratio_max_iterations,
             max_ratio=args.max_ratio,
@@ -2827,7 +2867,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 frame_slots=args.frame_slots,
                 optimize_frame_slots=args.optimize_frame_slots,
                 route_max_iterations=args.route_max_iterations,
+                tdm_provider=args.tdm_provider,
                 ratio_optimizer=args.ratio_optimizer,
+                timing_dag_optimizer=args.timing_dag_optimizer,
                 slot_optimizer=args.slot_optimizer,
                 feedback_optimizer=args.feedback_optimizer,
                 simulation_frames=args.simulation_frames,

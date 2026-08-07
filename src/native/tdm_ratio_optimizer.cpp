@@ -56,6 +56,7 @@ struct Input {
   std::vector<Domain> domains;
   std::vector<Hop> hops;
   std::vector<TimingPath> paths;
+  std::vector<double> seed_ratios;
 };
 
 std::vector<int> parse_list(const std::string& text) {
@@ -80,8 +81,11 @@ Input read_input(const std::string& path) {
   }
   std::string line;
   std::getline(stream, line);
-  const bool input_v3 = line == "EMUFLOW_TDM_RATIO_INPUT_V3";
-  if (!input_v3 && line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
+  const bool input_v4 = line == "EMUFLOW_TDM_RATIO_INPUT_V4";
+  const bool input_v5 = line == "EMUFLOW_TDM_RATIO_INPUT_V5";
+  const bool input_v3 = input_v5 || line == "EMUFLOW_TDM_RATIO_INPUT_V3";
+  if (!input_v4 && !input_v5 && !input_v3 &&
+      line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
     throw std::runtime_error("invalid input header");
   }
   Input input;
@@ -140,6 +144,14 @@ Input read_input(const std::string& path) {
         throw std::runtime_error("PATH indices must be contiguous");
       }
       input.paths.push_back(std::move(timing_path));
+    } else if (kind == "SEED" && (input_v4 || input_v5)) {
+      int index = -1;
+      double ratio = 0.0;
+      record >> index >> ratio;
+      if (index != static_cast<int>(input.seed_ratios.size())) {
+        throw std::runtime_error("SEED indices must be contiguous");
+      }
+      input.seed_ratios.push_back(ratio);
     } else {
       throw std::runtime_error("unknown input record: " + kind);
     }
@@ -193,6 +205,16 @@ Input read_input(const std::string& path) {
       }
     }
   }
+  if ((input_v4 || input_v5) &&
+      input.seed_ratios.size() != input.hops.size()) {
+    throw std::runtime_error("seeded input requires one SEED per hop");
+  }
+  for (double ratio : input.seed_ratios) {
+    if (!std::isfinite(ratio) || ratio < input.min_ratio ||
+        ratio > input.max_ratio) {
+      throw std::runtime_error("invalid continuous seed ratio");
+    }
+  }
   return input;
 }
 
@@ -216,33 +238,42 @@ class Optimizer {
       }
     }
     allowed_ratios_ = build_allowed_ratios();
-    initialize_path_multipliers();
+    if (input_.seed_ratios.empty()) {
+      initialize_path_multipliers();
+    } else {
+      continuous_ = input_.seed_ratios;
+    }
   }
 
   void run() {
-    progress("lagrangian:start");
-    double best_objective = -std::numeric_limits<double>::infinity();
-    std::vector<double> best_ratios = continuous_;
-    int stale = 0;
-    for (int iteration = 0; iteration < input_.max_iterations; ++iteration) {
-      aggregate_edge_multipliers();
-      solve_kkt_ratios();
-      const double objective = worst_normalized_slack(continuous_);
-      if (objective > best_objective + input_.convergence) {
-        best_objective = objective;
-        best_ratios = continuous_;
-        stale = 0;
-      } else {
-        ++stale;
+    if (input_.seed_ratios.empty()) {
+      progress("lagrangian:start");
+      double best_objective = -std::numeric_limits<double>::infinity();
+      std::vector<double> best_ratios = continuous_;
+      int stale = 0;
+      for (int iteration = 0; iteration < input_.max_iterations;
+           ++iteration) {
+        aggregate_edge_multipliers();
+        solve_kkt_ratios();
+        const double objective = worst_normalized_slack(continuous_);
+        if (objective > best_objective + input_.convergence) {
+          best_objective = objective;
+          best_ratios = continuous_;
+          stale = 0;
+        } else {
+          ++stale;
+        }
+        completed_iterations_ = iteration + 1;
+        if (stale >= 100) {
+          break;
+        }
+        update_path_multipliers(iteration);
       }
-      completed_iterations_ = iteration + 1;
-      if (stale >= 100) {
-        break;
-      }
-      update_path_multipliers(iteration);
+      continuous_ = best_ratios;
+      progress("lagrangian:done");
+    } else {
+      progress("external-continuous-seed");
     }
-    progress("lagrangian:done");
-    continuous_ = best_ratios;
     legalize();
     progress("legalization:done");
     select_uniform_minimax_seed();

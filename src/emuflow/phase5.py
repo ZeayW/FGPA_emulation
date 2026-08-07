@@ -16,10 +16,12 @@ from .tdm import (
 from .tdm_ratio import (
     DEFAULT_EXACT_DOMAIN_LIMIT,
     TDM_RATIO_PROVIDER,
+    TDM_TIMING_DAG_RATIO_PROVIDER,
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
 from .tdm_slot import refine_tdm_schedule_native
+from .tdm_timing_dag import build_timing_dag_ratio_plan
 
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
@@ -32,6 +34,7 @@ def run_phase5(
     simulation_frames: int = 16,
     provider: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
+    timing_dag_optimizer: Optional[str] = None,
     slot_optimizer: Optional[str] = None,
     ratio_max_iterations: int = 500,
     max_ratio: Optional[int] = None,
@@ -63,27 +66,55 @@ def run_phase5(
     timing_validation = None
     candidate_selection = None
     if provider == TDM_BASELINE_PROVIDER:
-        if ratio_optimizer is not None or slot_optimizer is not None:
+        if (
+            ratio_optimizer is not None
+            or timing_dag_optimizer is not None
+            or slot_optimizer is not None
+        ):
             raise ValueError(
                 "native TDM optimizers require the academic Phase 5 provider"
             )
-    elif provider == TDM_RATIO_PROVIDER:
+    elif provider in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}:
+        if (
+            provider == TDM_RATIO_PROVIDER
+            and timing_dag_optimizer is not None
+        ):
+            raise ValueError(
+                "timing_dag_optimizer requires the timing-DAG Phase 5 "
+                "provider"
+            )
         candidates = []
         for strategy, exact_domain_limit in (
             ("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT),
             ("scalable-minimum-wire", 0),
         ):
-            candidate_plan = build_tdm_ratio_plan(
-                routes,
-                platform,
-                executable=ratio_optimizer,
-                max_iterations=ratio_max_iterations,
-                max_ratio=max_ratio,
-                ratio_quantum=ratio_quantum,
-                post_refinement_iterations=post_refinement_iterations,
-                exact_domain_limit=exact_domain_limit,
-                convergence=convergence,
-            )
+            if provider == TDM_RATIO_PROVIDER:
+                candidate_plan = build_tdm_ratio_plan(
+                    routes,
+                    platform,
+                    executable=ratio_optimizer,
+                    max_iterations=ratio_max_iterations,
+                    max_ratio=max_ratio,
+                    ratio_quantum=ratio_quantum,
+                    post_refinement_iterations=post_refinement_iterations,
+                    exact_domain_limit=exact_domain_limit,
+                    convergence=convergence,
+                )
+            else:
+                candidate_plan = build_timing_dag_ratio_plan(
+                    routes,
+                    platform,
+                    dag_executable=timing_dag_optimizer,
+                    legalization_executable=ratio_optimizer,
+                    max_iterations=ratio_max_iterations,
+                    max_ratio=max_ratio,
+                    ratio_quantum=ratio_quantum,
+                    post_refinement_iterations=(
+                        post_refinement_iterations
+                    ),
+                    exact_domain_limit=exact_domain_limit,
+                    convergence=convergence,
+                )
             candidate_ratio_validation = validate_tdm_ratio_plan(
                 routes, platform, candidate_plan
             )

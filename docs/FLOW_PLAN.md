@@ -386,6 +386,8 @@ and an explicitly infeasible frame immediately below the selected minimum.
 
 Implemented model:
 
+- selectable continuous ratio providers: the established path-Lagrangian/KKT
+  solver and an equation-level ASP-DAC 2026 timing-DAG solver;
 - time-expanded links with fixed legal ratio/lane groups;
 - C++ timing-path-guided concrete-slot local search;
 - exhaustive multi-round small-instance oracle for optimality comparison;
@@ -409,6 +411,17 @@ precedence, link latency, ratio windows, lane collision, global round barriers,
 and the reserved runtime-barrier slot. It is deliberately limited to small
 instances and is a correctness/QoR reference, not the scalable production
 solver.
+
+The timing-DAG provider builds an exact prefix DAG from ordered compressed STA
+paths. Its C++ continuous core implements ASP-DAC 2026 Eqs. 8, 13, 15--17,
+19, and 20: forward arrival propagation, normalized path duals, reverse
+delay-cost flow, per-domain KKT updates, and residual-capacity scaling. The
+paper does not disclose every numerical stabilization detail, so the provider
+records the explicit equation set and separately identifies its multiplicative
+path-dual update. Python independently reconstructs DAG path delays, path-dual
+normalization, Eq. 16/17 flow, capacity, and the final worst delay. The same
+TODAES-style discrete legalizer and schedule checker are used for both
+continuous providers, enabling controlled A/B comparison.
 
 The one-command flow can also treat `frame_slots` as a feasible upper bound
 and run checked monotone bisection across the actual Phase 4/5 providers. Each

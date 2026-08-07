@@ -105,6 +105,12 @@
 >   [EDA-2025-git repository at a fixed commit](https://github.com/nsyw705/EDA-2025-git/tree/45315b739e6678bf04605aaa246285c768bc8e13/data_case)
 >   using per-file SHA-256 verification (benchmark inputs only; participant
 >   algorithms and the opaque checker binary are not incorporated)
+> - Algorithm references (papers are provenance, not incorporated source):
+>   Chen et al.,
+>   [Timing-Aware Optimization of Die-Level Routing and TDM Assignment for
+>   Multi-FPGA Systems](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf),
+>   ASP-DAC 2026, DOI
+>   [10.1109/ASP-DAC66049.2026.11420825](https://doi.org/10.1109/ASP-DAC66049.2026.11420825)
 > - Public hardware-architecture data:
 >   the non-confidential
 >   [Arm MPS4 technical reference manual](https://documentation-service.arm.com/static/669a306a43b8ec1e18652768)
@@ -251,7 +257,7 @@ boundaries; combinational loops and hard macros remain atomic.
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
-| TDM | In-tree C++17 path-Lagrangian/KKT ratio optimizer, TODAES 2020 displacement DP, timing-path-guided slot local search, and independent checkers/oracles | Range-normalized KKT updates avoid numeric collapse on large timing scales. Exact/scalable ratio legalization is followed by a C++ concrete-slot refinement that coordinates timing paths across link domains; an exhaustive small-instance multi-round oracle and independent reconstruction check direction, ratio windows, collision, tree precedence, global barriers, and runtime-barrier reservation |
+| TDM | Selectable in-tree C++17 path-Lagrangian or ASP-DAC 2026 timing-DAG continuous optimizer, TODAES 2020 displacement DP, timing-path-guided slot local search, and independent checkers/oracles | The timing-DAG provider implements arrival propagation (Eq. 8), KKT ratio/domain-dual updates (Eqs. 13/19), delay-cost multiplier flow (Eqs. 16/17), path-dual normalization (Eq. 15), and residual scaling (Eq. 20). Both continuous providers share the same checked discrete legalization and concrete scheduling contracts |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming missing reference-clock/reset package bindings |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
@@ -449,6 +455,7 @@ build/native/install/bin/sta
 build/native/install/bin/openroad
 build/native/install/bin/emuflow_tlr_router
 build/native/install/bin/emuflow_tdm_ratio_optimizer
+build/native/install/bin/emuflow_tdm_timing_dag_optimizer
 build/native/install/bin/emuflow_tdm_slot_optimizer
 build/native/install/bin/emuflow_tdm_partition_feedback
 build/native/install/bin/emuflow_pin_planner
@@ -1309,8 +1316,9 @@ after checkout. Implementations are editable source in this repository:
 - `engines/vtr/`: VPR packing, placement, routing-resource graph, detailed
   routing, and materialized dependency source; and
 - `src/native/`: first-party C++ optimization kernels, including the
-  timing-aware system router, Lagrangian/KKT TDM-ratio optimizer, and
-  placement-aware logical-pin and physical package-pin planners;
+  timing-aware system router, path-Lagrangian and ASP-DAC 2026 timing-DAG
+  TDM-ratio optimizers, concrete-slot optimizer, and placement-aware logical-
+  pin and physical package-pin planners;
 - `src/emuflow/`: EmuFlow control plane, artifact contracts, native-provider
   adapters, and independent checkers.
 

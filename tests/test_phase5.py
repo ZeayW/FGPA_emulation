@@ -24,16 +24,25 @@ from emuflow.tdm_ratio import (
     validate_tdm_ratio_plan,
 )
 from emuflow.tdm_slot import refine_tdm_schedule_native
+from emuflow.tdm_timing_dag import (
+    _build_dag,
+    build_timing_dag_ratio_plan,
+    build_timing_dag_ratio_seed,
+    optimize_prepared_timing_dag,
+    validate_timing_dag_seed,
+)
 from emuflow.tdm_oracle import (
     exact_discrete_ratio_legalization,
     exact_multi_round_slot_schedule,
     exact_single_round_slot_schedule,
+    exact_timing_ratio_assignment,
     validate_exact_slot_schedule,
 )
 from emuflow.timing_routing import route_system_native
 from tests.native_build import (
     tdm_ratio_optimizer,
     tdm_slot_optimizer,
+    tdm_timing_dag_optimizer,
     tlr_router,
 )
 
@@ -110,6 +119,229 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def _timing_dag_fixture(self):
+        platform = Platform.from_dict(
+            _platform_value(
+                "timing_dag",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        routes = {
+            "schema": "emuflow.system-routes/v1",
+            "design": "tdm_test",
+            "platform": platform.name,
+            "constraints": {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 32,
+            },
+            "routes": [
+                {
+                    "id": f"d{index}",
+                    "net": f"n{index}",
+                    "source": "a",
+                    "sinks": ["b"],
+                    "tree_edges": [
+                        {"link": "ab", "from": "a", "to": "b"}
+                    ],
+                }
+                for index in range(3)
+            ],
+            "timing": {
+                "normalization": {
+                    "positive_slack_scale_ns": 1.0,
+                    "negative_slack_scale_ns": 1.0,
+                    "max_clock_period_ns": 100.0,
+                },
+                "paths": [
+                    {
+                        "path": f"p{index}",
+                        "clock_domain": "clk",
+                        "clock_period_ns": 100.0,
+                        "fixed_delay_ns": fixed,
+                        "cut_nets": [f"n{index}"],
+                        "cut_transitions": [
+                            {
+                                "net": f"n{index}",
+                                "from": "a",
+                                "to": "b",
+                            }
+                        ],
+                    }
+                    for index, fixed in enumerate((0.0, 8.0))
+                ],
+            },
+        }
+        return routes, platform
+
+    def test_timing_dag_equations_improve_contended_uniform_seed(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        result = build_timing_dag_ratio_seed(
+            routes,
+            platform,
+            executable=str(tdm_timing_dag_optimizer()),
+            max_iterations=500,
+            max_ratio=32.0,
+        )
+        validation = result["validation"]
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(result["equations"], [8, 13, 16, 17, 19, 20])
+        self.assertEqual(validation["covered_hops"], 2)
+        self.assertEqual(validation["uncovered_hops"], 1)
+        self.assertLess(validation["worst_delay_ns"], 16.0)
+        self.assertAlmostEqual(
+            result["domains"][0]["usage"], 1.0, places=9
+        )
+        self.assertLessEqual(
+            result["metrics"]["max_flow_conservation_error"], 1.0e-12
+        )
+
+    def test_timing_dag_independent_checker_rejects_mu_corruption(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        result = build_timing_dag_ratio_seed(
+            routes,
+            platform,
+            executable=str(tdm_timing_dag_optimizer()),
+        )
+        corrupted = copy.deepcopy(result)
+        corrupted["edge_mu"][0] += 0.125
+        model = _prepare_model(routes, platform)
+        with self.assertRaisesRegex(ValidationError, "Eq. 16/17"):
+            validate_timing_dag_seed(model, _build_dag(model), corrupted)
+
+    def test_timing_dag_residual_scaling_honors_nonunit_min_ratio(self) -> None:
+        model = {
+            "domains": [{"index": 0, "lanes": 1}],
+            "hops": [
+                {
+                    "index": index,
+                    "domain": 0,
+                    "direction": 0,
+                    "base_delay_ns": 1.5,
+                    "beta_ns": 1.0,
+                }
+                for index in range(5)
+            ],
+            "timing_paths": [
+                {
+                    "index": index,
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": float(index),
+                    "hops": [index],
+                }
+                for index in range(5)
+            ],
+            "normalization": {
+                "positive_slack_scale_ns": 1.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 100.0,
+            },
+        }
+        result = optimize_prepared_timing_dag(
+            model,
+            executable=str(tdm_timing_dag_optimizer()),
+            min_ratio=4.0,
+            max_ratio=32.0,
+        )
+        self.assertEqual(result["validation"]["status"], "pass")
+        self.assertAlmostEqual(result["domains"][0]["usage"], 1.0, places=9)
+
+    def test_timing_dag_seed_uses_checked_discrete_legalization(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        plan = build_timing_dag_ratio_plan(
+            routes,
+            platform,
+            dag_executable=str(tdm_timing_dag_optimizer()),
+            legalization_executable=str(tdm_ratio_optimizer()),
+            max_ratio=32,
+            ratio_quantum=8,
+            post_refinement_iterations=20,
+        )
+        self.assertEqual(
+            plan["provider"], "aspdac26-timing-dag-lagrangian-v1"
+        )
+        validation = validate_tdm_ratio_plan(routes, platform, plan)
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(
+            validation["provider"],
+            "aspdac26-timing-dag-lagrangian-v1",
+        )
+        continuous = [hop["continuous_ratio"] for hop in plan["hops"]]
+        discrete = [hop["discrete_ratio"] for hop in plan["hops"]]
+        bound = max(
+            abs(before - after)
+            for before, after in zip(continuous, discrete)
+        )
+        oracle = exact_discrete_ratio_legalization(
+            continuous,
+            [hop["direction"] for hop in plan["hops"]],
+            lanes=1,
+            allowed_ratios=[1, 8, 16, 24, 32],
+            displacement_bound=bound,
+        )
+        self.assertEqual(discrete, oracle["discrete_ratios"])
+        timing_oracle = exact_timing_ratio_assignment(
+            _prepare_model(routes, platform),
+            [1, 8, 16, 24, 32],
+        )
+        self.assertEqual(timing_oracle["status"], "optimal")
+        self.assertEqual(discrete, timing_oracle["discrete_ratios"])
+        self.assertAlmostEqual(
+            plan["metrics"]["discrete_worst_normalized_slack"],
+            timing_oracle["worst_normalized_slack"],
+        )
+
+    def test_timing_dag_plan_derives_schedule_safe_max_ratio(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        plan = build_timing_dag_ratio_plan(
+            routes,
+            platform,
+            dag_executable=str(tdm_timing_dag_optimizer()),
+            legalization_executable=str(tdm_ratio_optimizer()),
+            ratio_quantum=8,
+            post_refinement_iterations=20,
+        )
+        # The 32-slot frame and one-cycle link latency leave 31 usable
+        # launch slots; the largest legal ratio quantum is therefore 24.
+        self.assertEqual(plan["configuration"]["max_ratio"], 24)
+        self.assertEqual(
+            validate_tdm_ratio_plan(routes, platform, plan)["status"],
+            "pass",
+        )
+
+    def test_phase5_accepts_timing_dag_provider_end_to_end(self) -> None:
+        routes, _platform = self._timing_dag_fixture()
+        platform_value = _platform_value(
+            "timing_dag", ["a", "b"], [_link("ab", "a", "b")]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(platform_value), encoding="utf-8"
+            )
+            report = run_phase5(
+                routes_path,
+                platform_path,
+                root / "phase5",
+                simulation_frames=2,
+                provider="aspdac26-timing-dag-lagrangian-v1",
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                max_ratio=32,
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["optimization_provider"],
+                "aspdac26-timing-dag-lagrangian-v1",
+            )
+            self.assertEqual(
+                report["ratio_validation"]["status"], "pass"
+            )
+
     def test_native_ratio_capacity_product_uses_64_bit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

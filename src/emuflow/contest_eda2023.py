@@ -16,11 +16,14 @@ from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .routing import SYSTEM_ROUTES_SCHEMA
+from .tdm_timing_dag import optimize_prepared_timing_dag
 
 
 EDA2023_INSTANCE_SCHEMA = "emuflow.contest-eda2023-instance/v1"
 EDA2023_HIERARCHY_SCHEMA = "emuflow.die-hierarchy/v1"
 EDA2023_TDM_SCHEMA = "emuflow.contest-eda2023-tdm/v1"
+EDA2023_TDM_PROVIDER = "cpp-lagrangian-kkt-direction-separated-v1"
+EDA2023_TIMING_DAG_PROVIDER = "aspdac26-timing-dag-lagrangian-v1"
 EDA2023_EVALUATION_SCHEMA = "emuflow.contest-eda2023-evaluation/v1"
 EDA2023_BOARDDB_MATERIALIZATION_SCHEMA = (
     "emuflow.contest-eda2023-boarddb-materialization/v1"
@@ -661,10 +664,14 @@ def optimize_eda2023_tdm(
     output_dir: Path,
     *,
     optimizer: Optional[str] = None,
+    timing_dag_optimizer: Optional[str] = None,
+    provider: str = EDA2023_TDM_PROVIDER,
     max_iterations: int = 100,
     post_refinement_iterations: int = 2000,
     exact_domain_limit: int = 2048,
 ) -> Dict[str, Any]:
+    if provider not in {EDA2023_TDM_PROVIDER, EDA2023_TIMING_DAG_PROVIDER}:
+        raise ValidationError(f"unsupported EDA 2023 TDM provider {provider!r}")
     instance = _load_instance(instance_path)
     model = _route_model(instance, read_json(routes_path))
     wire_links = [link for link in instance["links"] if link["kind"] == "wire"]
@@ -672,13 +679,55 @@ def optimize_eda2023_tdm(
     max_ratio = max(4, 4 * math.ceil(max(1, len(model["hops"])) / 4))
     period = float(max(1, len(instance["dies"]) - 1) * (max_ratio + 0.5))
     metrics: Dict[str, Any] = {}
+    timing_dag_evidence = None
     if model["hops"]:
+        continuous_seed = None
+        if provider == EDA2023_TIMING_DAG_PROVIDER:
+            prepared_model = {
+                "domains": [
+                    {
+                        "index": domain_by_link[link["id"]],
+                        "lanes": link["capacity"],
+                    }
+                    for link in wire_links
+                ],
+                "hops": [
+                    {
+                        "index": hop["index"],
+                        "domain": domain_by_link[hop["link"]],
+                        "base_delay_ns": 1.5,
+                        "beta_ns": 1.0,
+                    }
+                    for hop in model["hops"]
+                ],
+                "timing_paths": [
+                    {
+                        "index": index,
+                        "fixed_delay_ns": path["fixed_delay"],
+                        "hops": list(path["hops"]),
+                    }
+                    for index, path in enumerate(model["paths"])
+                ],
+            }
+            timing_dag_evidence = optimize_prepared_timing_dag(
+                prepared_model,
+                executable=timing_dag_optimizer,
+                max_iterations=max_iterations,
+                min_ratio=4.0,
+                max_ratio=float(max_ratio),
+                convergence=1.0e-9,
+            )
+            continuous_seed = timing_dag_evidence["continuous_ratios"]
         resolved = resolve_native_executable("emuflow_tdm_ratio_optimizer", optimizer)
         with tempfile.TemporaryDirectory(prefix="emuflow-eda2023-tdm-") as temporary:
             native_input = Path(temporary) / "ratio.in"
             native_output = Path(temporary) / "ratio.out"
             with native_input.open("w", encoding="utf-8") as stream:
-                stream.write("EMUFLOW_TDM_RATIO_INPUT_V3\n")
+                stream.write(
+                    "EMUFLOW_TDM_RATIO_INPUT_V5\n"
+                    if continuous_seed is not None
+                    else "EMUFLOW_TDM_RATIO_INPUT_V3\n"
+                )
                 stream.write(
                     "PARAM "
                     f"{max_iterations} {max_ratio} 4 4 0 "
@@ -701,6 +750,9 @@ def optimize_eda2023_tdm(
                         f"PATH {index} {period:.17g} "
                         f"{path['fixed_delay']:.17g} {hop_list}\n"
                     )
+                if continuous_seed is not None:
+                    for index, ratio in enumerate(continuous_seed):
+                        stream.write(f"SEED {index} {ratio:.17g}\n")
             completed = subprocess.run(
                 [resolved, str(native_input), str(native_output)],
                 capture_output=True,
@@ -740,9 +792,16 @@ def optimize_eda2023_tdm(
     plan = {
         "schema": EDA2023_TDM_SCHEMA,
         "instance": instance["name"],
-        "provider": "cpp-lagrangian-kkt-direction-separated-v1",
+        "provider": provider,
         "hops": model["hops"],
     }
+    if timing_dag_evidence is not None:
+        plan["algorithm"] = {
+            "provider": timing_dag_evidence["provider"],
+            "equations": timing_dag_evidence["equations"],
+            "metrics": timing_dag_evidence["metrics"],
+            "validation": timing_dag_evidence["validation"],
+        }
     output_dir.mkdir(parents=True, exist_ok=True)
     plan_path = output_dir / "tdm_plan.json"
     write_json(plan_path, plan)

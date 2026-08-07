@@ -495,6 +495,7 @@ def run_vpr_route_packed(
     boundary_output: Optional[Path] = None,
     logic_query: Optional[Path] = None,
     logic_output: Optional[Path] = None,
+    retain_rr_graph: bool = False,
 ) -> Dict[str, Any]:
     """Route an existing VPR packing and OpenPARF cluster placement."""
 
@@ -645,7 +646,8 @@ def run_vpr_route_packed(
         }
     )
     report["configuration"] = {
-        "route_channel_width": route_channel_width
+        "route_channel_width": route_channel_width,
+        "retain_rr_graph": retain_rr_graph,
     }
     report["command"] = arguments
     report["log"] = str(log_path)
@@ -654,5 +656,14 @@ def run_vpr_route_packed(
         report["boundary_timing"] = boundary_artifact
     if logic_artifact is not None:
         report["logic_segment_timing"] = logic_artifact
+    rr_graph_artifact = route_check.get("artifacts", {}).get("rr_graph")
+    if isinstance(rr_graph_artifact, dict):
+        rr_graph_artifact["retained"] = retain_rr_graph
     write_json(output_dir / "vpr-route-report.json", report)
+    if not retain_rr_graph:
+        # The independent checker has already consumed the multi-gigabyte
+        # routing-resource graph and recorded its size/hash in the report.
+        # Keeping one copy per FPGA otherwise makes ordinary multi-FPGA runs
+        # require tens of gigabytes of avoidable temporary storage.
+        rr_graph.unlink(missing_ok=True)
     return report

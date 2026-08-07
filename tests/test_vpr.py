@@ -203,6 +203,7 @@ class VprTest(unittest.TestCase):
         self.assertIn("--place_file", report["command"])
         self.assertIn("--write_rr_graph", report["command"])
         self.assertEqual(report["route_check"]["status"], "pass")
+        self.assertFalse(report["configuration"]["retain_rr_graph"])
         self.assertIn("boundary_timing", report)
         self.assertIn("logic_segment_timing", report)
 

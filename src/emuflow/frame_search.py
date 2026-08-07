@@ -18,7 +18,7 @@ from .runtime import (
 )
 
 
-FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v3"
+FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v4"
 
 
 def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -113,6 +113,7 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "ratio_quantum",
         "post_refinement_iterations",
         "slot_refinement_iterations",
+        "tdm_provider",
         "ratio_convergence",
         "simulation_frames",
     }
@@ -137,6 +138,13 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
     ):
         raise ValidationError(
             "frame-search configuration slot_refinement_iterations is invalid"
+        )
+    tdm_provider = configuration["tdm_provider"]
+    if tdm_provider is not None and (
+        not isinstance(tdm_provider, str) or not tdm_provider
+    ):
+        raise ValidationError(
+            "frame-search configuration tdm_provider is invalid"
         )
     max_ratio = configuration["max_ratio"]
     if max_ratio is not None and (
@@ -176,7 +184,9 @@ def run_frame_length_search(
     route_constraints: Optional[Path] = None,
     route_max_iterations: Optional[int] = None,
     router: Optional[str] = None,
+    tdm_provider: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
+    timing_dag_optimizer: Optional[str] = None,
     slot_optimizer: Optional[str] = None,
     simulation_frames: int = 16,
     ratio_max_iterations: int = 500,
@@ -231,7 +241,9 @@ def run_frame_length_search(
                 platform_path,
                 tdm_root,
                 simulation_frames=simulation_frames,
+                provider=tdm_provider,
                 ratio_optimizer=ratio_optimizer,
+                timing_dag_optimizer=timing_dag_optimizer,
                 slot_optimizer=slot_optimizer,
                 ratio_max_iterations=ratio_max_iterations,
                 max_ratio=max_ratio,
@@ -318,6 +330,7 @@ def run_frame_length_search(
             "ratio_quantum": ratio_quantum,
             "post_refinement_iterations": post_refinement_iterations,
             "slot_refinement_iterations": slot_refinement_iterations,
+            "tdm_provider": tdm_provider,
             "ratio_convergence": ratio_convergence,
             "simulation_frames": simulation_frames,
         },

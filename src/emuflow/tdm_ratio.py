@@ -23,6 +23,7 @@ from .tdm import RUNTIME_BARRIER_SLOTS
 
 TDM_RATIO_PLAN_SCHEMA = "emuflow.tdm-ratio-plan/v1"
 TDM_RATIO_PROVIDER = "lagrangian-kkt-timing-aware-v1"
+TDM_TIMING_DAG_RATIO_PROVIDER = "aspdac26-timing-dag-lagrangian-v1"
 DEFAULT_EXACT_DOMAIN_LIMIT = 2048
 HopKey = Tuple[str, str, str, str]
 
@@ -373,10 +374,15 @@ def _write_native_input(
     post_refinement_iterations: int,
     exact_domain_limit: int,
     convergence: float,
+    continuous_seed: Optional[Sequence[float]] = None,
 ) -> None:
     normalization = model["normalization"]
     lines = [
-        "EMUFLOW_TDM_RATIO_INPUT_V2",
+        (
+            "EMUFLOW_TDM_RATIO_INPUT_V4"
+            if continuous_seed is not None
+            else "EMUFLOW_TDM_RATIO_INPUT_V2"
+        ),
         (
             f"PARAM {max_iterations} {max_ratio} {ratio_quantum} "
             f"{post_refinement_iterations} {exact_domain_limit} "
@@ -400,6 +406,9 @@ def _write_native_input(
             f"{timing_path['clock_period_ns']:.17g} "
             f"{timing_path['fixed_delay_ns']:.17g} {hops}"
         )
+    if continuous_seed is not None:
+        for index, ratio in enumerate(continuous_seed):
+            lines.append(f"SEED {index} {ratio:.17g}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -890,6 +899,9 @@ def build_tdm_ratio_plan(
     post_refinement_iterations: int = 200,
     exact_domain_limit: int = DEFAULT_EXACT_DOMAIN_LIMIT,
     convergence: float = 1.0e-9,
+    continuous_seed: Optional[Sequence[float]] = None,
+    provider: str = TDM_RATIO_PROVIDER,
+    provider_metadata: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     model = _prepare_model(routes, platform)
     if max_ratio is None:
@@ -940,6 +952,28 @@ def build_tdm_ratio_plan(
         raise ValidationError(
             "TDM ratio convergence: expected a positive number"
         )
+    if provider not in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}:
+        raise ValidationError(f"unsupported TDM ratio provider {provider!r}")
+    if (continuous_seed is None) != (provider == TDM_RATIO_PROVIDER):
+        raise ValidationError(
+            "timing-DAG provider requires a continuous seed and the legacy "
+            "provider must solve its own continuous relaxation"
+        )
+    if continuous_seed is not None:
+        if len(continuous_seed) != len(model["hops"]):
+            raise ValidationError(
+                "TDM ratio continuous seed coverage is not exact"
+            )
+        for ratio in continuous_seed:
+            if (
+                isinstance(ratio, bool)
+                or not isinstance(ratio, (int, float))
+                or not math.isfinite(float(ratio))
+                or not 1.0 <= float(ratio) <= max_ratio
+            ):
+                raise ValidationError(
+                    "TDM ratio continuous seed contains an invalid ratio"
+                )
 
     resolved = resolve_native_executable(
         "emuflow_tdm_ratio_optimizer", executable
@@ -957,6 +991,7 @@ def build_tdm_ratio_plan(
             post_refinement_iterations=post_refinement_iterations,
             exact_domain_limit=exact_domain_limit,
             convergence=float(convergence),
+            continuous_seed=continuous_seed,
         )
         completed = subprocess.run(
             [resolved, str(native_input), str(native_output)],
@@ -995,7 +1030,7 @@ def build_tdm_ratio_plan(
         "schema": TDM_RATIO_PLAN_SCHEMA,
         "design": routes.get("design"),
         "platform": platform.name,
-        "provider": TDM_RATIO_PROVIDER,
+        "provider": provider,
         "configuration": {
             "max_iterations": max_iterations,
             "max_ratio": max_ratio,
@@ -1029,6 +1064,8 @@ def build_tdm_ratio_plan(
             ),
         },
     }
+    if provider_metadata is not None:
+        plan["algorithm"] = dict(provider_metadata)
     validate_tdm_ratio_plan(routes, platform, plan)
     return plan
 
@@ -1065,10 +1102,24 @@ def validate_tdm_ratio_plan(
         raise ValidationError(
             f"ratio plan.schema: expected {TDM_RATIO_PLAN_SCHEMA!r}"
         )
-    if plan.get("provider") != TDM_RATIO_PROVIDER:
+    if plan.get("provider") not in {
+        TDM_RATIO_PROVIDER,
+        TDM_TIMING_DAG_RATIO_PROVIDER,
+    }:
         raise ValidationError(
-            f"ratio plan.provider: expected {TDM_RATIO_PROVIDER!r}"
+            "ratio plan.provider is unsupported"
         )
+    if plan.get("provider") == TDM_TIMING_DAG_RATIO_PROVIDER:
+        algorithm = plan.get("algorithm")
+        if (
+            not isinstance(algorithm, dict)
+            or algorithm.get("provider")
+            != "aspdac26-timing-dag-equations-v1"
+            or algorithm.get("validation", {}).get("status") != "pass"
+        ):
+            raise ValidationError(
+                "timing-DAG ratio plan algorithm evidence is invalid"
+            )
     if plan.get("design") != routes.get("design"):
         raise ValidationError("ratio plan.design does not match routes")
     if plan.get("platform") != platform.name:
@@ -1455,7 +1506,7 @@ def validate_tdm_ratio_plan(
         )
     return {
         "status": "pass",
-        "provider": TDM_RATIO_PROVIDER,
+        "provider": plan["provider"],
         **expected_static_metrics,
         "continuous_max_domain_usage": max(
             (

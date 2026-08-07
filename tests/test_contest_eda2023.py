@@ -13,7 +13,11 @@ from emuflow.contest_eda2023 import (
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4
-from tests.native_build import tdm_ratio_optimizer, tlr_router
+from tests.native_build import (
+    tdm_ratio_optimizer,
+    tdm_timing_dag_optimizer,
+    tlr_router,
+)
 
 
 FPGA_DIE = """\
@@ -122,6 +126,28 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             self.assertEqual(evaluation["metrics"]["used_wires"], 2)
             self.assertTrue((root / "solution" / "design.route.out").is_file())
             self.assertTrue((root / "solution" / "design.tdm.out").is_file())
+
+            timing_dag = optimize_eda2023_tdm(
+                normalized / "contest_instance.json",
+                routed / "routes.json",
+                root / "timing-dag-solution",
+                optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                provider="aspdac26-timing-dag-lagrangian-v1",
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(timing_dag["status"], "pass")
+            self.assertLessEqual(
+                timing_dag["max_routing_weight"],
+                optimized["max_routing_weight"],
+            )
+            timing_dag_plan = read_json(
+                root / "timing-dag-solution" / "tdm_plan.json"
+            )
+            self.assertEqual(
+                timing_dag_plan["algorithm"]["validation"]["status"],
+                "pass",
+            )
 
     def test_physical_fpga_projection_preserves_wire_banks(self):
         with tempfile.TemporaryDirectory() as temporary:

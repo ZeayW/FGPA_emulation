@@ -41,6 +41,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER
+  "Build the in-tree ASP-DAC 2026 timing-DAG TDM optimizer"
+  ON
+)
+option(
   EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER
   "Build the in-tree quantized-delay topology optimizer"
   ON
@@ -366,6 +371,22 @@ if(EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER)
   target_compile_options(emuflow_tdm_slot_optimizer PRIVATE -O3)
   set_target_properties(
     emuflow_tdm_slot_optimizer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER)
+  add_executable(
+    emuflow_tdm_timing_dag_optimizer
+    "${CMAKE_SOURCE_DIR}/src/native/tdm_timing_dag_optimizer.cpp"
+  )
+  target_compile_features(
+    emuflow_tdm_timing_dag_optimizer PRIVATE cxx_std_17
+  )
+  target_compile_options(emuflow_tdm_timing_dag_optimizer PRIVATE -O3)
+  set_target_properties(
+    emuflow_tdm_timing_dag_optimizer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -874,6 +895,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_tdm_slot_optimizer_cli
       COMMAND "$<TARGET_FILE:emuflow_tdm_slot_optimizer>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER)
+    add_test(
+      NAME emuflow_tdm_timing_dag_optimizer_cli
+      COMMAND "$<TARGET_FILE:emuflow_tdm_timing_dag_optimizer>" --help
     )
   endif()
 

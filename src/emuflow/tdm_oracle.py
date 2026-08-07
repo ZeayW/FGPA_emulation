@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import functools
+import itertools
 import math
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
@@ -102,6 +103,109 @@ def exact_discrete_ratio_legalization(
         "discrete_ratios": discrete,
         "lanes": lane_by_signal,
         "groups": [list(group) for group in groups],
+    }
+
+
+def exact_timing_ratio_assignment(
+    model: Mapping[str, Any],
+    allowed_ratios: Sequence[int],
+    *,
+    maximum_assignments: int = 1_000_000,
+) -> Dict[str, Any]:
+    """Exhaustively maximize worst normalized slack on a small ratio model.
+
+    Feasibility matches direction-separated grouping: every physical lane has
+    one direction and one ratio, and a ratio-r lane carries at most r signals.
+    This oracle is exponential and intentionally restricted to unit tests and
+    small QoR witnesses.
+    """
+    hops = model.get("hops")
+    domains = model.get("domains")
+    timing_paths = model.get("timing_paths")
+    normalization = model.get("normalization")
+    if (
+        not isinstance(hops, list)
+        or not hops
+        or not isinstance(domains, list)
+        or not domains
+        or not isinstance(timing_paths, list)
+        or not timing_paths
+        or not isinstance(normalization, Mapping)
+    ):
+        raise ValidationError("timing-ratio oracle model is incomplete")
+    allowed = sorted(set(allowed_ratios))
+    if not allowed or allowed[0] <= 0:
+        raise ValidationError("timing-ratio oracle ratios are invalid")
+    assignments = len(allowed) ** len(hops)
+    if assignments > maximum_assignments:
+        raise ValidationError(
+            "timing-ratio oracle search exceeds maximum_assignments"
+        )
+    lanes_by_domain = {
+        domain["index"]: domain["lanes"] for domain in domains
+    }
+    best_score = None
+    best_ratios = None
+    best_metrics = None
+    feasible_assignments = 0
+    for ratios in itertools.product(allowed, repeat=len(hops)):
+        groups = Counter(
+            (
+                hop["domain"],
+                hop["direction"],
+                ratios[hop["index"]],
+            )
+            for hop in hops
+        )
+        lanes_used = Counter()
+        for (domain, _direction, ratio), count in groups.items():
+            lanes_used[domain] += math.ceil(count / ratio)
+        if any(
+            lanes_used[domain] > lanes
+            for domain, lanes in lanes_by_domain.items()
+        ):
+            continue
+        feasible_assignments += 1
+        path_metrics = []
+        for timing_path in timing_paths:
+            delay = timing_path["fixed_delay_ns"] + sum(
+                hops[hop]["base_delay_ns"]
+                + hops[hop]["beta_ns"] * (ratios[hop] - 1)
+                for hop in timing_path["hops"]
+            )
+            slack = timing_path["clock_period_ns"] - delay
+            path_metrics.append(
+                (
+                    _normalized_slack(
+                        timing_path["clock_period_ns"],
+                        slack,
+                        normalization,
+                    ),
+                    delay,
+                )
+            )
+        worst_normalized = min(item[0] for item in path_metrics)
+        worst_delay = max(item[1] for item in path_metrics)
+        score = (
+            worst_normalized,
+            -max(ratios),
+            -sum(ratios),
+            tuple(-ratio for ratio in ratios),
+        )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_ratios = ratios
+            best_metrics = (worst_normalized, worst_delay, dict(lanes_used))
+    if best_ratios is None or best_metrics is None:
+        raise ValidationError("timing-ratio oracle found no legal assignment")
+    return {
+        "status": "optimal",
+        "evaluated_assignments": assignments,
+        "feasible_assignments": feasible_assignments,
+        "discrete_ratios": list(best_ratios),
+        "worst_normalized_slack": best_metrics[0],
+        "worst_delay_ns": best_metrics[1],
+        "lanes_used_by_domain": best_metrics[2],
     }
 
 
