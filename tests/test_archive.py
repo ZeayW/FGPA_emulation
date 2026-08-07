@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from emuflow.archive import (
 )
 from emuflow.cli import main
 from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from tests.native_build import tlr_router
 
@@ -39,6 +41,22 @@ class ValidationArchiveTest(unittest.TestCase):
             flow = root / "flow"
             archive = root / "archive"
             _run_small_flow(flow)
+            nested = flow / "physical/fpga0/partition.route"
+            nested.parent.mkdir(parents=True)
+            nested.write_bytes(b"nested physical evidence")
+            flow_report_path = flow / "multi-fpga-flow-report.json"
+            flow_report = read_json(flow_report_path)
+            flow_report["nested_test_evidence"] = {
+                "path": str(nested),
+                "sha256": hashlib.sha256(nested.read_bytes()).hexdigest(),
+            }
+            flow_report["pruned_test_evidence"] = {
+                "path": str(flow / "physical/fpga0/rr_graph.xml"),
+                "bytes": 123456,
+                "sha256": "a" * 64,
+                "retained": False,
+            }
+            write_json(flow_report_path, flow_report)
 
             result = create_validation_archive(
                 flow,
@@ -58,6 +76,23 @@ class ValidationArchiveTest(unittest.TestCase):
             )
             self.assertEqual(
                 manifest["environment"]["tools"]["router"], "test-build"
+            )
+            nested_record = next(
+                item
+                for item in manifest["files"]
+                if item["source_path"]
+                == "physical/fpga0/partition.route"
+            )
+            self.assertEqual(nested_record["retention"], "hash-only")
+            self.assertTrue(
+                any(
+                    role.startswith("reported:")
+                    for role in nested_record["roles"]
+                )
+            )
+            self.assertEqual(
+                manifest["source"]["pruned_artifacts"][0]["status"],
+                "intentionally-pruned",
             )
             self.assertEqual(
                 validate_validation_archive(archive)["flow"]["instances"], 8

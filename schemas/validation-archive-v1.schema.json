@@ -23,7 +23,7 @@
     "created_at": {"type": "string", "format": "date-time"},
     "source": {
       "type": "object",
-      "required": ["flow_root", "flow_report", "revision", "external_inputs"],
+      "required": ["flow_root", "flow_report", "revision", "external_inputs", "pruned_artifacts"],
       "properties": {
         "flow_root": {"type": "string", "minLength": 1},
         "flow_report": {"const": "multi-fpga-flow-report.json"},
@@ -36,7 +36,8 @@
           },
           "additionalProperties": false
         },
-        "external_inputs": {"type": "array", "items": {"type": "object"}}
+        "external_inputs": {"type": "array", "items": {"type": "object"}},
+        "pruned_artifacts": {"type": "array", "items": {"type": "object"}}
       },
       "additionalProperties": false
     },

@@ -562,7 +562,9 @@ source hashes, and every retained artifact's path, size, role, and SHA-256.
 Reports and small key artifacts are copied. Files larger than 64 MiB are kept
 as size/SHA-256 records by default; change the threshold with
 `--archive-max-copy-bytes`. The complete top-level flow report is always
-copied regardless of that threshold.
+copied regardless of that threshold. Intermediates deliberately pruned by a
+stage, such as a VPR RR graph, remain explicit `intentionally-pruned` records
+with their original size and SHA-256 rather than silently disappearing.
 
 Archiving and cleanup may also be run separately:
 

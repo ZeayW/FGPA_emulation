@@ -10,7 +10,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 from . import __version__
 from .errors import EmuFlowError, ValidationError
@@ -138,10 +138,110 @@ def _declared_artifacts(report: Mapping[str, Any]) -> Dict[Path, set[str]]:
     return result
 
 
+def _reported_artifacts(
+    report: Mapping[str, Any], flow_root: Path
+) -> tuple[
+    Dict[Path, set[str]],
+    Dict[Path, set[str]],
+    list[Dict[str, Any]],
+    list[Dict[str, Any]],
+]:
+    internal = _declared_artifacts(report)
+    expected: Dict[Path, set[str]] = {}
+    external: Dict[tuple[str, str], Dict[str, Any]] = {}
+    pruned: Dict[tuple[str, str], Dict[str, Any]] = {}
+
+    for relative, roles in internal.items():
+        for role in roles:
+            expected.setdefault(relative, set()).add(
+                report["artifacts"][role]["sha256"]
+            )
+
+    def visit(value: Any, pointer: str) -> None:
+        if isinstance(value, dict):
+            raw_path = value.get("path")
+            digest = value.get("sha256")
+            if (
+                isinstance(raw_path, str)
+                and isinstance(digest, str)
+                and len(digest) == 64
+                and all(
+                    character in "0123456789abcdef" for character in digest
+                )
+            ):
+                path = Path(raw_path).expanduser()
+                resolved = (
+                    path.resolve()
+                    if path.is_absolute()
+                    else (flow_root / path).resolve()
+                )
+                if _is_relative_to(resolved, flow_root):
+                    relative = resolved.relative_to(flow_root)
+                    if value.get("retained") is False:
+                        record = {
+                            "source_path": relative.as_posix(),
+                            "status": "intentionally-pruned",
+                            "expected_sha256": digest,
+                            "role": f"reported:{pointer}",
+                        }
+                        size = value.get("bytes")
+                        if (
+                            not isinstance(size, bool)
+                            and isinstance(size, int)
+                            and size >= 0
+                        ):
+                            record["bytes"] = size
+                        pruned[(relative.as_posix(), digest)] = record
+                        for key, item in value.items():
+                            visit(item, f"{pointer}/{key}")
+                        return
+                    internal.setdefault(relative, set()).add(
+                        f"reported:{pointer}"
+                    )
+                    expected.setdefault(relative, set()).add(digest)
+                else:
+                    key = (str(resolved), digest)
+                    record: Dict[str, Any] = {
+                        "path": str(resolved),
+                        "status": "unavailable",
+                        "expected_sha256": digest,
+                        "role": f"reported:{pointer}",
+                    }
+                    if resolved.is_file() and not resolved.is_symlink():
+                        actual = _sha256(resolved)
+                        if actual != digest:
+                            raise ValidationError(
+                                "external artifact SHA-256 disagrees with "
+                                f"flow report: {resolved}"
+                            )
+                        record.update(
+                            {
+                                "status": "verified-hash-only",
+                                "bytes": resolved.stat().st_size,
+                                "sha256": actual,
+                            }
+                        )
+                    external[key] = record
+            for key, item in value.items():
+                visit(item, f"{pointer}/{key}")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{pointer}/{index}")
+
+    visit(report, "$")
+    return (
+        internal,
+        expected,
+        [external[key] for key in sorted(external)],
+        [pruned[key] for key in sorted(pruned)],
+    )
+
+
 def _candidate_files(
-    flow_root: Path, report: Mapping[str, Any]
+    flow_root: Path,
+    reported: Mapping[Path, set[str]],
 ) -> Dict[Path, set[str]]:
-    result = _declared_artifacts(report)
+    result = {path: set(roles) for path, roles in reported.items()}
     result.setdefault(Path("multi-fpga-flow-report.json"), set()).add(
         "flow_report"
     )
@@ -174,6 +274,18 @@ def _external_inputs(report: Mapping[str, Any]) -> list[Dict[str, Any]]:
             }
         )
     return records
+
+
+def _merge_external_inputs(
+    sources: Iterable[Dict[str, Any]], reported: Iterable[Dict[str, Any]]
+) -> list[Dict[str, Any]]:
+    records: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for record in (*sources, *reported):
+        path = record.get("path")
+        digest = record.get("sha256", record.get("expected_sha256", ""))
+        if isinstance(path, str) and isinstance(digest, str):
+            records[(path, digest)] = record
+    return [records[key] for key in sorted(records)]
 
 
 def _validate_json(path: Path) -> None:
@@ -213,8 +325,10 @@ def create_validation_archive(
     report_path = flow_root / "multi-fpga-flow-report.json"
     report = read_json(report_path)
     summary = validate_multi_fpga_flow_report(report)
-    candidates = _candidate_files(flow_root, report)
-    declared = _declared_artifacts(report)
+    reported, expected, reported_external, pruned = _reported_artifacts(
+        report, flow_root
+    )
+    candidates = _candidate_files(flow_root, reported)
 
     temporary = archive_dir.with_name(
         f".{archive_dir.name}.creating-{os.getpid()}"
@@ -229,14 +343,14 @@ def create_validation_archive(
             source = _source_file(flow_root, relative)
             digest = _sha256(source)
             roles = sorted(candidates[relative])
-            artifact_roles = sorted(declared.get(relative, set()))
-            for role in artifact_roles:
-                expected = report["artifacts"][role]["sha256"]
-                if digest != expected:
+            artifact_roles = sorted(reported.get(relative, set()))
+            for expected_digest in sorted(expected.get(relative, set())):
+                if digest != expected_digest:
                     raise ValidationError(
-                        f"artifact {role!r} SHA-256 disagrees with flow report"
+                        "artifact SHA-256 disagrees with flow report: "
+                        f"{relative.as_posix()}"
                     )
-                verified_declared += 1
+            verified_declared += len(artifact_roles)
             size = source.stat().st_size
             retained = (
                 relative == Path("multi-fpga-flow-report.json")
@@ -276,7 +390,10 @@ def create_validation_archive(
                 "flow_root": str(flow_root),
                 "flow_report": "multi-fpga-flow-report.json",
                 "revision": revision,
-                "external_inputs": _external_inputs(report),
+                "external_inputs": _merge_external_inputs(
+                    _external_inputs(report), reported_external
+                ),
+                "pruned_artifacts": pruned,
             },
             "flow": {
                 "schema": report.get("schema"),
