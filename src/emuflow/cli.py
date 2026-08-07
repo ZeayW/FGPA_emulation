@@ -819,7 +819,11 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--route-max-iterations", type=int)
     multi_fpga_compile.add_argument(
         "--tdm-provider",
-        choices=(TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER),
+        choices=(
+            TDM_RATIO_PROVIDER,
+            TDM_TIMING_DAG_RATIO_PROVIDER,
+            TDM_BASELINE_PROVIDER,
+        ),
     )
     multi_fpga_compile.add_argument("--ratio-optimizer")
     multi_fpga_compile.add_argument("--timing-dag-optimizer")
@@ -1763,7 +1767,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_stage_optimize.add_argument(
         "--tdm-provider",
-        choices=(TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER),
+        choices=(
+            TDM_RATIO_PROVIDER,
+            TDM_TIMING_DAG_RATIO_PROVIDER,
+            TDM_BASELINE_PROVIDER,
+        ),
     )
     cross_stage_optimize.add_argument("--ratio-optimizer")
     cross_stage_optimize.add_argument("--timing-dag-optimizer")
