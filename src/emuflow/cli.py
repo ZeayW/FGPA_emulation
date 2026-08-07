@@ -534,6 +534,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2025_boarddb.add_argument("--instance", type=Path, required=True)
     eda2025_boarddb.add_argument("--device-template", type=Path, required=True)
     eda2025_boarddb.add_argument("--output", "-o", type=Path, required=True)
+    eda2025_boarddb.add_argument("--route-constraints-output", type=Path)
     eda2025_boarddb.add_argument("--name", required=True)
     eda2025_boarddb.add_argument("--topology", type=Path)
     eda2025_boarddb.add_argument("--template-fpga")
@@ -2233,6 +2234,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 fabric_clock_mhz=args.fabric_clock_mhz,
                 latency_cycles=args.latency_cycles,
                 link_mode=args.link_mode,
+                route_constraints_path=args.route_constraints_output,
             )
         elif args.contest_command == "iccad2019-import":
             report = import_iccad2019_instance(
@@ -2324,6 +2326,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 fabric_clock_mhz=args.fabric_clock_mhz,
                 latency_cycles=args.latency_cycles,
                 link_mode=args.link_mode,
+                route_constraints_path=args.route_constraints_output,
             )
         else:
             raise AssertionError(f"unhandled contest command {args.contest_command!r}")

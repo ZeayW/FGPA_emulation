@@ -731,7 +731,8 @@ emuflow multi-fpga compile design.v \
   --top top \
   --clock clk \
   --platform build/eda2025-case04/rtl-boarddb.json \
-  --frame-slots 512 \
+  --route-constraints \
+    build/eda2025-case04/rtl-boarddb.route_constraints.json \
   --out build/design-on-eda2025
 ```
 
@@ -740,6 +741,12 @@ published electrical bit width. `lane_scale=1` therefore maps each contest
 channel to one *abstract* BoardDB lane. Changing `--lane-scale` is an explicit
 architecture study and remains recorded in every link; it is never silently
 inferred from the device template or presented as measured board data.
+The materializer also emits a companion
+`rtl-boarddb.route_constraints.json`: it preserves the contest's shared
+bidirectional channel domains, `Rmax` frame bound, and ratio quantum using the
+materialized link IDs. Link delay remains the explicitly configured BoardDB
+clock/latency model; the contest's `beta + alpha * ratio` formula remains in
+the separate official-score adapter.
 
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact

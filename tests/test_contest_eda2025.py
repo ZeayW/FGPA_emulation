@@ -217,6 +217,23 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 {link["data_lanes_per_direction"] for link in boarddb["links"]},
                 {1},
             )
+            self.assertEqual(
+                {link["capacity_sharing"] for link in boarddb["links"]},
+                {"shared_bidirectional"},
+            )
+            constraints_path = root / "rtl-boarddb.route_constraints.json"
+            self.assertEqual(report["route_constraints"], str(constraints_path))
+            constraints = read_json(constraints_path)
+            self.assertEqual(
+                constraints["schema"],
+                "emuflow.system-route-constraints/v1",
+            )
+            self.assertEqual(constraints["frame_slots"], 512)
+            self.assertEqual(constraints["tdm_ratio_quantum"], 8)
+            self.assertEqual(
+                set(constraints["shared_capacity_links"]),
+                {link["id"] for link in boarddb["links"]},
+            )
 
     def test_rtl_boarddb_materializer_requires_explicit_heterogeneous_device(self):
         with tempfile.TemporaryDirectory() as temporary:

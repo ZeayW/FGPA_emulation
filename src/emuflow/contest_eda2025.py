@@ -18,7 +18,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
-from .routing import SYSTEM_ROUTES_SCHEMA
+from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA, SYSTEM_ROUTES_SCHEMA
 
 
 EDA2025_INSTANCE_SCHEMA = "emuflow.contest-eda2025-instance/v1"
@@ -729,6 +729,7 @@ def materialize_eda2025_rtl_boarddb(
     fabric_clock_mhz: float = 50.0,
     latency_cycles: int = 2,
     link_mode: str = "abstract",
+    route_constraints_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Combine a contest interconnect with a real-RTL-capable FPGA template."""
     if not isinstance(name, str) or not name.strip():
@@ -786,12 +787,14 @@ def materialize_eda2025_rtl_boarddb(
             "id": f"eda2025_link_{left:03d}_{right:03d}",
             "endpoints": [fpga_ids[left], fpga_ids[right]],
             "direction": "full_duplex",
+            "capacity_sharing": "shared_bidirectional",
             "mode": link_mode,
             "data_lanes_per_direction": topology[left][right] * lane_scale,
             "fabric_clock_mhz": float(fabric_clock_mhz),
             "latency_cycles": latency_cycles,
             "contest_channels": topology[left][right],
             "lane_scale": lane_scale,
+            "capacity_semantics": "shared-bidirectional-tdm-projection",
         }
         for left in range(len(fpga_ids))
         for right in range(left + 1, len(fpga_ids))
@@ -818,7 +821,27 @@ def materialize_eda2025_rtl_boarddb(
                     if topology_path is not None
                     else "initial_topology"
                 ),
+                "capacity_semantics": (
+                    "shared-bidirectional-tdm-projection"
+                ),
+                "timing_projection": (
+                    "configured-boarddb-link-clock-and-latency"
+                ),
             }
+        },
+    )
+    constraints_output = route_constraints_path or output_path.with_name(
+        f"{output_path.stem}.route_constraints.json"
+    )
+    write_json(
+        constraints_output,
+        {
+            "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
+            "frame_slots": instance["parameters"]["max_ratio"],
+            "tdm_ratio_quantum": instance["parameters"][
+                "ratio_quantum"
+            ],
+            "shared_capacity_links": [link["id"] for link in links],
         },
     )
     report = {
@@ -838,7 +861,9 @@ def materialize_eda2025_rtl_boarddb(
         "data_lanes": sum(link.data_lanes_per_direction for link in validated.links),
         "topology_changes": changed_channels,
         "allowed_topology_changes": allowed_changes,
+        "capacity_semantics": "shared-bidirectional-tdm-projection",
         "output": str(output_path),
+        "route_constraints": str(constraints_output),
     }
     return report
 
