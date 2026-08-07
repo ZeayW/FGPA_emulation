@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import math
 from collections import defaultdict, deque
 from pathlib import Path
@@ -37,6 +38,7 @@ from .phase5 import run_phase5
 from .platform import Platform
 from .routing import (
     SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
+    load_route_constraints,
     route_link_delay_ns,
     validate_system_routes,
 )
@@ -422,6 +424,8 @@ def compare_candidate_objectives(
 def reconstruct_partition_migration(
     incumbent_assignment: Mapping[str, Any],
     candidate_assignment: Mapping[str, Any],
+    platform: Platform,
+    route_constraints: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     incumbent = incumbent_assignment.get("cluster_assignment")
     candidate = candidate_assignment.get("cluster_assignment")
@@ -432,6 +436,12 @@ def reconstruct_partition_migration(
     if set(incumbent) != set(candidate) or not incumbent:
         raise ValidationError(
             "cross-stage partition migration coverage mismatch"
+        )
+    fpga_ids = tuple(sorted(fpga.id for fpga in platform.fpgas))
+    owners = set(incumbent.values()) | set(candidate.values())
+    if not owners.issubset(fpga_ids):
+        raise ValidationError(
+            "cross-stage partition migration owner is not on the platform"
         )
     pair_counts: Dict[Tuple[str, str], int] = defaultdict(int)
     for cluster in sorted(incumbent):
@@ -450,7 +460,7 @@ def reconstruct_partition_migration(
             pair_counts[(source, target)] += 1
     moved = sum(pair_counts.values())
     total = len(incumbent)
-    return {
+    raw = {
         "clusters": total,
         "moved_clusters": moved,
         "moved_fraction": moved / total,
@@ -463,6 +473,142 @@ def reconstruct_partition_migration(
             for (source, target), count in sorted(pair_counts.items())
         ],
     }
+    automorphisms = _platform_automorphisms(
+        platform, route_constraints
+    )
+    best_mapping = max(
+        automorphisms,
+        key=lambda mapping: (
+            sum(
+                mapping[incumbent[cluster]] == candidate[cluster]
+                for cluster in incumbent
+            ),
+            tuple(mapping[fpga] for fpga in fpga_ids),
+        ),
+    )
+    aligned_pairs: Dict[Tuple[str, str], int] = defaultdict(int)
+    for cluster in sorted(incumbent):
+        aligned_source = best_mapping[incumbent[cluster]]
+        target = candidate[cluster]
+        if aligned_source != target:
+            aligned_pairs[(aligned_source, target)] += 1
+    aligned_moved = sum(aligned_pairs.values())
+    if route_constraints is None:
+        alignment_qualification = (
+            "identity-only-external-route-constraints-unavailable"
+        )
+    elif len(fpga_ids) > 8:
+        alignment_qualification = "identity-only-enumeration-bound"
+    else:
+        alignment_qualification = "boarddb-and-route-constraints"
+    raw["symmetry_alignment"] = {
+        "method": "maximum-overlap-exact-platform-automorphism",
+        "qualification": alignment_qualification,
+        "valid_automorphisms": len(automorphisms),
+        "mapping": dict(sorted(best_mapping.items())),
+        "moved_clusters": aligned_moved,
+        "moved_fraction": aligned_moved / total,
+        "moves": [
+            {
+                "from": source,
+                "to": target,
+                "clusters": count,
+            }
+            for (source, target), count in sorted(aligned_pairs.items())
+        ],
+    }
+    return raw
+
+
+def _platform_automorphisms(
+    platform: Platform,
+    route_constraints: Optional[Mapping[str, Any]],
+) -> Tuple[Dict[str, str], ...]:
+    """Enumerate exact FPGA-label symmetries relevant to system routing."""
+    fpga_ids = tuple(sorted(fpga.id for fpga in platform.fpgas))
+    identity = {fpga: fpga for fpga in fpga_ids}
+    if route_constraints is None or len(fpga_ids) > 8:
+        return (identity,)
+
+    nodes = {fpga.id: fpga for fpga in platform.fpgas}
+
+    def node_signature(fpga_id: str) -> Tuple[Any, ...]:
+        fpga = nodes[fpga_id]
+        return (
+            fpga.part,
+            fpga.utilization_limit,
+            tuple(sorted(fpga.capacity.items())),
+        )
+
+    def link_signature(link: Any, mapping: Mapping[str, str]) -> Tuple[Any, ...]:
+        left, right = link.endpoints
+        bindings = tuple(
+            sorted(
+                (
+                    mapping[binding.fpga],
+                    binding.connector,
+                    binding.mgt,
+                    tuple(
+                        (
+                            lane.lane,
+                            lane.tx_package_pin_p,
+                            lane.tx_package_pin_n,
+                            lane.rx_package_pin_p,
+                            lane.rx_package_pin_n,
+                        )
+                        for lane in binding.lanes
+                    ),
+                )
+                for binding in link.endpoint_bindings
+            )
+        )
+        reverse_delay = None
+        if link.direction in {"full_duplex", "half_duplex"}:
+            reverse_delay = route_link_delay_ns(
+                platform, link.id, right, left, route_constraints
+            )
+        return (
+            mapping[left],
+            mapping[right],
+            link.direction,
+            link.mode,
+            link.data_lanes_per_direction,
+            link.fabric_clock_mhz,
+            link.latency_cycles,
+            link.capacity_sharing,
+            link.payload_bits_per_lane_per_cycle,
+            link.max_line_rate_gbps_per_lane,
+            bindings,
+            link.id in set(route_constraints.get("unavailable_links", [])),
+            link.id in set(route_constraints.get("sll_links", [])),
+            link.id in set(
+                route_constraints.get("shared_capacity_links", [])
+            ),
+            route_link_delay_ns(
+                platform, link.id, left, right, route_constraints
+            ),
+            reverse_delay,
+        )
+
+    target_links = sorted(
+        link_signature(link, identity) for link in platform.links
+    )
+    result = []
+    for values in itertools.permutations(fpga_ids):
+        mapping = dict(zip(fpga_ids, values))
+        if any(
+            node_signature(source) != node_signature(target)
+            for source, target in mapping.items()
+        ):
+            continue
+        transformed_links = sorted(
+            link_signature(link, mapping) for link in platform.links
+        )
+        if transformed_links == target_links:
+            result.append(mapping)
+    if not result:
+        raise ValidationError("platform identity is not an automorphism")
+    return tuple(result)
 
 
 def build_cross_stage_candidate(
@@ -915,6 +1061,17 @@ def run_cross_stage_optimization(
                 },
             },
         }
+    migration_route_constraints = (
+        None
+        if route_constraints_path is not None
+        and board_link_timing_path is None
+        else load_route_constraints(
+            effective_route_constraints_path,
+            platform,
+            frame_slots=frame_slots,
+            max_iterations=route_max_iterations,
+        )
+    )
 
     candidates = []
     baseline = _run_candidate_flow(
@@ -1061,6 +1218,8 @@ def run_cross_stage_optimization(
                                 read_json(
                                     phase3_root / "assignment.json"
                                 ),
+                                platform,
+                                migration_route_constraints,
                             )
                         ),
                     }
@@ -1346,6 +1505,16 @@ def validate_cross_stage_report(
         raise ValidationError(
             "cross-stage unexpected board link timing metadata"
         )
+    migration_route_constraints = (
+        None
+        if "route_constraints" in source_hashes
+        and not uses_board_link_timing
+        else load_route_constraints(
+            constraints_artifact if uses_board_link_timing else None,
+            platform,
+            frame_slots=frame_slots,
+        )
+    )
     incumbent = None
     incumbent_record = None
     selected = 0
@@ -1444,6 +1613,8 @@ def validate_cross_stage_report(
             expected_migration = reconstruct_partition_migration(
                 read_json(root / incumbent_record["assignment"]),
                 read_json(assignment_path),
+                platform,
+                migration_route_constraints,
             )
             if candidate.get("partition_migration") != expected_migration:
                 raise ValidationError(

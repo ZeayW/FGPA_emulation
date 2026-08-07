@@ -10,6 +10,7 @@ from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cross_stage import (
     build_cross_stage_candidate,
     compare_candidate_objectives,
+    reconstruct_partition_migration,
     run_cross_stage_optimization,
     validate_cross_stage_report,
 )
@@ -18,6 +19,7 @@ from emuflow.io import write_json
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
+from emuflow.routing import load_route_constraints
 from emuflow.tdm import build_tdm_schedule
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.yosys import import_yosys_json
@@ -28,6 +30,59 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CrossStageCandidateTest(unittest.TestCase):
+    def test_partition_migration_aligns_only_platform_automorphisms(
+        self,
+    ) -> None:
+        value = _platform_value(
+            "symmetric_ring",
+            ["a", "b", "c"],
+            [
+                _link("ab", "a", "b"),
+                _link("bc", "b", "c"),
+                _link("ca", "c", "a"),
+            ],
+        )
+        platform = Platform.from_dict(value)
+        incumbent = {
+            "cluster_assignment": {"c0": "a", "c1": "b", "c2": "c"}
+        }
+        candidate = {
+            "cluster_assignment": {"c0": "b", "c1": "c", "c2": "a"}
+        }
+        migration = reconstruct_partition_migration(
+            incumbent,
+            candidate,
+            platform,
+            load_route_constraints(None, platform),
+        )
+        self.assertEqual(migration["moved_clusters"], 3)
+        self.assertEqual(
+            migration["symmetry_alignment"]["moved_clusters"], 0
+        )
+        self.assertEqual(
+            migration["symmetry_alignment"]["mapping"],
+            {"a": "b", "b": "c", "c": "a"},
+        )
+
+        asymmetric = copy.deepcopy(value)
+        for index, fpga in enumerate(asymmetric["fpgas"]):
+            fpga["capacity"]["lut"] += index
+        asymmetric_platform = Platform.from_dict(asymmetric)
+        asymmetric_migration = reconstruct_partition_migration(
+            incumbent,
+            candidate,
+            asymmetric_platform,
+            load_route_constraints(None, asymmetric_platform),
+        )
+        self.assertEqual(
+            asymmetric_migration["symmetry_alignment"]["moved_clusters"],
+            3,
+        )
+        self.assertEqual(
+            asymmetric_migration["symmetry_alignment"]["valid_automorphisms"],
+            1,
+        )
+
     def test_all_path_objective_keeps_non_crossing_paths(self) -> None:
         compiler = shutil.which("g++") or shutil.which("clang++")
         if compiler is None:

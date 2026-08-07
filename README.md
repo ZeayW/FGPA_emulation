@@ -274,6 +274,10 @@ top-level validator requires the selected candidate's independent Phase 3/4/5
 results to match those consumed by all later stages. TritonPart seed-sweep,
 minimum-partition repair, and multi-resource balance-repair settings are
 propagated unchanged from the initial partition into every feedback trial.
+Candidate reports retain the literal FPGA-ID migration count and also report a
+symmetry-aligned count. The latter may remove a label permutation only when it
+is an exact automorphism of the BoardDB and normalized route constraints;
+otherwise the identity mapping is used conservatively.
 
 The same command can continue through the checked serial BSP boundary after a
 provider recipe has been materialized. It then runs Phase 6B, constructs the

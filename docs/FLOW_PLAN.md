@@ -353,6 +353,11 @@ Feedback trials inherit the initial Phase 3 TritonPart seed-sweep and checked
 minimum-used-FPGA/multi-resource balance-repair policy. A trial therefore is
 not rejected merely because the outer loop silently omitted the legalization
 policy used to create its incumbent.
+Partition migration is reported both literally and after maximum-overlap label
+alignment. Alignment is restricted to exact automorphisms preserving FPGA
+resources, link topology, connector roles, availability/capacity classes, and
+direction-specific link delay. It is diagnostic only and never rewrites the
+selected assignment.
 
 Acceptance uses the concrete schedule rather than the analytical routing
 proxy. The candidate checker reconstructs transport delay for every path in
