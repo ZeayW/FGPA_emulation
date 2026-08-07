@@ -12,6 +12,7 @@ from .partition import (
 from .partition_hops import refine_partition_hops
 from .platform import Platform
 from .repart import run_repart
+from .mfspart_provider import run_mfspart
 from .tritonpart import load_partition_net_weights, run_tritonpart
 from .routing import load_route_constraints
 
@@ -42,6 +43,10 @@ def run_phase3(
     repart_timeout_seconds: int = 3600,
     route_constraints_path: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
+    mfspart_coarsener: Optional[str] = None,
+    mfspart_initializer: Optional[str] = None,
+    mfspart_refiner: Optional[str] = None,
+    mfspart_legalizer: Optional[str] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -98,11 +103,26 @@ def run_phase3(
             timeout_seconds=repart_timeout_seconds,
             enable_replication=provider == "repart-replication",
         )
+    elif provider == "mfspart":
+        assignment = run_mfspart(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            route_constraints,
+            output_dir / "mfspart",
+            seed=seed,
+            net_weights=load_partition_net_weights(net_weights_path),
+            coarsener=mfspart_coarsener,
+            initializer=mfspart_initializer,
+            refiner=mfspart_refiner,
+            legalizer=mfspart_legalizer,
+        )
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "
             "expected 'repart-replication', 'repart', 'tritonpart', "
-            "or 'greedy'"
+            "'mfspart', or 'greedy'"
         )
     assignment, hop_refinement = refine_partition_hops(
         ir,
@@ -152,6 +172,8 @@ def run_phase3(
         report["artifacts"]["repart"] = "repart/repart_input.json"
         if provider == "repart-replication":
             report["artifacts"]["replication"] = "replication.json"
+    elif provider == "mfspart":
+        report["artifacts"]["mfspart"] = "mfspart/hierarchy.json"
     if hop_refinement["enabled"]:
         report["artifacts"]["hop_refinement"] = (
             "hop-refinement/hop_refinement.json"

@@ -717,7 +717,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
     multi_fpga_compile.add_argument(
         "--partition-provider",
-        choices=("repart-replication", "repart", "tritonpart", "greedy"),
+        choices=("repart-replication", "repart", "tritonpart", "mfspart", "greedy"),
         default="tritonpart",
     )
     multi_fpga_compile.add_argument("--seed", type=int, default=0)
@@ -1346,7 +1346,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--balance-tolerance", type=float)
     phase3.add_argument(
         "--provider",
-        choices=("repart-replication", "repart", "tritonpart", "greedy"),
+        choices=("repart-replication", "repart", "tritonpart", "mfspart", "greedy"),
         default="tritonpart",
         help="partition provider (default: tritonpart)",
     )
@@ -1430,6 +1430,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "topology-constrained FM refiner"
         ),
     )
+    phase3.add_argument("--mfspart-coarsener")
+    phase3.add_argument("--mfspart-initializer")
+    phase3.add_argument("--mfspart-refiner")
+    phase3.add_argument("--mfspart-legalizer")
 
     sta_parser = subparsers.add_parser(
         "sta", help="STA path extraction artifact operations"
@@ -1755,7 +1759,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_stage_optimize.add_argument(
         "--phase3-provider",
-        choices=("repart-replication", "repart", "tritonpart"),
+        choices=("repart-replication", "repart", "tritonpart", "mfspart"),
         default="repart-replication",
     )
     cross_stage_optimize.add_argument(
@@ -2884,6 +2888,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             repart_timeout_seconds=args.repart_timeout_seconds,
             route_constraints_path=args.route_constraints,
             hop_refiner=args.hop_refiner,
+            mfspart_coarsener=args.mfspart_coarsener,
+            mfspart_initializer=args.mfspart_initializer,
+            mfspart_refiner=args.mfspart_refiner,
+            mfspart_legalizer=args.mfspart_legalizer,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

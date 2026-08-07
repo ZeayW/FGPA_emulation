@@ -61,6 +61,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_MFSPART_COARSENER
+  "Build the in-tree MFSPart-style multilevel affinity coarsener"
+  ON
+)
+option(
   EMUFLOW_BUILD_PIN_PLANNER
   "Build the in-tree placement-aware TDM grouping and pin planner"
   ON
@@ -436,6 +441,53 @@ if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
   target_compile_options(emuflow_hop_partition_refiner PRIVATE -O3)
   set_target_properties(
     emuflow_hop_partition_refiner
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_MFSPART_COARSENER)
+  add_executable(
+    emuflow_mfspart_coarsener
+    "${CMAKE_SOURCE_DIR}/src/native/mfspart_coarsener.cpp"
+  )
+  target_compile_features(emuflow_mfspart_coarsener PRIVATE cxx_std_17)
+  target_compile_options(emuflow_mfspart_coarsener PRIVATE -O3)
+  set_target_properties(
+    emuflow_mfspart_coarsener
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
+    emuflow_mfspart_initializer
+    "${CMAKE_SOURCE_DIR}/src/native/mfspart_initializer.cpp"
+  )
+  target_compile_features(emuflow_mfspart_initializer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_mfspart_initializer PRIVATE -O3)
+  set_target_properties(
+    emuflow_mfspart_initializer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
+    emuflow_mfspart_refiner
+    "${CMAKE_SOURCE_DIR}/src/native/mfspart_refiner.cpp"
+  )
+  target_compile_features(emuflow_mfspart_refiner PRIVATE cxx_std_17)
+  target_compile_options(emuflow_mfspart_refiner PRIVATE -O3)
+  set_target_properties(
+    emuflow_mfspart_refiner
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
+    emuflow_mfspart_legalizer
+    "${CMAKE_SOURCE_DIR}/src/native/mfspart_legalizer.cpp"
+  )
+  target_compile_features(emuflow_mfspart_legalizer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_mfspart_legalizer PRIVATE -O3)
+  set_target_properties(
+    emuflow_mfspart_legalizer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -944,6 +996,25 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_hop_partition_refiner_cli
       COMMAND "$<TARGET_FILE:emuflow_hop_partition_refiner>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_MFSPART_COARSENER)
+    add_test(
+      NAME emuflow_mfspart_coarsener_cli
+      COMMAND "$<TARGET_FILE:emuflow_mfspart_coarsener>" --help
+    )
+    add_test(
+      NAME emuflow_mfspart_initializer_cli
+      COMMAND "$<TARGET_FILE:emuflow_mfspart_initializer>" --help
+    )
+    add_test(
+      NAME emuflow_mfspart_refiner_cli
+      COMMAND "$<TARGET_FILE:emuflow_mfspart_refiner>" --help
+    )
+    add_test(
+      NAME emuflow_mfspart_legalizer_cli
+      COMMAND "$<TARGET_FILE:emuflow_mfspart_legalizer>" --help
     )
   endif()
 

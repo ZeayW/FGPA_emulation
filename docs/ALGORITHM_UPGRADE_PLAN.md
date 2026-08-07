@@ -313,6 +313,115 @@ TritonPart's native OpenSTA timing-aware netlist mode must be evaluated
 separately from EmuFlow's weighted-hypergraph adapter. They are not treated as
 the same algorithm.
 
+### MFSPart reproduction boundary
+
+The primary reference is Zhu et al., *MFSPart: A Generalized Partitioning
+Framework for Multi-FPGA Systems and Its Ensemble-Based Extension*, TCAD 2026,
+DOI `10.1109/TCAD.2026.3656070`. The authors publish a companion repository at
+<https://github.com/hkust-zhiyao/MFSPart>, but the repository has no explicit
+software license as of pinned revision
+`d1941db4580306c3d68b750953f9f7573ba899a0`. EmuFlow therefore cannot vendor
+or derive from those implementation files. The in-tree engine is an
+independent, source-visible reproduction from the paper's equations,
+algorithms, and disclosed parameters; provenance records both the paper and
+the companion link without treating the latter as a build dependency.
+
+The serial reference implementation is divided into independently testable
+increments:
+
+1. **Paper data model and affinity hierarchy**
+   - retain original directed hyperedges for connectivity objective Eq. 2;
+   - build aggregated driver-sink edges for cut/hop objectives Eq. 1;
+   - implement affinity coarsening Eq. 4 with stable seeded tie-breaking,
+     explicit multi-resource cluster limits, lossless fine/coarse maps, and
+     identical-hyperedge aggregation;
+   - add fixed-node radius/margin coarsening only after the non-fixed hierarchy
+     and oracle pass.
+2. **Delayed propagation and initial partitioning**
+   - propagate candidate FPGAs only on the coarsest graph;
+   - use the complete propagation theorem and real-time maintenance direction
+     from Li et al., DATE 2024 (DOI `10.23919/DATE58400.2024.10546878`);
+     that paper states the zero-hop (`Hmax = 1`) recurrence while MFSPart
+     permits general `Hmax`, so the open implementation explicitly uses the
+     theorem-derived bound `FPGA_distance <= circuit_distance * Hmax` and
+     labels this generalization as an inference rather than quoted pseudocode;
+   - implement priority Eq. 5, probabilistic feasible assignment Eqs. 6--7,
+     and deterministic empty-domain repair Eq. 8;
+   - record the random seed and every candidate-domain contraction so a run is
+     replayable.
+3. **Uncoarsening and refinement**
+   - project assignments level by level and implement direct K-way FM
+     Eqs. 9--10 with best-prefix rollback;
+   - enforce capacity and fixed-node legality on every tentative move, restrict
+     target FPGAs to graph distance two by default, and apply the disclosed
+     ineffective-move early-stop rule;
+   - update driver-sink cut, connectivity, mean hop, and violation severity
+     incrementally, while an independent checker recomputes them from scratch.
+4. **Ensemble extension**
+   - after the serial reference passes, maintain five deterministic-seed
+     solutions and apply cut-overlay clustering every six uncoarsening levels;
+   - preserve only structures common to paired parents, then rerun propagation,
+     initialization, and FM on the overlay graph before remapping.
+
+Paper-faithful metrics and EmuFlow extensions remain separate. The MFSPart
+score reports driver-sink cut, connectivity, mean hop, maximum-hop violations,
+capacity, and fixed-node legality exactly as defined by the paper. Path slack,
+TDM pressure, heterogeneous-resource vectors, semantic cut legality, and
+minimum-used-FPGA requirements are optional EmuFlow extension terms and are
+never presented as part of the published MFSPart formulation.
+
+The first acceptance oracle exhaustively enumerates compact assignments and
+recomputes Eqs. 1--3 plus maximum-hop and fixed-node constraints. Each later
+increment must preserve oracle agreement before it is enabled in Phase 3.
+Large-design comparison is deferred until the constructive multilevel engine
+can replace, rather than merely precede, the current 50,000-cluster post-FM
+scale gate.
+
+The affinity hierarchy, fixed-node margin coarsening, and
+delayed-propagation/two-phase-initialization increments are implemented as
+first-party C++ engines. Fixed anchors assigned to the same FPGA are premerged;
+the original-graph radius protects nearby nodes; and a batched 0/1-shortest-path
+repair checks the selected contraction set against the
+FPGA-distance-plus-margin lower bound. Violating shortest paths release enough
+lowest-affinity contractions in one round, including alternate paths, instead
+of rebuilding the complete graph for every candidate merge. The native engine
+records protected nodes, premerges, repair rounds, distance searches, and
+rejection reasons. Its Python
+adapter independently recomputes original-graph protection and contracted-graph
+anchor distances in addition to reconstructing every hierarchy transformation,
+replaying every seeded assignment and domain contraction, recomputing the paper
+metrics, and providing a bounded exhaustive assignment oracle for compact
+acceptance cases. They are not yet the default Phase 3 provider; promotion
+waits for Phase 3 integration of the now-complete serial hierarchy.
+
+The serial uncoarsening increment is also implemented: assignments are
+projected through each lossless fine/coarse map and refined by direct K-way FM
+using Eqs. 9--10, distance-two candidate moves, ineffective-move early stop,
+and best-prefix rollback. Its native priority queue invalidates gains only for
+driver-sink neighbors, pins of incident hyperedges, and nodes whose exact
+multi-resource feasibility changes as a source/target FPGA load changes. The
+independent Python oracle still performs a full gain rescan after every move,
+so incremental-state errors cannot validate themselves.
+
+The complete serial chain is now available as an explicit, non-default
+`mfspart` Phase 3 provider. Its adapter derives directed driver-sink records,
+active multi-resource vectors, fixed FPGA indices, symmetric BoardDB hop
+distances, and independently checked balance capacities before invoking
+coarsening, initialization, and level-by-level FM. The resulting assignment is
+converted back through the common Phase 3 artifact builder and validator. A
+small sequential RTL case passes both the Phase 3 CLI and the affected
+multi-FPGA flow through routing, TDM, split-netlist generation, and runtime
+equivalence. Asymmetric or disconnected BoardDBs are rejected explicitly in
+paper mode. A separate first-party C++ legalizer enforces EmuFlow's
+minimum-used-FPGA contract after uncoarsening without presenting that extension
+as an MFSPart paper contribution. It incrementally maintains capacity, part
+occupancy, and incident-net partition counts; ranks legal moves by exact
+driver-sink cut and connectivity deltas; and cannot empty the source part or
+move fixed nodes. A Python oracle recomputes every candidate objective from
+the complete graph and replays the selected moves. Promotion to the default
+provider still requires larger sparse-complexity evidence for fixed-node margin
+coarsening and a frozen large-design downstream QoR comparison.
+
 ### Primary objective
 
 Lexicographic feasibility first:

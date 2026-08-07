@@ -1,0 +1,274 @@
+import copy
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.errors import ValidationError
+from emuflow.mfspart import MFSPART_HIERARCHY_SCHEMA
+from emuflow.mfspart_initial import MFSPART_INITIAL_SCHEMA
+from emuflow.mfspart_refine import (
+    _normalise_refinement,
+    refine_mfspart_hierarchy,
+    refine_mfspart_level,
+    validate_mfspart_refinement,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _line_problem(part_count=3):
+    parts = [f"F{index}" for index in range(part_count)]
+    distances = {
+        source: {
+            target: abs(source_index - target_index)
+            for target_index, target in enumerate(parts)
+        }
+        for source_index, source in enumerate(parts)
+    }
+    capacities = {part: {"cells": 8} for part in parts}
+    return parts, distances, capacities
+
+
+class MFSPartRefinementTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            raise unittest.SkipTest("a C++17 compiler is required")
+        cls.temporary_directory = tempfile.TemporaryDirectory()
+        cls.executable = (
+            Path(cls.temporary_directory.name) / "emuflow_mfspart_refiner"
+        )
+        subprocess.run(
+            [
+                compiler,
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Wpedantic",
+                "-Werror",
+                str(ROOT / "src/native/mfspart_refiner.cpp"),
+                "-o",
+                str(cls.executable),
+            ],
+            check=True,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.temporary_directory.cleanup()
+
+    @staticmethod
+    def _violating_graph():
+        return {
+            "nodes": [
+                {"fixed_part": 0, "weights": [1]},
+                {"fixed_part": -1, "weights": [1]},
+            ],
+            "nets": [{"weight": 1.0, "source": 0, "sinks": [1]}],
+        }
+
+    def test_eq9_eq10_move_removes_violation(self) -> None:
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                self._violating_graph(),
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2],
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=1,
+                executable=str(self.executable),
+            )
+        self.assertEqual(artifact["validation"]["status"], "pass")
+        self.assertEqual(artifact["assignment"], [0, 0])
+        self.assertGreater(artifact["metrics"]["best_cumulative_gain"], 0)
+        self.assertEqual(artifact["metrics"]["final_violating_pairs"], 0.0)
+
+    def test_best_prefix_rolls_back_negative_moves(self) -> None:
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": -1, "weights": [1]},
+            ],
+            "nets": [{"weight": 1.0, "source": 0, "sinks": [1]}],
+        }
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 0],
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=1,
+                executable=str(self.executable),
+            )
+        self.assertEqual(artifact["assignment"], [0, 0])
+        self.assertGreaterEqual(len(artifact["moves"]), 1)
+        self.assertEqual(sum(move["kept"] for move in artifact["moves"]), 0)
+        self.assertEqual(artifact["metrics"]["best_prefix"], 0.0)
+
+    def test_capacity_blocks_otherwise_profitable_move(self) -> None:
+        parts, distances, capacities = _line_problem()
+        capacities["F0"]["cells"] = 1
+        capacities["F1"]["cells"] = 1
+        graph = {
+            "nodes": [
+                {"fixed_part": 0, "weights": [1]},
+                {"fixed_part": -1, "weights": [2]},
+                {"fixed_part": 1, "weights": [1]},
+            ],
+            "nets": [{"weight": 1.0, "source": 0, "sinks": [1]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2, 1],
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=1,
+                executable=str(self.executable),
+            )
+        self.assertEqual(artifact["assignment"][1], 2)
+        self.assertEqual(artifact["metrics"]["final_capacity_violations"], 0.0)
+
+    def test_independent_oracle_rejects_corrupt_gain(self) -> None:
+        parts, distances, capacities = _line_problem()
+        problem = _normalise_refinement(
+            self._violating_graph(),
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 2],
+            hmax=1,
+            move_distance=2,
+            early_stop=1,
+            gamma=15.0,
+            violation_lambda=10_000.0,
+            mu=0.1,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                self._violating_graph(),
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2],
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=1,
+                executable=str(self.executable),
+            )
+        corrupt = copy.deepcopy(artifact)
+        corrupt["moves"][0]["gain"] += 1.0
+        with self.assertRaisesRegex(ValidationError, "replay mismatch"):
+            validate_mfspart_refinement(corrupt, problem)
+
+    def test_uncoarsening_projects_each_level_before_refinement(self) -> None:
+        fine = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": -1, "weights": [1]},
+                {"fixed_part": -1, "weights": [1]},
+            ],
+            "nets": [
+                {"weight": 1.0, "source": 0, "sinks": [2]},
+                {"weight": 1.0, "source": 1, "sinks": [3]},
+            ],
+        }
+        coarse = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [2]},
+                {"fixed_part": -1, "weights": [2]},
+            ],
+            "nets": [{"weight": 2.0, "source": 0, "sinks": [1]}],
+        }
+        hierarchy = {
+            "schema": MFSPART_HIERARCHY_SCHEMA,
+            "dimensions": ["cells"],
+            "levels": [fine, coarse],
+            "fine_to_coarse": [{0: 0, 1: 0, 2: 1, 3: 1}],
+        }
+        initial = {
+            "schema": MFSPART_INITIAL_SCHEMA,
+            "assignment": {0: 0, 1: 2},
+        }
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_hierarchy(
+                hierarchy,
+                initial,
+                parts,
+                distances,
+                capacities,
+                Path(temporary_directory),
+                hmax=1,
+                early_stop_fraction=0.5,
+                executable=str(self.executable),
+            )
+        self.assertEqual(artifact["validation"]["status"], "pass")
+        self.assertEqual(artifact["validation"]["refined_levels"], 2)
+        self.assertEqual(len(artifact["assignment"]), 4)
+
+    def test_sparse_incremental_gain_avoids_full_rescan(self) -> None:
+        node_count = 2_000
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]}
+                for _ in range(node_count)
+            ],
+            "nets": [
+                {
+                    "weight": 1.0,
+                    "source": node,
+                    "sinks": [node + 1],
+                }
+                for node in range(0, node_count, 2)
+            ],
+        }
+        parts = ["F0", "F1"]
+        distances = {
+            "F0": {"F0": 0, "F1": 1},
+            "F1": {"F0": 1, "F1": 0},
+        }
+        capacities = {part: {"cells": 5_000} for part in parts}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0] * node_count,
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=20,
+                executable=str(self.executable),
+            )
+        self.assertEqual(artifact["metrics"]["attempted_moves"], 20.0)
+        self.assertLess(
+            artifact["metrics"]["candidate_recomputations"], 3_000
+        )
+        self.assertEqual(artifact["validation"]["status"], "pass")
+
+
+if __name__ == "__main__":
+    unittest.main()
