@@ -538,6 +538,49 @@ For a design that naturally collapses into one zero-cut partition, pass
 `--partition-repair-min-used-fpgas`; every repair move remains explicit in the
 partition artifact and is checked independently.
 
+### Automatic validation archives
+
+A successful full-flow run can be archived as part of the same command. The
+archive is written outside the run directory, validated before the command
+returns, and can optionally gate deletion of the large working directory:
+
+```bash
+emuflow multi-fpga compile design.v --top top \
+  --clock clk \
+  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
+  --physical --physical-backend open \
+  --out /scratch/runs/design-r1 \
+  --archive-out /data/emuflow-archives/design-r1 \
+  --archive-run-id design-r1 \
+  --archive-cleanup
+```
+
+The versioned `archive-manifest.json` records the run ID, EmuFlow revision and
+dirty state, complete CLI configuration, host/runtime identity, optional
+`--archive-tool-version NAME=VERSION` entries, final flow summary, external RTL
+source hashes, and every retained artifact's path, size, role, and SHA-256.
+Reports and small key artifacts are copied. Files larger than 64 MiB are kept
+as size/SHA-256 records by default; change the threshold with
+`--archive-max-copy-bytes`. The complete top-level flow report is always
+copied regardless of that threshold.
+
+Archiving and cleanup may also be run separately:
+
+```bash
+emuflow archive create --flow /scratch/runs/design-r1 \
+  --out /data/emuflow-archives/design-r1 --run-id design-r1
+emuflow archive validate /data/emuflow-archives/design-r1
+emuflow archive cleanup /data/emuflow-archives/design-r1 \
+  --flow /scratch/runs/design-r1
+```
+
+`archive cleanup` revalidates the sealed manifest, every copied archive file,
+the source flow report, and every recorded source artifact before removal. A
+path mismatch, changed file, broken hash, missing report, symlink, or nested
+archive/run layout blocks deletion. Successful cleanup leaves a hash-bound
+`cleanup-receipt.json` in the archive. Validation archives are experiment
+outputs and remain outside this source repository.
+
 ### Public contest compatibility
 
 EmuFlow keeps a contest's exact abstract machine model separate from BoardDB

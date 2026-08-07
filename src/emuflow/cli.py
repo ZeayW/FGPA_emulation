@@ -4,6 +4,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
+from .archive import (
+    DEFAULT_MAX_COPY_BYTES,
+    cleanup_validation_source,
+    create_validation_archive,
+    validate_validation_archive,
+)
 from .architecture import ArchitectureDB
 from .benchmark import run_benchmark
 from .board_arm_mps4 import materialize_arm_mps4_boarddb
@@ -152,12 +158,72 @@ def _keyed_paths(values: Sequence[str], option: str) -> Dict[str, Path]:
     return result
 
 
+def _keyed_values(values: Sequence[str], option: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for value in values:
+        key, separator, item = value.partition("=")
+        if not separator or not key or not item:
+            raise ValueError(f"{option}: expected KEY=VALUE, got {value!r}")
+        if key in result:
+            raise ValueError(f"{option}: duplicate key {key!r}")
+        result[key] = item
+    return result
+
+
+def _jsonable_cli_configuration(args: argparse.Namespace) -> Dict[str, Any]:
+    def normalize(value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value.resolve())
+        if isinstance(value, dict):
+            return {
+                str(key): normalize(item)
+                for key, item in sorted(value.items())
+            }
+        if isinstance(value, (list, tuple)):
+            return [normalize(item) for item in value]
+        return value
+
+    return {
+        key: normalize(value)
+        for key, value in sorted(vars(args).items())
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="emuflow",
         description="Open multi-FPGA emulation flow frontend",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    archive_parser = subparsers.add_parser(
+        "archive", help="archive and safely clean completed validation runs"
+    )
+    archive_subparsers = archive_parser.add_subparsers(
+        dest="archive_command", required=True
+    )
+    archive_create = archive_subparsers.add_parser(
+        "create", help="create a checked, storage-bounded validation archive"
+    )
+    archive_create.add_argument("--flow", type=Path, required=True)
+    archive_create.add_argument("--out", type=Path, required=True)
+    archive_create.add_argument("--run-id", required=True)
+    archive_create.add_argument("--source-commit")
+    archive_create.add_argument(
+        "--max-copy-bytes", type=int, default=DEFAULT_MAX_COPY_BYTES
+    )
+    archive_create.add_argument(
+        "--tool-version", action="append", default=[], metavar="NAME=VERSION"
+    )
+    archive_validate = archive_subparsers.add_parser(
+        "validate", help="verify an archive without its original run directory"
+    )
+    archive_validate.add_argument("archive", type=Path)
+    archive_cleanup = archive_subparsers.add_parser(
+        "cleanup", help="delete a source run only after sealed archive validation"
+    )
+    archive_cleanup.add_argument("archive", type=Path)
+    archive_cleanup.add_argument("--flow", type=Path, required=True)
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
     platform_subparsers = platform_parser.add_subparsers(
@@ -612,6 +678,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--platform", type=Path, required=True)
     multi_fpga_compile.add_argument("--out", type=Path, required=True)
+    multi_fpga_compile.add_argument(
+        "--archive-out",
+        type=Path,
+        help="archive a successful full-flow run to this separate directory",
+    )
+    multi_fpga_compile.add_argument(
+        "--archive-run-id",
+        help="archive identity (defaults to the flow output directory name)",
+    )
+    multi_fpga_compile.add_argument("--archive-source-commit")
+    multi_fpga_compile.add_argument(
+        "--archive-max-copy-bytes", type=int, default=DEFAULT_MAX_COPY_BYTES
+    )
+    multi_fpga_compile.add_argument(
+        "--archive-tool-version",
+        action="append",
+        default=[],
+        metavar="NAME=VERSION",
+    )
+    multi_fpga_compile.add_argument(
+        "--archive-cleanup",
+        action="store_true",
+        help="remove --out only after the new archive passes its cleanup gate",
+    )
     multi_fpga_compile.add_argument("--yosys")
     multi_fpga_compile.add_argument(
         "--mapping-profile",
@@ -1955,6 +2045,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "archive":
+        if args.archive_command == "create":
+            report = create_validation_archive(
+                args.flow,
+                args.out,
+                run_id=args.run_id,
+                source_commit=args.source_commit,
+                max_copy_bytes=args.max_copy_bytes,
+                tool_versions=_keyed_values(
+                    args.tool_version, "--tool-version"
+                ),
+            )
+        elif args.archive_command == "validate":
+            report = validate_validation_archive(args.archive)
+        else:
+            report = cleanup_validation_source(args.archive, args.flow)
+        _print_json(report)
+        return 0
+
     if args.command == "platform":
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
@@ -2549,6 +2658,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report["summary"])
             return 0
+        if args.archive_cleanup and args.archive_out is None:
+            raise EmuFlowError("--archive-cleanup requires --archive-out")
         report = run_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,
@@ -2656,7 +2767,29 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.serial_bsp_ready_stable_cycles
             ),
         )
-        _print_json(report)
+        if args.archive_out is not None:
+            archive_report = create_validation_archive(
+                args.out,
+                args.archive_out,
+                run_id=args.archive_run_id or args.out.resolve().name,
+                source_commit=args.archive_source_commit,
+                max_copy_bytes=args.archive_max_copy_bytes,
+                tool_versions=_keyed_values(
+                    args.archive_tool_version, "--archive-tool-version"
+                ),
+                run_configuration=_jsonable_cli_configuration(args),
+            )
+            result: Dict[str, Any] = {
+                "flow": report,
+                "archive": archive_report,
+            }
+            if args.archive_cleanup:
+                result["cleanup"] = cleanup_validation_source(
+                    args.archive_out, args.out
+                )
+            _print_json(result)
+        else:
+            _print_json(report)
         return 0 if report["status"] == "pass" else 2
 
     if args.command == "partition":
