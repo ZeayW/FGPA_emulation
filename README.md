@@ -278,6 +278,9 @@ Candidate reports retain the literal FPGA-ID migration count and also report a
 symmetry-aligned count. The latter may remove a label permutation only when it
 is an exact automorphism of the BoardDB and normalized route constraints;
 otherwise the identity mapping is used conservatively.
+The optimizer also assigns every evaluated partition a canonical class under
+those same exact symmetries. Repeated classes terminate outer-loop cycling only
+after the candidate's routing/TDM QoR has been evaluated.
 
 The same command can continue through the checked serial BSP boundary after a
 provider recipe has been materialized. It then runs Phase 6B, constructs the

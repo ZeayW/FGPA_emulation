@@ -611,6 +611,53 @@ def _platform_automorphisms(
     return tuple(result)
 
 
+def reconstruct_partition_class(
+    assignment: Mapping[str, Any],
+    platform: Platform,
+    route_constraints: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Build a deterministic partition identity modulo exact board symmetry."""
+    cluster_assignment = assignment.get("cluster_assignment")
+    if not isinstance(cluster_assignment, dict) or not cluster_assignment:
+        raise ValidationError(
+            "cross-stage partition class assignment is invalid"
+        )
+    fpga_ids = tuple(sorted(fpga.id for fpga in platform.fpgas))
+    if not set(cluster_assignment.values()).issubset(fpga_ids):
+        raise ValidationError(
+            "cross-stage partition class owner is not on the platform"
+        )
+    automorphisms = _platform_automorphisms(platform, route_constraints)
+    canonical = min(
+        tuple(
+            (cluster, mapping[cluster_assignment[cluster]])
+            for cluster in sorted(cluster_assignment)
+        )
+        for mapping in automorphisms
+    )
+    signature = hashlib.sha256(
+        "\n".join(
+            f"{len(cluster)}:{cluster}:{len(owner)}:{owner}"
+            for cluster, owner in canonical
+        ).encode("utf-8")
+    ).hexdigest()
+    if route_constraints is None:
+        qualification = (
+            "identity-only-external-route-constraints-unavailable"
+        )
+    elif len(fpga_ids) > 8:
+        qualification = "identity-only-enumeration-bound"
+    else:
+        qualification = "boarddb-and-route-constraints"
+    return {
+        "method": "lexicographic-exact-platform-automorphism",
+        "qualification": qualification,
+        "valid_automorphisms": len(automorphisms),
+        "clusters": len(canonical),
+        "sha256": signature,
+    }
+
+
 def build_cross_stage_candidate(
     database: Mapping[str, Any],
     assignment: Mapping[str, Any],
@@ -1098,7 +1145,15 @@ def run_cross_stage_optimization(
         "reason": "initial incumbent",
     }
     baseline["phase3_validation"] = initial_validation
+    baseline["partition_class"] = reconstruct_partition_class(
+        initial_assignment,
+        platform,
+        migration_route_constraints,
+    )
     candidates.append(baseline)
+    evaluated_partition_classes = {
+        baseline["partition_class"]["sha256"]: 0
+    }
     incumbent_index = 0
     termination = "iteration-limit"
 
@@ -1134,6 +1189,7 @@ def run_cross_stage_optimization(
             break
         accepted_step = False
         feasible_trials = 0
+        equivalent_trials = 0
         for trial, step_size in enumerate(steps):
             iteration = len(candidates)
             iteration_root = output_dir / f"iteration_{iteration:03d}"
@@ -1222,8 +1278,28 @@ def run_cross_stage_optimization(
                                 migration_route_constraints,
                             )
                         ),
+                        "partition_class": reconstruct_partition_class(
+                            read_json(phase3_root / "assignment.json"),
+                            platform,
+                            migration_route_constraints,
+                        ),
                     }
                 )
+                partition_signature = candidate["partition_class"][
+                    "sha256"
+                ]
+                equivalent_iteration = evaluated_partition_classes.get(
+                    partition_signature
+                )
+                if equivalent_iteration is not None:
+                    candidate["equivalent_partition_iteration"] = (
+                        equivalent_iteration
+                    )
+                    equivalent_trials += 1
+                else:
+                    evaluated_partition_classes[partition_signature] = (
+                        iteration
+                    )
                 decision = compare_candidate_objectives(
                     read_json(output_dir / candidate["score"]),
                     read_json(output_dir / incumbent["score"]),
@@ -1234,6 +1310,8 @@ def run_cross_stage_optimization(
                 if decision["accepted"]:
                     incumbent_index = iteration
                     accepted_step = True
+                    if equivalent_iteration is not None:
+                        termination = "symmetry-cycle"
                     break
             except (EmuFlowError, ValidationError, ValueError) as error:
                 candidates.append(
@@ -1256,12 +1334,15 @@ def run_cross_stage_optimization(
                     }
                 )
         if accepted_step:
+            if termination == "symmetry-cycle":
+                break
             continue
-        termination = (
-            "line-search-rejected"
-            if feasible_trials
-            else "line-search-infeasible"
-        )
+        if feasible_trials and equivalent_trials == feasible_trials:
+            termination = "symmetry-stagnation"
+        elif feasible_trials:
+            termination = "line-search-rejected"
+        else:
+            termination = "line-search-infeasible"
         break
 
     report = {
@@ -1519,6 +1600,7 @@ def validate_cross_stage_report(
     incumbent_record = None
     selected = 0
     validated = 0
+    evaluated_partition_classes: Dict[str, int] = {}
     active_outer = 1
     expected_trial = 0
     for index, candidate in enumerate(candidates):
@@ -1608,6 +1690,43 @@ def validate_cross_stage_report(
         )
         assignment_path = root / candidate["assignment"]
         clusters_path = assignment_path.parent / "clusters.json"
+        expected_partition_class = reconstruct_partition_class(
+            read_json(assignment_path),
+            platform,
+            migration_route_constraints,
+        )
+        if candidate.get("partition_class") != expected_partition_class:
+            raise ValidationError(
+                "cross-stage partition class mismatch"
+            )
+        partition_signature = expected_partition_class["sha256"]
+        equivalent_iteration = evaluated_partition_classes.get(
+            partition_signature
+        )
+        if index == 0:
+            if candidate.get("equivalent_partition_iteration") is not None:
+                raise ValidationError(
+                    "cross-stage initial partition cannot be equivalent"
+                )
+        elif equivalent_iteration is None:
+            if candidate.get("equivalent_partition_iteration") is not None:
+                raise ValidationError(
+                    "cross-stage unexpected equivalent partition"
+                )
+        else:
+            reported_equivalent = candidate.get(
+                "equivalent_partition_iteration"
+            )
+            if (
+                isinstance(reported_equivalent, bool)
+                or not isinstance(reported_equivalent, int)
+                or reported_equivalent != equivalent_iteration
+            ):
+                raise ValidationError(
+                    "cross-stage equivalent partition iteration mismatch"
+                )
+        if equivalent_iteration is None:
+            evaluated_partition_classes[partition_signature] = index
         if index > 0:
             assert incumbent_record is not None
             expected_migration = reconstruct_partition_migration(
@@ -1702,6 +1821,62 @@ def validate_cross_stage_report(
         raise ValidationError(
             "cross-stage selected candidate identity mismatch"
         )
+    termination = report.get("termination")
+    if termination not in {
+        "iteration-limit",
+        "feedback-generation-failed",
+        "line-search-rejected",
+        "line-search-infeasible",
+        "symmetry-cycle",
+        "symmetry-stagnation",
+    }:
+        raise ValidationError("cross-stage termination is invalid")
+    if termination == "symmetry-cycle":
+        final = candidates[-1]
+        if (
+            final.get("status") != "pass"
+            or not final.get("decision", {}).get("accepted")
+            or isinstance(
+                final.get("equivalent_partition_iteration"), bool
+            )
+            or not isinstance(
+                final.get("equivalent_partition_iteration"), int
+            )
+            or selected != final["iteration"]
+        ):
+            raise ValidationError(
+                "cross-stage symmetry-cycle termination mismatch"
+            )
+    if termination == "symmetry-stagnation":
+        outer_iterations = [
+            candidate.get("outer_iteration")
+            for candidate in candidates[1:]
+            if isinstance(candidate.get("outer_iteration"), int)
+        ]
+        last_outer = max(outer_iterations, default=None)
+        feasible = [
+            candidate
+            for candidate in candidates[1:]
+            if candidate.get("outer_iteration") == last_outer
+            and candidate.get("status") == "pass"
+        ]
+        if (
+            not feasible
+            or any(
+                candidate.get("decision", {}).get("accepted")
+                or isinstance(
+                    candidate.get("equivalent_partition_iteration"),
+                    bool,
+                )
+                or not isinstance(
+                    candidate.get("equivalent_partition_iteration"), int
+                )
+                for candidate in feasible
+            )
+        ):
+            raise ValidationError(
+                "cross-stage symmetry-stagnation termination mismatch"
+            )
     return {
         "status": "pass",
         "validated_candidates": validated,

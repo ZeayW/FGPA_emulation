@@ -10,6 +10,7 @@ from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cross_stage import (
     build_cross_stage_candidate,
     compare_candidate_objectives,
+    reconstruct_partition_class,
     reconstruct_partition_migration,
     run_cross_stage_optimization,
     validate_cross_stage_report,
@@ -63,6 +64,18 @@ class CrossStageCandidateTest(unittest.TestCase):
             migration["symmetry_alignment"]["mapping"],
             {"a": "b", "b": "c", "c": "a"},
         )
+        self.assertEqual(
+            reconstruct_partition_class(
+                incumbent,
+                platform,
+                load_route_constraints(None, platform),
+            ),
+            reconstruct_partition_class(
+                candidate,
+                platform,
+                load_route_constraints(None, platform),
+            ),
+        )
 
         asymmetric = copy.deepcopy(value)
         for index, fpga in enumerate(asymmetric["fpgas"]):
@@ -81,6 +94,18 @@ class CrossStageCandidateTest(unittest.TestCase):
         self.assertEqual(
             asymmetric_migration["symmetry_alignment"]["valid_automorphisms"],
             1,
+        )
+        self.assertNotEqual(
+            reconstruct_partition_class(
+                incumbent,
+                asymmetric_platform,
+                load_route_constraints(None, asymmetric_platform),
+            )["sha256"],
+            reconstruct_partition_class(
+                candidate,
+                asymmetric_platform,
+                load_route_constraints(None, asymmetric_platform),
+            )["sha256"],
         )
 
     def test_all_path_objective_keeps_non_crossing_paths(self) -> None:
@@ -437,7 +462,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                     {"ab": {"a": {"b": 3.0}, "b": {"a": 7.0}}},
                 )
                 self.assertEqual(
-                    report["termination"], "line-search-rejected"
+                    report["termination"], "symmetry-stagnation"
                 )
                 self.assertEqual(
                     report["configuration"][
@@ -470,6 +495,13 @@ class CrossStageCandidateTest(unittest.TestCase):
                 self.assertTrue(
                     all(
                         not candidate["decision"]["accepted"]
+                        for candidate in report["candidates"][1:]
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        candidate["equivalent_partition_iteration"]
+                        == 0
                         for candidate in report["candidates"][1:]
                     )
                 )
@@ -522,6 +554,24 @@ class CrossStageCandidateTest(unittest.TestCase):
             ):
                 validate_cross_stage_report(
                     corrupted_path,
+                    ir_path,
+                    database_path,
+                    platform_path,
+                )
+
+            corrupted_class = copy.deepcopy(reports[0])
+            corrupted_class["candidates"][0]["partition_class"][
+                "sha256"
+            ] = "0" * 64
+            corrupted_class_path = (
+                root / "run_0" / "corrupted_partition_class_report.json"
+            )
+            write_json(corrupted_class_path, corrupted_class)
+            with self.assertRaisesRegex(
+                ValidationError, "partition class mismatch"
+            ):
+                validate_cross_stage_report(
+                    corrupted_class_path,
                     ir_path,
                     database_path,
                     platform_path,

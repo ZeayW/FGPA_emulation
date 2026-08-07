@@ -358,6 +358,10 @@ alignment. Alignment is restricted to exact automorphisms preserving FPGA
 resources, link topology, connector roles, availability/capacity classes, and
 direction-specific link delay. It is diagnostic only and never rewrites the
 selected assignment.
+The same exact symmetry group defines a canonical partition class for
+fixed-point and cycle detection. A repeated class is still routed and scheduled
+once, so heuristic QoR differences remain eligible for acceptance, but it does
+not trigger another redundant feedback iteration.
 
 Acceptance uses the concrete schedule rather than the analytical routing
 proxy. The candidate checker reconstructs transport delay for every path in
