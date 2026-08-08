@@ -671,6 +671,21 @@ provenance.  Normalized y regions are rejected.  The result is marked
 position-based refinement, existing concrete-slot contract, RUDY gate, and
 two-stage bank/channel assignment are reconciled and verified.
 
+The next isolated kernel is
+`chimew-section3.3.2-bounded-inference-v1`. Its input requires physical-site
+source-y coordinates from `source-qualified-physical-site-lookahead-v1` with
+hash-sealed placement provenance; normalized coordinates are rejected. The
+kernel only permutes signals that have the same grouping domain, TDM ratio,
+and exact SLL encoding, so every group capacity and group SLL encoding remain
+unchanged. It orders equal-encoding signals by source y as described in
+Section 3.3.2 and accepts a permutation only when the independently replayed
+within-group pairwise-y objective does not increase. The paper does not
+publish its complete swap schedule or tie breaks, so the deterministic group
+anchor order and acceptance objective are explicitly labelled a first-party
+bounded inference, not an exact reproduction of unpublished details. This
+artifact also remains `not-a-phase6-pin-plan` until the RUDY and two-stage
+physical bank/channel gates pass.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA
