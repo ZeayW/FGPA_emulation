@@ -832,6 +832,28 @@ for validation-farm task sealing. Validate the checked-in plan with:
 emuflow contest matrix-validate benchmarks/contest_validation_matrix.json
 ```
 
+The same matrix can be compiled into collision-free fetch tasks for a pinned
+validation-farm install. Fetchers and the matrix are copied into that install,
+so workers never depend on a mutable source checkout. Each worker recomputes
+the downloaded Git-blob SHA-1 or SHA-256 and checks the exact revision and byte
+count before emitting `fetch_report.json`:
+
+```bash
+emuflow contest matrix-fetch-farm-spec \
+  benchmarks/contest_validation_matrix.json \
+  --source-commit "$COMMIT" \
+  --install-dir "/shared/emuflow/install/$COMMIT" \
+  --node hpc1 --node hpc2 --tier smoke \
+  --farm-id public-contest-smoke --output farm.json
+
+emuflow validation-farm prepare --spec farm.json --out /shared/runs/public-smoke
+emuflow validation-farm launch /shared/runs/public-smoke
+```
+
+This first farm compiler intentionally covers the immutable `fetch` gate only.
+Import, evaluation, BoardDB projection, and Phase 3–7 remain separate matrix
+gates and are not upgraded merely because a download passed.
+
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact
 harmonic constraint `sum(1 / ratio) <= 1`:
