@@ -907,6 +907,7 @@ emuflow multi-fpga compile examples/rtl/counter.v \
   --clock clk \
   --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --physical \
+  --physical-workers 2 \
   --out build/counter-multi-fpga-physical
 ```
 
@@ -916,6 +917,10 @@ refinement and legalization, final VPR routing, independent RR-graph checking,
 and physical timing closure for every partition. It requires neither a board
 nor vendor device data. The resulting timing is qualified against the public
 academic architecture and is not vendor sign-off.
+Independent FPGA partitions run concurrently when `--physical-workers N` is
+greater than one; their artifacts remain isolated and the aggregate report is
+written deterministically in BoardDB FPGA order. The equivalent standalone
+`emuflow multi-fpga physical` command uses `--workers N`.
 
 To use the identical flow boundary with a concrete Xilinx part, select the
 Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:

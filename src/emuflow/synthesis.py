@@ -11,6 +11,7 @@ from .native_tools import resolve_native_executable
 VALID_XILINX_FAMILIES = {"xcup", "xcu", "xc7"}
 VALID_SYNTHESIS_POLICIES = {"native", "logic-only"}
 YOSYS_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+YOSYS_DEFINE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:=[^\s;]+)?$")
 LOGIC_ONLY_MAP = (
     Path(__file__).resolve().parents[2] / "scripts" / "yosys" / "logic_only_map.v"
 )
@@ -30,6 +31,14 @@ def _yosys_identifier(value: str) -> str:
     return value
 
 
+def _yosys_define(value: str) -> str:
+    if not YOSYS_DEFINE.fullmatch(value):
+        raise EmuFlowError(
+            f"unsupported Yosys define {value!r}; expected NAME or NAME=VALUE"
+        )
+    return value
+
+
 def build_yosys_script(
     sources: Iterable[Path],
     top: str,
@@ -37,6 +46,8 @@ def build_yosys_script(
     family: str = "xcup",
     policy: str = "native",
     verilog_output: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
 ) -> str:
     source_list = list(sources)
     if not source_list:
@@ -53,6 +64,12 @@ def build_yosys_script(
         )
     top_identifier = _yosys_identifier(top)
 
+    include_list = list(include_dirs)
+    define_list = [_yosys_define(value) for value in defines]
+    read_options = [
+        *(f"-I{_yosys_quote(str(path))}" for path in include_list),
+        *(f"-D{value}" for value in define_list),
+    ]
     read_sources = " ".join(_yosys_quote(str(path)) for path in source_list)
     synth_options = [
         f"synth_xilinx -family {family}",
@@ -77,7 +94,7 @@ def build_yosys_script(
             f"techmap -map {_yosys_quote(str(LOGIC_ONLY_MAP))}"
         )
     commands = [
-        f"read_verilog -sv {read_sources}",
+        " ".join(["read_verilog", "-sv", *read_options, read_sources]),
         f"hierarchy -check -top {top_identifier}",
         " ".join(synth_options),
         # synth_xilinx preserves hierarchy in some Yosys releases. EmuIR
@@ -189,12 +206,21 @@ def run_yosys(
     verilog_output: Optional[Path] = None,
     executable: Optional[str] = None,
     log_path: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
 ) -> None:
     source_list = list(sources)
     for source in source_list:
         if not source.is_file():
             raise EmuFlowError(f"RTL source does not exist: {source}")
 
+    include_list = list(include_dirs)
+    for include_dir in include_list:
+        if not include_dir.is_dir():
+            raise EmuFlowError(
+                f"Verilog include directory does not exist: {include_dir}"
+            )
+    define_list = list(defines)
     command = resolve_native_executable("yosys", executable)
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +233,8 @@ def run_yosys(
         family,
         policy,
         verilog_output=verilog_output,
+        include_dirs=include_list,
+        defines=define_list,
     )
     completed = subprocess.run(
         [command, "-p", script],

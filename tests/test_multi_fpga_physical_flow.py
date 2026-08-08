@@ -1,9 +1,11 @@
 import hashlib
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
@@ -111,6 +113,9 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         "virtual_anchors": f"{fpga}/virtual_anchors.json",
                     }
                 )
+            # Deliberately reverse the producer order; the physical report is
+            # required to follow the BoardDB order even under concurrency.
+            manifest["fpgas"].reverse()
             write_json(split / "manifest.json", manifest)
             write_json(root / "schedule.json", {})
             architecture = root / "architecture.xml"
@@ -123,7 +128,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 "timing_model": {"fabric_to_dut_max_delay_ns": 8.0},
             }
 
+            worker_barrier = threading.Barrier(2, timeout=5.0)
+
             def fake_yosys(_sources, _top, output, **_kwargs):
+                worker_barrier.wait()
                 write_json(output, {"modules": {}})
 
             def fake_lower(netlist_path, _transport, _transport_ir, output, report):
@@ -269,12 +277,30 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     root / "schedule.json",
                     root / "physical",
                     architecture=architecture,
+                    workers=2,
                 )
 
         self.assertEqual(report["summary"]["fpgas"], 2)
         self.assertEqual(report["summary"]["original_cells"], 2)
         self.assertEqual(report["summary"]["transport_cells"], 2)
         self.assertEqual(report["physical_summary"]["validation"]["status"], "pass")
+        self.assertEqual(
+            [item["fpga"] for item in report["fpgas"]],
+            ["fpga0", "fpga1"],
+        )
+        self.assertEqual(report["execution"]["requested_workers"], 2)
+        self.assertEqual(report["execution"]["effective_workers"], 2)
+
+    def test_rejects_non_positive_worker_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValidationError, "workers"):
+                run_multi_fpga_physical_flow(
+                    Path(temporary),
+                    PLATFORM,
+                    Path(temporary) / "schedule.json",
+                    Path(temporary) / "physical",
+                    workers=0,
+                )
 
 
 if __name__ == "__main__":

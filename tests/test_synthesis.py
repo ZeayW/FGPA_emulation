@@ -40,6 +40,27 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn("techmap -map", script)
         self.assertIn("logic_only_map.v", script)
 
+    def test_include_directories_and_defines_are_explicit(self) -> None:
+        script = build_yosys_script(
+            [Path("rtl/design.v")],
+            top="design",
+            output=Path("build/design.json"),
+            include_dirs=[Path("rtl/include")],
+            defines=["SYNTHESIS", "WIDTH=32"],
+        )
+        self.assertIn('-I"rtl/include"', script)
+        self.assertIn("-DSYNTHESIS", script)
+        self.assertIn("-DWIDTH=32", script)
+
+    def test_unsafe_define_is_rejected(self) -> None:
+        with self.assertRaisesRegex(EmuFlowError, "Yosys define"):
+            build_yosys_script(
+                [Path("rtl/design.v")],
+                top="design",
+                output=Path("build/design.json"),
+                defines=["SAFE; delete"],
+            )
+
     def test_generic_script_has_no_vendor_family_dependency(self) -> None:
         script = build_generic_yosys_script(
             [Path("rtl/counter.sv")],

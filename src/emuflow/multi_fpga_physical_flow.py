@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .boundary_timing import (
     validate_boundary_identity_database,
@@ -266,7 +267,10 @@ def run_multi_fpga_physical_flow(
     assignment_path: Optional[Path] = None,
     routes_path: Optional[Path] = None,
     path_database_path: Optional[Path] = None,
+    workers: int = 1,
 ) -> Dict[str, Any]:
+    if workers < 1:
+        raise ValidationError("physical workers must be at least one")
     split_root = split_root.resolve()
     manifest_path = split_root / "manifest.json"
     manifest = read_json(manifest_path)
@@ -337,9 +341,9 @@ def run_multi_fpga_physical_flow(
         }
 
     runtime_controller = split_root / manifest["runtime_controller_rtl"]
-    records = []
-    physical_fpgas = []
-    for item in manifest["fpgas"]:
+    def _run_partition(
+        item: Mapping[str, Any],
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         fpga_id = item["fpga"]
         source_root = split_root / fpga_id
         fpga_root = output_dir / fpga_id
@@ -665,22 +669,55 @@ def run_multi_fpga_physical_flow(
             original_cells=original_cells,
             transport_cells=transport_cells,
         )
-        physical_fpgas.append(physical_summary_item(physical_result))
-        records.append(
-            {
-                "fpga": fpga_id,
-                "part": fpga_part,
-                "status": "pass",
-                "original_cells": original_cells,
-                "transport_cells": transport_cells,
-                "critical_path_ns": physical_result["timing"][
-                    "critical_path_ns"
-                ],
-                **provider_fields,
-                "stages": stages,
-                "physical_result": physical_result,
+        record = {
+            "fpga": fpga_id,
+            "part": fpga_part,
+            "status": "pass",
+            "original_cells": original_cells,
+            "transport_cells": transport_cells,
+            "critical_path_ns": physical_result["timing"][
+                "critical_path_ns"
+            ],
+            **provider_fields,
+            "stages": stages,
+            "physical_result": physical_result,
+        }
+        return record, physical_summary_item(physical_result)
+
+    items_by_fpga = {item["fpga"]: item for item in manifest["fpgas"]}
+    ordered_items = [items_by_fpga[fpga_id] for fpga_id in expected_fpgas]
+    effective_workers = min(workers, len(ordered_items))
+    if effective_workers == 1:
+        partition_results = [_run_partition(item) for item in ordered_items]
+    else:
+        results_by_fpga: Dict[
+            str, Tuple[Dict[str, Any], Dict[str, Any]]
+        ] = {}
+        failures = []
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            future_to_fpga = {
+                executor.submit(_run_partition, item): item["fpga"]
+                for item in ordered_items
             }
-        )
+            for future in as_completed(future_to_fpga):
+                fpga_id = future_to_fpga[future]
+                try:
+                    results_by_fpga[fpga_id] = future.result()
+                except Exception as error:  # Preserve all partition failures.
+                    failures.append((fpga_id, error))
+        if failures:
+            details = "; ".join(
+                f"{fpga_id}: {error}"
+                for fpga_id, error in sorted(failures, key=lambda item: item[0])
+            )
+            raise EmuFlowError(
+                f"parallel multi-FPGA physical flow failed: {details}"
+            ) from failures[0][1]
+        partition_results = [
+            results_by_fpga[fpga_id] for fpga_id in expected_fpgas
+        ]
+    records = [record for record, _summary in partition_results]
+    physical_fpgas = [summary for _record, summary in partition_results]
 
     physical_summary = {
         "schema": PHYSICAL_SUMMARY_SCHEMA,
@@ -766,6 +803,11 @@ def run_multi_fpga_physical_flow(
             "sha256": _sha256(manifest_path),
         },
         "architecture": architecture_source,
+        "execution": {
+            "requested_workers": workers,
+            "effective_workers": effective_workers,
+            "ordering": "boarddb-fpga-order",
+        },
         "expected_fpgas": expected_fpgas,
         "fpgas": records,
         "physical_summary": physical_summary,

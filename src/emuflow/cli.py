@@ -584,6 +584,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     synthesis.add_argument("--log", type=Path)
     synthesis.add_argument(
+        "--include-dir",
+        action="append",
+        default=[],
+        type=Path,
+        help="Verilog include directory passed to Yosys (repeatable)",
+    )
+    synthesis.add_argument(
+        "--define",
+        action="append",
+        default=[],
+        help="Verilog preprocessor NAME or NAME=VALUE (repeatable)",
+    )
+    synthesis.add_argument(
         "--verilog-output",
         type=Path,
         help="optional flattened mapped Verilog for downstream physical tools",
@@ -905,6 +918,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--physical-vivado-route-directive", default="Default"
     )
     multi_fpga_compile.add_argument(
+        "--physical-workers",
+        type=int,
+        default=1,
+        help="run independent per-FPGA physical backends concurrently",
+    )
+    multi_fpga_compile.add_argument(
         "--serial-bsp-phy-provider",
         type=Path,
         help=(
@@ -981,6 +1000,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_physical.add_argument(
         "--vivado-route-directive", default="Default"
+    )
+    multi_fpga_physical.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="run independent per-FPGA physical backends concurrently",
     )
     multi_fpga_bsp = multi_fpga_subparsers.add_parser(
         "bsp",
@@ -2400,6 +2425,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             verilog_output=args.verilog_output,
             executable=args.yosys,
             log_path=args.log,
+            include_dirs=args.include_dir,
+            defines=args.define,
         )
         _print_json(
             {
@@ -2412,6 +2439,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                     else None
                 ),
                 "sources": [str(source) for source in args.sources],
+                "include_dirs": [str(path) for path in args.include_dir],
+                "defines": list(args.define),
                 "status": "pass",
                 "top": args.top,
             }
@@ -2705,6 +2734,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 assignment_path=args.assignment,
                 routes_path=args.routes,
                 path_database_path=args.path_database,
+                workers=args.workers,
             )
             _print_json(report["summary"])
             return 0
@@ -2808,6 +2838,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_vivado_route_directive=(
                 args.physical_vivado_route_directive
             ),
+            physical_workers=args.physical_workers,
             serial_bsp_phy_provider=args.serial_bsp_phy_provider,
             serial_bsp_runtime_sync_provider=(
                 args.serial_bsp_runtime_sync_provider

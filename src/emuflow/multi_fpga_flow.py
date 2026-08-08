@@ -331,6 +331,7 @@ def run_multi_fpga_flow(
     physical_vivado_max_timing_paths: int = 10000,
     physical_vivado_place_directive: str = "Default",
     physical_vivado_route_directive: str = "Default",
+    physical_workers: int = 1,
     serial_bsp_phy_provider: Optional[Path] = None,
     serial_bsp_runtime_sync_provider: Optional[Path] = None,
     serial_bsp_board_overlay: Optional[Path] = None,
@@ -871,6 +872,7 @@ def run_multi_fpga_flow(
             path_database_path=(
                 path_database_path if timing_driven else None
             ),
+            workers=physical_workers,
         )
         physical_summary_path = output_dir / "physical/physical-summary.json"
 

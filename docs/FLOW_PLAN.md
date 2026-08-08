@@ -563,6 +563,10 @@ exported RR graph. The in-tree C++ checker validates route-node identity,
 coordinates and PTC, exact edge/switch connectivity, tree-branch restarts,
 cross-net resource capacity, packed-net/sink coverage, and the placement
 artifact hash. This is separate from VPR's internal route consistency check.
+Per-FPGA physical pipelines may execute concurrently because they consume
+read-only common inputs and write disjoint output trees. The coordinator
+collects every result before emitting summaries and restores BoardDB FPGA
+order, so worker completion order cannot change report content.
 
 Physical IO-net preservation, routed DCP validation, timing, and bitstream
 generation remain separate gates and are not implied by the placement gate.
