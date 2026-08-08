@@ -1557,6 +1557,17 @@ reconstructs group capacity, slot collisions, objective values, and split
 netlists. Its validation report includes the reconstructed logical-lane
 baseline and objective, crossing-bit, and pin-distance improvements.
 
+Two non-selectable Chimew research kernels now sit beside that production
+baseline. The first reproduces FPGA 2026 Algorithm 1 from explicit,
+source-qualified physical SLL-crossing encodings. The second only swaps
+equal-encoding signals using physical-site source-y coordinates, preserving
+every group capacity and SLL encoding while independently checking a
+non-increasing pairwise-y objective. Because the paper does not publish the
+complete position-refinement swap schedule, the latter is explicitly named a
+bounded deterministic inference rather than an exact reproduction. Both
+artifacts remain `not-a-phase6-pin-plan` until the RUDY and two-stage physical
+bank/channel assignment gates are implemented and validated.
+
 Phase 6B has two explicit electrical providers. For parallel I/O,
 `src/native/bsp_pin_solver.cpp` implements exact sparse minimum-cost bipartite
 flow over electrically legal physical channels. Its checker independently
