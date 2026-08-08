@@ -16,6 +16,7 @@ from emuflow.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_PROVIDER,
     build_chimew_phase6_pin_plan,
     run_chimew_phase6_adapter,
+    validate_chimew_phase6_binding,
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
@@ -246,6 +247,15 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             )["status"],
             "pass",
         )
+        self.assertEqual(
+            validate_chimew_phase6_binding(
+                self.schedule,
+                self.platform,
+                result["pin_plan"],
+                result["electrical_binding"],
+            )["status"],
+            "pass",
+        )
         plan_by_id = {
             entry["schedule_entry"]: entry for entry in result["pin_plan"]["entries"]
         }
@@ -324,6 +334,24 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 self.assignment_input,
                 electrical_map,
                 executable=str(self.executable),
+            )
+
+    def test_binding_checker_rejects_pin_plan_lane_tampering(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+        )
+        plan = copy.deepcopy(result["pin_plan"])
+        plan["entries"][0]["physical_lane"] = 1
+        with self.assertRaisesRegex(ValidationError, "conflicts with pin plan"):
+            validate_chimew_phase6_binding(
+                self.schedule,
+                self.platform,
+                plan,
+                result["electrical_binding"],
             )
 
 

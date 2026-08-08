@@ -454,6 +454,178 @@ def build_chimew_phase6_pin_plan(
     }
 
 
+def validate_chimew_phase6_binding(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    pin_plan: Mapping[str, Any],
+    binding: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Independently bind a Chimew pin plan to its electrical certificate."""
+
+    if binding.get("schema") != CHIMEW_PHASE6_BINDING_SCHEMA:
+        raise ValidationError("Chimew Phase 6 electrical binding schema is invalid")
+    if (
+        binding.get("status") != "pass"
+        or binding.get("integration_status") != "phase6-pin-plan"
+        or binding.get("provider") != CHIMEW_PHASE6_BINDING_PROVIDER
+        or pin_plan.get("provider") != CHIMEW_PIN_PLAN_PROVIDER
+    ):
+        raise ValidationError("Chimew Phase 6 electrical binding provider is invalid")
+    if (
+        binding.get("design") != schedule.get("design")
+        or binding.get("platform") != platform.name
+        or pin_plan.get("design") != schedule.get("design")
+        or pin_plan.get("platform") != platform.name
+    ):
+        raise ValidationError("Chimew Phase 6 electrical binding identity differs")
+    provenance = binding.get("provenance")
+    configuration = pin_plan.get("configuration")
+    if not isinstance(provenance, dict) or not isinstance(configuration, dict):
+        raise ValidationError("Chimew Phase 6 electrical provenance is missing")
+    _string(binding.get("paper_provider"), "electrical_binding.paper_provider")
+    _string(provenance.get("producer"), "electrical_binding.producer")
+    _string(
+        provenance.get("producer_version"),
+        "electrical_binding.producer_version",
+    )
+    for field in (
+        "boarddb_sha256",
+        "package_pin_inventory_sha256",
+        "electrical_map_sha256",
+        "assignment_input_sha256",
+        "schedule_sha256",
+    ):
+        _digest(provenance.get(field), f"electrical_binding.{field}")
+    schedule_sha256 = _canonical_sha256(schedule)
+    if (
+        provenance.get("schedule_sha256") != schedule_sha256
+        or configuration.get("schedule_sha256") != schedule_sha256
+        or provenance.get("electrical_map_sha256")
+        != configuration.get("electrical_map_sha256")
+    ):
+        raise ValidationError("Chimew Phase 6 electrical provenance does not agree")
+
+    schedule_by_id = {entry["id"]: entry for entry in schedule.get("entries", [])}
+    plan_by_id = {
+        entry["schedule_entry"]: entry for entry in pin_plan.get("entries", [])
+    }
+    if len(schedule_by_id) != len(schedule.get("entries", [])) or set(plan_by_id) != set(
+        schedule_by_id
+    ):
+        raise ValidationError("Chimew Phase 6 electrical schedule coverage is invalid")
+    raw_entries = binding.get("entries")
+    if not isinstance(raw_entries, list):
+        raise ValidationError("Chimew Phase 6 electrical entries are missing")
+    covered = set()
+    pins = set()
+    lanes = set()
+    groups = set()
+    link_by_id = {link.id: link for link in platform.links}
+    for index, record in enumerate(raw_entries):
+        if not isinstance(record, dict):
+            raise ValidationError(f"Chimew electrical binding entry {index} is invalid")
+        group = _string(record.get("group"), f"electrical_binding[{index}].group")
+        if group in groups:
+            raise ValidationError("Chimew electrical binding duplicates a group")
+        groups.add(group)
+        members = record.get("schedule_entries")
+        if not isinstance(members, list) or not members or not all(
+            isinstance(member, str) and member for member in members
+        ):
+            raise ValidationError("Chimew electrical binding group is empty")
+        if len(set(members)) != len(members) or any(member in covered for member in members):
+            raise ValidationError("Chimew electrical binding duplicates schedule entries")
+        link = _string(record.get("link"), f"electrical_binding[{index}].link")
+        fpga_a = _string(record.get("fpga_a"), f"electrical_binding[{index}].fpga_a")
+        fpga_b = _string(record.get("fpga_b"), f"electrical_binding[{index}].fpga_b")
+        platform_link = link_by_id.get(link)
+        if platform_link is None or set(platform_link.endpoints) != {fpga_a, fpga_b}:
+            raise ValidationError("Chimew electrical binding link identity is invalid")
+        physical_lane = record.get("physical_lane")
+        if (
+            isinstance(physical_lane, bool)
+            or not isinstance(physical_lane, int)
+            or not 0
+            <= physical_lane
+            < platform_link.transport_bits_per_cycle_per_direction
+        ):
+            raise ValidationError("Chimew electrical binding physical lane is invalid")
+        lane_key = (link, physical_lane)
+        if lane_key in lanes:
+            raise ValidationError("Chimew electrical binding reuses a concrete lane")
+        lanes.add(lane_key)
+        direction = record.get("direction")
+        if direction not in {"a_to_b", "b_to_a"}:
+            raise ValidationError("Chimew electrical binding direction is invalid")
+        source, sink = (fpga_a, fpga_b) if direction == "a_to_b" else (fpga_b, fpga_a)
+        for member in members:
+            scheduled = schedule_by_id.get(member)
+            planned = plan_by_id.get(member)
+            if (
+                scheduled is None
+                or planned is None
+                or scheduled.get("link") != link
+                or scheduled.get("from") != source
+                or scheduled.get("to") != sink
+                or planned.get("physical_lane") != physical_lane
+            ):
+                raise ValidationError("Chimew electrical binding conflicts with pin plan")
+        pin_keys = (
+            (fpga_a, _string(record.get("package_pin_a"), "package_pin_a")),
+            (fpga_b, _string(record.get("package_pin_b"), "package_pin_b")),
+        )
+        if any(key in pins for key in pin_keys):
+            raise ValidationError("Chimew electrical binding reuses a package pin")
+        pins.update(pin_keys)
+        _string(record.get("bank_pair"), "electrical_binding.bank_pair")
+        _string(record.get("channel"), "electrical_binding.channel")
+        _string(record.get("bank_a"), "electrical_binding.bank_a")
+        _string(record.get("bank_b"), "electrical_binding.bank_b")
+        iostandard = _string(
+            record.get("iostandard"), "electrical_binding.iostandard"
+        )
+        supported = record.get("supported_iostandards")
+        if (
+            not isinstance(supported, list)
+            or iostandard not in supported
+            or len(supported) != len(set(supported))
+        ):
+            raise ValidationError("Chimew electrical binding IOSTANDARD is invalid")
+        voltage = _number(
+            record.get("bank_voltage"), "electrical_binding.bank_voltage"
+        )
+        if (
+            record.get("electrical_class") != "single_ended_parallel"
+            or iostandard not in _IOSTANDARD_VOLTAGES
+            or abs(voltage - _IOSTANDARD_VOLTAGES[iostandard]) > 1.0e-9
+        ):
+            raise ValidationError("Chimew electrical binding voltage is invalid")
+        covered.update(members)
+    if covered != set(schedule_by_id):
+        raise ValidationError("Chimew electrical binding coverage is incomplete")
+    metrics = binding.get("metrics")
+    expected = {
+        "signals": len(covered),
+        "groups": len(groups),
+        "channels": len(raw_entries),
+        "package_pins": len(pins),
+        "lane_slot_collisions": 0,
+        "package_pin_collisions": 0,
+    }
+    if not isinstance(metrics, dict) or any(
+        metrics.get(key) != value for key, value in expected.items()
+    ):
+        raise ValidationError("Chimew Phase 6 electrical metrics do not agree")
+    return {
+        "status": "pass",
+        "signals": len(covered),
+        "groups": len(groups),
+        "concrete_lanes": len(lanes),
+        "package_pins": len(pins),
+        "binding_sha256": _canonical_sha256(binding),
+    }
+
+
 def run_chimew_phase6_adapter(
     schedule_path: Path,
     platform_path: Path,

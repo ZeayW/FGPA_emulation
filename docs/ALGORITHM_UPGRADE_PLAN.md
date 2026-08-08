@@ -740,6 +740,12 @@ plus a distinct electrical binding certificate. Chimew paper metrics remain
 under the paper provider identity, while voltage, package-pin, and
 concrete-slot checks are explicitly labelled EmuFlow extensions.
 
+Phase 6 requires that certificate whenever the Chimew provider is selected.
+It independently rechecks schedule and source hashes, exact signal coverage,
+direction, BoardDB link/lane bounds, bank/channel identity, package-pin
+uniqueness, and IOSTANDARD/voltage compatibility before sealing the certificate
+into the split manifest. A Chimew-labelled pin plan cannot bypass this gate.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA

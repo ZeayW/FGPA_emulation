@@ -519,6 +519,12 @@ reconstructs group legality and lane/slot occupancy before Phase 6 generates
 schedule-specific mux/capture RTL and rechecks exact instance coverage,
 endpoint agreement, and mapped cycle behavior.
 
+For the Chimew provider, the source-qualified electrical certificate is a
+mandatory Phase 6 input rather than an advisory side artifact. The independent
+validator binds its concrete lanes, pins, banks, direction, electrical standard,
+voltage, and source hashes to the accepted pin plan and schedule; the validated
+certificate is then carried by the split manifest.
+
 Package-pin, bank, IOSTANDARD, direction, connector, frequency, and skew
 binding is implemented as the Phase 6B source-complete min-cost-flow
 increment. It is exercised against an explicit synthetic UltraScale+ BSP and

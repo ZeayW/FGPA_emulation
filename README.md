@@ -1594,8 +1594,14 @@ emuflow phase6 \
   --platform platforms/hardware/board.json \
   --pin-plan build/chimew/phase6-adapter/pin_plan.json \
   --position-hints build/chimew/phase6-adapter/position_hints.json \
+  --electrical-binding build/chimew/phase6-adapter/electrical_binding.json \
   --out build/phase6
 ```
+
+For this provider the electrical certificate is mandatory: Phase 6 independently
+rechecks its exact schedule coverage, concrete-lane and package-pin uniqueness,
+direction, and source hashes, then seals a copy into the split manifest. Other
+pin-plan providers neither require nor accept this Chimew-specific certificate.
 
 Phase 6B has two explicit electrical providers. For parallel I/O,
 `src/native/bsp_pin_solver.cpp` implements exact sparse minimum-cost bipartite
