@@ -2064,6 +2064,7 @@ def _build_parser() -> argparse.ArgumentParser:
     split_validate.add_argument("--platform", type=Path, required=True)
     split_validate.add_argument("--pin-plan", type=Path)
     split_validate.add_argument("--position-hints", type=Path)
+    split_validate.add_argument("--electrical-binding", type=Path)
 
     phase6 = subparsers.add_parser(
         "phase6",
@@ -2076,6 +2077,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--out", type=Path, required=True)
     phase6.add_argument("--pin-plan", type=Path)
     phase6.add_argument("--position-hints", type=Path)
+    phase6.add_argument("--electrical-binding", type=Path)
     phase6.add_argument("--equivalence-cycles", type=int, default=16)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
 
@@ -3416,6 +3418,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             manifest_path=args.manifest,
             pin_plan_path=args.pin_plan,
             position_hints_path=args.position_hints,
+            electrical_binding_path=args.electrical_binding,
         )
         _print_json(report)
         return 0
@@ -3429,6 +3432,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             output_dir=args.out,
             pin_plan_path=args.pin_plan,
             position_hints_path=args.position_hints,
+            electrical_binding_path=args.electrical_binding,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
         )
