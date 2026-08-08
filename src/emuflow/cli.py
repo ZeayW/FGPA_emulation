@@ -48,6 +48,10 @@ from .contest_iccad2019 import (
     materialize_iccad2019_rtl_boarddb,
     optimize_iccad2019_ratios,
 )
+from .contest_public import (
+    build_contest_fetch_farm_spec,
+    fetch_public_contest_case,
+)
 from .contest_validation_matrix import load_contest_validation_matrix
 from .errors import EmuFlowError
 from .fpga_interchange import (
@@ -396,6 +400,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="validate the versioned public contest qualification matrix",
     )
     contest_matrix.add_argument("matrix", type=Path)
+    contest_fetch = contest_subparsers.add_parser(
+        "fetch-public",
+        help="fetch one hash-pinned public matrix case and validate provenance",
+    )
+    contest_fetch.add_argument("--matrix", type=Path, required=True)
+    contest_fetch.add_argument("--case-id", required=True)
+    contest_fetch.add_argument("--out", type=Path, required=True)
+    contest_farm = contest_subparsers.add_parser(
+        "matrix-fetch-farm-spec",
+        help="compile selected public fetch gates into a validation-farm spec",
+    )
+    contest_farm.add_argument("matrix", type=Path)
+    contest_farm.add_argument("--source-commit", required=True)
+    contest_farm.add_argument("--install-dir", type=Path, required=True)
+    contest_farm.add_argument("--node", action="append", required=True)
+    contest_farm.add_argument("--tier", action="append")
+    contest_farm.add_argument("--suite", action="append")
+    contest_farm.add_argument("--slots-per-node", type=int, default=1)
+    contest_farm.add_argument("--farm-id", required=True)
+    contest_farm.add_argument("--output", "-o", type=Path, required=True)
     eda2024_evaluate = contest_subparsers.add_parser(
         "eda2024-evaluate",
         help="independently check a 2024 logic-replication solution",
@@ -2302,6 +2326,22 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "contest":
         if args.contest_command == "matrix-validate":
             _, report = load_contest_validation_matrix(args.matrix)
+        elif args.contest_command == "fetch-public":
+            report = fetch_public_contest_case(
+                args.matrix, args.case_id, args.out
+            )
+        elif args.contest_command == "matrix-fetch-farm-spec":
+            report = build_contest_fetch_farm_spec(
+                args.matrix,
+                source_commit=args.source_commit,
+                install_dir=args.install_dir,
+                nodes=args.node,
+                output_path=args.output,
+                farm_id=args.farm_id,
+                tiers=args.tier or ("smoke",),
+                suites=args.suite,
+                slots_per_node=args.slots_per_node,
+            )
         elif args.contest_command == "eda2023-import":
             report = import_eda2023_case(
                 case_dir=args.case_dir,

@@ -182,6 +182,13 @@ file(
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
 )
+set(
+  EMUFLOW_PUBLIC_CONTEST_DATA
+  "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
+  "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
+  "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
+  "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
+)
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/emuflow.in"
   "${CMAKE_BINARY_DIR}/emuflow"
@@ -221,9 +228,26 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/scripts/yosys"
     "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
   COMMAND
+    "${CMAKE_COMMAND}" -E make_directory
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
+    "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
+    "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
+  COMMAND
     "${CMAKE_COMMAND}" -E touch
     "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
-  DEPENDS ${EMUFLOW_PYTHON_SOURCES} ${EMUFLOW_RUNTIME_DATA}
+  DEPENDS
+    ${EMUFLOW_PYTHON_SOURCES}
+    ${EMUFLOW_RUNTIME_DATA}
+    ${EMUFLOW_PUBLIC_CONTEST_DATA}
   COMMENT "Installing the in-tree EmuFlow Python control plane"
   VERBATIM
 )
