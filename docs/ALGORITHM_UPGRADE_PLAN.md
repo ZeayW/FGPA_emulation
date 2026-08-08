@@ -686,6 +686,20 @@ bounded inference, not an exact reproduction of unpublished details. This
 artifact also remains `not-a-phase6-pin-plan` until the RUDY and two-stage
 physical bank/channel gates pass.
 
+The source-qualified congestion kernel is `chimew-section2.3-rudy-gate-v1`.
+It accepts only `physical-site-xy` placement/net coordinates, hash-sealed
+placement, netlist, and architecture provenance, an explicit routing-capacity
+grid, and the physical wire pitch per routing layer. First-party C++ computes
+the paper's HPWL wire area, uniform bounding-box density, exact overlap load
+for every intersected bin, and peak utilization. Python independently
+reintegrates every bin and checks global wire-area conservation. The supplied
+maximum utilization is recorded as an EmuFlow qualification threshold, not a
+constant attributed to Chimew. Because the paper's displayed formula divides
+by bounding-box area without publishing a degenerate-net convention, v1
+rejects zero-width or zero-height boxes instead of inventing an epsilon. The
+report is still `not-a-phase6-pin-plan` until the two-stage bank/channel gate
+passes.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA

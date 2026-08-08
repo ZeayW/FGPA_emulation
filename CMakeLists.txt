@@ -527,6 +527,17 @@ if(EMUFLOW_BUILD_PIN_PLANNER)
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
+  add_executable(
+    emuflow_chimew_rudy
+    "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
+  )
+  target_compile_features(emuflow_chimew_rudy PRIVATE cxx_std_17)
+  target_compile_options(emuflow_chimew_rudy PRIVATE -O3)
+  set_target_properties(
+    emuflow_chimew_rudy
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
 endif()
 
 if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
@@ -1056,6 +1067,10 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_chimew_position_refiner_cli
       COMMAND "$<TARGET_FILE:emuflow_chimew_position_refiner>" --help
+    )
+    add_test(
+      NAME emuflow_chimew_rudy_cli
+      COMMAND "$<TARGET_FILE:emuflow_chimew_rudy>" --help
     )
   endif()
 
