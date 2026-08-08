@@ -48,6 +48,7 @@ from .contest_iccad2019 import (
     materialize_iccad2019_rtl_boarddb,
     optimize_iccad2019_ratios,
 )
+from .contest_validation_matrix import load_contest_validation_matrix
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -390,6 +391,11 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_subparsers = contest_parser.add_subparsers(
         dest="contest_command", required=True
     )
+    contest_matrix = contest_subparsers.add_parser(
+        "matrix-validate",
+        help="validate the versioned public contest qualification matrix",
+    )
+    contest_matrix.add_argument("matrix", type=Path)
     eda2024_evaluate = contest_subparsers.add_parser(
         "eda2024-evaluate",
         help="independently check a 2024 logic-replication solution",
@@ -2294,7 +2300,9 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "contest":
-        if args.contest_command == "eda2023-import":
+        if args.contest_command == "matrix-validate":
+            _, report = load_contest_validation_matrix(args.matrix)
+        elif args.contest_command == "eda2023-import":
             report = import_eda2023_case(
                 case_dir=args.case_dir,
                 output_dir=args.out,
