@@ -850,9 +850,26 @@ emuflow validation-farm prepare --spec farm.json --out /shared/runs/public-smoke
 emuflow validation-farm launch /shared/runs/public-smoke
 ```
 
-This first farm compiler intentionally covers the immutable `fetch` gate only.
-Import, evaluation, BoardDB projection, and Phase 3–7 remain separate matrix
-gates and are not upgraded merely because a download passed.
+After that farm passes, compile a second, separately pinned farm for semantic
+import.  The compiler accepts only `pass` fetch tasks, rechecks their provenance
+and content digests, and gives every importer a new isolated run directory:
+
+```bash
+emuflow contest matrix-import-farm-spec \
+  benchmarks/contest_validation_matrix.json \
+  --fetch-farm /shared/runs/public-smoke \
+  --source-commit "$COMMIT" \
+  --install-dir "/shared/emuflow/install/$COMMIT" \
+  --node hpc1 --node hpc2 --tier smoke \
+  --farm-id public-contest-import-smoke --output import-farm.json
+```
+
+The unified `import-public` gate dispatches the EDA 2023 and EDA 2025 execution
+adapters and a structural EDA 2024/RePart importer.  The latter parses and
+cross-checks all problem inputs but explicitly records that no participant
+solution has been evaluated. Evaluation, BoardDB projection, and Phase 3–7
+remain separate matrix gates and are not upgraded merely because fetch or
+import passed.
 
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact

@@ -50,7 +50,9 @@ from .contest_iccad2019 import (
 )
 from .contest_public import (
     build_contest_fetch_farm_spec,
+    build_contest_import_farm_spec,
     fetch_public_contest_case,
+    import_public_contest_case,
 )
 from .contest_validation_matrix import load_contest_validation_matrix
 from .errors import EmuFlowError
@@ -407,6 +409,14 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_fetch.add_argument("--matrix", type=Path, required=True)
     contest_fetch.add_argument("--case-id", required=True)
     contest_fetch.add_argument("--out", type=Path, required=True)
+    contest_import = contest_subparsers.add_parser(
+        "import-public",
+        help="semantically import one pinned public matrix case",
+    )
+    contest_import.add_argument("--matrix", type=Path, required=True)
+    contest_import.add_argument("--case-id", required=True)
+    contest_import.add_argument("--source-dir", type=Path, required=True)
+    contest_import.add_argument("--out", type=Path, required=True)
     contest_farm = contest_subparsers.add_parser(
         "matrix-fetch-farm-spec",
         help="compile selected public fetch gates into a validation-farm spec",
@@ -420,6 +430,20 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_farm.add_argument("--slots-per-node", type=int, default=1)
     contest_farm.add_argument("--farm-id", required=True)
     contest_farm.add_argument("--output", "-o", type=Path, required=True)
+    contest_import_farm = contest_subparsers.add_parser(
+        "matrix-import-farm-spec",
+        help="compile passed public fetches into semantic import farm tasks",
+    )
+    contest_import_farm.add_argument("matrix", type=Path)
+    contest_import_farm.add_argument("--fetch-farm", type=Path, required=True)
+    contest_import_farm.add_argument("--source-commit", required=True)
+    contest_import_farm.add_argument("--install-dir", type=Path, required=True)
+    contest_import_farm.add_argument("--node", action="append", required=True)
+    contest_import_farm.add_argument("--tier", action="append")
+    contest_import_farm.add_argument("--suite", action="append")
+    contest_import_farm.add_argument("--slots-per-node", type=int, default=1)
+    contest_import_farm.add_argument("--farm-id", required=True)
+    contest_import_farm.add_argument("--output", "-o", type=Path, required=True)
     eda2024_evaluate = contest_subparsers.add_parser(
         "eda2024-evaluate",
         help="independently check a 2024 logic-replication solution",
@@ -2330,9 +2354,26 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = fetch_public_contest_case(
                 args.matrix, args.case_id, args.out
             )
+        elif args.contest_command == "import-public":
+            report = import_public_contest_case(
+                args.matrix, args.case_id, args.source_dir, args.out
+            )
         elif args.contest_command == "matrix-fetch-farm-spec":
             report = build_contest_fetch_farm_spec(
                 args.matrix,
+                source_commit=args.source_commit,
+                install_dir=args.install_dir,
+                nodes=args.node,
+                output_path=args.output,
+                farm_id=args.farm_id,
+                tiers=args.tier or ("smoke",),
+                suites=args.suite,
+                slots_per_node=args.slots_per_node,
+            )
+        elif args.contest_command == "matrix-import-farm-spec":
+            report = build_contest_import_farm_spec(
+                args.matrix,
+                args.fetch_farm,
                 source_commit=args.source_commit,
                 install_dir=args.install_dir,
                 nodes=args.node,
