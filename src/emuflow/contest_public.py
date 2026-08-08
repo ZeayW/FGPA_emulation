@@ -15,14 +15,24 @@ from .contest_validation_matrix import (
 )
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
-from .contest_eda2023 import import_eda2023_case
-from .contest_eda2024 import import_eda2024_case
-from .contest_eda2025 import import_eda2025_instance
+from .contest_eda2023 import (
+    import_eda2023_case,
+    materialize_eda2023_rtl_boarddb,
+)
+from .contest_eda2024 import (
+    import_eda2024_case,
+    materialize_eda2024_rtl_boarddb,
+)
+from .contest_eda2025 import (
+    import_eda2025_instance,
+    materialize_eda2025_rtl_boarddb,
+)
 from .validation_farm import validate_validation_farm
 
 
 PUBLIC_CONTEST_FETCH_REPORT_SCHEMA = "emuflow.public-contest-fetch-report/v1"
 PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA = "emuflow.public-contest-import-report/v1"
+PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA = "emuflow.public-contest-boarddb-report/v1"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 
 
@@ -260,6 +270,147 @@ def import_public_contest_case(
     return report
 
 
+def _validate_import_artifacts(
+    matrix: Mapping[str, Any], case: Mapping[str, Any], import_dir: Path
+) -> Dict[str, Any]:
+    report = read_json(import_dir / "import_report.json")
+    if (
+        report.get("schema") != PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA
+        or report.get("status") != "pass"
+        or report.get("case_id") != case["id"]
+        or report.get("matrix_sha256") != canonical_matrix_sha256(matrix)
+        or report.get("evaluation_status") != "not-run"
+    ):
+        raise ValidationError("public contest import report is invalid")
+    records = report.get("artifacts")
+    if not isinstance(records, list) or not records:
+        raise ValidationError("public contest import artifact manifest is invalid")
+    seen = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValidationError(f"public contest import artifact {index} is invalid")
+        relative = record.get("path")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or relative in seen
+        ):
+            raise ValidationError("public contest import artifact path is invalid")
+        seen.add(relative)
+        path = import_dir / relative
+        if (
+            not path.is_file()
+            or path.stat().st_size != record.get("bytes")
+            or hashlib.sha256(path.read_bytes()).hexdigest() != record.get("sha256")
+        ):
+            raise ValidationError(
+                f"public contest import artifact {relative!r} seal is broken"
+            )
+    actual = {
+        path.relative_to(import_dir).as_posix()
+        for path in import_dir.rglob("*")
+        if path.is_file() and path.name != "import_report.json"
+    }
+    if actual != seen:
+        raise ValidationError("public contest import artifact coverage is not exact")
+    return report
+
+
+def materialize_public_contest_boarddb(
+    matrix_path: Path,
+    case_id: str,
+    source_dir: Path,
+    import_dir: Path,
+    device_template_path: Path,
+    output_dir: Path,
+    *,
+    lane_scale: int = 1,
+    unweighted_link_lanes: int = 1,
+    fabric_clock_mhz: float = 50.0,
+    latency_cycles: int = 2,
+) -> Dict[str, Any]:
+    """Project a passed public import onto a source-qualified FPGA template."""
+
+    matrix, _ = load_contest_validation_matrix(matrix_path)
+    case = _find_case(matrix, case_id)
+    if "materialize-boarddb" not in case["target_gates"]:
+        raise ValidationError(
+            f"public contest case {case_id!r} has no BoardDB materialization gate"
+        )
+    source_dir = source_dir.resolve()
+    import_dir = import_dir.resolve()
+    _validate_fetch_provenance(case, source_dir)
+    _validate_import_artifacts(matrix, case, import_dir)
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if any(output_dir.iterdir()):
+        raise EmuFlowError(f"public contest BoardDB output is not empty: {output_dir}")
+    output_path = output_dir / "boarddb.json"
+    name = case_id.replace(".", "-") + "-rtl"
+    if case["suite"] == "eda2023":
+        adapter = materialize_eda2023_rtl_boarddb(
+            import_dir / "contest_instance.json",
+            device_template_path,
+            output_path,
+            name=name,
+            lane_scale=lane_scale,
+            fabric_clock_mhz=fabric_clock_mhz,
+            latency_cycles=latency_cycles,
+            route_constraints_path=output_dir / "route_constraints.json",
+        )
+        projection = {"lane_scale": lane_scale}
+    elif case["suite"] == "eda2024-repart":
+        adapter = materialize_eda2024_rtl_boarddb(
+            source_dir,
+            device_template_path,
+            output_path,
+            name=name,
+            lanes_per_edge=unweighted_link_lanes,
+            fabric_clock_mhz=fabric_clock_mhz,
+            latency_cycles=latency_cycles,
+            route_constraints_path=output_dir / "route_constraints.json",
+        )
+        projection = {"unweighted_link_lanes": unweighted_link_lanes}
+    elif case["suite"] == "eda2025":
+        adapter = materialize_eda2025_rtl_boarddb(
+            import_dir / "contest_instance.json",
+            device_template_path,
+            output_path,
+            name=name,
+            lane_scale=lane_scale,
+            fabric_clock_mhz=fabric_clock_mhz,
+            latency_cycles=latency_cycles,
+            route_constraints_path=output_dir / "route_constraints.json",
+        )
+        projection = {"lane_scale": lane_scale}
+    else:
+        raise ValidationError(
+            f"public contest suite {case['suite']!r} has no BoardDB adapter"
+        )
+    artifacts = _artifact_manifest(output_dir)
+    report = {
+        "schema": PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA,
+        "status": "pass",
+        "case_id": case_id,
+        "suite": case["suite"],
+        "gate": "materialize-boarddb",
+        "matrix_sha256": canonical_matrix_sha256(matrix),
+        "qualification": "academic-architecture-projection",
+        "projection": {
+            **projection,
+            "fabric_clock_mhz": float(fabric_clock_mhz),
+            "latency_cycles": latency_cycles,
+        },
+        "adapter": adapter,
+        "artifacts": artifacts,
+        "phase3_status": "not-run",
+    }
+    write_json(output_dir / "boarddb_report.json", report)
+    return report
+
+
 def build_contest_fetch_farm_spec(
     matrix_path: Path,
     *,
@@ -447,6 +598,131 @@ def build_contest_import_farm_spec(
         "farm_id": farm_id,
         "matrix_sha256": coverage["matrix_sha256"],
         "fetch_farm": str(fetch_farm_dir),
+        "tasks": len(tasks),
+        "input_bytes": sum(case["input_bytes"] for case in selected_cases),
+        "output": str(output_path.resolve()),
+    }
+
+
+def build_contest_boarddb_farm_spec(
+    matrix_path: Path,
+    fetch_farm_dir: Path,
+    import_farm_dir: Path,
+    *,
+    source_commit: str,
+    install_dir: Path,
+    nodes: Sequence[str],
+    output_path: Path,
+    farm_id: str,
+    tiers: Iterable[str] = ("smoke",),
+    suites: Optional[Iterable[str]] = None,
+    slots_per_node: int = 1,
+    lane_scale: int = 1,
+    unweighted_link_lanes: int = 1,
+) -> Dict[str, Any]:
+    """Compile BoardDB projection gates from passed fetch and import farms."""
+
+    matrix, coverage = load_contest_validation_matrix(matrix_path)
+    source_commit = source_commit.lower()
+    if _COMMIT_RE.fullmatch(source_commit) is None:
+        raise ValidationError("contest farm source commit must be full 40-hex")
+    if not nodes or len(set(nodes)) != len(nodes):
+        raise ValidationError("contest farm nodes must be non-empty and unique")
+    if slots_per_node < 1:
+        raise ValidationError("contest farm slots per node must be positive")
+    if lane_scale < 1 or unweighted_link_lanes < 1:
+        raise ValidationError("contest BoardDB lane projections must be positive")
+
+    fetch_farm_dir = fetch_farm_dir.resolve()
+    import_farm_dir = import_farm_dir.resolve()
+    validate_validation_farm(fetch_farm_dir)
+    validate_validation_farm(import_farm_dir)
+    fetch_manifest = read_json(fetch_farm_dir / "farm-manifest.json")
+    import_manifest = read_json(import_farm_dir / "farm-manifest.json")
+    fetch_ids = {record["id"] for record in fetch_manifest["tasks"]}
+    import_ids = {record["id"] for record in import_manifest["tasks"]}
+    selected_tiers = set(tiers)
+    selected_suites = set(suites) if suites is not None else None
+    tasks = []
+    selected_cases = []
+    for case in matrix["cases"]:
+        if (
+            case["tier"] not in selected_tiers
+            or "materialize-boarddb" not in case["target_gates"]
+            or case["source"]["revision_kind"] == "embedded-sha256"
+        ):
+            continue
+        if selected_suites is not None and case["suite"] not in selected_suites:
+            continue
+        suffix = case["id"].replace(".", "-")
+        fetch_id = "fetch-" + suffix
+        import_id = "import-" + suffix
+        if fetch_id not in fetch_ids or import_id not in import_ids:
+            raise ValidationError(
+                f"contest BoardDB case {case['id']!r} lacks an upstream task"
+            )
+        fetch_state = read_json(fetch_farm_dir / "tasks" / fetch_id / "state.json")
+        import_state = read_json(import_farm_dir / "tasks" / import_id / "state.json")
+        if fetch_state.get("status") != "pass" or import_state.get("status") != "pass":
+            raise ValidationError(
+                f"contest BoardDB case {case['id']!r} upstream gates did not pass"
+            )
+        source_dir = (fetch_farm_dir / "runs" / fetch_id / "input").resolve()
+        import_dir = (import_farm_dir / "runs" / import_id).resolve()
+        _validate_fetch_provenance(case, source_dir)
+        _validate_import_artifacts(matrix, case, import_dir)
+        tasks.append(
+            {
+                "id": "boarddb-" + suffix,
+                "command": [
+                    "{install}/bin/emuflow",
+                    "contest",
+                    "materialize-public-boarddb",
+                    "--matrix",
+                    (
+                        "{install}/share/emuflow/benchmarks/"
+                        "contest_validation_matrix.json"
+                    ),
+                    "--case-id",
+                    case["id"],
+                    "--source-dir",
+                    str(source_dir),
+                    "--import-dir",
+                    str(import_dir),
+                    "--device-template",
+                    (
+                        "{install}/share/emuflow/platforms/virtual/"
+                        "academic_vtr_4fpga_mesh.json"
+                    ),
+                    "--lane-scale",
+                    str(lane_scale),
+                    "--unweighted-link-lanes",
+                    str(unweighted_link_lanes),
+                    "--out",
+                    "{run_dir}",
+                ],
+            }
+        )
+        selected_cases.append(case)
+    if not tasks:
+        raise ValidationError("contest farm selection produced no BoardDB tasks")
+    spec = {
+        "schema": "emuflow.validation-farm-spec/v1",
+        "farm_id": farm_id,
+        "source_commit": source_commit,
+        "install_dir": str(install_dir.resolve()),
+        "nodes": list(nodes),
+        "slots_per_node": slots_per_node,
+        "tasks": tasks,
+    }
+    write_json(output_path, spec)
+    return {
+        "schema": "emuflow.contest-boarddb-farm-plan/v1",
+        "status": "generated",
+        "farm_id": farm_id,
+        "matrix_sha256": coverage["matrix_sha256"],
+        "fetch_farm": str(fetch_farm_dir),
+        "import_farm": str(import_farm_dir),
         "tasks": len(tasks),
         "input_bytes": sum(case["input_bytes"] for case in selected_cases),
         "output": str(output_path.resolve()),

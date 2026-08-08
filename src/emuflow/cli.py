@@ -50,10 +50,12 @@ from .contest_iccad2019 import (
     optimize_iccad2019_ratios,
 )
 from .contest_public import (
+    build_contest_boarddb_farm_spec,
     build_contest_fetch_farm_spec,
     build_contest_import_farm_spec,
     fetch_public_contest_case,
     import_public_contest_case,
+    materialize_public_contest_boarddb,
 )
 from .contest_validation_matrix import load_contest_validation_matrix
 from .errors import EmuFlowError
@@ -418,6 +420,20 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_import.add_argument("--case-id", required=True)
     contest_import.add_argument("--source-dir", type=Path, required=True)
     contest_import.add_argument("--out", type=Path, required=True)
+    contest_boarddb = contest_subparsers.add_parser(
+        "materialize-public-boarddb",
+        help="materialize a passed public import on an RTL-capable FPGA template",
+    )
+    contest_boarddb.add_argument("--matrix", type=Path, required=True)
+    contest_boarddb.add_argument("--case-id", required=True)
+    contest_boarddb.add_argument("--source-dir", type=Path, required=True)
+    contest_boarddb.add_argument("--import-dir", type=Path, required=True)
+    contest_boarddb.add_argument("--device-template", type=Path, required=True)
+    contest_boarddb.add_argument("--out", type=Path, required=True)
+    contest_boarddb.add_argument("--lane-scale", type=int, default=1)
+    contest_boarddb.add_argument("--unweighted-link-lanes", type=int, default=1)
+    contest_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
+    contest_boarddb.add_argument("--latency-cycles", type=int, default=2)
     contest_farm = contest_subparsers.add_parser(
         "matrix-fetch-farm-spec",
         help="compile selected public fetch gates into a validation-farm spec",
@@ -445,6 +461,23 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_import_farm.add_argument("--slots-per-node", type=int, default=1)
     contest_import_farm.add_argument("--farm-id", required=True)
     contest_import_farm.add_argument("--output", "-o", type=Path, required=True)
+    contest_boarddb_farm = contest_subparsers.add_parser(
+        "matrix-boarddb-farm-spec",
+        help="compile passed public imports into BoardDB projection farm tasks",
+    )
+    contest_boarddb_farm.add_argument("matrix", type=Path)
+    contest_boarddb_farm.add_argument("--fetch-farm", type=Path, required=True)
+    contest_boarddb_farm.add_argument("--import-farm", type=Path, required=True)
+    contest_boarddb_farm.add_argument("--source-commit", required=True)
+    contest_boarddb_farm.add_argument("--install-dir", type=Path, required=True)
+    contest_boarddb_farm.add_argument("--node", action="append", required=True)
+    contest_boarddb_farm.add_argument("--tier", action="append")
+    contest_boarddb_farm.add_argument("--suite", action="append")
+    contest_boarddb_farm.add_argument("--slots-per-node", type=int, default=1)
+    contest_boarddb_farm.add_argument("--lane-scale", type=int, default=1)
+    contest_boarddb_farm.add_argument("--unweighted-link-lanes", type=int, default=1)
+    contest_boarddb_farm.add_argument("--farm-id", required=True)
+    contest_boarddb_farm.add_argument("--output", "-o", type=Path, required=True)
     eda2024_evaluate = contest_subparsers.add_parser(
         "eda2024-evaluate",
         help="independently check a 2024 logic-replication solution",
@@ -2381,6 +2414,19 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = import_public_contest_case(
                 args.matrix, args.case_id, args.source_dir, args.out
             )
+        elif args.contest_command == "materialize-public-boarddb":
+            report = materialize_public_contest_boarddb(
+                args.matrix,
+                args.case_id,
+                args.source_dir,
+                args.import_dir,
+                args.device_template,
+                args.out,
+                lane_scale=args.lane_scale,
+                unweighted_link_lanes=args.unweighted_link_lanes,
+                fabric_clock_mhz=args.fabric_clock_mhz,
+                latency_cycles=args.latency_cycles,
+            )
         elif args.contest_command == "matrix-fetch-farm-spec":
             report = build_contest_fetch_farm_spec(
                 args.matrix,
@@ -2405,6 +2451,22 @@ def _dispatch(args: argparse.Namespace) -> int:
                 tiers=args.tier or ("smoke",),
                 suites=args.suite,
                 slots_per_node=args.slots_per_node,
+            )
+        elif args.contest_command == "matrix-boarddb-farm-spec":
+            report = build_contest_boarddb_farm_spec(
+                args.matrix,
+                args.fetch_farm,
+                args.import_farm,
+                source_commit=args.source_commit,
+                install_dir=args.install_dir,
+                nodes=args.node,
+                output_path=args.output,
+                farm_id=args.farm_id,
+                tiers=args.tier or ("smoke",),
+                suites=args.suite,
+                slots_per_node=args.slots_per_node,
+                lane_scale=args.lane_scale,
+                unweighted_link_lanes=args.unweighted_link_lanes,
             )
         elif args.contest_command == "eda2023-import":
             report = import_eda2023_case(

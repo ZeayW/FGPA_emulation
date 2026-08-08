@@ -5,12 +5,15 @@ import unittest
 from pathlib import Path
 
 from emuflow.contest_public import (
+    PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA,
     PUBLIC_CONTEST_FETCH_REPORT_SCHEMA,
     PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA,
+    build_contest_boarddb_farm_spec,
     build_contest_fetch_farm_spec,
     build_contest_import_farm_spec,
     fetch_public_contest_case,
     import_public_contest_case,
+    materialize_public_contest_boarddb,
 )
 from emuflow.contest_validation_matrix import canonical_matrix_sha256
 from emuflow.errors import ValidationError
@@ -77,7 +80,9 @@ class PublicContestFetchTest(unittest.TestCase):
                 "input_bytes": sum(record["bytes"] for record in records),
                 "tier": "smoke",
                 "qualification": "catalogued",
-                "target_gates": ["fetch", "import", "evaluate"],
+                "target_gates": [
+                    "fetch", "import", "evaluate", "materialize-boarddb"
+                ],
                 "evidence": [],
             }],
         }
@@ -209,6 +214,55 @@ payload = b'abc'
                     matrix, "eda2024-repart.case1", source, root / "normalized"
                 )
 
+    def test_unified_boarddb_gate_revalidates_import_and_projects_topology(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix, source = self._semantic_fixture(root, "eda2024-repart")
+            normalized = root / "normalized"
+            import_public_contest_case(
+                matrix, "eda2024-repart.case1", source, normalized
+            )
+            repository = Path(__file__).resolve().parents[1]
+            report = materialize_public_contest_boarddb(
+                matrix,
+                "eda2024-repart.case1",
+                source,
+                normalized,
+                repository / "platforms/virtual/academic_vtr_4fpga_mesh.json",
+                root / "boarddb",
+                unweighted_link_lanes=4,
+            )
+            self.assertEqual(report["schema"], PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["qualification"], "academic-architecture-projection")
+            self.assertEqual(report["phase3_status"], "not-run")
+            boarddb = read_json(root / "boarddb" / "boarddb.json")
+            self.assertEqual(
+                [fpga["id"] for fpga in boarddb["fpgas"]], ["F1", "F2"]
+            )
+            self.assertEqual(boarddb["links"][0]["data_lanes_per_direction"], 4)
+            self.assertTrue((root / "boarddb" / "route_constraints.json").is_file())
+
+    def test_unified_boarddb_gate_rejects_tampered_import_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix, source = self._semantic_fixture(root, "eda2024-repart")
+            normalized = root / "normalized"
+            import_public_contest_case(
+                matrix, "eda2024-repart.case1", source, normalized
+            )
+            (normalized / "contest_instance.json").write_text("{}\n", encoding="utf-8")
+            repository = Path(__file__).resolve().parents[1]
+            with self.assertRaisesRegex(ValidationError, "seal"):
+                materialize_public_contest_boarddb(
+                    matrix,
+                    "eda2024-repart.case1",
+                    source,
+                    normalized,
+                    repository / "platforms/virtual/academic_vtr_4fpga_mesh.json",
+                    root / "boarddb",
+                )
+
     def test_passed_fetch_farm_compiles_to_isolated_import_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -294,6 +348,89 @@ payload = b'abc'
                     output_path=root / "spec.json",
                     farm_id="bad",
                 )
+
+    def test_passed_fetch_and_import_farms_compile_to_boarddb_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix_path, source = self._semantic_fixture(root, "eda2024-repart")
+            matrix = read_json(matrix_path)
+            suffix = "eda2024-repart-case1"
+            commit = "c" * 40
+            install = root / "install" / commit
+            install.mkdir(parents=True)
+
+            fetch_spec = root / "fetch-spec.json"
+            write_json(fetch_spec, {
+                "schema": "emuflow.validation-farm-spec/v1",
+                "farm_id": "fetch",
+                "source_commit": commit,
+                "install_dir": str(install),
+                "nodes": ["hpc1"],
+                "tasks": [{
+                    "id": "fetch-" + suffix,
+                    "command": ["{install}/bin/emuflow", "noop", "{run_dir}"],
+                }],
+            })
+            fetch_farm = root / "fetch-farm"
+            prepare_validation_farm(fetch_spec, fetch_farm)
+            fetch_run = fetch_farm / "runs" / ("fetch-" + suffix)
+            fetch_source = fetch_run / "input"
+            fetch_source.mkdir()
+            for path in source.iterdir():
+                (fetch_source / path.name).write_bytes(path.read_bytes())
+            write_json(
+                fetch_farm / "tasks" / ("fetch-" + suffix) / "state.json",
+                {"status": "pass"},
+            )
+            write_json(fetch_run / "fetch_report.json", {
+                "schema": PUBLIC_CONTEST_FETCH_REPORT_SCHEMA,
+                "status": "pass",
+                "case_id": "eda2024-repart.case1",
+                "matrix_sha256": canonical_matrix_sha256(matrix),
+            })
+
+            import_spec = root / "import-spec.json"
+            write_json(import_spec, {
+                "schema": "emuflow.validation-farm-spec/v1",
+                "farm_id": "import",
+                "source_commit": commit,
+                "install_dir": str(install),
+                "nodes": ["hpc2"],
+                "tasks": [{
+                    "id": "import-" + suffix,
+                    "command": ["{install}/bin/emuflow", "noop", "{run_dir}"],
+                }],
+            })
+            import_farm = root / "import-farm"
+            prepare_validation_farm(import_spec, import_farm)
+            import_run = import_farm / "runs" / ("import-" + suffix)
+            import_public_contest_case(
+                matrix_path, "eda2024-repart.case1", fetch_source, import_run
+            )
+            write_json(
+                import_farm / "tasks" / ("import-" + suffix) / "state.json",
+                {"status": "pass"},
+            )
+
+            output = root / "boarddb-spec.json"
+            report = build_contest_boarddb_farm_spec(
+                matrix_path,
+                fetch_farm,
+                import_farm,
+                source_commit=commit,
+                install_dir=install,
+                nodes=["hpc3", "hpc4"],
+                output_path=output,
+                farm_id="boarddb",
+                unweighted_link_lanes=4,
+            )
+            spec = read_json(output)
+            self.assertEqual(report["tasks"], 1)
+            self.assertEqual(spec["tasks"][0]["id"], "boarddb-" + suffix)
+            command = spec["tasks"][0]["command"]
+            self.assertIn(str(fetch_source.resolve()), command)
+            self.assertIn(str(import_run.resolve()), command)
+            self.assertIn("academic_vtr_4fpga_mesh.json", " ".join(command))
 
 
 if __name__ == "__main__":
