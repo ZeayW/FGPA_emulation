@@ -659,6 +659,18 @@ artifacts do not claim paper reproduction.  A future Chimew provider must use
 a distinct identity and pass the paper-specific acceptance gates below before
 it can become selectable.
 
+The first paper-specific kernel is isolated as
+`chimew-algorithm1-encoding-grouping-v1`.  It reproduces Algorithm 1's
+descending crossing-count order, same/covered/nearest-encoding selection, OR
+group encoding, and ratio capacity in first-party C++, with an independent
+Python decision replay.  Its input requires
+`source-qualified-physical-sll-routing-v1`: explicit source/sink SLL indices,
+an independently reconstructed encoding, and hash-sealed physical-routing
+provenance.  Normalized y regions are rejected.  The result is marked
+`not-a-phase6-pin-plan`; it is deliberately not selectable until the
+position-based refinement, existing concrete-slot contract, RUDY gate, and
+two-stage bank/channel assignment are reconciled and verified.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA
