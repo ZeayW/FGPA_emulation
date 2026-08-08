@@ -1568,6 +1568,35 @@ instead of running a second large optimizer. The result remains a standalone
 paper kernel until its abstract banks/channels are reconciled with EmuFlow's
 voltage, IOSTANDARD, clock, differential-pair, and concrete-slot contracts.
 
+The reconciliation path is now implemented for source-qualified
+single-ended parallel channels. `emuflow pin-plan chimew-build` consumes the
+physical bank/channel problem plus a hash-sealed BoardDB/package-pin map,
+reruns the certified native assignment, and emits `pin_plan.json` and
+`position_hints.json` for ordinary Phase 6 consumption. It additionally emits
+an electrical binding certificate covering concrete lane uniqueness,
+non-reserved package pins, bank identities, IOSTANDARD support, and matching
+bank voltage. Differential and serial resources remain on their existing
+source-backed Phase 6B paths and are not silently projected through this v1
+adapter.
+
+```bash
+emuflow pin-plan chimew-build \
+  --schedule build/phase5/schedule.json \
+  --platform platforms/hardware/board.json \
+  --assignment-input build/chimew/bank_channel_input.json \
+  --electrical-map bsp/chimew_electrical_map.json \
+  --out build/chimew/phase6-adapter
+
+emuflow phase6 \
+  --ir build/phase1/design.emuir.json \
+  --assignment build/phase3/assignment.json \
+  --schedule build/phase5/schedule.json \
+  --platform platforms/hardware/board.json \
+  --pin-plan build/chimew/phase6-adapter/pin_plan.json \
+  --position-hints build/chimew/phase6-adapter/position_hints.json \
+  --out build/phase6
+```
+
 Phase 6B has two explicit electrical providers. For parallel I/O,
 `src/native/bsp_pin_solver.cpp` implements exact sparse minimum-cost bipartite
 flow over electrically legal physical channels. Its checker independently

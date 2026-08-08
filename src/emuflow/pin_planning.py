@@ -17,6 +17,8 @@ from .placement import PLACEMENT_SCHEMA
 SIGNAL_POSITION_HINTS_SCHEMA = "emuflow.signal-position-hints/v1"
 PIN_PLAN_SCHEMA = "emuflow.placement-aware-pin-plan/v1"
 PIN_PLAN_PROVIDER = "placement-aware-region-grouping-mcf-v1"
+CHIMEW_PIN_PLAN_PROVIDER = "chimew-paper-plus-emuflow-electrical-slot-v1"
+CHIMEW_PHYSICAL_POSITION_PROVIDER = "chimew-physical-site-projection-v1"
 LEGACY_PIN_PLAN_PROVIDERS = frozenset(
     {"chimew-placement-aware-grouping-mcf-v1"}
 )
@@ -144,10 +146,37 @@ def _validate_positions(
         raise ValidationError(
             "position hints do not match the schedule design/platform"
         )
-    if positions.get("provider") != "openparf-lookahead-centroid-v1":
+    provider = positions.get("provider")
+    if provider not in {
+        "openparf-lookahead-centroid-v1",
+        CHIMEW_PHYSICAL_POSITION_PROVIDER,
+    }:
         raise ValidationError(
-            "position hints are not from the OpenPARF lookahead provider"
+            "position hints are not from a supported source-qualified provider"
         )
+    if provider == CHIMEW_PHYSICAL_POSITION_PROVIDER:
+        if positions.get("source_coordinate_system") != "physical-site-xy":
+            raise ValidationError("Chimew position projection is not physical-site based")
+        provenance = positions.get("provenance")
+        if not isinstance(provenance, dict):
+            raise ValidationError("Chimew position projection provenance is missing")
+        for field in ("producer", "producer_version"):
+            if not isinstance(provenance.get(field), str) or not provenance[field]:
+                raise ValidationError("Chimew position projection provenance is invalid")
+        for field in (
+            "assignment_input_sha256",
+            "placement_sha256",
+            "architecture_sha256",
+        ):
+            digest = provenance.get(field)
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValidationError(
+                    f"Chimew position projection {field} is invalid"
+                )
     region_count = positions.get("region_count")
     if (
         isinstance(region_count, bool)
@@ -365,7 +394,11 @@ def validate_pin_plan(
 ) -> Dict[str, Any]:
     if plan.get("schema") != PIN_PLAN_SCHEMA:
         raise ValidationError(f"pin plan schema must be {PIN_PLAN_SCHEMA!r}")
-    if plan.get("provider") not in {PIN_PLAN_PROVIDER, *LEGACY_PIN_PLAN_PROVIDERS}:
+    if plan.get("provider") not in {
+        PIN_PLAN_PROVIDER,
+        CHIMEW_PIN_PLAN_PROVIDER,
+        *LEGACY_PIN_PLAN_PROVIDERS,
+    }:
         raise ValidationError("pin plan provider is not source-complete")
     if (
         plan.get("design") != schedule.get("design")

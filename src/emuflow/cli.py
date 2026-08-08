@@ -25,6 +25,7 @@ from .cross_stage import (
     validate_cross_stage_candidate,
     validate_cross_stage_report,
 )
+from .chimew_phase6 import run_chimew_phase6_adapter
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
@@ -1941,6 +1942,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pin_plan_build.add_argument("--crossing-weight", type=float, default=1.0)
     pin_plan_build.add_argument("--position-weight", type=float, default=1.0)
+    pin_plan_chimew = pin_plan_subparsers.add_parser(
+        "chimew-build",
+        help="bind certified Chimew banks/channels to electrical concrete lanes",
+    )
+    pin_plan_chimew.add_argument("--schedule", type=Path, required=True)
+    pin_plan_chimew.add_argument("--platform", type=Path, required=True)
+    pin_plan_chimew.add_argument("--assignment-input", type=Path, required=True)
+    pin_plan_chimew.add_argument("--electrical-map", type=Path, required=True)
+    pin_plan_chimew.add_argument("--assigner")
+    pin_plan_chimew.add_argument("--region-count", type=int, default=31)
+    pin_plan_chimew.add_argument("--out", type=Path, required=True)
     pin_plan_validate = pin_plan_subparsers.add_parser(
         "validate", help="independently validate a pin plan"
     )
@@ -2170,6 +2182,17 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.archive_command == "validate":
             report = validate_validation_archive(args.archive)
+        elif args.pin_plan_command == "chimew-build":
+            report = run_chimew_phase6_adapter(
+                schedule_path=args.schedule,
+                platform_path=args.platform,
+                bank_channel_input_path=args.assignment_input,
+                electrical_map_path=args.electrical_map,
+                output_dir=args.out,
+                executable=args.assigner,
+                region_count=args.region_count,
+            )
+            _print_json(report)
         else:
             report = cleanup_validation_source(args.archive, args.flow)
         _print_json(report)

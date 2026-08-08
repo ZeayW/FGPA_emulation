@@ -726,6 +726,20 @@ hand-derived optima and reject tampered dual certificates. The standalone
 result remains `not-a-phase6-pin-plan` until an adapter applies EmuFlow's
 electrical and concrete-slot extensions without changing the paper claims.
 
+That boundary is now executable as
+`chimew-paper-plus-emuflow-electrical-slot-v1`. The adapter reruns the
+certified two-stage native assignment, requires each paper channel to map
+bijectively to a BoardDB link/physical lane, and preserves every schedule
+entry's route, direction, ratio, logical lane, slot, and cycle meaning. Its
+separate source-qualified electrical map binds bank identities, non-reserved
+single-ended package pins, supported IOSTANDARDs, and matching bank voltages;
+it rejects incomplete channel coverage, package-pin reuse, physical-lane
+reuse, and placement coordinates outside recorded FPGA site bounds. The
+result is a regular `emuflow.placement-aware-pin-plan/v1` accepted by Phase 6,
+plus a distinct electrical binding certificate. Chimew paper metrics remain
+under the paper provider identity, while voltage, package-pin, and
+concrete-slot checks are explicitly labelled EmuFlow extensions.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA
