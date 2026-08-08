@@ -188,6 +188,7 @@ set(
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
+  "${CMAKE_SOURCE_DIR}/platforms/virtual/academic_vtr_4fpga_mesh.json"
 )
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/emuflow.in"
@@ -231,6 +232,7 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E make_directory
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/platforms/virtual"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
@@ -241,6 +243,10 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/platforms/virtual/academic_vtr_4fpga_mesh.json"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/platforms/virtual/academic_vtr_4fpga_mesh.json"
   COMMAND
     "${CMAKE_COMMAND}" -E touch
     "${CMAKE_BINARY_DIR}/emuflow-python.stamp"

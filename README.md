@@ -867,9 +867,26 @@ emuflow contest matrix-import-farm-spec \
 The unified `import-public` gate dispatches the EDA 2023 and EDA 2025 execution
 adapters and a structural EDA 2024/RePart importer.  The latter parses and
 cross-checks all problem inputs but explicitly records that no participant
-solution has been evaluated. Evaluation, BoardDB projection, and Phase 3–7
-remain separate matrix gates and are not upgraded merely because fetch or
-import passed.
+solution has been evaluated. A separately sealed BoardDB gate revalidates the
+fetch provenance and every imported artifact before applying an explicitly
+labelled academic FPGA-device projection:
+
+```bash
+emuflow contest materialize-public-boarddb \
+  --matrix benchmarks/contest_validation_matrix.json \
+  --case-id eda2024-repart.case01 \
+  --source-dir fetched/input --import-dir normalized \
+  --device-template platforms/virtual/academic_vtr_4fpga_mesh.json \
+  --unweighted-link-lanes 4 --out boarddb-gate
+```
+
+For shared HPC validation, `matrix-boarddb-farm-spec` accepts only passed,
+sealed fetch and import farms and schedules each case in a fresh run directory.
+The versioned install carries the matrix and academic device template, so a
+worker does not read either input from a mutable checkout.
+
+Evaluation, BoardDB projection, and Phase 3–7 remain separate matrix gates and
+are not upgraded merely because fetch or import passed.
 
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact
