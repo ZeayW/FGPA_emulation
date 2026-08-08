@@ -142,7 +142,7 @@ class ValidationFarmTest(unittest.TestCase):
             self.assertTrue(status["complete"])
             self.assertEqual(status["counts"], {"pass": 1})
 
-    def test_launch_uses_argv_ssh_and_refuses_duplicate_submission(self) -> None:
+    def test_launch_uses_argv_ssh_and_skips_duplicate_submission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             spec, install = self._fixture(root, task_count=1)
@@ -160,8 +160,35 @@ class ValidationFarmTest(unittest.TestCase):
             self.assertEqual(argv[:4], ["ssh", "-o", "BatchMode=yes", "node-a"])
             self.assertIn(str(install / "bin" / "emuflow"), argv[-1])
             self.assertIn("validation-farm worker", argv[-1])
-            with self.assertRaisesRegex(EmuFlowError, "already submitted"):
-                launch_validation_farm(farm)
+            with mock.patch(
+                "emuflow.validation_farm.subprocess.run", return_value=completed
+            ) as second_runner:
+                second = launch_validation_farm(farm)
+            self.assertEqual(second["submitted"], 0)
+            self.assertEqual(second["skipped"], 1)
+            second_runner.assert_not_called()
+
+    def test_submit_failure_can_be_retried_without_duplicate_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            farm = root / "farm"
+            prepare_validation_farm(spec, farm)
+            failed = subprocess.CompletedProcess(
+                args=[], returncode=255, stdout="", stderr="unreachable"
+            )
+            passed = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout='{"status":"detached"}\n', stderr=""
+            )
+            with mock.patch(
+                "emuflow.validation_farm.subprocess.run",
+                side_effect=[failed, passed],
+            ):
+                first = launch_validation_farm(farm)
+                second = launch_validation_farm(farm)
+            self.assertEqual(first["submit_failed"], 1)
+            self.assertEqual(second["submitted"], 1)
+            self.assertEqual(second["submit_failed"], 0)
 
 
 if __name__ == "__main__":

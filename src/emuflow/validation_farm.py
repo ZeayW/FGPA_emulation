@@ -404,9 +404,27 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
     manifest = read_json(farm_dir / "farm-manifest.json")
     ssh = manifest["ssh"]
 
+    launch_lock = (farm_dir / "launch.lock").open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        launch_lock.close()
+        raise EmuFlowError("validation farm launch is already in progress") from error
+
     def submit(record: Mapping[str, Any]) -> Dict[str, Any]:
         task_path = Path(record["task"])
         task_dir = task_path.parent
+        previous = read_json(task_dir / "state.json")
+        previous_status = previous.get("status")
+        if previous_status not in {"prepared", "submit_failed"}:
+            return {
+                "task_id": record["id"],
+                "node": record["node"],
+                "status": "skipped",
+                "task_status": previous_status,
+            }
+        if previous_status == "submit_failed":
+            (task_dir / "submission.claim").unlink(missing_ok=True)
         _claim_submission(task_dir)
         write_json(
             task_dir / "state.json",
@@ -441,6 +459,7 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
                 "updated_at": _now(),
             }
             write_json(task_dir / "state.json", state)
+            (task_dir / "submission.claim").unlink(missing_ok=True)
             return state
         return {
             "task_id": record["id"],
@@ -449,19 +468,27 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
             "remote_response": completed.stdout.strip(),
         }
 
-    workers = min(submit_workers, len(manifest["tasks"]))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        submissions = list(executor.map(submit, manifest["tasks"]))
-    failures = sum(item["status"] == "submit_failed" for item in submissions)
-    return {
-        "schema": "emuflow.validation-farm-submission/v1",
-        "farm_id": manifest["farm_id"],
-        "source_commit": manifest["source_commit"],
-        "submitted": len(submissions) - failures,
-        "submit_failed": failures,
-        "tasks": submissions,
-        "status": "pass" if failures == 0 else "failed",
-    }
+    try:
+        workers = min(submit_workers, len(manifest["tasks"]))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            submissions = list(executor.map(submit, manifest["tasks"]))
+        failures = sum(
+            item["status"] == "submit_failed" for item in submissions
+        )
+        skipped = sum(item["status"] == "skipped" for item in submissions)
+        return {
+            "schema": "emuflow.validation-farm-submission/v1",
+            "farm_id": manifest["farm_id"],
+            "source_commit": manifest["source_commit"],
+            "submitted": len(submissions) - failures - skipped,
+            "skipped": skipped,
+            "submit_failed": failures,
+            "tasks": submissions,
+            "status": "pass" if failures == 0 else "failed",
+        }
+    finally:
+        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_UN)
+        launch_lock.close()
 
 
 def _acquire_slot(task: Mapping[str, Any]) -> tuple[Any, int]:
