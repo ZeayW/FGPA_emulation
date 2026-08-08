@@ -818,6 +818,20 @@ materialized link IDs. Link delay remains the explicitly configured BoardDB
 clock/latency model; the contest's `beta + alpha * ratio` formula remains in
 the separate official-score adapter.
 
+The repository-level qualification plan is recorded in
+`benchmarks/contest_validation_matrix.json`.  This versioned matrix covers
+every hash-pinned public EDA 2023, RePart/EDA 2024, and EDA 2025 case plus the
+embedded ICCAD 2019 official sample.  `qualification` deliberately separates
+mere catalog coverage from adapter regression, real-case validation, and a
+complete EmuFlow run; a planned target gate is never reported as completed
+evidence.  `emuflow.contest_validation_matrix` validates gate order, immutable
+source revisions, unique deterministic case IDs, and emits a canonical SHA-256
+for validation-farm task sealing. Validate the checked-in plan with:
+
+```bash
+emuflow contest matrix-validate benchmarks/contest_validation_matrix.json
+```
+
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact
 harmonic constraint `sum(1 / ratio) <= 1`:
