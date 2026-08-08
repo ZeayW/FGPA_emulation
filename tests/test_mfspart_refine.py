@@ -10,6 +10,8 @@ from emuflow.mfspart import MFSPART_HIERARCHY_SCHEMA
 from emuflow.mfspart_initial import MFSPART_INITIAL_SCHEMA
 from emuflow.mfspart_refine import (
     _normalise_refinement,
+    _replay,
+    _replay_exhaustive,
     refine_mfspart_hierarchy,
     refine_mfspart_level,
     validate_mfspart_refinement,
@@ -268,6 +270,108 @@ class MFSPartRefinementTest(unittest.TestCase):
             artifact["metrics"]["candidate_recomputations"], 3_000
         )
         self.assertEqual(artifact["validation"]["status"], "pass")
+
+    def test_incremental_oracle_matches_exhaustive_global_best(self) -> None:
+        parts, distances, capacities = _line_problem()
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [weight]}
+                for weight in [1, 2, 1, 3, 1, 2]
+            ],
+            "nets": [
+                {"weight": 2.0, "source": 0, "sinks": [1, 2]},
+                {"weight": 1.0, "source": 2, "sinks": [3]},
+                {"weight": 3.0, "source": 4, "sinks": [1, 5]},
+            ],
+        }
+        problem = _normalise_refinement(
+            graph,
+            ["cells"],
+            parts,
+            distances,
+            capacities,
+            [0, 0, 1, 1, 2, 2],
+            hmax=1,
+            move_distance=2,
+            early_stop=6,
+            gamma=15.0,
+            violation_lambda=10_000.0,
+            mu=0.1,
+        )
+        incremental_moves, incremental_assignment, incremental_metrics = _replay(problem)
+        exhaustive_moves, exhaustive_assignment, exhaustive_metrics = _replay_exhaustive(problem)
+        self.assertEqual(incremental_moves, exhaustive_moves)
+        self.assertEqual(incremental_assignment, exhaustive_assignment)
+        for name, value in exhaustive_metrics.items():
+            self.assertEqual(incremental_metrics[name], value)
+
+    def test_incremental_oracle_scales_to_100k_sparse_nodes(self) -> None:
+        node_count = 100_000
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]}
+                for _ in range(node_count)
+            ],
+            "nets": [
+                {"weight": 1.0, "source": node, "sinks": [node + 1]}
+                for node in range(0, node_count, 2)
+            ],
+        }
+        parts = ["F0", "F1"]
+        problem = _normalise_refinement(
+            graph,
+            ["cells"],
+            parts,
+            {"F0": {"F0": 0, "F1": 1}, "F1": {"F0": 1, "F1": 0}},
+            {part: {"cells": 200_000} for part in parts},
+            [0] * node_count,
+            hmax=1,
+            move_distance=2,
+            early_stop=20,
+            gamma=15.0,
+            violation_lambda=10_000.0,
+            mu=0.1,
+        )
+        moves, _, metrics = _replay(problem)
+        self.assertEqual(len(moves), 20)
+        self.assertLess(metrics["oracle_candidate_recomputations"], 101_000)
+
+    def test_high_fanout_connectivity_uses_indexed_part_counts(self) -> None:
+        node_count = 10_000
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]}
+                for _ in range(node_count)
+            ],
+            "nets": [
+                {
+                    "weight": 1.0,
+                    "source": 0,
+                    "sinks": list(range(1, node_count)),
+                }
+            ],
+        }
+        parts = ["F0", "F1"]
+        distances = {
+            "F0": {"F0": 0, "F1": 1},
+            "F1": {"F0": 1, "F1": 0},
+        }
+        capacities = {part: {"cells": 20_000} for part in parts}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0] * node_count,
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=3,
+                executable=str(self.executable),
+            )
+        self.assertEqual(artifact["validation"]["status"], "pass")
+        self.assertLess(artifact["metrics"]["candidate_recomputations"], 50_000)
 
 
 if __name__ == "__main__":

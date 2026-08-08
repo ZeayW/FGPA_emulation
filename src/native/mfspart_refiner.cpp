@@ -57,13 +57,14 @@ struct Move {
 
 struct CandidateMove {
   double gain = -std::numeric_limits<double>::infinity();
+  long long gain_rank = std::numeric_limits<long long>::min();
   int node = -1;
   int target = -1;
   int version = -1;
 
   bool operator<(const CandidateMove& other) const {
-    if (gain != other.gain) {
-      return gain < other.gain;
+    if (gain_rank != other.gain_rank) {
+      return gain_rank < other.gain_rank;
     }
     if (node != other.node) {
       return node > other.node;
@@ -71,6 +72,12 @@ struct CandidateMove {
     return target > other.target;
   }
 };
+
+constexpr double kGainRankScale = 1'000'000'000.0;
+
+long long gain_rank(double gain) {
+  return std::llround(gain * kGainRankScale);
+}
 
 struct Metrics {
   double driver_sink_cut = 0.0;
@@ -301,13 +308,19 @@ bool target_fits(const Input& input,
 
 double compatibility(
     const Input& input,
-    const std::vector<std::vector<std::pair<int, double>>>& adjacency,
+    const std::vector<std::vector<double>>& neighbor_part_weights,
     const std::vector<std::vector<int>>& incidence,
+    const std::vector<std::vector<int>>& net_part_counts,
+    const std::vector<int>& net_unique_parts,
     const std::vector<int>& assignment, int node, int candidate_part) {
   double local_hop_score = 0.0;
   double violation_penalty = 0.0;
-  for (const auto& [neighbor, weight] : adjacency[node]) {
-    const int distance = input.distances[assignment[neighbor]][candidate_part];
+  for (int neighbor_part = 0; neighbor_part < input.parts; ++neighbor_part) {
+    const double weight = neighbor_part_weights[node][neighbor_part];
+    if (weight == 0.0) {
+      continue;
+    }
+    const int distance = input.distances[neighbor_part][candidate_part];
     if (distance <= input.hmax) {
       local_hop_score +=
           static_cast<double>(input.hmax - distance) * weight;
@@ -319,13 +332,17 @@ double compatibility(
   double connectivity = 0.0;
   for (const int net_index : incidence[node]) {
     const Net& net = input.nets[net_index];
-    std::set<int> spanned;
-    spanned.insert(net.source == node ? candidate_part
-                                      : assignment[net.source]);
-    for (const int sink : net.sinks) {
-      spanned.insert(sink == node ? candidate_part : assignment[sink]);
+    int spanned_parts = net_unique_parts[net_index];
+    const int source_part = assignment[node];
+    if (candidate_part != source_part) {
+      if (net_part_counts[net_index][candidate_part] == 0) {
+        ++spanned_parts;
+      }
+      if (net_part_counts[net_index][source_part] == 1) {
+        --spanned_parts;
+      }
     }
-    connectivity += net.weight * static_cast<double>(spanned.size());
+    connectivity += net.weight * static_cast<double>(spanned_parts);
   }
   return local_hop_score - input.gamma * connectivity -
          input.lambda * violation_penalty;
@@ -401,6 +418,27 @@ void run(const Input& input, const std::string& output_path) {
   }
   const auto adjacency = build_pair_adjacency(input);
   const auto incidence = build_incidence(input);
+  std::vector<std::vector<double>> neighbor_part_weights(
+      input.nodes.size(), std::vector<double>(input.parts, 0.0));
+  for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
+    for (const auto& [neighbor, weight] : adjacency[node]) {
+      neighbor_part_weights[node][assignment[neighbor]] += weight;
+    }
+  }
+  std::vector<std::vector<int>> net_part_counts(
+      input.nets.size(), std::vector<int>(input.parts, 0));
+  std::vector<int> net_unique_parts(input.nets.size(), 0);
+  for (int net_index = 0; net_index < static_cast<int>(input.nets.size());
+       ++net_index) {
+    const Net& net = input.nets[net_index];
+    ++net_part_counts[net_index][assignment[net.source]];
+    for (const int sink : net.sinks) {
+      ++net_part_counts[net_index][assignment[sink]];
+    }
+    net_unique_parts[net_index] = static_cast<int>(std::count_if(
+        net_part_counts[net_index].begin(), net_part_counts[net_index].end(),
+        [](int count) { return count > 0; }));
+  }
   std::vector<bool> locked(input.nodes.size(), false);
   std::vector<int> versions(input.nodes.size(), 0);
   std::priority_queue<CandidateMove> queue;
@@ -420,37 +458,117 @@ void run(const Input& input, const std::string& output_path) {
               weight_index[dimension].end());
   }
 
-  auto recompute_candidate = [&](int node) {
+  std::vector<std::vector<char>> fit_cache(
+      input.nodes.size(), std::vector<char>(input.parts, 0));
+  std::vector<std::vector<double>> cached_gains(
+      input.nodes.size(),
+      std::vector<double>(input.parts,
+                          -std::numeric_limits<double>::infinity()));
+  std::vector<std::vector<long long>> cached_gain_ranks(
+      input.nodes.size(),
+      std::vector<long long>(input.parts,
+                             std::numeric_limits<long long>::min()));
+  std::vector<std::vector<char>> cached_gain_valid(
+      input.nodes.size(), std::vector<char>(input.parts, 0));
+  std::vector<int> best_targets(input.nodes.size(), -1);
+  std::vector<double> best_gains(
+      input.nodes.size(), -std::numeric_limits<double>::infinity());
+  std::vector<long long> best_gain_ranks(
+      input.nodes.size(), std::numeric_limits<long long>::min());
+  for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
+    for (int target = 0; target < input.parts; ++target) {
+      fit_cache[node][target] = target_fits(input, loads, node, target);
+    }
+  }
+
+  auto select_cached_best = [&](int node) {
+    const int source = assignment[node];
+    int best_target = -1;
+    double best_gain = -std::numeric_limits<double>::infinity();
+    long long best_rank = std::numeric_limits<long long>::min();
+    for (int target = 0; target < input.parts; ++target) {
+      if (!cached_gain_valid[node][target] || target == source ||
+          input.distances[source][target] > input.move_distance ||
+          !fit_cache[node][target]) {
+        continue;
+      }
+      const long long rank = cached_gain_ranks[node][target];
+      if (rank > best_rank ||
+          (rank == best_rank && target < best_target)) {
+        best_target = target;
+        best_gain = cached_gains[node][target];
+        best_rank = rank;
+      }
+    }
+    return std::tuple<int, double, long long>{best_target, best_gain,
+                                               best_rank};
+  };
+
+  auto publish_best = [&](int node, int target, double gain, long long rank) {
     ++versions[node];
+    best_targets[node] = target;
+    best_gains[node] = gain;
+    best_gain_ranks[node] = rank;
+    if (target >= 0) {
+      queue.push({gain, rank, node, target, versions[node]});
+    }
+  };
+
+  auto recompute_candidate = [&](int node) {
     if (locked[node] || input.nodes[node].fixed_part >= 0) {
+      publish_best(node, -1, -std::numeric_limits<double>::infinity(),
+                   std::numeric_limits<long long>::min());
       return;
     }
     ++candidate_recomputations;
     const int source = assignment[node];
     const double source_score =
-        compatibility(input, adjacency, incidence, assignment, node, source);
+        compatibility(input, neighbor_part_weights, incidence, net_part_counts,
+                      net_unique_parts, assignment, node, source);
     ++compatibility_evaluations;
-    int best_target = -1;
-    double best_gain = -std::numeric_limits<double>::infinity();
     for (int target = 0; target < input.parts; ++target) {
       if (target == source ||
-          input.distances[source][target] > input.move_distance ||
-          !target_fits(input, loads, node, target)) {
+          input.distances[source][target] > input.move_distance) {
+        cached_gain_valid[node][target] = false;
         continue;
       }
       const double gain =
-          compatibility(input, adjacency, incidence, assignment, node,
-                        target) -
+          compatibility(input, neighbor_part_weights, incidence, net_part_counts,
+                        net_unique_parts, assignment, node, target) -
           source_score;
       ++compatibility_evaluations;
-      if (gain > best_gain ||
-          (gain == best_gain && target < best_target)) {
-        best_gain = gain;
-        best_target = target;
-      }
+      const long long rank = gain_rank(gain);
+      cached_gains[node][target] = gain;
+      cached_gain_ranks[node][target] = rank;
+      cached_gain_valid[node][target] = true;
     }
-    if (best_target >= 0) {
-      queue.push({best_gain, node, best_target, versions[node]});
+    const auto [best_target, best_gain, best_rank] =
+        select_cached_best(node);
+    publish_best(node, best_target, best_gain, best_rank);
+  };
+
+  auto refresh_capacity_candidate = [&](int node, int part,
+                                        bool publish) {
+    const bool old_fit = fit_cache[node][part];
+    const bool new_fit = target_fits(input, loads, node, part);
+    if (old_fit == new_fit) {
+      return;
+    }
+    fit_cache[node][part] = new_fit;
+    if (!publish || locked[node] || input.nodes[node].fixed_part >= 0) {
+      return;
+    }
+    if (new_fit) {
+      if (cached_gain_valid[node][part]) {
+        const long long rank = cached_gain_ranks[node][part];
+        if (rank > best_gain_ranks[node] ||
+            (rank == best_gain_ranks[node] && part < best_targets[node])) {
+          publish_best(node, part, cached_gains[node][part], rank);
+        }
+      }
+    } else if (best_targets[node] == part) {
+      const auto [target, gain, rank] = select_cached_best(node);
+      publish_best(node, target, gain, rank);
     }
   };
   for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
@@ -490,6 +608,20 @@ void run(const Input& input, const std::string& output_path) {
       loads[best_target][dimension] += input.nodes[best_node].weights[dimension];
     }
     assignment[best_node] = best_target;
+    for (const auto& [neighbor, weight] : adjacency[best_node]) {
+      neighbor_part_weights[neighbor][source] -= weight;
+      neighbor_part_weights[neighbor][best_target] += weight;
+    }
+    for (const int net_index : incidence[best_node]) {
+      --net_part_counts[net_index][source];
+      if (net_part_counts[net_index][source] == 0) {
+        --net_unique_parts[net_index];
+      }
+      if (net_part_counts[net_index][best_target] == 0) {
+        ++net_unique_parts[net_index];
+      }
+      ++net_part_counts[net_index][best_target];
+    }
     locked[best_node] = true;
     ++versions[best_node];
     cumulative += best_gain;
@@ -512,8 +644,11 @@ void run(const Input& input, const std::string& output_path) {
       affected.insert(net.source);
       affected.insert(net.sinks.begin(), net.sinks.end());
     }
+    std::set<int> source_fit_nodes;
+    std::set<int> target_fit_nodes;
     auto invalidate_capacity_interval = [&](int dimension, long long low,
-                                            long long high) {
+                                            long long high,
+                                            std::set<int>& fit_nodes) {
       if (low >= high) {
         return;
       }
@@ -524,7 +659,7 @@ void run(const Input& input, const std::string& output_path) {
           weight_index[dimension].begin(), weight_index[dimension].end(),
           std::pair<long long, int>{high, std::numeric_limits<int>::max()});
       for (auto iterator = begin; iterator != end; ++iterator) {
-        if (affected.insert(iterator->second).second) {
+        if (fit_nodes.insert(iterator->second).second) {
           ++capacity_invalidations;
         }
       }
@@ -536,11 +671,20 @@ void run(const Input& input, const std::string& output_path) {
           input.capacities[best_target][dimension] -
           loads[best_target][dimension];
       invalidate_capacity_interval(dimension, old_source_remaining[dimension],
-                                   new_source_remaining);
+                                   new_source_remaining, source_fit_nodes);
       invalidate_capacity_interval(dimension, new_target_remaining,
-                                   old_target_remaining[dimension]);
+                                   old_target_remaining[dimension],
+                                   target_fit_nodes);
     }
     affected.erase(best_node);
+    for (const int node : source_fit_nodes) {
+      refresh_capacity_candidate(node, source,
+                                 affected.find(node) == affected.end());
+    }
+    for (const int node : target_fit_nodes) {
+      refresh_capacity_candidate(node, best_target,
+                                 affected.find(node) == affected.end());
+    }
     for (const int node : affected) {
       recompute_candidate(node);
     }

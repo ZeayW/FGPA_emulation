@@ -69,10 +69,11 @@ def _normalise_input(
         bounds.append(bound)
 
     node_order: List[str] = []
+    seen_node_ids = set()
     normal_nodes = []
     for raw in nodes:
         node_id = raw.get("id")
-        if not isinstance(node_id, str) or not node_id or node_id in node_order:
+        if not isinstance(node_id, str) or not node_id or node_id in seen_node_ids:
             raise ValidationError("MFSPart node ids must be non-empty and unique")
         raw_weights = raw.get("weights")
         if not isinstance(raw_weights, Mapping):
@@ -98,6 +99,7 @@ def _normalise_input(
         ):
             raise ValidationError(f"node {node_id!r} has invalid fixed_part")
         node_order.append(node_id)
+        seen_node_ids.add(node_id)
         normal_nodes.append(
             {
                 "fixed_part": fixed_part,

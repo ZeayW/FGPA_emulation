@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -63,6 +65,24 @@ struct DomainRecord {
 };
 
 using Candidates = std::vector<std::vector<int>>;
+
+struct PropagationState {
+  Candidates candidates;
+  std::vector<bool> processed;
+};
+
+struct PriorityEntry {
+  double priority = 0.0;
+  int node = -1;
+  int version = -1;
+
+  bool operator<(const PriorityEntry& other) const {
+    if (priority != other.priority) {
+      return priority < other.priority;
+    }
+    return node > other.node;
+  }
+};
 
 std::uint64_t splitmix64(std::uint64_t value) {
   value += 0x9e3779b97f4a7c15ULL;
@@ -257,47 +277,44 @@ std::vector<std::vector<std::pair<int, double>>> build_adjacency(
   return adjacency;
 }
 
-Candidates propagate(
+std::vector<int> propagate_new_anchors(
     const Input& input,
     const std::vector<std::vector<std::pair<int, double>>>& adjacency,
-    const std::vector<int>& assigned) {
-  Candidates candidates(input.nodes.size());
-  for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
-    if (assigned[node] >= 0) {
-      candidates[node] = {assigned[node]};
-    } else {
-      candidates[node].resize(input.parts);
-      for (int part = 0; part < input.parts; ++part) {
-        candidates[node][part] = part;
-      }
-    }
-  }
+    PropagationState& state, const std::vector<int>& anchors) {
   std::queue<int> queue;
   std::vector<bool> queued(input.nodes.size(), false);
-  for (int node = 0; node < static_cast<int>(assigned.size()); ++node) {
-    if (assigned[node] >= 0) {
-      queue.push(node);
-      queued[node] = true;
+  std::vector<bool> changed(input.nodes.size(), false);
+  for (const int anchor : anchors) {
+    if (!state.processed[anchor] && !queued[anchor]) {
+      queue.push(anchor);
+      queued[anchor] = true;
     }
   }
   while (!queue.empty()) {
     const int anchor = queue.front();
     queue.pop();
-    if (candidates[anchor].empty()) {
+    queued[anchor] = false;
+    if (state.processed[anchor] || state.candidates[anchor].size() != 1) {
       continue;
     }
-    const int anchor_part = candidates[anchor].front();
+    state.processed[anchor] = true;
+    const int anchor_part = state.candidates[anchor].front();
     const int max_distance = *std::max_element(
         input.distances[anchor_part].begin(),
         input.distances[anchor_part].end());
+    if (max_distance <= input.hmax) {
+      continue;
+    }
     std::vector<int> circuit_distance(input.nodes.size(), -1);
     std::queue<int> bfs;
+    std::vector<int> reached;
     circuit_distance[anchor] = 0;
     bfs.push(anchor);
+    reached.push_back(anchor);
     while (!bfs.empty()) {
       const int node = bfs.front();
       bfs.pop();
-      if (circuit_distance[node] * input.hmax >= max_distance) {
+      if ((circuit_distance[node] + 1) * input.hmax >= max_distance) {
         continue;
       }
       for (const auto& [neighbor, unused_weight] : adjacency[node]) {
@@ -305,31 +322,140 @@ Candidates propagate(
         if (circuit_distance[neighbor] < 0) {
           circuit_distance[neighbor] = circuit_distance[node] + 1;
           bfs.push(neighbor);
+          reached.push_back(neighbor);
         }
       }
     }
-    for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
+    for (const int node : reached) {
       const int distance = circuit_distance[node];
-      if (node == anchor || distance < 0 ||
-          distance * input.hmax >= max_distance) {
+      if (node == anchor || distance * input.hmax >= max_distance) {
         continue;
       }
       std::vector<int> filtered;
-      for (const int part : candidates[node]) {
+      for (const int part : state.candidates[node]) {
         if (input.distances[anchor_part][part] <= distance * input.hmax) {
           filtered.push_back(part);
         }
       }
-      if (filtered != candidates[node]) {
-        candidates[node] = std::move(filtered);
-        if (candidates[node].size() == 1 && !queued[node]) {
+      if (filtered != state.candidates[node]) {
+        state.candidates[node] = std::move(filtered);
+        changed[node] = true;
+        if (state.candidates[node].size() == 1 &&
+            !state.processed[node] && !queued[node]) {
           queue.push(node);
           queued[node] = true;
         }
       }
     }
   }
-  return candidates;
+  std::vector<int> changed_nodes;
+  for (int node = 0; node < static_cast<int>(changed.size()); ++node) {
+    if (changed[node]) {
+      changed_nodes.push_back(node);
+    }
+  }
+  return changed_nodes;
+}
+
+PropagationState initial_propagation(
+    const Input& input,
+    const std::vector<std::vector<std::pair<int, double>>>& adjacency,
+    const std::vector<int>& assigned) {
+  PropagationState state;
+  state.candidates.resize(input.nodes.size());
+  state.processed.assign(input.nodes.size(), false);
+  std::vector<int> anchors;
+  for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
+    if (assigned[node] >= 0) {
+      state.candidates[node] = {assigned[node]};
+      anchors.push_back(node);
+    } else {
+      state.candidates[node].resize(input.parts);
+      for (int part = 0; part < input.parts; ++part) {
+        state.candidates[node][part] = part;
+      }
+    }
+  }
+  (void)propagate_new_anchors(input, adjacency, state, anchors);
+  return state;
+}
+
+bool trial_empties_domain(
+    const Input& input,
+    const std::vector<std::vector<std::pair<int, double>>>& adjacency,
+    const PropagationState& state, int selected_node, int selected_part) {
+  std::unordered_map<int, std::vector<int>> overlay;
+  overlay.emplace(selected_node, std::vector<int>{selected_part});
+  std::queue<int> queue;
+  queue.push(selected_node);
+  std::unordered_set<int> processed;
+  std::unordered_set<int> queued{selected_node};
+  auto candidate_parts = [&](int node) -> const std::vector<int>& {
+    const auto found = overlay.find(node);
+    return found == overlay.end() ? state.candidates[node] : found->second;
+  };
+  while (!queue.empty()) {
+    const int anchor = queue.front();
+    queue.pop();
+    queued.erase(anchor);
+    const auto& anchor_candidates = candidate_parts(anchor);
+    if (state.processed[anchor] || processed.count(anchor) != 0 ||
+        anchor_candidates.size() != 1) {
+      continue;
+    }
+    processed.insert(anchor);
+    const int anchor_part = anchor_candidates.front();
+    const int max_distance = *std::max_element(
+        input.distances[anchor_part].begin(),
+        input.distances[anchor_part].end());
+    if (max_distance <= input.hmax) {
+      continue;
+    }
+    std::vector<int> circuit_distance(input.nodes.size(), -1);
+    std::queue<int> bfs;
+    std::vector<int> reached;
+    circuit_distance[anchor] = 0;
+    bfs.push(anchor);
+    reached.push_back(anchor);
+    while (!bfs.empty()) {
+      const int node = bfs.front();
+      bfs.pop();
+      if ((circuit_distance[node] + 1) * input.hmax >= max_distance) {
+        continue;
+      }
+      for (const auto& [neighbor, unused_weight] : adjacency[node]) {
+        (void)unused_weight;
+        if (circuit_distance[neighbor] < 0) {
+          circuit_distance[neighbor] = circuit_distance[node] + 1;
+          bfs.push(neighbor);
+          reached.push_back(neighbor);
+        }
+      }
+    }
+    for (const int node : reached) {
+      const int distance = circuit_distance[node];
+      if (node == anchor || distance * input.hmax >= max_distance) {
+        continue;
+      }
+      std::vector<int> filtered;
+      for (const int part : candidate_parts(node)) {
+        if (input.distances[anchor_part][part] <= distance * input.hmax) {
+          filtered.push_back(part);
+        }
+      }
+      if (filtered.empty()) {
+        return true;
+      }
+      if (filtered != candidate_parts(node)) {
+        overlay[node] = std::move(filtered);
+        if (overlay[node].size() == 1 && !state.processed[node] &&
+            processed.count(node) == 0 && queued.insert(node).second) {
+          queue.push(node);
+        }
+      }
+    }
+  }
+  return false;
 }
 
 bool fits(const Input& input,
@@ -430,7 +556,8 @@ void run(const Input& input, const std::string& output_path) {
     records.push_back({start_node, start_part, 0, 0.0});
   }
 
-  Candidates initial_candidates = propagate(input, adjacency, assigned);
+  PropagationState propagation = initial_propagation(input, adjacency, assigned);
+  const Candidates initial_candidates = propagation.candidates;
   for (int node = 0; node < static_cast<int>(assigned.size()); ++node) {
     if (assigned[node] >= 0 && initial_candidates[node].empty()) {
       throw std::runtime_error("fixed assignments violate FPGA topology");
@@ -438,32 +565,49 @@ void run(const Input& input, const std::string& output_path) {
   }
   std::uint64_t random_event = 0;
   std::vector<bool> phase_two(input.nodes.size(), false);
-  while (true) {
-    Candidates candidates = propagate(input, adjacency, assigned);
-    int selected_node = -1;
-    double selected_priority = -1.0;
-    for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
-      if (assigned[node] >= 0 || candidates[node].empty() || phase_two[node]) {
-        continue;
-      }
-      double total = 0.0;
-      double fixed = 0.0;
-      for (const auto& [neighbor, weight] : adjacency[node]) {
-        total += weight;
-        if (assigned[neighbor] >= 0) {
-          fixed += weight;
-        }
-      }
-      const double priority = total > 0.0 ? fixed / total : 0.0;
-      if (priority > selected_priority ||
-          (priority == selected_priority && node < selected_node)) {
-        selected_priority = priority;
-        selected_node = node;
+  std::vector<double> total_weight(input.nodes.size(), 0.0);
+  std::vector<int> priority_versions(input.nodes.size(), 0);
+  std::priority_queue<PriorityEntry> priority_queue;
+  long long priority_recomputations = 0;
+  for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
+    for (const auto& [neighbor, weight] : adjacency[node]) {
+      (void)neighbor;
+      total_weight[node] += weight;
+    }
+  }
+  auto refresh_priority = [&](int node) {
+    ++priority_versions[node];
+    if (assigned[node] >= 0 || phase_two[node] ||
+        propagation.candidates[node].empty()) {
+      return;
+    }
+    ++priority_recomputations;
+    double fixed_weight = 0.0;
+    for (const auto& [neighbor, weight] : adjacency[node]) {
+      if (assigned[neighbor] >= 0) {
+        fixed_weight += weight;
       }
     }
-    if (selected_node < 0) {
+    const double priority = total_weight[node] > 0.0
+                                ? fixed_weight / total_weight[node]
+                                : 0.0;
+    priority_queue.push({priority, node, priority_versions[node]});
+  };
+  for (int node = 0; node < static_cast<int>(input.nodes.size()); ++node) {
+    refresh_priority(node);
+  }
+  while (true) {
+    const Candidates& candidates = propagation.candidates;
+    while (!priority_queue.empty() &&
+           priority_queue.top().version !=
+               priority_versions[priority_queue.top().node]) {
+      priority_queue.pop();
+    }
+    if (priority_queue.empty()) {
       break;
     }
+    const int selected_node = priority_queue.top().node;
+    priority_queue.pop();
     struct Choice {
       int part = -1;
       double score = 0.0;
@@ -473,15 +617,11 @@ void run(const Input& input, const std::string& output_path) {
       if (!fits(input, loads, selected_node, part)) {
         continue;
       }
-      std::vector<int> trial = assigned;
-      trial[selected_node] = part;
-      const Candidates trial_candidates = propagate(input, adjacency, trial);
       bool empties_other = false;
-      for (int node = 0; node < static_cast<int>(trial.size()); ++node) {
-        if (trial_candidates[node].empty()) {
-          empties_other = true;
-          break;
-        }
+      if (*std::max_element(input.distances[part].begin(),
+                            input.distances[part].end()) > input.hmax) {
+        empties_other = trial_empties_domain(
+            input, adjacency, propagation, selected_node, part);
       }
       if (!empties_other) {
         choices.push_back({part, score(input, adjacency, assigned, loads,
@@ -490,6 +630,7 @@ void run(const Input& input, const std::string& output_path) {
     }
     if (choices.empty()) {
       phase_two[selected_node] = true;
+      ++priority_versions[selected_node];
       continue;
     }
     const double maximum = std::max_element(
@@ -513,14 +654,31 @@ void run(const Input& input, const std::string& output_path) {
         break;
       }
     }
+    std::set<int> changed_nodes;
+    if (propagation.candidates[selected_node].size() != 1 ||
+        propagation.candidates[selected_node].front() != selected.part) {
+      changed_nodes.insert(selected_node);
+    }
     assign_node(input, assigned, loads, selected_node, selected.part);
+    ++priority_versions[selected_node];
     records.push_back({selected_node, selected.part, 1, selected.score});
-    const Candidates updated_candidates = propagate(input, adjacency, assigned);
-    for (int node = 0; node < static_cast<int>(assigned.size()); ++node) {
-      if (updated_candidates[node].size() < candidates[node].size()) {
-        domain_records.push_back(
-            {static_cast<int>(records.size()) - 1, node,
-             updated_candidates[node]});
+    propagation.candidates[selected_node] = {selected.part};
+    propagation.processed[selected_node] = false;
+    const auto propagated_changes =
+        propagate_new_anchors(input, adjacency, propagation, {selected_node});
+    changed_nodes.insert(propagated_changes.begin(), propagated_changes.end());
+    for (const int node : changed_nodes) {
+      domain_records.push_back(
+          {static_cast<int>(records.size()) - 1, node,
+           propagation.candidates[node]});
+      if (node != selected_node) {
+        refresh_priority(node);
+      }
+    }
+    for (const auto& [neighbor, weight] : adjacency[selected_node]) {
+      (void)weight;
+      if (assigned[neighbor] < 0) {
+        refresh_priority(neighbor);
       }
     }
   }
@@ -630,6 +788,8 @@ void run(const Input& input, const std::string& output_path) {
          << '\n';
   stream << "METRIC capacity_violations " << capacity_violations << '\n';
   stream << "METRIC fixed_violations " << fixed_violations << '\n';
+  stream << "METRIC priority_recomputations " << priority_recomputations
+         << '\n';
 }
 
 }  // namespace

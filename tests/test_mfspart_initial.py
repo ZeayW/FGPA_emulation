@@ -8,6 +8,8 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.mfspart import MFSPART_HIERARCHY_SCHEMA
 from emuflow.mfspart_initial import (
+    _expected,
+    _expected_exhaustive,
     _normalise_problem,
     build_mfspart_initial_partition,
     exhaustively_enumerate_mfspart_assignments,
@@ -116,6 +118,69 @@ class MFSPartInitialPartitionTest(unittest.TestCase):
         self.assertEqual(exhaustive["enumerated_assignments"], 3)
         self.assertEqual(exhaustive["topology_feasible_assignments"], 1)
         self.assertEqual(exhaustive["best_assignment"], [0, 1, 2])
+
+    def test_incremental_propagation_matches_exhaustive_replay(self) -> None:
+        hierarchy = _hierarchy(
+            [
+                {"fixed_part": -1, "weights": [weight]}
+                for weight in [1, 2, 1, 1, 2, 1]
+            ],
+            [
+                {"weight": 2.0, "source": 0, "sinks": [1, 2]},
+                {"weight": 1.0, "source": 2, "sinks": [3]},
+                {"weight": 3.0, "source": 4, "sinks": [3, 5]},
+            ],
+        )
+        parts, distances, capacities, degrees = _line_problem()
+        problem = _normalise_problem(
+            hierarchy,
+            parts,
+            distances,
+            capacities,
+            degrees,
+            hmax=1,
+            seed=23,
+            theta=1.0,
+            eta=1.0,
+            violation_lambda=1.0,
+            mu=1.0,
+            temperature=1.0,
+        )
+        self.assertEqual(_expected(problem), _expected_exhaustive(problem))
+
+    def test_sparse_10k_initialization_uses_local_priority_updates(self) -> None:
+        node_count = 10_000
+        hierarchy = _hierarchy(
+            [
+                {"fixed_part": -1, "weights": [1]}
+                for _ in range(node_count)
+            ],
+            [
+                {"weight": 1.0, "source": node, "sinks": [node + 1]}
+                for node in range(0, node_count, 2)
+            ],
+        )
+        parts = ["F0", "F1"]
+        distances = {
+            "F0": {"F0": 0, "F1": 1},
+            "F1": {"F0": 1, "F1": 0},
+        }
+        capacities = {part: {"cells": node_count * 2} for part in parts}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = build_mfspart_initial_partition(
+                hierarchy,
+                parts,
+                distances,
+                capacities,
+                {"F0": 1.0, "F1": 1.0},
+                Path(temporary_directory),
+                hmax=1,
+                seed=31,
+                executable=str(self.executable),
+            )
+        self.assertEqual(artifact["validation"]["status"], "pass")
+        self.assertEqual(artifact["validation"]["phase_counts"][2], 0)
+        self.assertLess(artifact["metrics"]["priority_recomputations"], 40_000)
 
     def test_records_every_candidate_domain_contraction(self) -> None:
         hierarchy = _hierarchy(

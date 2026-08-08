@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 import subprocess
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -17,6 +19,16 @@ from .native_tools import resolve_native_executable
 MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v1"
 MFSPART_REFINEMENT_SCHEMA = "emuflow.mfspart-refinement/v1"
 MFSPART_REFINER_PROVIDER = "mfspart-paper-direct-kway-fm-v1"
+_GAIN_RANK_SCALE = 1_000_000_000.0
+
+
+def _gain_rank(value: float) -> int:
+    scaled = value * _GAIN_RANK_SCALE
+    return (
+        math.floor(scaled + 0.5)
+        if scaled >= 0.0
+        else math.ceil(scaled - 0.5)
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -266,7 +278,60 @@ def _compatibility(problem, adjacency, incidence, assignment, node: int, candida
     return hop_score - problem["gamma"] * connectivity - problem["lambda"] * violation
 
 
-def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int], Dict[str, float]]:
+def _compatibility_indexed(
+    problem,
+    neighbor_part_weights,
+    incidence,
+    net_part_counts,
+    net_unique_parts,
+    assignment,
+    node: int,
+    candidate: int,
+) -> float:
+    hop_score = 0.0
+    violation = 0.0
+    for neighbor_part, weight in enumerate(neighbor_part_weights[node]):
+        if weight == 0.0:
+            continue
+        distance = problem["distances"][neighbor_part][candidate]
+        if distance <= problem["hmax"]:
+            hop_score += (problem["hmax"] - distance) * weight
+        else:
+            violation += weight * (
+                1.0 + problem["mu"] * (distance - problem["hmax"])
+            )
+    connectivity = 0.0
+    source_part = assignment[node]
+    for net_index in incidence[node]:
+        spanned_parts = net_unique_parts[net_index]
+        if candidate != source_part:
+            spanned_parts += int(net_part_counts[net_index][candidate] == 0)
+            spanned_parts -= int(net_part_counts[net_index][source_part] == 1)
+        connectivity += problem["graph"]["nets"][net_index]["weight"] * spanned_parts
+    return hop_score - problem["gamma"] * connectivity - problem["lambda"] * violation
+
+
+def _pair_compatibility_indexed(
+    problem, neighbor_part_weights, node: int, candidate: int
+) -> float:
+    """Return the Eq. 10 hop/violation terms without hyperedge connectivity."""
+
+    hop_score = 0.0
+    violation = 0.0
+    for neighbor_part, weight in enumerate(neighbor_part_weights[node]):
+        if weight == 0.0:
+            continue
+        distance = problem["distances"][neighbor_part][candidate]
+        if distance <= problem["hmax"]:
+            hop_score += (problem["hmax"] - distance) * weight
+        else:
+            violation += weight * (
+                1.0 + problem["mu"] * (distance - problem["hmax"])
+            )
+    return hop_score - problem["lambda"] * violation
+
+
+def _replay_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int], Dict[str, float]]:
     adjacency, incidence = _adjacency_and_incidence(problem)
     assignment = list(problem["assignment"])
     loads = _loads(problem, assignment)
@@ -320,6 +385,421 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
     return moves, final, metrics
 
 
+def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int], Dict[str, float]]:
+    """Independently replay FM with exact, certificate-like lazy candidates.
+
+    Every unlocked node has one heap certificate for its globally best legal
+    target.  A move invalidates precisely the nodes whose objective or target
+    feasibility can change.  Small-graph tests compare this implementation
+    move-for-move with :func:`_replay_exhaustive`.
+    """
+
+    adjacency, incidence = _adjacency_and_incidence(problem)
+    assignment = list(problem["assignment"])
+    loads = _loads(problem, assignment)
+    node_count = len(assignment)
+    dimension_count = len(problem["dimensions"])
+    locked = [False] * node_count
+    versions = [0] * node_count
+    queue = []
+    candidate_recomputations = 0
+    neighbor_part_weights = [
+        [0.0] * len(problem["parts"]) for _ in range(node_count)
+    ]
+    for node in range(node_count):
+        for neighbor, weight in adjacency[node]:
+            neighbor_part_weights[node][assignment[neighbor]] += weight
+    pair_coefficients = []
+    for neighbor_part in range(len(problem["parts"])):
+        coefficients = []
+        for candidate in range(len(problem["parts"])):
+            distance = problem["distances"][neighbor_part][candidate]
+            if distance <= problem["hmax"]:
+                coefficients.append(float(problem["hmax"] - distance))
+            else:
+                coefficients.append(
+                    -problem["lambda"]
+                    * (1.0 + problem["mu"] * (distance - problem["hmax"]))
+                )
+        pair_coefficients.append(coefficients)
+    pair_scores = [
+        [
+            sum(
+                neighbor_part_weights[node][neighbor_part]
+                * pair_coefficients[neighbor_part][candidate]
+                for neighbor_part in range(len(problem["parts"]))
+                if neighbor_part_weights[node][neighbor_part] != 0.0
+            )
+            for candidate in range(len(problem["parts"]))
+        ]
+        for node in range(node_count)
+    ]
+    net_part_counts = [
+        [0] * len(problem["parts"]) for _ in problem["graph"]["nets"]
+    ]
+    net_unique_parts = [0] * len(problem["graph"]["nets"])
+    net_pins = []
+    for net_index, net in enumerate(problem["graph"]["nets"]):
+        pins = [net["source"], *net["sinks"]]
+        net_pins.append(pins)
+        net_part_counts[net_index][assignment[net["source"]]] += 1
+        for sink in net["sinks"]:
+            net_part_counts[net_index][assignment[sink]] += 1
+        net_unique_parts[net_index] = sum(
+            count > 0 for count in net_part_counts[net_index]
+        )
+    # For a node/candidate pair, the connectivity delta is the weight of its
+    # incident nets that do not yet contain candidate, minus the weight of
+    # incident nets from which moving the node removes its source part.  Keep
+    # the first term indexed so candidate scoring is O(parts + incidence), not
+    # O(parts * incidence).  This index is maintained from independent
+    # net-part transition events below.
+    incident_weight_totals = [0.0] * node_count
+    incident_unique_weighted = [0.0] * node_count
+    incident_present_weights = [
+        [0.0] * len(problem["parts"]) for _ in range(node_count)
+    ]
+    incident_singleton_weights = [
+        [0.0] * len(problem["parts"]) for _ in range(node_count)
+    ]
+    for net_index, net in enumerate(problem["graph"]["nets"]):
+        present_parts = [
+            part
+            for part, count in enumerate(net_part_counts[net_index])
+            if count > 0
+        ]
+        for pin in net_pins[net_index]:
+            incident_weight_totals[pin] += net["weight"]
+            incident_unique_weighted[pin] += (
+                net["weight"] * net_unique_parts[net_index]
+            )
+            for part in present_parts:
+                incident_present_weights[pin][part] += net["weight"]
+                if net_part_counts[net_index][part] == 1:
+                    incident_singleton_weights[pin][part] += net["weight"]
+
+    weight_indexes = []
+    for dimension in range(dimension_count):
+        weight_indexes.append(
+            sorted(
+                (problem["graph"]["nodes"][node]["weights"][dimension], node)
+                for node in range(node_count)
+            )
+        )
+    fit_violation_counts = [
+        [
+            sum(
+                problem["graph"]["nodes"][node]["weights"][dimension]
+                > problem["capacities"][target][dimension]
+                - loads[target][dimension]
+                for dimension in range(dimension_count)
+            )
+            for target in range(len(problem["parts"]))
+        ]
+        for node in range(node_count)
+    ]
+    fit_cache = [
+        [count == 0 for count in node_counts]
+        for node_counts in fit_violation_counts
+    ]
+    cached_gains = [
+        [None] * len(problem["parts"]) for _ in range(node_count)
+    ]
+    cached_gain_ranks = [
+        [None] * len(problem["parts"]) for _ in range(node_count)
+    ]
+    target_versions = [
+        [0] * len(problem["parts"]) for _ in range(node_count)
+    ]
+    target_queues = [[] for _ in range(node_count)]
+    best_targets = [-1] * node_count
+    best_gains = [-math.inf] * node_count
+    best_gain_ranks = [-(1 << 63)] * node_count
+    source_fit_marks = [0] * node_count
+    target_fit_marks = [0] * node_count
+
+    def select_cached_best(node: int):
+        source = assignment[node]
+        target_queue = target_queues[node]
+        while target_queue:
+            negative_rank, target, version, gain = target_queue[0]
+            if (
+                version == target_versions[node][target]
+                and fit_cache[node][target]
+                and cached_gain_ranks[node][target] == -negative_rank
+                and target != source
+                and problem["distances"][source][target]
+                <= problem["move_distance"]
+            ):
+                return target, gain, -negative_rank
+            heapq.heappop(target_queue)
+        return -1, -math.inf, -(1 << 63)
+
+    def publish_best(node: int, target: int, gain: float, rank: int) -> None:
+        versions[node] += 1
+        best_targets[node] = target
+        best_gains[node] = gain
+        best_gain_ranks[node] = rank
+        if target >= 0:
+            heapq.heappush(
+                queue, (-rank, node, target, versions[node], gain)
+            )
+
+    def recompute_candidate(node: int) -> None:
+        nonlocal candidate_recomputations
+        if locked[node] or problem["graph"]["nodes"][node]["fixed_part"] >= 0:
+            publish_best(node, -1, -math.inf, -(1 << 63))
+            return
+        candidate_recomputations += 1
+        source = assignment[node]
+        source_pair_score = pair_scores[node][source]
+        source_connectivity = incident_unique_weighted[node]
+        source_singleton_weight = incident_singleton_weights[node][source]
+        source_score = source_pair_score - problem["gamma"] * source_connectivity
+        target_queue = []
+        for target in range(len(problem["parts"])):
+            if (
+                target == source
+                or problem["distances"][source][target] > problem["move_distance"]
+            ):
+                cached_gains[node][target] = None
+                cached_gain_ranks[node][target] = None
+                continue
+            connectivity_delta = (
+                incident_weight_totals[node]
+                - incident_present_weights[node][target]
+                - source_singleton_weight
+            )
+            target_score = pair_scores[node][target] - problem["gamma"] * (
+                source_connectivity + connectivity_delta
+            )
+            gain = target_score - source_score
+            gain_rank = _gain_rank(gain)
+            cached_gains[node][target] = gain
+            cached_gain_ranks[node][target] = gain_rank
+            if fit_cache[node][target]:
+                target_queue.append(
+                    (-gain_rank, target, target_versions[node][target], gain)
+                )
+        heapq.heapify(target_queue)
+        target_queues[node] = target_queue
+        publish_best(node, *select_cached_best(node))
+
+    def refresh_capacity_candidate(
+        node: int, part: int, new_fit: bool, publish: bool
+    ) -> None:
+        old_fit = fit_cache[node][part]
+        if old_fit == new_fit:
+            return
+        fit_cache[node][part] = new_fit
+        target_versions[node][part] += 1
+        if (
+            not publish
+            or locked[node]
+            or problem["graph"]["nodes"][node]["fixed_part"] >= 0
+        ):
+            return
+        rank = cached_gain_ranks[node][part]
+        if new_fit:
+            if rank is not None:
+                heapq.heappush(
+                    target_queues[node],
+                    (
+                        -rank,
+                        part,
+                        target_versions[node][part],
+                        cached_gains[node][part],
+                    ),
+                )
+        target, gain, best_rank = select_cached_best(node)
+        if target != best_targets[node] or best_rank != best_gain_ranks[node]:
+            publish_best(node, target, gain, best_rank)
+
+    for node in range(node_count):
+        recompute_candidate(node)
+
+    moves = []
+    cumulative = 0.0
+    best_cumulative = 0.0
+    best_prefix = 0
+    ineffective = 0
+    while ineffective < problem["early_stop"]:
+        while queue and (
+            locked[queue[0][1]] or queue[0][3] != versions[queue[0][1]]
+        ):
+            heapq.heappop(queue)
+        if not queue:
+            break
+        _, node, target, _, gain = heapq.heappop(queue)
+        source = assignment[node]
+        old_source_remaining = [
+            problem["capacities"][source][dimension] - loads[source][dimension]
+            for dimension in range(dimension_count)
+        ]
+        old_target_remaining = [
+            problem["capacities"][target][dimension] - loads[target][dimension]
+            for dimension in range(dimension_count)
+        ]
+        for dimension, weight in enumerate(
+            problem["graph"]["nodes"][node]["weights"]
+        ):
+            loads[source][dimension] -= weight
+            loads[target][dimension] += weight
+        assignment[node] = target
+        for neighbor, weight in adjacency[node]:
+            neighbor_part_weights[neighbor][source] -= weight
+            neighbor_part_weights[neighbor][target] += weight
+            for candidate in range(len(problem["parts"])):
+                pair_scores[neighbor][candidate] -= (
+                    weight * pair_coefficients[source][candidate]
+                )
+                pair_scores[neighbor][candidate] += (
+                    weight * pair_coefficients[target][candidate]
+                )
+        for net_index in incidence[node]:
+            old_source_count = net_part_counts[net_index][source]
+            old_target_count = net_part_counts[net_index][target]
+            source_disappears = old_source_count == 1
+            target_appears = old_target_count == 0
+            net_part_counts[net_index][source] -= 1
+            if net_part_counts[net_index][source] == 0:
+                net_unique_parts[net_index] -= 1
+            if net_part_counts[net_index][target] == 0:
+                net_unique_parts[net_index] += 1
+            net_part_counts[net_index][target] += 1
+            net_weight = problem["graph"]["nets"][net_index]["weight"]
+            unique_delta = int(target_appears) - int(source_disappears)
+            source_singleton_delta = (
+                -1 if old_source_count == 1 else 1 if old_source_count == 2 else 0
+            )
+            target_singleton_delta = (
+                1 if old_target_count == 0 else -1 if old_target_count == 1 else 0
+            )
+            for pin in net_pins[net_index]:
+                incident_unique_weighted[pin] += net_weight * unique_delta
+                incident_singleton_weights[pin][source] += (
+                    net_weight * source_singleton_delta
+                )
+                incident_singleton_weights[pin][target] += (
+                    net_weight * target_singleton_delta
+                )
+            if source_disappears:
+                for pin in net_pins[net_index]:
+                    incident_present_weights[pin][source] -= net_weight
+            if target_appears:
+                for pin in net_pins[net_index]:
+                    incident_present_weights[pin][target] += net_weight
+        locked[node] = True
+        versions[node] += 1
+        cumulative += gain
+        moves.append(
+            {
+                "node": node,
+                "source": source,
+                "target": target,
+                "gain": gain,
+                "cumulative_gain": cumulative,
+                "kept": False,
+            }
+        )
+        if cumulative > best_cumulative:
+            best_cumulative = cumulative
+            best_prefix = len(moves)
+            ineffective = 0
+        else:
+            ineffective += 1
+
+        affected = {neighbor for neighbor, _ in adjacency[node]}
+        for net_index in incidence[node]:
+            net = problem["graph"]["nets"][net_index]
+            affected.add(net["source"])
+            affected.update(net["sinks"])
+
+        source_fit_nodes = []
+        target_fit_nodes = []
+        capacity_epoch = len(moves)
+
+        def invalidate_capacity_interval(
+            dimension: int,
+            low: int,
+            high: int,
+            part: int,
+            violation_delta: int,
+            fit_nodes,
+            fit_marks,
+        ) -> None:
+            if low >= high:
+                return
+            index = weight_indexes[dimension]
+            begin = bisect_right(index, (low, node_count))
+            end = bisect_right(index, (high, node_count))
+            for _, candidate_node in index[begin:end]:
+                fit_violation_counts[candidate_node][part] += violation_delta
+                if fit_marks[candidate_node] != capacity_epoch:
+                    fit_marks[candidate_node] = capacity_epoch
+                    fit_nodes.append(candidate_node)
+
+        for dimension in range(dimension_count):
+            new_source_remaining = (
+                problem["capacities"][source][dimension] - loads[source][dimension]
+            )
+            new_target_remaining = (
+                problem["capacities"][target][dimension] - loads[target][dimension]
+            )
+            invalidate_capacity_interval(
+                dimension,
+                old_source_remaining[dimension],
+                new_source_remaining,
+                source,
+                -1,
+                source_fit_nodes,
+                source_fit_marks,
+            )
+            invalidate_capacity_interval(
+                dimension,
+                new_target_remaining,
+                old_target_remaining[dimension],
+                target,
+                1,
+                target_fit_nodes,
+                target_fit_marks,
+            )
+        affected.discard(node)
+        for candidate_node in source_fit_nodes:
+            refresh_capacity_candidate(
+                candidate_node,
+                source,
+                fit_violation_counts[candidate_node][source] == 0,
+                candidate_node not in affected,
+            )
+        for candidate_node in target_fit_nodes:
+            refresh_capacity_candidate(
+                candidate_node,
+                target,
+                fit_violation_counts[candidate_node][target] == 0,
+                candidate_node not in affected,
+            )
+        for affected_node in sorted(affected):
+            recompute_candidate(affected_node)
+
+    final = list(problem["assignment"])
+    for index, move in enumerate(moves):
+        move["kept"] = index < best_prefix
+        if move["kept"]:
+            final[move["node"]] = move["target"]
+    initial_metrics = _partition_metrics(problem, problem["assignment"])
+    final_metrics = _partition_metrics(problem, final)
+    metrics = {
+        "attempted_moves": float(len(moves)),
+        "best_prefix": float(best_prefix),
+        "best_cumulative_gain": best_cumulative,
+        "oracle_candidate_recomputations": float(candidate_recomputations),
+    }
+    metrics.update({f"initial_{name}": value for name, value in initial_metrics.items()})
+    metrics.update({f"final_{name}": value for name, value in final_metrics.items()})
+    return moves, final, metrics
+
+
 def validate_mfspart_refinement(artifact: Mapping[str, Any], problem: Mapping[str, Any]) -> Dict[str, Any]:
     if artifact.get("schema") != MFSPART_REFINEMENT_SCHEMA:
         raise ValidationError("invalid MFSPart refinement schema")
@@ -333,6 +813,8 @@ def validate_mfspart_refinement(artifact: Mapping[str, Any], problem: Mapping[st
     if artifact.get("assignment") != expected_assignment:
         raise ValidationError("MFSPart FM best-prefix rollback mismatch")
     for name, expected in expected_metrics.items():
+        if name == "oracle_candidate_recomputations":
+            continue
         actual = artifact.get("metrics", {}).get(name)
         if actual is None or not math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
             raise ValidationError(f"MFSPart FM metric mismatch for {name}")
@@ -341,6 +823,9 @@ def validate_mfspart_refinement(artifact: Mapping[str, Any], problem: Mapping[st
         "attempted_moves": len(actual_moves),
         "kept_moves": sum(move["kept"] for move in actual_moves),
         "best_cumulative_gain": artifact["metrics"]["best_cumulative_gain"],
+        "oracle_candidate_recomputations": int(
+            expected_metrics["oracle_candidate_recomputations"]
+        ),
     }
 
 

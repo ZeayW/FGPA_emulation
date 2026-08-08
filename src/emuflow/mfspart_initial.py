@@ -7,6 +7,7 @@ versioned protocol and independently replays Eqs. 5--8 as a correctness oracle.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import itertools
 import math
 import subprocess
@@ -254,7 +255,7 @@ def _propagate(problem: Mapping[str, Any], adjacency, assigned: Sequence[int]):
         bfs = deque([anchor])
         while bfs:
             node = bfs.popleft()
-            if circuit_distance[node] * problem["hmax"] >= maximum:
+            if (circuit_distance[node] + 1) * problem["hmax"] >= maximum:
                 continue
             for neighbor, _ in adjacency[node]:
                 if circuit_distance[neighbor] < 0:
@@ -270,6 +271,137 @@ def _propagate(problem: Mapping[str, Any], adjacency, assigned: Sequence[int]):
                     queue.append(node)
                     queued.add(node)
     return candidates
+
+
+def _propagate_new_anchors(problem, adjacency, candidates, processed, anchors) -> List[int]:
+    queue = deque()
+    queued = set()
+    changed = set()
+    for anchor in anchors:
+        if not processed[anchor] and anchor not in queued:
+            queue.append(anchor)
+            queued.add(anchor)
+    while queue:
+        anchor = queue.popleft()
+        queued.discard(anchor)
+        if processed[anchor] or len(candidates[anchor]) != 1:
+            continue
+        processed[anchor] = True
+        anchor_part = candidates[anchor][0]
+        maximum = max(problem["distances"][anchor_part])
+        if maximum <= problem["hmax"]:
+            continue
+        circuit_distance = [-1] * len(candidates)
+        circuit_distance[anchor] = 0
+        bfs = deque([anchor])
+        reached = [anchor]
+        while bfs:
+            node = bfs.popleft()
+            if (circuit_distance[node] + 1) * problem["hmax"] >= maximum:
+                continue
+            for neighbor, _ in adjacency[node]:
+                if circuit_distance[neighbor] < 0:
+                    circuit_distance[neighbor] = circuit_distance[node] + 1
+                    bfs.append(neighbor)
+                    reached.append(neighbor)
+        for node in reached:
+            distance = circuit_distance[node]
+            if node == anchor or distance * problem["hmax"] >= maximum:
+                continue
+            filtered = [
+                part
+                for part in candidates[node]
+                if problem["distances"][anchor_part][part]
+                <= distance * problem["hmax"]
+            ]
+            if filtered != candidates[node]:
+                candidates[node] = filtered
+                changed.add(node)
+                if len(filtered) == 1 and not processed[node] and node not in queued:
+                    queue.append(node)
+                    queued.add(node)
+    return sorted(changed)
+
+
+def _initial_propagation(problem, adjacency, assigned):
+    part_count = len(problem["parts"])
+    candidates = [
+        ([part] if part >= 0 else list(range(part_count))) for part in assigned
+    ]
+    processed = [False] * len(assigned)
+    _propagate_new_anchors(
+        problem,
+        adjacency,
+        candidates,
+        processed,
+        [node for node, part in enumerate(assigned) if part >= 0],
+    )
+    return candidates, processed
+
+
+def _trial_empties_domain(
+    problem,
+    adjacency,
+    candidate_masks,
+    processed,
+    allowed_masks,
+    selected_node: int,
+    selected_part: int,
+) -> bool:
+    overlay = {selected_node: 1 << selected_part}
+    queue = deque([selected_node])
+    queued = {selected_node}
+    trial_processed = set()
+
+    def candidate_mask(node: int):
+        return overlay.get(node, candidate_masks[node])
+
+    while queue:
+        anchor = queue.popleft()
+        queued.discard(anchor)
+        anchor_candidates = candidate_mask(anchor)
+        if (
+            processed[anchor]
+            or anchor in trial_processed
+            or anchor_candidates == 0
+            or anchor_candidates & (anchor_candidates - 1)
+        ):
+            continue
+        trial_processed.add(anchor)
+        anchor_part = anchor_candidates.bit_length() - 1
+        maximum = max(problem["distances"][anchor_part])
+        if maximum <= problem["hmax"]:
+            continue
+        distance = {anchor: 0}
+        bfs = deque([anchor])
+        while bfs:
+            node = bfs.popleft()
+            if (distance[node] + 1) * problem["hmax"] >= maximum:
+                continue
+            for neighbor, _ in adjacency[node]:
+                if neighbor not in distance:
+                    distance[neighbor] = distance[node] + 1
+                    bfs.append(neighbor)
+        for node, circuit_distance in distance.items():
+            if (
+                node == anchor
+                or circuit_distance * problem["hmax"] >= maximum
+            ):
+                continue
+            filtered = candidate_mask(node) & allowed_masks[anchor_part][circuit_distance]
+            if filtered == 0:
+                return True
+            if filtered != candidate_mask(node):
+                overlay[node] = filtered
+                if (
+                    filtered & (filtered - 1) == 0
+                    and not processed[node]
+                    and node not in trial_processed
+                    and node not in queued
+                ):
+                    queue.append(node)
+                    queued.add(node)
+    return False
 
 
 def _fits(problem, loads, node: int, part: int) -> bool:
@@ -339,7 +471,7 @@ def _partition_metrics(problem: Mapping[str, Any], assigned: Sequence[int]) -> D
     }
 
 
-def _expected(problem: Mapping[str, Any]) -> Tuple[List[List[int]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, float]]:
+def _expected_exhaustive(problem: Mapping[str, Any]) -> Tuple[List[List[int]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, float]]:
     graph = problem["graph"]
     adjacency = _adjacency(problem)
     assigned = [-1] * len(graph["nodes"])
@@ -424,6 +556,198 @@ def _expected(problem: Mapping[str, Any]) -> Tuple[List[List[int]], List[Dict[st
             for part in range(len(problem["parts"])):
                 if _fits(problem, loads, node, part):
                     choices.append((_score(problem, adjacency, assigned, loads, node, part, True), -node, -part, node, part))
+        if not choices:
+            raise ValidationError("initial partition cannot satisfy capacity")
+        value, _, _, node, part = max(choices)
+        _assign(problem, assigned, loads, node, part)
+        records.append({"node": node, "part": part, "phase": 2, "score": value})
+    return initial_candidates, records, domain_trace, _partition_metrics(problem, assigned)
+
+
+def _expected(problem: Mapping[str, Any]) -> Tuple[List[List[int]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, float]]:
+    """Replay initialization with monotonic candidate-domain certificates."""
+
+    graph = problem["graph"]
+    adjacency = _adjacency(problem)
+    assigned = [-1] * len(graph["nodes"])
+    loads = [[0] * len(problem["dimensions"]) for _ in problem["parts"]]
+    records = []
+    domain_trace = []
+    fixed = [
+        index for index, node in enumerate(graph["nodes"])
+        if node["fixed_part"] >= 0
+    ]
+    if fixed:
+        for node in fixed:
+            part = graph["nodes"][node]["fixed_part"]
+            if not _fits(problem, loads, node, part):
+                raise ValidationError("fixed nodes exceed FPGA capacity")
+            _assign(problem, assigned, loads, node, part)
+            records.append({"node": node, "part": part, "phase": 0, "score": 0.0})
+    else:
+        normalized = []
+        for node in range(len(graph["nodes"])):
+            degree = sum(weight for _, weight in adjacency[node])
+            normalized.append(degree / graph["nodes"][node]["weights"][0])
+        node = max(
+            range(len(graph["nodes"])),
+            key=lambda item: (normalized[item], -item),
+        )
+        feasible = [
+            part for part in range(len(problem["parts"]))
+            if _fits(problem, loads, node, part)
+        ]
+        if not feasible:
+            raise ValidationError("no FPGA can hold propagation start node")
+        part = max(
+            feasible, key=lambda item: (problem["part_degrees"][item], -item)
+        )
+        _assign(problem, assigned, loads, node, part)
+        records.append({"node": node, "part": part, "phase": 0, "score": 0.0})
+
+    candidates, processed = _initial_propagation(problem, adjacency, assigned)
+    initial_candidates = [list(parts) for parts in candidates]
+    candidate_masks = [sum(1 << part for part in parts) for parts in candidates]
+    maximum_circuit_distance = max(
+        (max(row) + problem["hmax"] - 1) // problem["hmax"]
+        for row in problem["distances"]
+    )
+    allowed_masks = []
+    for row in problem["distances"]:
+        allowed_masks.append(
+            [
+                sum(
+                    1 << part
+                    for part, distance in enumerate(row)
+                    if distance <= circuit_distance * problem["hmax"]
+                )
+                for circuit_distance in range(maximum_circuit_distance + 1)
+            ]
+        )
+    phase_two = [False] * len(assigned)
+    event = 0
+    priority_versions = [0] * len(assigned)
+    priority_queue = []
+
+    def refresh_priority(node: int) -> None:
+        priority_versions[node] += 1
+        if assigned[node] >= 0 or phase_two[node] or not candidates[node]:
+            return
+        total = sum(weight for _, weight in adjacency[node])
+        connected = sum(
+            weight
+            for neighbor, weight in adjacency[node]
+            if assigned[neighbor] >= 0
+        )
+        priority = connected / total if total else 0.0
+        heapq.heappush(
+            priority_queue, (-priority, node, priority_versions[node])
+        )
+
+    for node in range(len(assigned)):
+        refresh_priority(node)
+    while True:
+        while (
+            priority_queue
+            and priority_queue[0][2] != priority_versions[priority_queue[0][1]]
+        ):
+            heapq.heappop(priority_queue)
+        if not priority_queue:
+            break
+        _, node, _ = heapq.heappop(priority_queue)
+        choices = []
+        for part in candidates[node]:
+            if not _fits(problem, loads, node, part):
+                continue
+            if max(problem["distances"][part]) > problem["hmax"]:
+                if _trial_empties_domain(
+                    problem,
+                    adjacency,
+                    candidate_masks,
+                    processed,
+                    allowed_masks,
+                    node,
+                    part,
+                ):
+                    continue
+            choices.append(
+                (part, _score(problem, adjacency, assigned, loads, node, part, False))
+            )
+        if not choices:
+            phase_two[node] = True
+            priority_versions[node] += 1
+            continue
+        maximum = max(value for _, value in choices)
+        weights = [
+            math.exp((value - maximum) / problem["temperature"])
+            for _, value in choices
+        ]
+        unit = (
+            (_splitmix64(problem["seed"] ^ _splitmix64(event + 1)) >> 11)
+            * (1.0 / 9007199254740992.0)
+        )
+        event += 1
+        draw = unit * sum(weights)
+        selected_part, selected_score = choices[-1]
+        for (part, value), weight in zip(choices, weights):
+            draw -= weight
+            if draw <= 0:
+                selected_part, selected_score = part, value
+                break
+        changed_nodes = set()
+        if candidates[node] != [selected_part]:
+            changed_nodes.add(node)
+        _assign(problem, assigned, loads, node, selected_part)
+        priority_versions[node] += 1
+        records.append(
+            {
+                "node": node,
+                "part": selected_part,
+                "phase": 1,
+                "score": selected_score,
+            }
+        )
+        candidates[node] = [selected_part]
+        processed[node] = False
+        changed_nodes.update(
+            _propagate_new_anchors(
+                problem, adjacency, candidates, processed, [node]
+            )
+        )
+        for changed_node in changed_nodes:
+            candidate_masks[changed_node] = sum(
+                1 << part for part in candidates[changed_node]
+            )
+        for changed_node in sorted(changed_nodes):
+            domain_trace.append(
+                {
+                    "assignment_step": len(records) - 1,
+                    "node": changed_node,
+                    "parts": list(candidates[changed_node]),
+                }
+            )
+            if changed_node != node:
+                refresh_priority(changed_node)
+        for neighbor, _ in adjacency[node]:
+            if assigned[neighbor] < 0:
+                refresh_priority(neighbor)
+
+    while any(part < 0 for part in assigned):
+        choices = []
+        for node in range(len(assigned)):
+            if assigned[node] >= 0:
+                continue
+            for part in range(len(problem["parts"])):
+                if _fits(problem, loads, node, part):
+                    choices.append(
+                        (
+                            _score(problem, adjacency, assigned, loads, node, part, True),
+                            -node,
+                            -part,
+                            node,
+                            part,
+                        )
+                    )
         if not choices:
             raise ValidationError("initial partition cannot satisfy capacity")
         value, _, _, node, part = max(choices)

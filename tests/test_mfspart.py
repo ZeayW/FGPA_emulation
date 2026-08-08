@@ -65,6 +65,22 @@ class MFSPartCoarsenerTest(unittest.TestCase):
         ]
         return nodes, nets
 
+    def test_input_normalisation_scales_to_100k_unique_nodes(self) -> None:
+        node_count = 100_000
+        normalised = _normalise_input(
+            [
+                {"id": f"n{index}", "weights": {"lut": 1}}
+                for index in range(node_count)
+            ],
+            [{"id": "edge", "source": "n0", "sinks": ["n99999"]}],
+            ["lut"],
+            {"lut": node_count},
+            stop_delta=0,
+            max_levels=1,
+            seed=0,
+        )
+        self.assertEqual(len(normalised["nodes"]), node_count)
+
     def _run(self, root: Path, *, seed: int = 13, bounds=None):
         nodes, nets = self._fixture()
         return build_mfspart_hierarchy(
