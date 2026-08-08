@@ -700,6 +700,32 @@ rejects zero-width or zero-height boxes instead of inventing an epsilon. The
 report is still `not-a-phase6-pin-plan` until the two-stage bank/channel gate
 passes.
 
+The source-qualified assignment kernel is
+`chimew-section3.4-two-stage-assignment-v1`. Stage 1 assigns every TDM group
+or singleton common signal to a compatible bank pair with capacity equal to
+its available channel count. Stage 2 solves both direction-priority channel
+matchings for each used bank pair and selects the lower-cost alternative, so
+TDM groups of one direction occupy the first channel interval, the opposite
+direction occupies the next interval, and common signals use only the
+remaining interval. First-party C++ computes Algorithm 2 costs from physical
+bank/pin and source-fanout/sink-fanin coordinates. The displayed Algorithm 2
+is implemented literally as the sum, per member signal, of its output
+Manhattan distance and its mean input-fanin Manhattan distance; this explicit
+interpretation avoids silently double-applying the reciprocal mentioned in
+the accompanying prose. Cost ranks use a source-declared fixed scale solely
+for deterministic exact optimization, while reports retain physical-site
+units.
+
+Each min-cost result includes a primal assignment and residual-graph node
+potentials. Python independently reconstructs every legal edge and Algorithm
+2 cost, checks capacity and direction intervals, and proves optimality by
+requiring non-negative reduced cost on every residual edge. This check is
+linear in the candidate graph and deliberately avoids replaying a second full
+optimizer on large designs. Small fixtures still compare behavior against
+hand-derived optima and reject tampered dual certificates. The standalone
+result remains `not-a-phase6-pin-plan` until an adapter applies EmuFlow's
+electrical and concrete-slot extensions without changing the paper claims.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA
