@@ -15,9 +15,14 @@ from .contest_validation_matrix import (
 )
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
+from .contest_eda2023 import import_eda2023_case
+from .contest_eda2024 import import_eda2024_case
+from .contest_eda2025 import import_eda2025_instance
+from .validation_farm import validate_validation_farm
 
 
 PUBLIC_CONTEST_FETCH_REPORT_SCHEMA = "emuflow.public-contest-fetch-report/v1"
+PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA = "emuflow.public-contest-import-report/v1"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 
 
@@ -177,6 +182,84 @@ def fetch_public_contest_case(
     return report
 
 
+def _artifact_manifest(output_dir: Path) -> list[Dict[str, Any]]:
+    records = []
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file() or path.name == "import_report.json":
+            continue
+        records.append(
+            {
+                "path": path.relative_to(output_dir).as_posix(),
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return records
+
+
+def import_public_contest_case(
+    matrix_path: Path,
+    case_id: str,
+    source_dir: Path,
+    output_dir: Path,
+) -> Dict[str, Any]:
+    """Validate pinned fetch provenance and dispatch one semantic importer."""
+
+    matrix, _ = load_contest_validation_matrix(matrix_path)
+    case = _find_case(matrix, case_id)
+    if "import" not in case["target_gates"]:
+        raise ValidationError(f"public contest case {case_id!r} has no import gate")
+    source_dir = source_dir.resolve()
+    checked = _validate_fetch_provenance(case, source_dir)
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if any(output_dir.iterdir()):
+        raise EmuFlowError(f"public contest import output is not empty: {output_dir}")
+
+    name = case_id.replace(".", "-")
+    if case["suite"] == "eda2023":
+        adapter = import_eda2023_case(source_dir, output_dir, name)
+    elif case["suite"] == "eda2024-repart":
+        adapter = import_eda2024_case(source_dir, output_dir, name)
+    elif case["suite"] == "eda2025":
+        adapter = import_eda2025_instance(
+            source_dir / "design.info",
+            source_dir / "design.net",
+            source_dir / "design.topo",
+            source_dir / "design.fpga.out",
+            output_dir,
+            name,
+        )
+    else:
+        raise ValidationError(
+            f"public contest suite {case['suite']!r} has no public import adapter"
+        )
+    artifacts = _artifact_manifest(output_dir)
+    if not artifacts:
+        raise ValidationError("public contest importer produced no artifacts")
+    report = {
+        "schema": PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA,
+        "status": "pass",
+        "case_id": case_id,
+        "suite": case["suite"],
+        "case": case["case"],
+        "tier": case["tier"],
+        "gate": "import",
+        "matrix_sha256": canonical_matrix_sha256(matrix),
+        "source": {
+            "revision_kind": case["source"]["revision_kind"],
+            "revision": checked["revision"],
+            "files": checked["files"],
+            "input_bytes": checked["input_bytes"],
+        },
+        "adapter": adapter,
+        "artifacts": artifacts,
+        "evaluation_status": "not-run",
+    }
+    write_json(output_dir / "import_report.json", report)
+    return report
+
+
 def build_contest_fetch_farm_spec(
     matrix_path: Path,
     *,
@@ -253,5 +336,118 @@ def build_contest_fetch_farm_spec(
             for case in matrix["cases"]
             if any(task["id"] == "fetch-" + case["id"].replace(".", "-") for task in tasks)
         ),
+        "output": str(output_path.resolve()),
+    }
+
+
+def build_contest_import_farm_spec(
+    matrix_path: Path,
+    fetch_farm_dir: Path,
+    *,
+    source_commit: str,
+    install_dir: Path,
+    nodes: Sequence[str],
+    output_path: Path,
+    farm_id: str,
+    tiers: Iterable[str] = ("smoke",),
+    suites: Optional[Iterable[str]] = None,
+    slots_per_node: int = 1,
+) -> Dict[str, Any]:
+    """Compile semantic import gates from an already-passed fetch farm."""
+
+    matrix, coverage = load_contest_validation_matrix(matrix_path)
+    source_commit = source_commit.lower()
+    if _COMMIT_RE.fullmatch(source_commit) is None:
+        raise ValidationError("contest farm source commit must be full 40-hex")
+    if not nodes or len(set(nodes)) != len(nodes):
+        raise ValidationError("contest farm nodes must be non-empty and unique")
+    if slots_per_node < 1:
+        raise ValidationError("contest farm slots per node must be positive")
+    fetch_farm_dir = fetch_farm_dir.resolve()
+    validate_validation_farm(fetch_farm_dir)
+    manifest = read_json(fetch_farm_dir / "farm-manifest.json")
+    if manifest.get("schema") != "emuflow.validation-farm-manifest/v1":
+        raise ValidationError("contest fetch farm manifest schema is invalid")
+    fetch_records = {
+        record.get("id"): record
+        for record in manifest.get("tasks", [])
+        if isinstance(record, dict)
+    }
+    selected_tiers = set(tiers)
+    selected_suites = set(suites) if suites is not None else None
+    tasks = []
+    selected_cases = []
+    for case in matrix["cases"]:
+        if case["tier"] not in selected_tiers or "import" not in case["target_gates"]:
+            continue
+        if selected_suites is not None and case["suite"] not in selected_suites:
+            continue
+        if case["source"]["revision_kind"] == "embedded-sha256":
+            continue
+        fetch_id = "fetch-" + case["id"].replace(".", "-")
+        if fetch_id not in fetch_records:
+            raise ValidationError(
+                f"contest import case {case['id']!r} has no fetch-farm task"
+            )
+        state = read_json(fetch_farm_dir / "tasks" / fetch_id / "state.json")
+        if state.get("status") != "pass":
+            raise ValidationError(
+                f"contest import case {case['id']!r} fetch task did not pass"
+            )
+        fetch_run = fetch_farm_dir / "runs" / fetch_id
+        fetch_report = read_json(fetch_run / "fetch_report.json")
+        if (
+            fetch_report.get("schema") != PUBLIC_CONTEST_FETCH_REPORT_SCHEMA
+            or fetch_report.get("status") != "pass"
+            or fetch_report.get("case_id") != case["id"]
+            or fetch_report.get("matrix_sha256") != coverage["matrix_sha256"]
+        ):
+            raise ValidationError(
+                f"contest import case {case['id']!r} fetch report is invalid"
+            )
+        source_dir = (fetch_run / "input").resolve()
+        _validate_fetch_provenance(case, source_dir)
+        tasks.append(
+            {
+                "id": "import-" + case["id"].replace(".", "-"),
+                "command": [
+                    "{install}/bin/emuflow",
+                    "contest",
+                    "import-public",
+                    "--matrix",
+                    (
+                        "{install}/share/emuflow/benchmarks/"
+                        "contest_validation_matrix.json"
+                    ),
+                    "--case-id",
+                    case["id"],
+                    "--source-dir",
+                    str(source_dir),
+                    "--out",
+                    "{run_dir}",
+                ],
+            }
+        )
+        selected_cases.append(case)
+    if not tasks:
+        raise ValidationError("contest farm selection produced no import tasks")
+    spec = {
+        "schema": "emuflow.validation-farm-spec/v1",
+        "farm_id": farm_id,
+        "source_commit": source_commit,
+        "install_dir": str(install_dir.resolve()),
+        "nodes": list(nodes),
+        "slots_per_node": slots_per_node,
+        "tasks": tasks,
+    }
+    write_json(output_path, spec)
+    return {
+        "schema": "emuflow.contest-import-farm-plan/v1",
+        "status": "generated",
+        "farm_id": farm_id,
+        "matrix_sha256": coverage["matrix_sha256"],
+        "fetch_farm": str(fetch_farm_dir),
+        "tasks": len(tasks),
+        "input_bytes": sum(case["input_bytes"] for case in selected_cases),
         "output": str(output_path.resolve()),
     }
