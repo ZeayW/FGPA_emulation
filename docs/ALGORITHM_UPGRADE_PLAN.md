@@ -650,6 +650,15 @@ baseline. They do not faithfully reproduce Chimew's die-crossing encoding,
 RUDY congestion gate, two-stage bank/pin assignment, or published edge-cost
 model.
 
+The baseline therefore emits provider-neutral identities
+`placement-aware-region-grouping-mcf-v1`,
+`electrical-package-pin-min-cost-flow-v1`, and
+`placement-aware-pin-split-v1`.  Historical artifacts using the former
+`chimew-*` identities remain readable for schema-v1 compatibility, but new
+artifacts do not claim paper reproduction.  A future Chimew provider must use
+a distinct identity and pass the paper-specific acceptance gates below before
+it can become selectable.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA

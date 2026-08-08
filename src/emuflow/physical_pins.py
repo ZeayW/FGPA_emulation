@@ -18,7 +18,10 @@ from .platform import Platform
 
 HARDWARE_BSP_SCHEMA = "emuflow.hardware-bsp/v1"
 PACKAGE_PIN_BINDING_SCHEMA = "emuflow.package-pin-binding/v1"
-PACKAGE_PIN_PROVIDER = "chimew-package-pin-min-cost-flow-v1"
+PACKAGE_PIN_PROVIDER = "electrical-package-pin-min-cost-flow-v1"
+LEGACY_PACKAGE_PIN_PROVIDERS = frozenset(
+    {"chimew-package-pin-min-cost-flow-v1"}
+)
 SERIAL_TRANSCEIVER_PROVIDER = "boarddb-fixed-serial-transceiver-v1"
 PHASE6B_REPORT_SCHEMA = "emuflow.phase6b-report/v1"
 _COST_SCALE = 1_000_000
@@ -984,7 +987,8 @@ def validate_package_pin_binding(
     bsp_validation = validate_hardware_bsp(bsp, platform)
     if (
         binding.get("schema") != PACKAGE_PIN_BINDING_SCHEMA
-        or binding.get("provider") != PACKAGE_PIN_PROVIDER
+        or binding.get("provider")
+        not in {PACKAGE_PIN_PROVIDER, *LEGACY_PACKAGE_PIN_PROVIDERS}
         or binding.get("design") != schedule.get("design")
         or binding.get("platform") != platform.name
         or binding.get("board") != bsp["board"]["name"]

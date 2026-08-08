@@ -378,7 +378,7 @@ def build_split_artifacts(
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "provider": (
-            "chimew-placement-aware-pin-split-v1"
+            "placement-aware-pin-split-v1"
             if pin_plan is not None
             else "deterministic-cut-shadow-split-v1"
         ),
