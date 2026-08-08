@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
 from .native_tools import resolve_native_executable
@@ -188,7 +188,7 @@ def _oracle_groups(
 def _run_native(
     entries: Sequence[Mapping[str, Any]],
     encodings: Mapping[str, int],
-    executable: str | None,
+    executable: Optional[str],
 ) -> tuple[Dict[str, int], int, int]:
     domains = sorted({_domain(entry) for entry in entries})
     domain_index = {domain: index for index, domain in enumerate(domains)}
@@ -241,7 +241,7 @@ def build_chimew_initial_groups(
     schedule: Mapping[str, Any],
     crossing_document: Mapping[str, Any],
     *,
-    executable: str | None = None,
+    executable: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run paper Algorithm 1 and independently replay every group decision."""
 
