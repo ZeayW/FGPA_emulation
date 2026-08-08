@@ -1579,7 +1579,7 @@ reconstructs group capacity, slot collisions, objective values, and split
 netlists. Its validation report includes the reconstructed logical-lane
 baseline and objective, crossing-bit, and pin-distance improvements.
 
-Three non-selectable Chimew research kernels now sit beside that production
+Four non-selectable Chimew research kernels now sit beside that production
 baseline. The first reproduces FPGA 2026 Algorithm 1 from explicit,
 source-qualified physical SLL-crossing encodings. The second only swaps
 equal-encoding signals using physical-site source-y coordinates, preserving
@@ -1594,8 +1594,15 @@ reconstructs every load, utilization, hotspot, and load-conservation metric.
 The congestion threshold is explicitly a qualification policy rather than a
 paper constant, and v1 rejects zero-area bounding boxes instead of silently
 introducing an unpublished epsilon. These artifacts remain
-`not-a-phase6-pin-plan` until the two-stage physical bank/channel assignment
-gate is implemented and validated.
+`not-a-phase6-pin-plan`. The fourth reproduces the Section 3.4 two-stage
+assignment: a capacitated bank-pair min-cost flow followed by two exact
+channel matchings, one for each TDM direction priority, using the lower-cost
+alternative. Edge ranks independently reconstruct Algorithm 2's source
+fanout distance plus per-signal mean sink-fanin distance. Every matching emits
+a residual-dual optimality certificate, which Python checks in linear time
+instead of running a second large optimizer. The result remains a standalone
+paper kernel until its abstract banks/channels are reconciled with EmuFlow's
+voltage, IOSTANDARD, clock, differential-pair, and concrete-slot contracts.
 
 Phase 6B has two explicit electrical providers. For parallel I/O,
 `src/native/bsp_pin_solver.cpp` implements exact sparse minimum-cost bipartite
