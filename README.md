@@ -608,6 +608,51 @@ archive/run layout blocks deletion. Successful cleanup leaves a hash-bound
 `cleanup-receipt.json` in the archive. Validation archives are experiment
 outputs and remain outside this source repository.
 
+### Parallel validation farm
+
+Independent validations can be distributed across shared-filesystem compute
+nodes with the versioned `validation-farm` interface. A farm pins an immutable
+install directory whose basename is the full source commit, assigns every task
+to a node, creates a unique run directory per task, and rejects mutable
+`install/current` aliases and duplicate submissions. For example:
+
+```json
+{
+  "schema": "emuflow.validation-farm-spec/v1",
+  "farm_id": "routing-ablation",
+  "source_commit": "0123456789abcdef0123456789abcdef01234567",
+  "install_dir": "/shared/emuflow/install/0123456789abcdef0123456789abcdef01234567",
+  "nodes": ["compute1", "compute2"],
+  "slots_per_node": 1,
+  "tasks": [
+    {
+      "id": "baseline",
+      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/shared/platforms/board.json", "--partition-provider", "tritonpart", "--out", "{run_dir}"]
+    },
+    {
+      "id": "candidate",
+      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/shared/platforms/board.json", "--partition-provider", "mfspart", "--out", "{run_dir}"]
+    }
+  ]
+}
+```
+
+Prepare and inspect the collision-free plan before launching it from a host
+that can SSH directly to the listed nodes:
+
+```bash
+emuflow validation-farm prepare --spec farm.json --out /shared/runs/farm-001
+emuflow validation-farm validate /shared/runs/farm-001
+emuflow validation-farm launch /shared/runs/farm-001
+emuflow validation-farm status /shared/runs/farm-001
+```
+
+Remote workers detach into their own sessions, acquire a per-node slot lock,
+and atomically record queued, running, pass, or failure state. Commands are
+argv arrays rather than shell fragments. This farm-level concurrency is
+orthogonal to `--physical-workers N`, which parallelizes the FPGA partitions
+inside one Phase-7 task.
+
 ### Public contest compatibility
 
 EmuFlow keeps a contest's exact abstract machine model separate from BoardDB

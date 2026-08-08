@@ -140,6 +140,14 @@ from .vpr import run_vpr, run_vpr_route_packed, run_vtr_yosys
 from .vivado_board_flow import run_vivado_board_flow
 from .vivado_board_timing import run_vivado_board_timing
 from .vivado_pin_sites import derive_vivado_pin_sites
+from .validation_farm import (
+    detach_validation_farm_task,
+    launch_validation_farm,
+    prepare_validation_farm,
+    run_validation_farm_task,
+    validation_farm_status,
+    validate_validation_farm,
+)
 
 
 def _print_json(value: Dict[str, Any]) -> None:
@@ -224,6 +232,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     archive_cleanup.add_argument("archive", type=Path)
     archive_cleanup.add_argument("--flow", type=Path, required=True)
+
+    farm_parser = subparsers.add_parser(
+        "validation-farm",
+        help="schedule version-pinned validation tasks on shared-filesystem nodes",
+    )
+    farm_subparsers = farm_parser.add_subparsers(
+        dest="farm_command", required=True
+    )
+    farm_prepare = farm_subparsers.add_parser(
+        "prepare", help="validate a farm spec and reserve isolated run directories"
+    )
+    farm_prepare.add_argument("--spec", type=Path, required=True)
+    farm_prepare.add_argument("--out", type=Path, required=True)
+    farm_validate = farm_subparsers.add_parser(
+        "validate", help="verify task isolation and the pinned install contract"
+    )
+    farm_validate.add_argument("farm", type=Path)
+    farm_launch = farm_subparsers.add_parser(
+        "launch", help="submit prepared tasks to their assigned nodes"
+    )
+    farm_launch.add_argument("farm", type=Path)
+    farm_launch.add_argument("--submit-workers", type=int, default=8)
+    farm_status = farm_subparsers.add_parser(
+        "status", help="summarize task states from the shared filesystem"
+    )
+    farm_status.add_argument("farm", type=Path)
+    farm_worker = farm_subparsers.add_parser(
+        "worker", help=argparse.SUPPRESS
+    )
+    farm_worker.add_argument("--task", type=Path, required=True)
+    farm_worker.add_argument("--detach", action="store_true")
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
     platform_subparsers = platform_parser.add_subparsers(
@@ -2135,6 +2174,24 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = cleanup_validation_source(args.archive, args.flow)
         _print_json(report)
         return 0
+
+    if args.command == "validation-farm":
+        if args.farm_command == "prepare":
+            report = prepare_validation_farm(args.spec, args.out)
+        elif args.farm_command == "validate":
+            report = validate_validation_farm(args.farm)
+        elif args.farm_command == "launch":
+            report = launch_validation_farm(
+                args.farm, submit_workers=args.submit_workers
+            )
+        elif args.farm_command == "status":
+            report = validation_farm_status(args.farm)
+        elif args.detach:
+            report = detach_validation_farm_task(args.task)
+        else:
+            report = run_validation_farm_task(args.task)
+        _print_json(report)
+        return 0 if report.get("status") not in {"failed", "submit_failed"} else 2
 
     if args.command == "platform":
         if args.platform_command == "arm-mps4-materialize":
