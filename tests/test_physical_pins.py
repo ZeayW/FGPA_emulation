@@ -8,6 +8,7 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.board_arm_mps4 import materialize_arm_mps4_boarddb
 from emuflow.netlist import _build_virtual_anchors
 from emuflow.physical_pins import (
+    LEGACY_PACKAGE_PIN_PROVIDERS,
     PACKAGE_PIN_PROVIDER,
     SERIAL_TRANSCEIVER_PROVIDER,
     binding_to_xdc,
@@ -268,6 +269,22 @@ class PhysicalPinBindingTest(unittest.TestCase):
         xdc = binding_to_xdc(first, "fpga0")
         self.assertIn("SYNTHETIC VALIDATION BSP", xdc)
         self.assertIn("get_ports {tx_link0_fpga1[", xdc)
+
+    def test_legacy_binding_provider_remains_readable(self) -> None:
+        binding = self._build()
+        self.assertNotIn(binding["provider"], LEGACY_PACKAGE_PIN_PROVIDERS)
+        legacy = copy.deepcopy(binding)
+        legacy["provider"] = next(iter(LEGACY_PACKAGE_PIN_PROVIDERS))
+        validation = validate_package_pin_binding(
+            self.schedule,
+            self.platform,
+            self.positions,
+            self.plan,
+            self.anchors,
+            self.bsp,
+            legacy,
+        )
+        self.assertEqual(validation["status"], "pass")
 
     def test_binding_corruption_is_rejected(self) -> None:
         binding = self._build()

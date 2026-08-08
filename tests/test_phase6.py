@@ -288,7 +288,7 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(
                 report["provider"],
-                "chimew-placement-aware-pin-split-v1",
+                "placement-aware-pin-split-v1",
             )
             self.assertEqual(
                 report["pin_plan_validation"]["status"], "pass"

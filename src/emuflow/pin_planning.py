@@ -16,7 +16,10 @@ from .placement import PLACEMENT_SCHEMA
 
 SIGNAL_POSITION_HINTS_SCHEMA = "emuflow.signal-position-hints/v1"
 PIN_PLAN_SCHEMA = "emuflow.placement-aware-pin-plan/v1"
-PIN_PLAN_PROVIDER = "chimew-placement-aware-grouping-mcf-v1"
+PIN_PLAN_PROVIDER = "placement-aware-region-grouping-mcf-v1"
+LEGACY_PIN_PLAN_PROVIDERS = frozenset(
+    {"chimew-placement-aware-grouping-mcf-v1"}
+)
 
 
 def _domain_key(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
@@ -362,7 +365,7 @@ def validate_pin_plan(
 ) -> Dict[str, Any]:
     if plan.get("schema") != PIN_PLAN_SCHEMA:
         raise ValidationError(f"pin plan schema must be {PIN_PLAN_SCHEMA!r}")
-    if plan.get("provider") != PIN_PLAN_PROVIDER:
+    if plan.get("provider") not in {PIN_PLAN_PROVIDER, *LEGACY_PIN_PLAN_PROVIDERS}:
         raise ValidationError("pin plan provider is not source-complete")
     if (
         plan.get("design") != schedule.get("design")

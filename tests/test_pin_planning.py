@@ -6,6 +6,7 @@ from pathlib import Path
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.pin_planning import (
+    LEGACY_PIN_PLAN_PROVIDERS,
     PIN_PLAN_PROVIDER,
     SIGNAL_POSITION_HINTS_SCHEMA,
     build_pin_plan,
@@ -157,6 +158,21 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
         }
         self.assertEqual(low_pins, {0})
         self.assertEqual(high_pins, {1})
+
+    def test_legacy_provider_remains_readable_but_is_not_emitted(self) -> None:
+        plan = build_pin_plan(
+            self.schedule,
+            self.platform,
+            self.positions,
+            executable=str(self.executable),
+        )
+        self.assertNotIn(plan["provider"], LEGACY_PIN_PLAN_PROVIDERS)
+        legacy = copy.deepcopy(plan)
+        legacy["provider"] = next(iter(LEGACY_PIN_PLAN_PROVIDERS))
+        validation = validate_pin_plan(
+            self.schedule, self.platform, self.positions, legacy
+        )
+        self.assertEqual(validation["status"], "pass")
 
     def test_lane_slot_collision_is_rejected(self) -> None:
         plan = build_pin_plan(
