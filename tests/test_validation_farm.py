@@ -38,9 +38,9 @@ class ValidationFarmTest(unittest.TestCase):
                         sys.executable,
                         "-c",
                         (
-                            "import pathlib,sys; "
+                            "import json,pathlib,sys; "
                             "pathlib.Path(sys.argv[1]).joinpath('done')"
-                            ".write_text('ok')"
+                            ".write_text(json.dumps({'status': 'ok'}))"
                         ),
                         "{run_dir}",
                     ],
@@ -134,7 +134,10 @@ class ValidationFarmTest(unittest.TestCase):
             self.assertEqual(result["slot"], 0)
             self.assertEqual(result["source_commit"], COMMIT)
             self.assertEqual(result["install_dir"], str(install.resolve()))
-            self.assertEqual((farm / "runs" / "task-0" / "done").read_text(), "ok")
+            self.assertEqual(
+                read_json(farm / "runs" / "task-0" / "done")["status"],
+                "ok",
+            )
             status = validation_farm_status(farm)
             self.assertTrue(status["complete"])
             self.assertEqual(status["counts"], {"pass": 1})

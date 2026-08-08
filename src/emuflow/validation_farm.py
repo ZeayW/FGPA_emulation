@@ -77,18 +77,14 @@ def _validate_commit(value: Any) -> str:
 
 
 def _format_value(value: str, replacements: Mapping[str, str], label: str) -> str:
-    fields = set(re.findall(r"\{([^{}]+)\}", value))
+    placeholder = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+    fields = set(placeholder.findall(value))
     unknown = fields - _PLACEHOLDERS
     if unknown:
         raise ValidationError(
             f"validation farm {label} uses unknown placeholders: {sorted(unknown)}"
         )
-    try:
-        return value.format_map(replacements)
-    except (KeyError, ValueError) as error:
-        raise ValidationError(
-            f"validation farm {label} is malformed: {error}"
-        ) from error
+    return placeholder.sub(lambda match: replacements[match.group(1)], value)
 
 
 def _validate_install(raw_path: Any, commit: str) -> Path:
