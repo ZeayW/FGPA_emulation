@@ -596,6 +596,10 @@ if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
 endif()
 
 if(EMUFLOW_BUILD_REPART)
+  # RePart's upstream build contract links Boost statically.  Keep the
+  # installed executable self-contained so it does not depend on the exact
+  # Boost SONAME available in the build container.
+  set(Boost_USE_STATIC_LIBS ON)
   find_package(Boost 1.65 REQUIRED COMPONENTS system thread)
   find_package(Threads REQUIRED)
 
