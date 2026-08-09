@@ -15,7 +15,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
-from .routing import SYSTEM_ROUTES_SCHEMA
+from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA, SYSTEM_ROUTES_SCHEMA
 from .tdm_timing_dag import optimize_prepared_timing_dag
 
 
@@ -450,6 +450,7 @@ def materialize_eda2023_rtl_boarddb(
     fabric_clock_mhz: float = 50.0,
     latency_cycles: int = 2,
     link_mode: str = "abstract",
+    route_constraints_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Project public die-level Wire banks onto physical FPGA vertices."""
     if (
@@ -527,6 +528,36 @@ def materialize_eda2023_rtl_boarddb(
             }
         },
     )
+    cross_nets = [
+        net
+        for net in instance["nets"]
+        if any(
+            instance["die_to_fpga"][sink]
+            != instance["die_to_fpga"][net["source_die"]]
+            for sink in net["sink_dies"]
+        )
+    ]
+    ratio_quantum = instance["parameters"]["tdm_ratio_quantum"]
+    max_ratio = max(
+        ratio_quantum,
+        ratio_quantum * math.ceil(max(1, len(cross_nets)) / ratio_quantum),
+    )
+    constraints_output = route_constraints_path or output_path.with_name(
+        f"{output_path.stem}.route_constraints.json"
+    )
+    write_json(
+        constraints_output,
+        {
+            "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
+            "frame_slots": max_ratio,
+            "max_route_hops": instance["parameters"].get(
+                "physical_fpga_diameter", _physical_fpga_diameter(instance)
+            ),
+            "tdm_ratio_quantum": ratio_quantum,
+            "tdm_min_ratio": ratio_quantum,
+            "shared_capacity_links": [link.id for link in validated.links],
+        },
+    )
     return {
         "schema": EDA2023_BOARDDB_MATERIALIZATION_SCHEMA,
         "status": "pass",
@@ -543,6 +574,7 @@ def materialize_eda2023_rtl_boarddb(
         ),
         "capacity_semantics": "fixed-direction-lane-groups-shared-bank",
         "output": str(output_path),
+        "route_constraints": str(constraints_output),
     }
 
 

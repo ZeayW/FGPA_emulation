@@ -163,6 +163,7 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
                 output_path=output,
                 name="eda2023_sample_academic_rtl",
                 lane_scale=2,
+                route_constraints_path=root / "physical-route-constraints.json",
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["physical_fpgas"], 2)
@@ -188,6 +189,20 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
             provenance = boarddb["platform"]["provenance"]["interconnect"]
             self.assertEqual(provenance["projection"], "physical-fpga-wire-bank")
             self.assertEqual(provenance["collapsed_sll_links"], 2)
+            constraints = read_json(root / "physical-route-constraints.json")
+            self.assertEqual(
+                constraints["schema"], "emuflow.system-route-constraints/v1"
+            )
+            self.assertEqual(constraints["max_route_hops"], 1)
+            self.assertEqual(constraints["tdm_ratio_quantum"], 4)
+            self.assertEqual(
+                constraints["shared_capacity_links"],
+                ["eda2023_die_link_001_002"],
+            )
+            self.assertEqual(
+                report["route_constraints"],
+                str(root / "physical-route-constraints.json"),
+            )
 
     def test_physical_fpga_projection_rejects_invalid_lane_scale(self):
         with tempfile.TemporaryDirectory() as temporary:

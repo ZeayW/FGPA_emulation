@@ -522,6 +522,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2023_boarddb.add_argument("--instance", type=Path, required=True)
     eda2023_boarddb.add_argument("--device-template", type=Path, required=True)
     eda2023_boarddb.add_argument("--output", "-o", type=Path, required=True)
+    eda2023_boarddb.add_argument("--route-constraints-output", type=Path)
     eda2023_boarddb.add_argument("--name", required=True)
     eda2023_boarddb.add_argument("--template-fpga")
     eda2023_boarddb.add_argument("--lane-scale", type=int, default=1)

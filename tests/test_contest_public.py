@@ -243,6 +243,32 @@ payload = b'abc'
             self.assertEqual(boarddb["links"][0]["data_lanes_per_direction"], 4)
             self.assertTrue((root / "boarddb" / "route_constraints.json").is_file())
 
+    def test_unified_boarddb_gate_projects_eda2023_physical_constraints(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix, source = self._semantic_fixture(root, "eda2023")
+            normalized = root / "normalized"
+            import_public_contest_case(
+                matrix, "eda2023.case1", source, normalized
+            )
+            repository = Path(__file__).resolve().parents[1]
+            report = materialize_public_contest_boarddb(
+                matrix,
+                "eda2023.case1",
+                source,
+                normalized,
+                repository / "platforms/virtual/academic_vtr_4fpga_mesh.json",
+                root / "boarddb",
+            )
+            self.assertEqual(report["status"], "pass")
+            constraints = read_json(root / "boarddb" / "route_constraints.json")
+            boarddb = read_json(root / "boarddb" / "boarddb.json")
+            self.assertEqual(
+                constraints["shared_capacity_links"],
+                [link["id"] for link in boarddb["links"]],
+            )
+            self.assertEqual(constraints["max_route_hops"], 1)
+
     def test_unified_boarddb_gate_rejects_tampered_import_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
