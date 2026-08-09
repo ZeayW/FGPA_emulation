@@ -22,6 +22,7 @@ from .chimew_grouping import (
     _domain,
     _integer,
     _popcount,
+    _tdm_ratio,
     _string,
     validate_chimew_crossings,
 )
@@ -141,10 +142,10 @@ def _validate_initial_groups(
     crossing_bits = 0
     for group, members in grouped.items():
         domains = {_domain(entries[entry_id]) for entry_id in members}
-        ratios = {entries[entry_id].get("tdm_ratio") for entry_id in members}
+        ratios = {_tdm_ratio(entries[entry_id]) for entry_id in members}
         if len(domains) != 1 or len(ratios) != 1:
             raise ValidationError(f"Chimew group {group} crosses a grouping domain")
-        ratio = _integer(next(iter(ratios)), f"chimew.group[{group}].ratio", minimum=1)
+        ratio = next(iter(ratios))
         if len(members) > ratio:
             raise ValidationError(f"Chimew group {group} exceeds its TDM ratio")
         encoding = 0
@@ -195,8 +196,7 @@ def _oracle_refine(
     before_total = _pairwise_objective(members, positions, all_groups)
     buckets: Dict[Tuple[Tuple[str, str, str], int, int], list[str]] = defaultdict(list)
     for entry in entries:
-        ratio = _integer(entry.get("tdm_ratio"), f"{entry['id']}.tdm_ratio", minimum=1)
-        buckets[(_domain(entry), ratio, encodings[entry["id"]])].append(entry["id"])
+        buckets[(_domain(entry), _tdm_ratio(entry), encodings[entry["id"]])].append(entry["id"])
     accepted = moved = 0
     for (_, _, encoding), bucket in sorted(buckets.items()):
         affected = {assignment[entry_id] for entry_id in bucket}
@@ -266,7 +266,7 @@ def _run_native(
             entry_id = entry["id"]
             lines.append(
                 "SIGNAL "
-                f"{index} {domain_index[_domain(entry)]} {entry['tdm_ratio']} "
+                f"{index} {domain_index[_domain(entry)]} {_tdm_ratio(entry)} "
                 f"{encodings[entry_id]} {initial[entry_id]} "
                 f"{positions[entry_id]:.17g}"
             )

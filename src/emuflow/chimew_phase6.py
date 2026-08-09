@@ -12,6 +12,7 @@ from .chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from .chimew_grouping import _tdm_ratio
 from .chimew_qualification import (
     canonical_sha256,
     validate_chimew_bank_channel_report_artifact,
@@ -339,7 +340,7 @@ def build_chimew_phase6_pin_plan(
                 or entry.get("to") != sink
             ):
                 raise ValidationError("Chimew member schedule domain does not agree")
-            ratios.add(entry.get("tdm_ratio"))
+            ratios.add(_tdm_ratio(entry))
             used_schedule_entries.add(entry_id)
             member_ids.append(entry_id)
             plan_assignment[entry_id] = (group_index, channel["physical_lane"])

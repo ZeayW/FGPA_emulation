@@ -25,6 +25,7 @@ from .chimew_bank_channel import (
 from .chimew_grouping import (
     _domain,
     _popcount,
+    _tdm_ratio,
     validate_chimew_crossings,
 )
 from .chimew_refinement import (
@@ -125,7 +126,7 @@ def _validate_refined_grouping(
         raise ValidationError("Chimew refinement changed a group SLL encoding")
     for group, entry_ids in members.items():
         domains = {_domain(schedule_by_id[entry_id]) for entry_id in entry_ids}
-        ratios = {schedule_by_id[entry_id].get("tdm_ratio") for entry_id in entry_ids}
+        ratios = {_tdm_ratio(schedule_by_id[entry_id]) for entry_id in entry_ids}
         if len(domains) != 1 or len(ratios) != 1:
             raise ValidationError(f"Chimew refined group {group} crosses a domain")
         ratio = next(iter(ratios))

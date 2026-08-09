@@ -487,6 +487,17 @@ class ChimewQualificationTest(unittest.TestCase):
                 (output / "phase6-adapter" / "qualification_certificate.json").is_file()
             )
 
+            direct_lane = copy.deepcopy(self.schedule)
+            for entry in direct_lane["entries"]:
+                entry.pop("tdm_ratio")
+            write_json(paths["schedule"], direct_lane)
+            direct_output = root / "direct-lane-pipeline"
+            direct_arguments = list(arguments[:-2])
+            direct_arguments.extend(["--out", str(direct_output)])
+            self.assertEqual(main(direct_arguments), 0)
+            direct_report = read_json(direct_output / "pipeline_report.json")
+            self.assertEqual(direct_report["status"], "pass")
+
 
 if __name__ == "__main__":
     unittest.main()

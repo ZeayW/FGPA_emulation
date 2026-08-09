@@ -28,6 +28,17 @@ def _domain_key(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
     return (entry["link"], entry["from"], entry["to"])
 
 
+def _schedule_tdm_ratio(entry: Mapping[str, Any]) -> int:
+    """Treat a schedule without ratio-plan metadata as direct-lane transport."""
+
+    value = entry.get("tdm_ratio", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValidationError(
+            f"schedule entry {entry.get('id')!r} has an invalid TDM ratio"
+        )
+    return value
+
+
 def build_signal_position_hints(
     ir: Mapping[str, Any],
     schedule: Mapping[str, Any],
@@ -281,7 +292,7 @@ def _write_model(
         lines.append(
             "SIGNAL "
             f"{index} {domain_index[_domain_key(entry)]} "
-            f"{entry['tdm_ratio']} {entry['slot']} {crossing} "
+            f"{_schedule_tdm_ratio(entry)} {entry['slot']} {crossing} "
             f"{float(hint['source_y']):.17g} "
             f"{float(hint['sink_y']):.17g}"
         )
@@ -486,7 +497,7 @@ def validate_pin_plan(
             )
     for group, entries in groups.items():
         domains = {_domain_key(entry) for entry in entries}
-        ratios = {entry["tdm_ratio"] for entry in entries}
+        ratios = {_schedule_tdm_ratio(entry) for entry in entries}
         pins = {by_id[entry["id"]]["physical_lane"] for entry in entries}
         slots = {entry["slot"] for entry in entries}
         if len(domains) != 1 or len(ratios) != 1 or len(pins) != 1:

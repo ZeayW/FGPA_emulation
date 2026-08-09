@@ -129,6 +129,14 @@ def _domain(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
     return entry["link"], entry["from"], entry["to"]
 
 
+def _tdm_ratio(entry: Mapping[str, Any]) -> int:
+    """Return the serialization ratio; direct-lane schedules imply ratio one."""
+
+    return _integer(
+        entry.get("tdm_ratio", 1), f"{entry['id']}.tdm_ratio", minimum=1
+    )
+
+
 def _nearest_key(
     encoding: int, target: int, multiplicity: Mapping[int, int], index: int
 ) -> tuple[int, int, int, int, int, int]:
@@ -148,8 +156,7 @@ def _oracle_groups(
 ) -> tuple[Dict[str, int], int, int]:
     buckets: Dict[tuple[Tuple[str, str, str], int], list[int]] = defaultdict(list)
     for index, entry in enumerate(entries):
-        ratio = _integer(entry.get("tdm_ratio"), f"{entry['id']}.tdm_ratio", minimum=1)
-        buckets[(_domain(entry), ratio)].append(index)
+        buckets[(_domain(entry), _tdm_ratio(entry))].append(index)
     assignment: Dict[str, int] = {}
     group_count = 0
     crossing_bits = 0
@@ -200,7 +207,7 @@ def _run_native(
         for index, entry in enumerate(entries):
             lines.append(
                 f"SIGNAL {index} {domain_index[_domain(entry)]} "
-                f"{entry['tdm_ratio']} {encodings[entry['id']]}"
+                f"{_tdm_ratio(entry)} {encodings[entry['id']]}"
             )
         input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         command = resolve_native_executable(
