@@ -18,6 +18,12 @@ from emuflow.chimew_phase6 import (
     run_chimew_phase6_adapter,
     validate_chimew_phase6_binding,
 )
+from emuflow.chimew_qualification import (
+    CHIMEW_QUALIFICATION_PROVIDER,
+    CHIMEW_QUALIFICATION_SCHEMA,
+    canonical_sha256,
+)
+from emuflow.cli import main
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
@@ -238,6 +244,60 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         self.assertEqual(
             result["electrical_binding"]["metrics"]["package_pin_collisions"], 0
         )
+
+    def test_complete_lookahead_certificate_is_bound_into_the_plan(self) -> None:
+        certificate = {
+            "schema": CHIMEW_QUALIFICATION_SCHEMA,
+            "status": "pass",
+            "design": self.schedule["design"],
+            "platform": self.schedule["platform"],
+            "provider": CHIMEW_QUALIFICATION_PROVIDER,
+            "provenance": {
+                "routing_sha256": "f" * 64,
+                "placement_sha256": "b" * 64,
+                "netlist_sha256": "d" * 64,
+                "architecture_sha256": "c" * 64,
+            },
+            "artifacts": {
+                "schedule": canonical_sha256(self.schedule),
+                "refined_grouping": "a" * 64,
+                "bank_channel_input": canonical_sha256(self.assignment_input),
+            },
+            "metrics": {
+                "signals": 2,
+                "groups": 2,
+                "rudy_overloaded_bins": 0,
+                "artifact_chain_disagreements": 0,
+            },
+        }
+        certificate["qualification_sha256"] = canonical_sha256(certificate)
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            qualification_document=certificate,
+            executable=str(self.executable),
+        )
+        self.assertEqual(
+            result["pin_plan"]["configuration"]["lookahead_qualification"],
+            "complete-artifact-chain",
+        )
+        self.assertEqual(
+            result["electrical_binding"]["provenance"]["qualification_sha256"],
+            certificate["qualification_sha256"],
+        )
+        tampered = copy.deepcopy(certificate)
+        tampered["metrics"]["signals"] = 3
+        with self.assertRaisesRegex(ValidationError, "self-seal"):
+            build_chimew_phase6_pin_plan(
+                self.schedule,
+                self.platform,
+                self.assignment_input,
+                self.electrical_map,
+                qualification_document=tampered,
+                executable=str(self.executable),
+            )
         self.assertEqual(
             validate_pin_plan(
                 self.schedule,
@@ -311,6 +371,28 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             )
             for name in report["artifacts"].values():
                 self.assertTrue((root / "out" / name).is_file())
+            self.assertEqual(
+                main(
+                    [
+                        "pin-plan",
+                        "chimew-build",
+                        "--schedule",
+                        str(paths["schedule"]),
+                        "--platform",
+                        str(paths["platform"]),
+                        "--assignment-input",
+                        str(paths["assignment"]),
+                        "--electrical-map",
+                        str(paths["electrical"]),
+                        "--assigner",
+                        str(self.executable),
+                        "--out",
+                        str(root / "cli-out"),
+                    ]
+                ),
+                0,
+            )
+            self.assertTrue((root / "cli-out" / "adapter_report.json").is_file())
 
     def test_out_of_bounds_physical_placement_is_rejected(self) -> None:
         assignment = copy.deepcopy(self.assignment_input)

@@ -740,6 +740,16 @@ plus a distinct electrical binding certificate. Chimew paper metrics remain
 under the paper provider identity, while voltage, package-pin, and
 concrete-slot checks are explicitly labelled EmuFlow extensions.
 
+The complete lookahead path is sealed separately by
+`chimew-paper-kernel-chain-plus-emuflow-provenance-v1`. Its certificate binds
+the exact schedule, crossings, both grouping stages, lookahead placement,
+RUDY input/report, and bank/channel input/report. Validation reconstructs
+group legality, SLL preservation, RUDY loads, assignment costs, and all
+cross-artifact hashes without rerunning the grouping or assignment optimizer.
+The adapter records `complete-artifact-chain` only when this self-sealed
+certificate matches its schedule and bank/channel input; otherwise it is
+explicitly `bank-electrical-only` and is not a full Chimew qualification.
+
 Phase 6 requires that certificate whenever the Chimew provider is selected.
 It independently rechecks schedule and source hashes, exact signal coverage,
 direction, BoardDB link/lane bounds, bank/channel identity, package-pin

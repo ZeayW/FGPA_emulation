@@ -26,6 +26,7 @@ from .cross_stage import (
     validate_cross_stage_report,
 )
 from .chimew_phase6 import run_chimew_phase6_adapter
+from .chimew_qualification import build_chimew_phase6_qualification
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
@@ -2037,9 +2038,36 @@ def _build_parser() -> argparse.ArgumentParser:
     pin_plan_chimew.add_argument("--platform", type=Path, required=True)
     pin_plan_chimew.add_argument("--assignment-input", type=Path, required=True)
     pin_plan_chimew.add_argument("--electrical-map", type=Path, required=True)
+    pin_plan_chimew.add_argument(
+        "--qualification",
+        type=Path,
+        help="complete chimew-qualify certificate (recommended for sign-off)",
+    )
     pin_plan_chimew.add_argument("--assigner")
     pin_plan_chimew.add_argument("--region-count", type=int, default=31)
     pin_plan_chimew.add_argument("--out", type=Path, required=True)
+    pin_plan_chimew_qualify = pin_plan_subparsers.add_parser(
+        "chimew-qualify",
+        help="seal a complete Chimew lookahead/RUDY/assignment artifact chain",
+    )
+    pin_plan_chimew_qualify.add_argument("--schedule", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument("--crossings", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument(
+        "--initial-grouping", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument("--positions", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument(
+        "--refined-grouping", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument("--rudy-input", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument("--rudy-report", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument(
+        "--assignment-input", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument(
+        "--assignment-report", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument("--output", "-o", type=Path, required=True)
     pin_plan_validate = pin_plan_subparsers.add_parser(
         "validate", help="independently validate a pin plan"
     )
@@ -2271,17 +2299,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.archive_command == "validate":
             report = validate_validation_archive(args.archive)
-        elif args.pin_plan_command == "chimew-build":
-            report = run_chimew_phase6_adapter(
-                schedule_path=args.schedule,
-                platform_path=args.platform,
-                bank_channel_input_path=args.assignment_input,
-                electrical_map_path=args.electrical_map,
-                output_dir=args.out,
-                executable=args.assigner,
-                region_count=args.region_count,
-            )
-            _print_json(report)
         else:
             report = cleanup_validation_source(args.archive, args.flow)
         _print_json(report)
@@ -3365,6 +3382,34 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "pin-plan":
+        if args.pin_plan_command == "chimew-build":
+            report = run_chimew_phase6_adapter(
+                schedule_path=args.schedule,
+                platform_path=args.platform,
+                bank_channel_input_path=args.assignment_input,
+                electrical_map_path=args.electrical_map,
+                output_dir=args.out,
+                qualification_path=args.qualification,
+                executable=args.assigner,
+                region_count=args.region_count,
+            )
+            _print_json(report)
+            return 0
+        if args.pin_plan_command == "chimew-qualify":
+            report = build_chimew_phase6_qualification(
+                read_json(args.schedule),
+                read_json(args.crossings),
+                read_json(args.initial_grouping),
+                read_json(args.positions),
+                read_json(args.refined_grouping),
+                read_json(args.rudy_input),
+                read_json(args.rudy_report),
+                read_json(args.assignment_input),
+                read_json(args.assignment_report),
+            )
+            write_json(args.output, report)
+            _print_json(report)
+            return 0
         schedule = read_json(args.schedule)
         platform = Platform.load(args.platform)
         if args.pin_plan_command == "build":

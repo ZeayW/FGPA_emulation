@@ -1649,12 +1649,36 @@ bank voltage. Differential and serial resources remain on their existing
 source-backed Phase 6B paths and are not silently projected through this v1
 adapter.
 
+Before sign-off, `emuflow pin-plan chimew-qualify` seals the exact schedule,
+physical-SLL crossings, initial and refined groups, lookahead positions, RUDY
+input/report, and bank/channel input/report into one self-hashed certificate.
+It independently rechecks coverage, group capacity and SLL preservation, the
+RUDY bins and pass threshold, assignment legality/costs, and placement,
+architecture, grouping, and source hashes. This is a near-linear artifact
+checker, not a second optimizer. Supplying the resulting certificate to
+`chimew-build` upgrades its status from `bank-electrical-only` to
+`complete-artifact-chain`; omitting it remains supported for kernel-level
+experiments but is not full Chimew lookahead qualification.
+
 ```bash
+emuflow pin-plan chimew-qualify \
+  --schedule build/phase5/schedule.json \
+  --crossings build/chimew/crossings.json \
+  --initial-grouping build/chimew/initial_groups.json \
+  --positions build/chimew/lookahead_positions.json \
+  --refined-grouping build/chimew/refined_groups.json \
+  --rudy-input build/chimew/rudy_input.json \
+  --rudy-report build/chimew/rudy_report.json \
+  --assignment-input build/chimew/bank_channel_input.json \
+  --assignment-report build/chimew/bank_channel_report.json \
+  --output build/chimew/qualification.json
+
 emuflow pin-plan chimew-build \
   --schedule build/phase5/schedule.json \
   --platform platforms/hardware/board.json \
   --assignment-input build/chimew/bank_channel_input.json \
   --electrical-map bsp/chimew_electrical_map.json \
+  --qualification build/chimew/qualification.json \
   --out build/chimew/phase6-adapter
 
 emuflow phase6 \

@@ -12,6 +12,10 @@ from .chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from .chimew_qualification import (
+    validate_chimew_qualification_binding,
+    validate_chimew_qualification_seal,
+)
 from .errors import ValidationError
 from .io import read_json, write_json
 from .pin_planning import (
@@ -250,6 +254,7 @@ def build_chimew_phase6_pin_plan(
     bank_channel_input: Mapping[str, Any],
     electrical_map: Mapping[str, Any],
     *,
+    qualification_document: Optional[Mapping[str, Any]] = None,
     executable: Optional[str] = None,
     region_count: int = 31,
 ) -> Dict[str, Any]:
@@ -258,6 +263,11 @@ def build_chimew_phase6_pin_plan(
     if not 1 <= region_count <= 31:
         raise ValueError("region_count must be in [1, 31]")
     problem = validate_chimew_bank_channel_input(bank_channel_input)
+    qualification_validation = None
+    if qualification_document is not None:
+        qualification_validation = validate_chimew_qualification_binding(
+            qualification_document, schedule, bank_channel_input
+        )
     electrical = validate_chimew_electrical_map(
         electrical_map, platform, problem
     )
@@ -394,6 +404,20 @@ def build_chimew_phase6_pin_plan(
             "paper_assignment_provider": report["provider"],
             "electrical_map_sha256": electrical["map_sha256"],
             "schedule_sha256": schedule_sha256,
+            "lookahead_qualification": (
+                "complete-artifact-chain"
+                if qualification_validation is not None
+                else "bank-electrical-only"
+            ),
+            **(
+                {
+                    "qualification_sha256": qualification_validation[
+                        "qualification_sha256"
+                    ]
+                }
+                if qualification_validation is not None
+                else {}
+            ),
         },
         "weights": weights,
         "metrics": {
@@ -432,7 +456,21 @@ def build_chimew_phase6_pin_plan(
             "electrical_map_sha256": electrical["map_sha256"],
             "assignment_input_sha256": report["input_sha256"],
             "schedule_sha256": schedule_sha256,
+            **(
+                {
+                    "qualification_sha256": qualification_validation[
+                        "qualification_sha256"
+                    ]
+                }
+                if qualification_validation is not None
+                else {}
+            ),
         },
+        **(
+            {"lookahead_qualification": dict(qualification_document)}
+            if qualification_document is not None
+            else {}
+        ),
         "metrics": {
             "signals": len(plan_assignment),
             "groups": len(problem["groups"]),
@@ -450,6 +488,7 @@ def build_chimew_phase6_pin_plan(
         "position_hints": positions,
         "pin_plan": plan,
         "electrical_binding": binding,
+        "qualification_validation": qualification_validation,
         "validation": validation,
     }
 
@@ -504,6 +543,33 @@ def validate_chimew_phase6_binding(
         != configuration.get("electrical_map_sha256")
     ):
         raise ValidationError("Chimew Phase 6 electrical provenance does not agree")
+    qualification_status = configuration.get(
+        "lookahead_qualification", "bank-electrical-only"
+    )
+    if qualification_status == "complete-artifact-chain":
+        qualification_sha = _digest(
+            configuration.get("qualification_sha256"),
+            "pin_plan.qualification_sha256",
+        )
+        if provenance.get("qualification_sha256") != qualification_sha:
+            raise ValidationError("Chimew qualification binding does not agree")
+        qualification = binding.get("lookahead_qualification")
+        if not isinstance(qualification, dict):
+            raise ValidationError("Chimew qualification certificate is missing")
+        qualification_validation = validate_chimew_qualification_seal(
+            qualification, schedule
+        )
+        if qualification_validation["qualification_sha256"] != qualification_sha:
+            raise ValidationError("embedded Chimew qualification does not agree")
+    elif qualification_status == "bank-electrical-only":
+        if (
+            "qualification_sha256" in configuration
+            or "qualification_sha256" in provenance
+            or "lookahead_qualification" in binding
+        ):
+            raise ValidationError("partial Chimew binding contains a qualification seal")
+    else:
+        raise ValidationError("Chimew lookahead qualification status is invalid")
 
     schedule_by_id = {entry["id"]: entry for entry in schedule.get("entries", [])}
     plan_by_id = {
@@ -633,6 +699,7 @@ def run_chimew_phase6_adapter(
     electrical_map_path: Path,
     output_dir: Path,
     *,
+    qualification_path: Optional[Path] = None,
     executable: Optional[str] = None,
     region_count: int = 31,
 ) -> Dict[str, Any]:
@@ -641,6 +708,7 @@ def run_chimew_phase6_adapter(
     schedule = read_json(schedule_path)
     assignment_input = read_json(bank_channel_input_path)
     electrical_map = read_json(electrical_map_path)
+    qualification = read_json(qualification_path) if qualification_path else None
     platform_sha256 = hashlib.sha256(platform_path.read_bytes()).hexdigest()
     provenance = electrical_map.get("provenance")
     if (
@@ -655,6 +723,7 @@ def run_chimew_phase6_adapter(
         Platform.load(platform_path),
         assignment_input,
         electrical_map,
+        qualification_document=qualification,
         executable=executable,
         region_count=region_count,
     )
@@ -667,6 +736,9 @@ def run_chimew_phase6_adapter(
     }
     for key, name in artifacts.items():
         write_json(output_dir / name, result[key])
+    if qualification is not None:
+        artifacts["qualification_certificate"] = "qualification_certificate.json"
+        write_json(output_dir / artifacts["qualification_certificate"], qualification)
     report = {
         "schema": CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA,
         "status": "pass",
@@ -676,6 +748,10 @@ def run_chimew_phase6_adapter(
         "paper_provider": result["bank_channel_report"]["provider"],
         "validation": result["validation"],
         "electrical_metrics": result["electrical_binding"]["metrics"],
+        "lookahead_qualification": (
+            result["pin_plan"]["configuration"]["lookahead_qualification"]
+        ),
+        "qualification_validation": result["qualification_validation"],
         "artifacts": artifacts,
     }
     write_json(output_dir / "adapter_report.json", report)
