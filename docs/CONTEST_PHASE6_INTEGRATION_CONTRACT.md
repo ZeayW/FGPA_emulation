@@ -13,14 +13,17 @@ artifacts below; neither track may reinterpret another phase's decisions.
 - `emuflow.system-route-constraints/v1` is the source of shared-capacity,
   maximum-hop, and ratio-domain constraints.
 - `emuflow.tdm-schedule/v1` is the source of each schedule-entry identity,
-  link, direction, ratio, logical lane, slot, round, and frame length.
+  link, direction, logical lane, slot, round, and frame length. Ratio-plan
+  schedules also carry `tdm_ratio`; direct-lane round-barrier schedules omit
+  that optional metadata and have the established effective ratio `1`.
 - BoardDB is the source of FPGA and link identities.  A contest projection
   remains a virtual academic platform unless a revision-controlled BSP adds
   package pins, electrical rules, clocks, and measured link properties.
 
 Phase 6 may group entries onto physical lanes and add physical annotations. It
-must not change a schedule entry's route, direction, ratio, logical lane, slot,
-round, or target-cycle meaning.
+must not change a schedule entry's route, direction, effective ratio, logical
+lane, slot, round, or target-cycle meaning, and must not rewrite a direct-lane
+schedule merely to materialize the implied ratio.
 
 ## Frozen Phase 6 boundary
 
