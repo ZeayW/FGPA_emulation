@@ -13,6 +13,8 @@ from .chimew_bank_channel import (
     validate_chimew_bank_channel_input,
 )
 from .chimew_qualification import (
+    canonical_sha256,
+    validate_chimew_bank_channel_report_artifact,
     validate_chimew_qualification_binding,
     validate_chimew_qualification_seal,
 )
@@ -255,6 +257,7 @@ def build_chimew_phase6_pin_plan(
     electrical_map: Mapping[str, Any],
     *,
     qualification_document: Optional[Mapping[str, Any]] = None,
+    bank_channel_report_document: Optional[Mapping[str, Any]] = None,
     executable: Optional[str] = None,
     region_count: int = 31,
 ) -> Dict[str, Any]:
@@ -271,9 +274,25 @@ def build_chimew_phase6_pin_plan(
     electrical = validate_chimew_electrical_map(
         electrical_map, platform, problem
     )
-    report = evaluate_chimew_bank_channel_assignment(
-        bank_channel_input, executable=executable
-    )
+    if bank_channel_report_document is not None:
+        if qualification_document is None:
+            raise ValidationError(
+                "a precomputed Chimew assignment report requires qualification"
+            )
+        validate_chimew_bank_channel_report_artifact(
+            bank_channel_input, bank_channel_report_document
+        )
+        report = dict(bank_channel_report_document)
+    else:
+        report = evaluate_chimew_bank_channel_assignment(
+            bank_channel_input, executable=executable
+        )
+    if qualification_document is not None and qualification_document[
+        "artifacts"
+    ].get("bank_channel_report") != canonical_sha256(report):
+        raise ValidationError(
+            "Chimew assignment report does not match qualification certificate"
+        )
     if report["provider"] != CHIMEW_BANK_CHANNEL_PROVIDER:
         raise ValidationError("Chimew assignment provider is invalid")
     schedule_by_id = {entry["id"]: entry for entry in schedule.get("entries", [])}
@@ -700,6 +719,7 @@ def run_chimew_phase6_adapter(
     output_dir: Path,
     *,
     qualification_path: Optional[Path] = None,
+    bank_channel_report_path: Optional[Path] = None,
     executable: Optional[str] = None,
     region_count: int = 31,
 ) -> Dict[str, Any]:
@@ -709,6 +729,9 @@ def run_chimew_phase6_adapter(
     assignment_input = read_json(bank_channel_input_path)
     electrical_map = read_json(electrical_map_path)
     qualification = read_json(qualification_path) if qualification_path else None
+    assignment_report = (
+        read_json(bank_channel_report_path) if bank_channel_report_path else None
+    )
     platform_sha256 = hashlib.sha256(platform_path.read_bytes()).hexdigest()
     provenance = electrical_map.get("provenance")
     if (
@@ -724,6 +747,7 @@ def run_chimew_phase6_adapter(
         assignment_input,
         electrical_map,
         qualification_document=qualification,
+        bank_channel_report_document=assignment_report,
         executable=executable,
         region_count=region_count,
     )

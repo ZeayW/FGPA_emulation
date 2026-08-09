@@ -749,6 +749,12 @@ cross-artifact hashes without rerunning the grouping or assignment optimizer.
 The adapter records `complete-artifact-chain` only when this self-sealed
 certificate matches its schedule and bank/channel input; otherwise it is
 explicitly `bank-electrical-only` and is not a full Chimew qualification.
+The `source-qualified-chimew-phase6-pipeline-v1` orchestration is the default
+research entry point: each native kernel runs once, the certified assignment
+report is consumed by hash instead of reoptimized, all source inputs are
+copied into an isolated output tree, and a final manifest records every file
+digest. The separate kernel and adapter commands remain available for
+debugging and external-tool integration.
 
 Phase 6 requires that certificate whenever the Chimew provider is selected.
 It independently rechecks schedule and source hashes, exact signal coverage,

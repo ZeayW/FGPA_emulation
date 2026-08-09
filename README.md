@@ -1660,7 +1660,25 @@ checker, not a second optimizer. Supplying the resulting certificate to
 `complete-artifact-chain`; omitting it remains supported for kernel-level
 experiments but is not full Chimew lookahead qualification.
 
+`emuflow pin-plan chimew-run` is the preferred end-to-end entry point. It runs
+all four native kernels once, builds the qualification certificate, consumes
+the already-certified bank/channel report without optimizing it a second
+time, emits the electrical adapter artifacts, and records SHA-256 for every
+copied input and generated output in `pipeline_report.json`.
+
 ```bash
+emuflow pin-plan chimew-run \
+  --schedule build/phase5/schedule.json \
+  --platform platforms/hardware/board.json \
+  --crossings build/chimew/crossings.json \
+  --positions build/chimew/lookahead_positions.json \
+  --rudy-input build/chimew/rudy_input.json \
+  --assignment-input build/chimew/bank_channel_input.json \
+  --electrical-map bsp/chimew_electrical_map.json \
+  --out build/chimew/complete-phase6
+
+# The two commands below expose the same qualification and adapter boundaries
+# separately for debugging or independently supplied certified reports.
 emuflow pin-plan chimew-qualify \
   --schedule build/phase5/schedule.json \
   --crossings build/chimew/crossings.json \
@@ -1677,6 +1695,7 @@ emuflow pin-plan chimew-build \
   --schedule build/phase5/schedule.json \
   --platform platforms/hardware/board.json \
   --assignment-input build/chimew/bank_channel_input.json \
+  --assignment-report build/chimew/bank_channel_report.json \
   --electrical-map bsp/chimew_electrical_map.json \
   --qualification build/chimew/qualification.json \
   --out build/chimew/phase6-adapter

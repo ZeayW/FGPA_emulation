@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +23,11 @@ from emuflow.chimew_qualification import (
     canonical_sha256,
     validate_chimew_phase6_qualification,
 )
+from emuflow.chimew_phase6 import (
+    CHIMEW_ELECTRICAL_MAP_PROVIDER,
+    CHIMEW_ELECTRICAL_MAP_SCHEMA,
+)
+from emuflow.chimew_pipeline import CHIMEW_PIPELINE_PROVIDER
 from emuflow.chimew_refinement import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
@@ -82,6 +88,8 @@ class ChimewQualificationTest(unittest.TestCase):
                     "from": "A",
                     "to": "B",
                     "tdm_ratio": 1,
+                    "lane": 0,
+                    "slot": 0,
                 },
                 {
                     "id": "s1",
@@ -89,6 +97,8 @@ class ChimewQualificationTest(unittest.TestCase):
                     "from": "B",
                     "to": "A",
                     "tdm_ratio": 1,
+                    "lane": 0,
+                    "slot": 0,
                 },
             ],
         }
@@ -371,6 +381,110 @@ class ChimewQualificationTest(unittest.TestCase):
                 rejected_report,
                 self.bank_input,
                 self.bank_report,
+            )
+
+    def test_cli_runs_the_complete_phase6_pipeline_without_reoptimizing_report(self) -> None:
+        platform = {
+            "schema": "emuflow.boarddb/v1",
+            "platform": {
+                "name": self.schedule["platform"],
+                "kind": "hardware",
+                "description": "Chimew pipeline fixture",
+            },
+            "fpgas": [
+                {
+                    "id": fpga,
+                    "part": "fixture",
+                    "utilization_limit": 1.0,
+                    "capacity": {"lut": 100},
+                }
+                for fpga in ("A", "B")
+            ],
+            "links": [
+                {
+                    "id": "AB",
+                    "endpoints": ["A", "B"],
+                    "direction": "full_duplex",
+                    "mode": "parallel",
+                    "data_lanes_per_direction": 2,
+                    "fabric_clock_mhz": 100.0,
+                    "latency_cycles": 1,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = {}
+            for label, document in {
+                "schedule": self.schedule,
+                "platform": platform,
+                "crossings": self.crossings,
+                "positions": self.positions,
+                "rudy-input": self.rudy_input,
+                "assignment-input": self.bank_input,
+            }.items():
+                paths[label] = root / f"{label}.json"
+                write_json(paths[label], document)
+            electrical = {
+                "schema": CHIMEW_ELECTRICAL_MAP_SCHEMA,
+                "provider": CHIMEW_ELECTRICAL_MAP_PROVIDER,
+                "design": self.schedule["design"],
+                "platform": self.schedule["platform"],
+                "provenance": {
+                    "producer": "fixture-bsp",
+                    "producer_version": "1",
+                    "boarddb_sha256": hashlib.sha256(
+                        paths["platform"].read_bytes()
+                    ).hexdigest(),
+                    "package_pin_inventory_sha256": "e" * 64,
+                },
+                "fpga_y_bounds": [
+                    {"fpga": fpga, "y_min": 0.0, "y_max": 100.0}
+                    for fpga in ("A", "B")
+                ],
+                "channels": [
+                    {
+                        "chimew_channel": f"channel{index}",
+                        "link": "AB",
+                        "physical_lane": index,
+                        "bank_a": "A0",
+                        "bank_b": "B0",
+                        "package_pin_a": f"A{index}",
+                        "package_pin_b": f"B{index}",
+                        "iostandard": "LVCMOS18",
+                        "supported_iostandards": ["LVCMOS18"],
+                        "bank_voltage": 1.8,
+                        "electrical_class": "single_ended_parallel",
+                        "reserved": False,
+                    }
+                    for index in range(2)
+                ],
+                "metrics": {"channels": 2, "package_pins": 4, "concrete_lanes": 2},
+            }
+            paths["electrical-map"] = root / "electrical-map.json"
+            write_json(paths["electrical-map"], electrical)
+            output = root / "pipeline"
+            arguments = ["pin-plan", "chimew-run"]
+            for option in (
+                "schedule",
+                "platform",
+                "crossings",
+                "positions",
+                "rudy-input",
+                "assignment-input",
+                "electrical-map",
+            ):
+                arguments.extend([f"--{option}", str(paths[option])])
+            for option in ("grouper", "refiner", "rudy", "assigner"):
+                arguments.extend([f"--{option}", self.executables[option]])
+            arguments.extend(["--out", str(output)])
+            self.assertEqual(main(arguments), 0)
+            report = read_json(output / "pipeline_report.json")
+            self.assertEqual(report["provider"], CHIMEW_PIPELINE_PROVIDER)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["metrics"]["artifact_chain_disagreements"], 0)
+            self.assertTrue(
+                (output / "phase6-adapter" / "qualification_certificate.json").is_file()
             )
 
 

@@ -26,6 +26,7 @@ from .cross_stage import (
     validate_cross_stage_report,
 )
 from .chimew_phase6 import run_chimew_phase6_adapter
+from .chimew_pipeline import run_chimew_phase6_pipeline
 from .chimew_qualification import build_chimew_phase6_qualification
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
@@ -2037,6 +2038,11 @@ def _build_parser() -> argparse.ArgumentParser:
     pin_plan_chimew.add_argument("--schedule", type=Path, required=True)
     pin_plan_chimew.add_argument("--platform", type=Path, required=True)
     pin_plan_chimew.add_argument("--assignment-input", type=Path, required=True)
+    pin_plan_chimew.add_argument(
+        "--assignment-report",
+        type=Path,
+        help="precomputed certified report (requires --qualification)",
+    )
     pin_plan_chimew.add_argument("--electrical-map", type=Path, required=True)
     pin_plan_chimew.add_argument(
         "--qualification",
@@ -2068,6 +2074,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--assignment-report", type=Path, required=True
     )
     pin_plan_chimew_qualify.add_argument("--output", "-o", type=Path, required=True)
+    pin_plan_chimew_run = pin_plan_subparsers.add_parser(
+        "chimew-run",
+        help="run and certify the complete source-qualified Chimew Phase 6 path",
+    )
+    pin_plan_chimew_run.add_argument("--schedule", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--platform", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--crossings", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--positions", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--rudy-input", type=Path, required=True)
+    pin_plan_chimew_run.add_argument(
+        "--assignment-input", type=Path, required=True
+    )
+    pin_plan_chimew_run.add_argument("--electrical-map", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--grouper")
+    pin_plan_chimew_run.add_argument("--refiner")
+    pin_plan_chimew_run.add_argument("--rudy")
+    pin_plan_chimew_run.add_argument("--assigner")
+    pin_plan_chimew_run.add_argument("--region-count", type=int, default=31)
+    pin_plan_chimew_run.add_argument("--out", type=Path, required=True)
     pin_plan_validate = pin_plan_subparsers.add_parser(
         "validate", help="independently validate a pin plan"
     )
@@ -3390,6 +3415,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 electrical_map_path=args.electrical_map,
                 output_dir=args.out,
                 qualification_path=args.qualification,
+                bank_channel_report_path=args.assignment_report,
                 executable=args.assigner,
                 region_count=args.region_count,
             )
@@ -3408,6 +3434,24 @@ def _dispatch(args: argparse.Namespace) -> int:
                 read_json(args.assignment_report),
             )
             write_json(args.output, report)
+            _print_json(report)
+            return 0
+        if args.pin_plan_command == "chimew-run":
+            report = run_chimew_phase6_pipeline(
+                schedule_path=args.schedule,
+                platform_path=args.platform,
+                crossings_path=args.crossings,
+                positions_path=args.positions,
+                rudy_input_path=args.rudy_input,
+                bank_channel_input_path=args.assignment_input,
+                electrical_map_path=args.electrical_map,
+                output_dir=args.out,
+                grouper=args.grouper,
+                refiner=args.refiner,
+                rudy=args.rudy,
+                assigner=args.assigner,
+                region_count=args.region_count,
+            )
             _print_json(report)
             return 0
         schedule = read_json(args.schedule)

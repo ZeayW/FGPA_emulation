@@ -9,6 +9,7 @@ from pathlib import Path
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
+    evaluate_chimew_bank_channel_assignment,
 )
 from emuflow.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
@@ -246,6 +247,9 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         )
 
     def test_complete_lookahead_certificate_is_bound_into_the_plan(self) -> None:
+        bank_report = evaluate_chimew_bank_channel_assignment(
+            self.assignment_input, executable=str(self.executable)
+        )
         certificate = {
             "schema": CHIMEW_QUALIFICATION_SCHEMA,
             "status": "pass",
@@ -262,6 +266,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 "schedule": canonical_sha256(self.schedule),
                 "refined_grouping": "a" * 64,
                 "bank_channel_input": canonical_sha256(self.assignment_input),
+                "bank_channel_report": canonical_sha256(bank_report),
             },
             "metrics": {
                 "signals": 2,
@@ -277,6 +282,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             self.assignment_input,
             self.electrical_map,
             qualification_document=certificate,
+            bank_channel_report_document=bank_report,
             executable=str(self.executable),
         )
         self.assertEqual(
@@ -296,6 +302,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 self.assignment_input,
                 self.electrical_map,
                 qualification_document=tampered,
+                bank_channel_report_document=bank_report,
                 executable=str(self.executable),
             )
         self.assertEqual(

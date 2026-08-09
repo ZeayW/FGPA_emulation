@@ -221,7 +221,7 @@ def _validate_rudy_report(
     return problem
 
 
-def _validate_bank_report(
+def validate_chimew_bank_channel_report_artifact(
     bank_input: Mapping[str, Any], report: Mapping[str, Any]
 ) -> Dict[str, Any]:
     problem = validate_chimew_bank_channel_input(bank_input)
@@ -327,7 +327,9 @@ def build_chimew_phase6_qualification(
         schedule, encodings, positions, initial, refined_grouping
     )
     rudy_problem = _validate_rudy_report(rudy_input, rudy_report)
-    bank_problem = _validate_bank_report(bank_input, bank_report)
+    bank_problem = validate_chimew_bank_channel_report_artifact(
+        bank_input, bank_report
+    )
     for label, document in (
         ("RUDY input", rudy_input),
         ("RUDY report", rudy_report),
