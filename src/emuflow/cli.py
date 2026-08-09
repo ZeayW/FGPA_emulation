@@ -25,6 +25,9 @@ from .cross_stage import (
     validate_cross_stage_candidate,
     validate_cross_stage_report,
 )
+from .chimew_phase6 import run_chimew_phase6_adapter
+from .chimew_pipeline import run_chimew_phase6_pipeline
+from .chimew_qualification import build_chimew_phase6_qualification
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
     import_eda2025_instance,
@@ -48,6 +51,15 @@ from .contest_iccad2019 import (
     materialize_iccad2019_rtl_boarddb,
     optimize_iccad2019_ratios,
 )
+from .contest_public import (
+    build_contest_boarddb_farm_spec,
+    build_contest_fetch_farm_spec,
+    build_contest_import_farm_spec,
+    fetch_public_contest_case,
+    import_public_contest_case,
+    materialize_public_contest_boarddb,
+)
+from .contest_validation_matrix import load_contest_validation_matrix
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -390,6 +402,84 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_subparsers = contest_parser.add_subparsers(
         dest="contest_command", required=True
     )
+    contest_matrix = contest_subparsers.add_parser(
+        "matrix-validate",
+        help="validate the versioned public contest qualification matrix",
+    )
+    contest_matrix.add_argument("matrix", type=Path)
+    contest_fetch = contest_subparsers.add_parser(
+        "fetch-public",
+        help="fetch one hash-pinned public matrix case and validate provenance",
+    )
+    contest_fetch.add_argument("--matrix", type=Path, required=True)
+    contest_fetch.add_argument("--case-id", required=True)
+    contest_fetch.add_argument("--out", type=Path, required=True)
+    contest_import = contest_subparsers.add_parser(
+        "import-public",
+        help="semantically import one pinned public matrix case",
+    )
+    contest_import.add_argument("--matrix", type=Path, required=True)
+    contest_import.add_argument("--case-id", required=True)
+    contest_import.add_argument("--source-dir", type=Path, required=True)
+    contest_import.add_argument("--out", type=Path, required=True)
+    contest_boarddb = contest_subparsers.add_parser(
+        "materialize-public-boarddb",
+        help="materialize a passed public import on an RTL-capable FPGA template",
+    )
+    contest_boarddb.add_argument("--matrix", type=Path, required=True)
+    contest_boarddb.add_argument("--case-id", required=True)
+    contest_boarddb.add_argument("--source-dir", type=Path, required=True)
+    contest_boarddb.add_argument("--import-dir", type=Path, required=True)
+    contest_boarddb.add_argument("--device-template", type=Path, required=True)
+    contest_boarddb.add_argument("--out", type=Path, required=True)
+    contest_boarddb.add_argument("--lane-scale", type=int, default=1)
+    contest_boarddb.add_argument("--unweighted-link-lanes", type=int, default=1)
+    contest_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
+    contest_boarddb.add_argument("--latency-cycles", type=int, default=2)
+    contest_farm = contest_subparsers.add_parser(
+        "matrix-fetch-farm-spec",
+        help="compile selected public fetch gates into a validation-farm spec",
+    )
+    contest_farm.add_argument("matrix", type=Path)
+    contest_farm.add_argument("--source-commit", required=True)
+    contest_farm.add_argument("--install-dir", type=Path, required=True)
+    contest_farm.add_argument("--node", action="append", required=True)
+    contest_farm.add_argument("--tier", action="append")
+    contest_farm.add_argument("--suite", action="append")
+    contest_farm.add_argument("--slots-per-node", type=int, default=1)
+    contest_farm.add_argument("--farm-id", required=True)
+    contest_farm.add_argument("--output", "-o", type=Path, required=True)
+    contest_import_farm = contest_subparsers.add_parser(
+        "matrix-import-farm-spec",
+        help="compile passed public fetches into semantic import farm tasks",
+    )
+    contest_import_farm.add_argument("matrix", type=Path)
+    contest_import_farm.add_argument("--fetch-farm", type=Path, required=True)
+    contest_import_farm.add_argument("--source-commit", required=True)
+    contest_import_farm.add_argument("--install-dir", type=Path, required=True)
+    contest_import_farm.add_argument("--node", action="append", required=True)
+    contest_import_farm.add_argument("--tier", action="append")
+    contest_import_farm.add_argument("--suite", action="append")
+    contest_import_farm.add_argument("--slots-per-node", type=int, default=1)
+    contest_import_farm.add_argument("--farm-id", required=True)
+    contest_import_farm.add_argument("--output", "-o", type=Path, required=True)
+    contest_boarddb_farm = contest_subparsers.add_parser(
+        "matrix-boarddb-farm-spec",
+        help="compile passed public imports into BoardDB projection farm tasks",
+    )
+    contest_boarddb_farm.add_argument("matrix", type=Path)
+    contest_boarddb_farm.add_argument("--fetch-farm", type=Path, required=True)
+    contest_boarddb_farm.add_argument("--import-farm", type=Path, required=True)
+    contest_boarddb_farm.add_argument("--source-commit", required=True)
+    contest_boarddb_farm.add_argument("--install-dir", type=Path, required=True)
+    contest_boarddb_farm.add_argument("--node", action="append", required=True)
+    contest_boarddb_farm.add_argument("--tier", action="append")
+    contest_boarddb_farm.add_argument("--suite", action="append")
+    contest_boarddb_farm.add_argument("--slots-per-node", type=int, default=1)
+    contest_boarddb_farm.add_argument("--lane-scale", type=int, default=1)
+    contest_boarddb_farm.add_argument("--unweighted-link-lanes", type=int, default=1)
+    contest_boarddb_farm.add_argument("--farm-id", required=True)
+    contest_boarddb_farm.add_argument("--output", "-o", type=Path, required=True)
     eda2024_evaluate = contest_subparsers.add_parser(
         "eda2024-evaluate",
         help="independently check a 2024 logic-replication solution",
@@ -432,6 +522,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2023_boarddb.add_argument("--instance", type=Path, required=True)
     eda2023_boarddb.add_argument("--device-template", type=Path, required=True)
     eda2023_boarddb.add_argument("--output", "-o", type=Path, required=True)
+    eda2023_boarddb.add_argument("--route-constraints-output", type=Path)
     eda2023_boarddb.add_argument("--name", required=True)
     eda2023_boarddb.add_argument("--template-fpga")
     eda2023_boarddb.add_argument("--lane-scale", type=int, default=1)
@@ -1941,6 +2032,68 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pin_plan_build.add_argument("--crossing-weight", type=float, default=1.0)
     pin_plan_build.add_argument("--position-weight", type=float, default=1.0)
+    pin_plan_chimew = pin_plan_subparsers.add_parser(
+        "chimew-build",
+        help="bind certified Chimew banks/channels to electrical concrete lanes",
+    )
+    pin_plan_chimew.add_argument("--schedule", type=Path, required=True)
+    pin_plan_chimew.add_argument("--platform", type=Path, required=True)
+    pin_plan_chimew.add_argument("--assignment-input", type=Path, required=True)
+    pin_plan_chimew.add_argument(
+        "--assignment-report",
+        type=Path,
+        help="precomputed certified report (requires --qualification)",
+    )
+    pin_plan_chimew.add_argument("--electrical-map", type=Path, required=True)
+    pin_plan_chimew.add_argument(
+        "--qualification",
+        type=Path,
+        help="complete chimew-qualify certificate (recommended for sign-off)",
+    )
+    pin_plan_chimew.add_argument("--assigner")
+    pin_plan_chimew.add_argument("--region-count", type=int, default=31)
+    pin_plan_chimew.add_argument("--out", type=Path, required=True)
+    pin_plan_chimew_qualify = pin_plan_subparsers.add_parser(
+        "chimew-qualify",
+        help="seal a complete Chimew lookahead/RUDY/assignment artifact chain",
+    )
+    pin_plan_chimew_qualify.add_argument("--schedule", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument("--crossings", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument(
+        "--initial-grouping", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument("--positions", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument(
+        "--refined-grouping", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument("--rudy-input", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument("--rudy-report", type=Path, required=True)
+    pin_plan_chimew_qualify.add_argument(
+        "--assignment-input", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument(
+        "--assignment-report", type=Path, required=True
+    )
+    pin_plan_chimew_qualify.add_argument("--output", "-o", type=Path, required=True)
+    pin_plan_chimew_run = pin_plan_subparsers.add_parser(
+        "chimew-run",
+        help="run and certify the complete source-qualified Chimew Phase 6 path",
+    )
+    pin_plan_chimew_run.add_argument("--schedule", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--platform", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--crossings", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--positions", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--rudy-input", type=Path, required=True)
+    pin_plan_chimew_run.add_argument(
+        "--assignment-input", type=Path, required=True
+    )
+    pin_plan_chimew_run.add_argument("--electrical-map", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--grouper")
+    pin_plan_chimew_run.add_argument("--refiner")
+    pin_plan_chimew_run.add_argument("--rudy")
+    pin_plan_chimew_run.add_argument("--assigner")
+    pin_plan_chimew_run.add_argument("--region-count", type=int, default=31)
+    pin_plan_chimew_run.add_argument("--out", type=Path, required=True)
     pin_plan_validate = pin_plan_subparsers.add_parser(
         "validate", help="independently validate a pin plan"
     )
@@ -1965,6 +2118,7 @@ def _build_parser() -> argparse.ArgumentParser:
     split_validate.add_argument("--platform", type=Path, required=True)
     split_validate.add_argument("--pin-plan", type=Path)
     split_validate.add_argument("--position-hints", type=Path)
+    split_validate.add_argument("--electrical-binding", type=Path)
 
     phase6 = subparsers.add_parser(
         "phase6",
@@ -1977,6 +2131,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6.add_argument("--out", type=Path, required=True)
     phase6.add_argument("--pin-plan", type=Path)
     phase6.add_argument("--position-hints", type=Path)
+    phase6.add_argument("--electrical-binding", type=Path)
     phase6.add_argument("--equivalence-cycles", type=int, default=16)
     phase6.add_argument("--equivalence-seed", type=int, default=20260727)
 
@@ -2294,7 +2449,71 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "contest":
-        if args.contest_command == "eda2023-import":
+        if args.contest_command == "matrix-validate":
+            _, report = load_contest_validation_matrix(args.matrix)
+        elif args.contest_command == "fetch-public":
+            report = fetch_public_contest_case(
+                args.matrix, args.case_id, args.out
+            )
+        elif args.contest_command == "import-public":
+            report = import_public_contest_case(
+                args.matrix, args.case_id, args.source_dir, args.out
+            )
+        elif args.contest_command == "materialize-public-boarddb":
+            report = materialize_public_contest_boarddb(
+                args.matrix,
+                args.case_id,
+                args.source_dir,
+                args.import_dir,
+                args.device_template,
+                args.out,
+                lane_scale=args.lane_scale,
+                unweighted_link_lanes=args.unweighted_link_lanes,
+                fabric_clock_mhz=args.fabric_clock_mhz,
+                latency_cycles=args.latency_cycles,
+            )
+        elif args.contest_command == "matrix-fetch-farm-spec":
+            report = build_contest_fetch_farm_spec(
+                args.matrix,
+                source_commit=args.source_commit,
+                install_dir=args.install_dir,
+                nodes=args.node,
+                output_path=args.output,
+                farm_id=args.farm_id,
+                tiers=args.tier or ("smoke",),
+                suites=args.suite,
+                slots_per_node=args.slots_per_node,
+            )
+        elif args.contest_command == "matrix-import-farm-spec":
+            report = build_contest_import_farm_spec(
+                args.matrix,
+                args.fetch_farm,
+                source_commit=args.source_commit,
+                install_dir=args.install_dir,
+                nodes=args.node,
+                output_path=args.output,
+                farm_id=args.farm_id,
+                tiers=args.tier or ("smoke",),
+                suites=args.suite,
+                slots_per_node=args.slots_per_node,
+            )
+        elif args.contest_command == "matrix-boarddb-farm-spec":
+            report = build_contest_boarddb_farm_spec(
+                args.matrix,
+                args.fetch_farm,
+                args.import_farm,
+                source_commit=args.source_commit,
+                install_dir=args.install_dir,
+                nodes=args.node,
+                output_path=args.output,
+                farm_id=args.farm_id,
+                tiers=args.tier or ("smoke",),
+                suites=args.suite,
+                slots_per_node=args.slots_per_node,
+                lane_scale=args.lane_scale,
+                unweighted_link_lanes=args.unweighted_link_lanes,
+            )
+        elif args.contest_command == "eda2023-import":
             report = import_eda2023_case(
                 case_dir=args.case_dir,
                 output_dir=args.out,
@@ -3189,6 +3408,53 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "pin-plan":
+        if args.pin_plan_command == "chimew-build":
+            report = run_chimew_phase6_adapter(
+                schedule_path=args.schedule,
+                platform_path=args.platform,
+                bank_channel_input_path=args.assignment_input,
+                electrical_map_path=args.electrical_map,
+                output_dir=args.out,
+                qualification_path=args.qualification,
+                bank_channel_report_path=args.assignment_report,
+                executable=args.assigner,
+                region_count=args.region_count,
+            )
+            _print_json(report)
+            return 0
+        if args.pin_plan_command == "chimew-qualify":
+            report = build_chimew_phase6_qualification(
+                read_json(args.schedule),
+                read_json(args.crossings),
+                read_json(args.initial_grouping),
+                read_json(args.positions),
+                read_json(args.refined_grouping),
+                read_json(args.rudy_input),
+                read_json(args.rudy_report),
+                read_json(args.assignment_input),
+                read_json(args.assignment_report),
+            )
+            write_json(args.output, report)
+            _print_json(report)
+            return 0
+        if args.pin_plan_command == "chimew-run":
+            report = run_chimew_phase6_pipeline(
+                schedule_path=args.schedule,
+                platform_path=args.platform,
+                crossings_path=args.crossings,
+                positions_path=args.positions,
+                rudy_input_path=args.rudy_input,
+                bank_channel_input_path=args.assignment_input,
+                electrical_map_path=args.electrical_map,
+                output_dir=args.out,
+                grouper=args.grouper,
+                refiner=args.refiner,
+                rudy=args.rudy,
+                assigner=args.assigner,
+                region_count=args.region_count,
+            )
+            _print_json(report)
+            return 0
         schedule = read_json(args.schedule)
         platform = Platform.load(args.platform)
         if args.pin_plan_command == "build":
@@ -3242,6 +3508,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             manifest_path=args.manifest,
             pin_plan_path=args.pin_plan,
             position_hints_path=args.position_hints,
+            electrical_binding_path=args.electrical_binding,
         )
         _print_json(report)
         return 0
@@ -3255,6 +3522,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             output_dir=args.out,
             pin_plan_path=args.pin_plan,
             position_hints_path=args.position_hints,
+            electrical_binding_path=args.electrical_binding,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
         )

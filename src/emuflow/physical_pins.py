@@ -12,13 +12,16 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
-from .pin_planning import validate_pin_plan
+from .pin_planning import _schedule_tdm_ratio, validate_pin_plan
 from .platform import Platform
 
 
 HARDWARE_BSP_SCHEMA = "emuflow.hardware-bsp/v1"
 PACKAGE_PIN_BINDING_SCHEMA = "emuflow.package-pin-binding/v1"
-PACKAGE_PIN_PROVIDER = "chimew-package-pin-min-cost-flow-v1"
+PACKAGE_PIN_PROVIDER = "electrical-package-pin-min-cost-flow-v1"
+LEGACY_PACKAGE_PIN_PROVIDERS = frozenset(
+    {"chimew-package-pin-min-cost-flow-v1"}
+)
 SERIAL_TRANSCEIVER_PROVIDER = "boarddb-fixed-serial-transceiver-v1"
 PHASE6B_REPORT_SCHEMA = "emuflow.phase6b-report/v1"
 _COST_SCALE = 1_000_000
@@ -591,14 +594,14 @@ def _build_demands(
     plan_by_group: Dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     for item in plan["entries"]:
         plan_by_group[item["group"]].append(item)
-    maximum_ratio = max(entry["tdm_ratio"] for entry in schedule["entries"])
+    maximum_ratio = max(_schedule_tdm_ratio(entry) for entry in schedule["entries"])
     expected_anchors = set()
     demands = []
     for group, items in sorted(plan_by_group.items()):
         entries = [schedule_by_id[item["schedule_entry"]] for item in items]
         domains = {_domain(entry) for entry in entries}
         lanes = {item["physical_lane"] for item in items}
-        ratios = {entry["tdm_ratio"] for entry in entries}
+        ratios = {_schedule_tdm_ratio(entry) for entry in entries}
         if len(domains) != 1 or len(lanes) != 1 or len(ratios) != 1:
             raise ValidationError(f"pin-plan group {group} is not homogeneous")
         link, source, sink = next(iter(domains))
@@ -984,7 +987,8 @@ def validate_package_pin_binding(
     bsp_validation = validate_hardware_bsp(bsp, platform)
     if (
         binding.get("schema") != PACKAGE_PIN_BINDING_SCHEMA
-        or binding.get("provider") != PACKAGE_PIN_PROVIDER
+        or binding.get("provider")
+        not in {PACKAGE_PIN_PROVIDER, *LEGACY_PACKAGE_PIN_PROVIDERS}
         or binding.get("design") != schedule.get("design")
         or binding.get("platform") != platform.name
         or binding.get("board") != bsp["board"]["name"]

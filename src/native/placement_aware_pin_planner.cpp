@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Placement-aware TDM signal grouping and virtual pin assignment.
-// The objective follows the FPGA'26 Chimew formulation: group signals with
-// compatible TDM ratios while minimizing the OR-popcount of region-crossing
-// signatures, refine groups using placement proximity, then solve the
-// group-to-pin assignment as an exact minimum-cost bipartite flow.
+// This is EmuFlow's region-signature engineering baseline: group signals with
+// compatible TDM ratios while minimizing the OR-popcount of normalized-region
+// signatures, refine groups using placement proximity, then solve group-to-pin
+// assignment as an exact minimum-cost bipartite flow.  Normalized placement
+// regions are not physical SLR/SLL crossings, so this provider is intentionally
+// distinct from the planned faithful Chimew reproduction.
 
 #include <algorithm>
 #include <array>

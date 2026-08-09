@@ -4,6 +4,7 @@ from pathlib import Path
 
 from emuflow.contest_eda2024 import (
     evaluate_eda2024_solution,
+    import_eda2024_case,
     materialize_eda2024_rtl_boarddb,
 )
 from emuflow.errors import ValidationError
@@ -88,6 +89,31 @@ class Eda2024ContestCheckerTest(unittest.TestCase):
             }
             self.assertEqual(usage, {"F1": 3, "F2": 0, "F3": 3})
             self.assertTrue((root / "report.json").is_file())
+
+    def test_import_parses_all_problem_inputs_without_solution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_case(root)
+            (root / "design.fpga.out").unlink()
+            report = import_eda2024_case(root, root / "normalized", "fixture")
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["fpgas"], 3)
+            self.assertEqual(report["nodes"], 4)
+            self.assertEqual(report["nets"], 2)
+            instance = read_json(root / "normalized" / "contest_instance.json")
+            self.assertTrue(instance["solution_required_for_evaluation"])
+            self.assertEqual(instance["topology"]["diameter"], 2)
+            self.assertEqual(set(instance["source_sha256"]), {
+                "design.are", "design.info", "design.net", "design.topo"
+            })
+
+    def test_import_rejects_net_node_absent_from_area(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_case(root)
+            (root / "design.net").write_text("a 1 missing\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "unknown nodes"):
+                import_eda2024_case(root, root / "normalized", "fixture")
 
     def test_source_replica_removes_outputs_but_receives_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:

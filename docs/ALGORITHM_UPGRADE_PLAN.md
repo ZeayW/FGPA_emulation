@@ -650,6 +650,118 @@ baseline. They do not faithfully reproduce Chimew's die-crossing encoding,
 RUDY congestion gate, two-stage bank/pin assignment, or published edge-cost
 model.
 
+The baseline therefore emits provider-neutral identities
+`placement-aware-region-grouping-mcf-v1`,
+`electrical-package-pin-min-cost-flow-v1`, and
+`placement-aware-pin-split-v1`.  Historical artifacts using the former
+`chimew-*` identities remain readable for schema-v1 compatibility, but new
+artifacts do not claim paper reproduction.  A future Chimew provider must use
+a distinct identity and pass the paper-specific acceptance gates below before
+it can become selectable.
+
+The first paper-specific kernel is isolated as
+`chimew-algorithm1-encoding-grouping-v1`.  It reproduces Algorithm 1's
+descending crossing-count order, same/covered/nearest-encoding selection, OR
+group encoding, and ratio capacity in first-party C++, with an independent
+Python decision replay.  Its input requires
+`source-qualified-physical-sll-routing-v1`: explicit source/sink SLL indices,
+an independently reconstructed encoding, and hash-sealed physical-routing
+provenance.  Normalized y regions are rejected.  The result is marked
+`not-a-phase6-pin-plan`; it is deliberately not selectable until the
+position-based refinement, existing concrete-slot contract, RUDY gate, and
+two-stage bank/channel assignment are reconciled and verified.
+
+The next isolated kernel is
+`chimew-section3.3.2-bounded-inference-v1`. Its input requires physical-site
+source-y coordinates from `source-qualified-physical-site-lookahead-v1` with
+hash-sealed placement provenance; normalized coordinates are rejected. The
+kernel only permutes signals that have the same grouping domain, TDM ratio,
+and exact SLL encoding, so every group capacity and group SLL encoding remain
+unchanged. It orders equal-encoding signals by source y as described in
+Section 3.3.2 and accepts a permutation only when the independently replayed
+within-group pairwise-y objective does not increase. The paper does not
+publish its complete swap schedule or tie breaks, so the deterministic group
+anchor order and acceptance objective are explicitly labelled a first-party
+bounded inference, not an exact reproduction of unpublished details. This
+artifact also remains `not-a-phase6-pin-plan` until the RUDY and two-stage
+physical bank/channel gates pass.
+
+The source-qualified congestion kernel is `chimew-section2.3-rudy-gate-v1`.
+It accepts only `physical-site-xy` placement/net coordinates, hash-sealed
+placement, netlist, and architecture provenance, an explicit routing-capacity
+grid, and the physical wire pitch per routing layer. First-party C++ computes
+the paper's HPWL wire area, uniform bounding-box density, exact overlap load
+for every intersected bin, and peak utilization. Python independently
+reintegrates every bin and checks global wire-area conservation. The supplied
+maximum utilization is recorded as an EmuFlow qualification threshold, not a
+constant attributed to Chimew. Because the paper's displayed formula divides
+by bounding-box area without publishing a degenerate-net convention, v1
+rejects zero-width or zero-height boxes instead of inventing an epsilon. The
+report is still `not-a-phase6-pin-plan` until the two-stage bank/channel gate
+passes.
+
+The source-qualified assignment kernel is
+`chimew-section3.4-two-stage-assignment-v1`. Stage 1 assigns every TDM group
+or singleton common signal to a compatible bank pair with capacity equal to
+its available channel count. Stage 2 solves both direction-priority channel
+matchings for each used bank pair and selects the lower-cost alternative, so
+TDM groups of one direction occupy the first channel interval, the opposite
+direction occupies the next interval, and common signals use only the
+remaining interval. First-party C++ computes Algorithm 2 costs from physical
+bank/pin and source-fanout/sink-fanin coordinates. The displayed Algorithm 2
+is implemented literally as the sum, per member signal, of its output
+Manhattan distance and its mean input-fanin Manhattan distance; this explicit
+interpretation avoids silently double-applying the reciprocal mentioned in
+the accompanying prose. Cost ranks use a source-declared fixed scale solely
+for deterministic exact optimization, while reports retain physical-site
+units.
+
+Each min-cost result includes a primal assignment and residual-graph node
+potentials. Python independently reconstructs every legal edge and Algorithm
+2 cost, checks capacity and direction intervals, and proves optimality by
+requiring non-negative reduced cost on every residual edge. This check is
+linear in the candidate graph and deliberately avoids replaying a second full
+optimizer on large designs. Small fixtures still compare behavior against
+hand-derived optima and reject tampered dual certificates. The standalone
+result remains `not-a-phase6-pin-plan` until an adapter applies EmuFlow's
+electrical and concrete-slot extensions without changing the paper claims.
+
+That boundary is now executable as
+`chimew-paper-plus-emuflow-electrical-slot-v1`. The adapter reruns the
+certified two-stage native assignment, requires each paper channel to map
+bijectively to a BoardDB link/physical lane, and preserves every schedule
+entry's route, direction, ratio, logical lane, slot, and cycle meaning. Its
+separate source-qualified electrical map binds bank identities, non-reserved
+single-ended package pins, supported IOSTANDARDs, and matching bank voltages;
+it rejects incomplete channel coverage, package-pin reuse, physical-lane
+reuse, and placement coordinates outside recorded FPGA site bounds. The
+result is a regular `emuflow.placement-aware-pin-plan/v1` accepted by Phase 6,
+plus a distinct electrical binding certificate. Chimew paper metrics remain
+under the paper provider identity, while voltage, package-pin, and
+concrete-slot checks are explicitly labelled EmuFlow extensions.
+
+The complete lookahead path is sealed separately by
+`chimew-paper-kernel-chain-plus-emuflow-provenance-v1`. Its certificate binds
+the exact schedule, crossings, both grouping stages, lookahead placement,
+RUDY input/report, and bank/channel input/report. Validation reconstructs
+group legality, SLL preservation, RUDY loads, assignment costs, and all
+cross-artifact hashes without rerunning the grouping or assignment optimizer.
+The adapter records `complete-artifact-chain` only when this self-sealed
+certificate matches its schedule and bank/channel input; otherwise it is
+explicitly `bank-electrical-only` and is not a full Chimew qualification.
+The `source-qualified-chimew-phase6-pipeline-v1` orchestration is the default
+research entry point: each native kernel runs once, the certified assignment
+report is consumed by hash instead of reoptimized, all source inputs are
+copied into an isolated output tree, and a final manifest records every file
+digest. The separate kernel and adapter commands remain available for
+debugging and external-tool integration.
+
+Phase 6 requires that certificate whenever the Chimew provider is selected.
+It independently rechecks schedule and source hashes, exact signal coverage,
+direction, BoardDB link/lane bounds, bank/channel identity, package-pin
+uniqueness, and IOSTANDARD/voltage compatibility before sealing the certificate
+into the split manifest. A Chimew-labelled pin plan cannot bypass this gate.
+
 ### Selected primary route: faithful Chimew reproduction
 
 1. Construct the FPGA-level lookahead netlist with die fences, cross-FPGA

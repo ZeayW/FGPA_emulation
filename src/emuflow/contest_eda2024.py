@@ -20,6 +20,7 @@ from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 
 
 EDA2024_EVALUATION_SCHEMA = "emuflow.contest-eda2024-evaluation/v1"
+EDA2024_IMPORT_SCHEMA = "emuflow.contest-eda2024-import/v1"
 EDA2024_BOARDDB_MATERIALIZATION_SCHEMA = (
     "emuflow.contest-eda2024-boarddb-materialization/v1"
 )
@@ -144,6 +145,134 @@ def parse_topology(
             )
         distances[source] = distance
     return max_hop, sorted(edges), distances
+
+
+def import_eda2024_case(
+    case_dir: Path, output_dir: Path, name: str
+) -> Dict[str, Any]:
+    """Parse all official inputs without requiring a participant solution.
+
+    This is deliberately an import gate, not an evaluation gate.  It proves
+    that the pinned source files form one structurally consistent problem
+    instance; solution legality and score remain the responsibility of
+    :func:`evaluate_eda2024_solution`.
+    """
+
+    if not isinstance(name, str) or not name.strip():
+        raise ValidationError("name: expected a non-empty string")
+    info_path = case_dir / "design.info"
+    area_path = case_dir / "design.are"
+    net_path = case_dir / "design.net"
+    topology_path = case_dir / "design.topo"
+    fpga_ids, external_limits, capacities = parse_design_info(info_path)
+    max_hop, links, distances = parse_topology(topology_path, fpga_ids)
+
+    nodes: Set[str] = set()
+    resource_totals = [0] * len(RESOURCE_NAMES)
+    for line_number, line in _data_lines(area_path):
+        fields = line.split()
+        if len(fields) != 9:
+            raise ValidationError(
+                f"{area_path}:{line_number}: expected node and eight resources"
+            )
+        node = fields[0]
+        if node in nodes:
+            raise ValidationError(
+                f"{area_path}:{line_number}: duplicate node {node!r}"
+            )
+        nodes.add(node)
+        for index, raw in enumerate(fields[1:]):
+            resource_totals[index] += _integer(
+                raw, f"{area_path}:{line_number} {RESOURCE_NAMES[index]}"
+            )
+    if not nodes:
+        raise ValidationError(f"{area_path}: expected at least one node")
+
+    net_count = 0
+    sink_pins = 0
+    total_weight = 0
+    maximum_fanout = 0
+    referenced_nodes: Set[str] = set()
+    for line_number, line in _data_lines(net_path):
+        fields = line.split()
+        if len(fields) < 3:
+            raise ValidationError(
+                f"{net_path}:{line_number}: expected source, weight, and sinks"
+            )
+        source = fields[0]
+        sinks = fields[2:]
+        if source in sinks or len(sinks) != len(set(sinks)):
+            raise ValidationError(
+                f"{net_path}:{line_number}: net endpoints must be distinct"
+            )
+        unknown = [node for node in [source, *sinks] if node not in nodes]
+        if unknown:
+            raise ValidationError(
+                f"{net_path}:{line_number}: unknown nodes {unknown[:8]}"
+            )
+        weight = _integer(
+            fields[1], f"{net_path}:{line_number} weight", positive=True
+        )
+        referenced_nodes.update([source, *sinks])
+        net_count += 1
+        sink_pins += len(sinks)
+        total_weight += weight
+        maximum_fanout = max(maximum_fanout, len(sinks))
+    if not net_count:
+        raise ValidationError(f"{net_path}: expected at least one net")
+
+    instance = {
+        "schema": EDA2024_IMPORT_SCHEMA,
+        "name": name,
+        "source_format": "eda2024-repart",
+        "solution_required_for_evaluation": True,
+        "fpgas": [
+            {
+                "id": fpga_id,
+                "external_communication_limit": external_limits[fpga_id],
+                "capacity": {
+                    resource: value
+                    for resource, value in zip(
+                        RESOURCE_NAMES, capacities[fpga_id]
+                    )
+                },
+            }
+            for fpga_id in fpga_ids
+        ],
+        "topology": {
+            "maximum_legal_hop_distance": max_hop,
+            "links": [list(link) for link in links],
+            "diameter": max(max(row.values()) for row in distances.values()),
+        },
+        "problem": {
+            "nodes": len(nodes),
+            "referenced_nodes": len(referenced_nodes),
+            "nets": net_count,
+            "sink_pins": sink_pins,
+            "total_net_weight": total_weight,
+            "maximum_fanout": maximum_fanout,
+            "resource_totals": {
+                resource: value
+                for resource, value in zip(RESOURCE_NAMES, resource_totals)
+            },
+        },
+        "source_sha256": {
+            path.name: _sha256(path)
+            for path in (info_path, area_path, net_path, topology_path)
+        },
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "contest_instance.json"
+    write_json(output_path, instance)
+    return {
+        "schema": EDA2024_IMPORT_SCHEMA,
+        "status": "pass",
+        "name": name,
+        "fpgas": len(fpga_ids),
+        "links": len(links),
+        **instance["problem"],
+        "artifacts": {"instance": str(output_path)},
+    }
 
 
 def materialize_eda2024_rtl_boarddb(

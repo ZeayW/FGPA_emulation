@@ -182,6 +182,14 @@ file(
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
 )
+set(
+  EMUFLOW_PUBLIC_CONTEST_DATA
+  "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
+  "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
+  "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
+  "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
+  "${CMAKE_SOURCE_DIR}/platforms/virtual/academic_vtr_4fpga_mesh.json"
+)
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/emuflow.in"
   "${CMAKE_BINARY_DIR}/emuflow"
@@ -221,9 +229,31 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/scripts/yosys"
     "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
   COMMAND
+    "${CMAKE_COMMAND}" -E make_directory
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/platforms/virtual"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
+    "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
+    "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/platforms/virtual/academic_vtr_4fpga_mesh.json"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/platforms/virtual/academic_vtr_4fpga_mesh.json"
+  COMMAND
     "${CMAKE_COMMAND}" -E touch
     "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
-  DEPENDS ${EMUFLOW_PYTHON_SOURCES} ${EMUFLOW_RUNTIME_DATA}
+  DEPENDS
+    ${EMUFLOW_PYTHON_SOURCES}
+    ${EMUFLOW_RUNTIME_DATA}
+    ${EMUFLOW_PUBLIC_CONTEST_DATA}
   COMMENT "Installing the in-tree EmuFlow Python control plane"
   VERBATIM
 )
@@ -502,6 +532,50 @@ if(EMUFLOW_BUILD_PIN_PLANNER)
   target_compile_options(emuflow_pin_planner PRIVATE -O3)
   set_target_properties(
     emuflow_pin_planner
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
+    emuflow_chimew_signal_grouper
+    "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
+  )
+  target_compile_features(emuflow_chimew_signal_grouper PRIVATE cxx_std_17)
+  target_compile_options(emuflow_chimew_signal_grouper PRIVATE -O3)
+  set_target_properties(
+    emuflow_chimew_signal_grouper
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
+    emuflow_chimew_position_refiner
+    "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
+  )
+  target_compile_features(emuflow_chimew_position_refiner PRIVATE cxx_std_17)
+  target_compile_options(emuflow_chimew_position_refiner PRIVATE -O3)
+  set_target_properties(
+    emuflow_chimew_position_refiner
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
+    emuflow_chimew_rudy
+    "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
+  )
+  target_compile_features(emuflow_chimew_rudy PRIVATE cxx_std_17)
+  target_compile_options(emuflow_chimew_rudy PRIVATE -O3)
+  set_target_properties(
+    emuflow_chimew_rudy
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
+    emuflow_chimew_bank_channel_assigner
+    "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
+  )
+  target_compile_features(emuflow_chimew_bank_channel_assigner PRIVATE cxx_std_17)
+  target_compile_options(emuflow_chimew_bank_channel_assigner PRIVATE -O3)
+  set_target_properties(
+    emuflow_chimew_bank_channel_assigner
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -1026,6 +1100,22 @@ if(BUILD_TESTING)
     set_tests_properties(
       emuflow_pin_planner_cli
       PROPERTIES WILL_FAIL TRUE
+    )
+    add_test(
+      NAME emuflow_chimew_signal_grouper_cli
+      COMMAND "$<TARGET_FILE:emuflow_chimew_signal_grouper>" --help
+    )
+    add_test(
+      NAME emuflow_chimew_position_refiner_cli
+      COMMAND "$<TARGET_FILE:emuflow_chimew_position_refiner>" --help
+    )
+    add_test(
+      NAME emuflow_chimew_rudy_cli
+      COMMAND "$<TARGET_FILE:emuflow_chimew_rudy>" --help
+    )
+    add_test(
+      NAME emuflow_chimew_bank_channel_assigner_cli
+      COMMAND "$<TARGET_FILE:emuflow_chimew_bank_channel_assigner>" --help
     )
   endif()
 

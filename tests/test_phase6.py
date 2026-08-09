@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -6,8 +7,13 @@ import unittest
 from pathlib import Path
 
 from emuflow.equivalence import _MappedModel, simulate_partition_equivalence
+from emuflow.chimew_phase6 import (
+    CHIMEW_PHASE6_BINDING_PROVIDER,
+    CHIMEW_PHASE6_BINDING_SCHEMA,
+)
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
+from emuflow.io import read_json, write_json
 from emuflow.netlist import (
     build_split_artifacts,
     validate_split_artifacts,
@@ -20,7 +26,9 @@ from emuflow.partition import (
 )
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.pin_planning import (
+    CHIMEW_PIN_PLAN_PROVIDER,
     SIGNAL_POSITION_HINTS_SCHEMA,
+    _assignment_metrics,
     build_pin_plan,
 )
 from emuflow.platform import Platform
@@ -64,6 +72,105 @@ class Phase6Test(unittest.TestCase):
             executable=str(tlr_router()),
         )
         self.schedule = build_tdm_schedule(self.routes, self.platform)
+
+    def _chimew_certificate(self, schedule, positions, plan):
+        chimew_plan = copy.deepcopy(plan)
+        chimew_plan["provider"] = CHIMEW_PIN_PLAN_PROVIDER
+        schedule_sha256 = hashlib.sha256(
+            json.dumps(
+                schedule,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        chimew_plan["configuration"].update({
+            "electrical_map_sha256": "d" * 64,
+            "schedule_sha256": schedule_sha256,
+        })
+        schedule_by_id = {entry["id"]: entry for entry in schedule["entries"]}
+        plan_groups = {}
+        for entry in chimew_plan["entries"]:
+            plan_groups.setdefault(entry["group"], []).append(entry)
+        for lane, members in enumerate(plan_groups.values()):
+            for entry in members:
+                entry["physical_lane"] = lane
+        assignment = {
+            entry["schedule_entry"]: (entry["group"], entry["physical_lane"])
+            for entry in chimew_plan["entries"]
+        }
+        chimew_plan["metrics"].update(
+            _assignment_metrics(
+                schedule,
+                self.platform,
+                positions,
+                assignment,
+                float(chimew_plan["weights"]["crossing"]),
+                float(chimew_plan["weights"]["position"]),
+            )
+        )
+        binding_entries = []
+        for index, (group, members) in enumerate(sorted(plan_groups.items())):
+            first = schedule_by_id[members[0]["schedule_entry"]]
+            if not all(
+                schedule_by_id[item["schedule_entry"]][key] == first[key]
+                for item in members
+                for key in ("link", "from", "to")
+            ) or not all(
+                item["physical_lane"] == members[0]["physical_lane"]
+                for item in members
+            ):
+                raise AssertionError("fixture pin group is not electrically homogeneous")
+            binding_entries.append({
+                "group": f"group{group}",
+                "schedule_entries": sorted(
+                    item["schedule_entry"] for item in members
+                ),
+                "direction": "a_to_b",
+                "bank_pair": f"bank{index}",
+                "channel": f"channel{index}",
+                "link": first["link"],
+                "physical_lane": members[0]["physical_lane"],
+                "fpga_a": first["from"],
+                "fpga_b": first["to"],
+                "bank_a": f"bank_a{index}",
+                "bank_b": f"bank_b{index}",
+                "package_pin_a": f"PA{index}",
+                "package_pin_b": f"PB{index}",
+                "iostandard": "LVCMOS18",
+                "supported_iostandards": ["LVCMOS18"],
+                "bank_voltage": 1.8,
+                "electrical_class": "single_ended_parallel",
+            })
+        binding = {
+            "schema": CHIMEW_PHASE6_BINDING_SCHEMA,
+            "status": "pass",
+            "integration_status": "phase6-pin-plan",
+            "design": schedule["design"],
+            "platform": self.platform.name,
+            "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
+            "paper_provider": "chimew-section3.4-two-stage-assignment-v1",
+            "extension_scope": "test fixture",
+            "provenance": {
+                "producer": "fixture",
+                "producer_version": "1",
+                "boarddb_sha256": "a" * 64,
+                "package_pin_inventory_sha256": "b" * 64,
+                "electrical_map_sha256": "d" * 64,
+                "assignment_input_sha256": "e" * 64,
+                "schedule_sha256": schedule_sha256,
+            },
+            "metrics": {
+                "signals": len(schedule["entries"]),
+                "groups": len(binding_entries),
+                "channels": len(binding_entries),
+                "package_pins": 2 * len(binding_entries),
+                "lane_slot_collisions": 0,
+                "package_pin_collisions": 0,
+            },
+            "entries": binding_entries,
+        }
+        return chimew_plan, binding
 
     def test_split_exact_coverage_lane_agreement_and_equivalence(self) -> None:
         artifacts = build_split_artifacts(
@@ -186,6 +293,7 @@ class Phase6Test(unittest.TestCase):
                 output / "manifest.json",
             )
             self.assertEqual(validation["status"], "pass")
+
             for filename in (
                 "manifest.json",
                 "lane_map.json",
@@ -288,7 +396,7 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(
                 report["provider"],
-                "chimew-placement-aware-pin-split-v1",
+                "placement-aware-pin-split-v1",
             )
             self.assertEqual(
                 report["pin_plan_validation"]["status"], "pass"
@@ -296,6 +404,53 @@ class Phase6Test(unittest.TestCase):
             self.assertEqual(report["artifacts"]["pin_plan"], "pin_plan.json")
             self.assertTrue((output / "pin_plan.json").is_file())
             self.assertTrue((output / "position_hints.json").is_file())
+            chimew_plan, binding = self._chimew_certificate(
+                schedule, positions, plan
+            )
+            chimew_plan_path = root / "chimew-plan.json"
+            binding_path = root / "electrical-binding.json"
+            write_json(chimew_plan_path, chimew_plan)
+            write_json(binding_path, binding)
+            chimew_output = root / "phase6-chimew"
+            with self.assertRaisesRegex(ValueError, "electrical_binding_path"):
+                run_phase6(
+                    paths["ir"],
+                    paths["assignment"],
+                    paths["schedule"],
+                    PLATFORM_PATH,
+                    root / "phase6-chimew-without-binding",
+                    equivalence_cycles=4,
+                    pin_plan_path=chimew_plan_path,
+                    position_hints_path=paths["positions"],
+                )
+            chimew_report = run_phase6(
+                paths["ir"],
+                paths["assignment"],
+                paths["schedule"],
+                PLATFORM_PATH,
+                chimew_output,
+                equivalence_cycles=4,
+                pin_plan_path=chimew_plan_path,
+                position_hints_path=paths["positions"],
+                electrical_binding_path=binding_path,
+            )
+            self.assertEqual(
+                chimew_report["electrical_binding_validation"]["status"], "pass"
+            )
+            self.assertEqual(
+                read_json(chimew_output / "manifest.json")["electrical_binding"],
+                "electrical_binding.json",
+            )
+            self.assertEqual(
+                validate_phase6(
+                    paths["ir"],
+                    paths["assignment"],
+                    paths["schedule"],
+                    PLATFORM_PATH,
+                    chimew_output / "manifest.json",
+                )["status"],
+                "pass",
+            )
             validation = validate_phase6(
                 paths["ir"],
                 paths["assignment"],

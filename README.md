@@ -818,6 +818,76 @@ materialized link IDs. Link delay remains the explicitly configured BoardDB
 clock/latency model; the contest's `beta + alpha * ratio` formula remains in
 the separate official-score adapter.
 
+The repository-level qualification plan is recorded in
+`benchmarks/contest_validation_matrix.json`.  This versioned matrix covers
+every hash-pinned public EDA 2023, RePart/EDA 2024, and EDA 2025 case plus the
+embedded ICCAD 2019 official sample.  `qualification` deliberately separates
+mere catalog coverage from adapter regression, real-case validation, and a
+complete EmuFlow run; a planned target gate is never reported as completed
+evidence.  `emuflow.contest_validation_matrix` validates gate order, immutable
+source revisions, unique deterministic case IDs, and emits a canonical SHA-256
+for validation-farm task sealing. Validate the checked-in plan with:
+
+```bash
+emuflow contest matrix-validate benchmarks/contest_validation_matrix.json
+```
+
+The same matrix can be compiled into collision-free fetch tasks for a pinned
+validation-farm install. Fetchers and the matrix are copied into that install,
+so workers never depend on a mutable source checkout. Each worker recomputes
+the downloaded Git-blob SHA-1 or SHA-256 and checks the exact revision and byte
+count before emitting `fetch_report.json`:
+
+```bash
+emuflow contest matrix-fetch-farm-spec \
+  benchmarks/contest_validation_matrix.json \
+  --source-commit "$COMMIT" \
+  --install-dir "/shared/emuflow/install/$COMMIT" \
+  --node hpc1 --node hpc2 --tier smoke \
+  --farm-id public-contest-smoke --output farm.json
+
+emuflow validation-farm prepare --spec farm.json --out /shared/runs/public-smoke
+emuflow validation-farm launch /shared/runs/public-smoke
+```
+
+After that farm passes, compile a second, separately pinned farm for semantic
+import.  The compiler accepts only `pass` fetch tasks, rechecks their provenance
+and content digests, and gives every importer a new isolated run directory:
+
+```bash
+emuflow contest matrix-import-farm-spec \
+  benchmarks/contest_validation_matrix.json \
+  --fetch-farm /shared/runs/public-smoke \
+  --source-commit "$COMMIT" \
+  --install-dir "/shared/emuflow/install/$COMMIT" \
+  --node hpc1 --node hpc2 --tier smoke \
+  --farm-id public-contest-import-smoke --output import-farm.json
+```
+
+The unified `import-public` gate dispatches the EDA 2023 and EDA 2025 execution
+adapters and a structural EDA 2024/RePart importer.  The latter parses and
+cross-checks all problem inputs but explicitly records that no participant
+solution has been evaluated. A separately sealed BoardDB gate revalidates the
+fetch provenance and every imported artifact before applying an explicitly
+labelled academic FPGA-device projection:
+
+```bash
+emuflow contest materialize-public-boarddb \
+  --matrix benchmarks/contest_validation_matrix.json \
+  --case-id eda2024-repart.case01 \
+  --source-dir fetched/input --import-dir normalized \
+  --device-template platforms/virtual/academic_vtr_4fpga_mesh.json \
+  --unweighted-link-lanes 4 --out boarddb-gate
+```
+
+For shared HPC validation, `matrix-boarddb-farm-spec` accepts only passed,
+sealed fetch and import farms and schedules each case in a fresh run directory.
+The versioned install carries the matrix and academic device template, so a
+worker does not read either input from a mutable checkout.
+
+Evaluation, BoardDB projection, and Phase 3–7 remain separate matrix gates and
+are not upgraded merely because fetch or import passed.
+
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact
 harmonic constraint `sum(1 / ratio) <= 1`:
@@ -1542,6 +1612,109 @@ lookahead coordinates from OpenPARF, materializes the plan, and independently
 reconstructs group capacity, slot collisions, objective values, and split
 netlists. Its validation report includes the reconstructed logical-lane
 baseline and objective, crossing-bit, and pin-distance improvements.
+
+Four non-selectable Chimew research kernels now sit beside that production
+baseline. The first reproduces FPGA 2026 Algorithm 1 from explicit,
+source-qualified physical SLL-crossing encodings. The second only swaps
+equal-encoding signals using physical-site source-y coordinates, preserving
+every group capacity and SLL encoding while independently checking a
+non-increasing pairwise-y objective. Because the paper does not publish the
+complete position-refinement swap schedule, the latter is explicitly named a
+bounded deterministic inference rather than an exact reproduction. The third
+implements Section 2.3 RUDY from a source-qualified physical placement,
+netlist, routing-capacity grid, and wire pitch: native C++ integrates every
+HPWL wire-area density over the intersected bins and Python independently
+reconstructs every load, utilization, hotspot, and load-conservation metric.
+The congestion threshold is explicitly a qualification policy rather than a
+paper constant, and v1 rejects zero-area bounding boxes instead of silently
+introducing an unpublished epsilon. These artifacts remain
+`not-a-phase6-pin-plan`. The fourth reproduces the Section 3.4 two-stage
+assignment: a capacitated bank-pair min-cost flow followed by two exact
+channel matchings, one for each TDM direction priority, using the lower-cost
+alternative. Edge ranks independently reconstruct Algorithm 2's source
+fanout distance plus per-signal mean sink-fanin distance. Every matching emits
+a residual-dual optimality certificate, which Python checks in linear time
+instead of running a second large optimizer. The result remains a standalone
+paper kernel until its abstract banks/channels are reconciled with EmuFlow's
+voltage, IOSTANDARD, clock, differential-pair, and concrete-slot contracts.
+
+The reconciliation path is now implemented for source-qualified
+single-ended parallel channels. `emuflow pin-plan chimew-build` consumes the
+physical bank/channel problem plus a hash-sealed BoardDB/package-pin map,
+reruns the certified native assignment, and emits `pin_plan.json` and
+`position_hints.json` for ordinary Phase 6 consumption. It additionally emits
+an electrical binding certificate covering concrete lane uniqueness,
+non-reserved package pins, bank identities, IOSTANDARD support, and matching
+bank voltage. Differential and serial resources remain on their existing
+source-backed Phase 6B paths and are not silently projected through this v1
+adapter.
+
+Before sign-off, `emuflow pin-plan chimew-qualify` seals the exact schedule,
+physical-SLL crossings, initial and refined groups, lookahead positions, RUDY
+input/report, and bank/channel input/report into one self-hashed certificate.
+It independently rechecks coverage, group capacity and SLL preservation, the
+RUDY bins and pass threshold, assignment legality/costs, and placement,
+architecture, grouping, and source hashes. This is a near-linear artifact
+checker, not a second optimizer. Supplying the resulting certificate to
+`chimew-build` upgrades its status from `bank-electrical-only` to
+`complete-artifact-chain`; omitting it remains supported for kernel-level
+experiments but is not full Chimew lookahead qualification.
+
+`emuflow pin-plan chimew-run` is the preferred end-to-end entry point. It runs
+all four native kernels once, builds the qualification certificate, consumes
+the already-certified bank/channel report without optimizing it a second
+time, emits the electrical adapter artifacts, and records SHA-256 for every
+copied input and generated output in `pipeline_report.json`.
+
+```bash
+emuflow pin-plan chimew-run \
+  --schedule build/phase5/schedule.json \
+  --platform platforms/hardware/board.json \
+  --crossings build/chimew/crossings.json \
+  --positions build/chimew/lookahead_positions.json \
+  --rudy-input build/chimew/rudy_input.json \
+  --assignment-input build/chimew/bank_channel_input.json \
+  --electrical-map bsp/chimew_electrical_map.json \
+  --out build/chimew/complete-phase6
+
+# The two commands below expose the same qualification and adapter boundaries
+# separately for debugging or independently supplied certified reports.
+emuflow pin-plan chimew-qualify \
+  --schedule build/phase5/schedule.json \
+  --crossings build/chimew/crossings.json \
+  --initial-grouping build/chimew/initial_groups.json \
+  --positions build/chimew/lookahead_positions.json \
+  --refined-grouping build/chimew/refined_groups.json \
+  --rudy-input build/chimew/rudy_input.json \
+  --rudy-report build/chimew/rudy_report.json \
+  --assignment-input build/chimew/bank_channel_input.json \
+  --assignment-report build/chimew/bank_channel_report.json \
+  --output build/chimew/qualification.json
+
+emuflow pin-plan chimew-build \
+  --schedule build/phase5/schedule.json \
+  --platform platforms/hardware/board.json \
+  --assignment-input build/chimew/bank_channel_input.json \
+  --assignment-report build/chimew/bank_channel_report.json \
+  --electrical-map bsp/chimew_electrical_map.json \
+  --qualification build/chimew/qualification.json \
+  --out build/chimew/phase6-adapter
+
+emuflow phase6 \
+  --ir build/phase1/design.emuir.json \
+  --assignment build/phase3/assignment.json \
+  --schedule build/phase5/schedule.json \
+  --platform platforms/hardware/board.json \
+  --pin-plan build/chimew/phase6-adapter/pin_plan.json \
+  --position-hints build/chimew/phase6-adapter/position_hints.json \
+  --electrical-binding build/chimew/phase6-adapter/electrical_binding.json \
+  --out build/phase6
+```
+
+For this provider the electrical certificate is mandatory: Phase 6 independently
+rechecks its exact schedule coverage, concrete-lane and package-pin uniqueness,
+direction, and source hashes, then seals a copy into the split manifest. Other
+pin-plan providers neither require nor accept this Chimew-specific certificate.
 
 Phase 6B has two explicit electrical providers. For parallel I/O,
 `src/native/bsp_pin_solver.cpp` implements exact sparse minimum-cost bipartite

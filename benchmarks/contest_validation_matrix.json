@@ -1,0 +1,290 @@
+{
+  "cases": [
+    {
+      "case": "case1",
+      "evidence": [],
+      "id": "eda2023.case1",
+      "input_bytes": 386,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case10",
+      "evidence": [],
+      "id": "eda2023.case10",
+      "input_bytes": 212202207,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "53a23393457c27dab40a4304a04bfde2ab6ce7ea0d2749b4dc5a775849f8912d",
+        "revision_kind": "sha256"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "large"
+    },
+    {
+      "case": "case2",
+      "evidence": [],
+      "id": "eda2023.case2",
+      "input_bytes": 2959,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case3",
+      "evidence": [],
+      "id": "eda2023.case3",
+      "input_bytes": 2897,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case4",
+      "evidence": [],
+      "id": "eda2023.case4",
+      "input_bytes": 17576,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case5",
+      "evidence": [],
+      "id": "eda2023.case5",
+      "input_bytes": 237435,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "small"
+    },
+    {
+      "case": "case6",
+      "evidence": [],
+      "id": "eda2023.case6",
+      "input_bytes": 7839207,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "medium"
+    },
+    {
+      "case": "case7",
+      "evidence": [],
+      "id": "eda2023.case7",
+      "input_bytes": 3368660,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "small"
+    },
+    {
+      "case": "case8",
+      "evidence": [],
+      "id": "eda2023.case8",
+      "input_bytes": 3936475,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "small"
+    },
+    {
+      "case": "case9",
+      "evidence": [],
+      "id": "eda2023.case9",
+      "input_bytes": 51846190,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2023_benchmarks.py",
+        "revision": "1f05cfd366b9565eb604380f5feed38b25baaff7",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2023",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "medium"
+    },
+    {
+      "case": "case01",
+      "evidence": [],
+      "id": "eda2024-repart.case01",
+      "input_bytes": 622,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_repart_benchmarks.py",
+        "revision": "211a9d8fd526576387cad7ac6dd3531354aeb31c",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2024-repart",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case03",
+      "evidence": [],
+      "id": "eda2024-repart.case03",
+      "input_bytes": 1347919,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_repart_benchmarks.py",
+        "revision": "211a9d8fd526576387cad7ac6dd3531354aeb31c",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2024-repart",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "small"
+    },
+    {
+      "case": "case04",
+      "evidence": [],
+      "id": "eda2024-repart.case04",
+      "input_bytes": 53117941,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_repart_benchmarks.py",
+        "revision": "211a9d8fd526576387cad7ac6dd3531354aeb31c",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2024-repart",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "medium"
+    },
+    {
+      "case": "case05",
+      "evidence": [],
+      "id": "eda2024-repart.case05",
+      "input_bytes": 93201,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_repart_benchmarks.py",
+        "revision": "211a9d8fd526576387cad7ac6dd3531354aeb31c",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2024-repart",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case01",
+      "evidence": [],
+      "id": "eda2025.case01",
+      "input_bytes": 301,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
+        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2025",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case02",
+      "evidence": [],
+      "id": "eda2025.case02",
+      "input_bytes": 47175,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
+        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2025",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    },
+    {
+      "case": "case03",
+      "evidence": [],
+      "id": "eda2025.case03",
+      "input_bytes": 1131769,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
+        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2025",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "small"
+    },
+    {
+      "case": "case04",
+      "evidence": [],
+      "id": "eda2025.case04",
+      "input_bytes": 36168634,
+      "qualification": "catalogued",
+      "source": {
+        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
+        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
+        "revision_kind": "git-commit"
+      },
+      "suite": "eda2025",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "medium"
+    },
+    {
+      "case": "official-sample",
+      "evidence": ["tests/test_contest_iccad2019.py"],
+      "id": "iccad2019.official-sample",
+      "input_bytes": 87,
+      "qualification": "adapter-regression",
+      "source": {
+        "locator": "tests/test_contest_iccad2019.py",
+        "revision": "5e6087d204ef52378b1304e27e7c3c788daf0f07072e70a4011faf022bec2ec5",
+        "revision_kind": "embedded-sha256"
+      },
+      "suite": "iccad2019",
+      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
+      "tier": "smoke"
+    }
+  ],
+  "schema": "emuflow.contest-validation-matrix/v1"
+}
