@@ -7,6 +7,7 @@
 #ifndef OPENPARF_UTIL_ENUMS_H_
 #define OPENPARF_UTIL_ENUMS_H_
 
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <string>
