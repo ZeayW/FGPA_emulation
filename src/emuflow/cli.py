@@ -26,6 +26,7 @@ from .cross_stage import (
     validate_cross_stage_report,
 )
 from .chimew_phase6 import run_chimew_phase6_adapter
+from .chimew_grouping import materialize_chimew_schedule_ratios
 from .chimew_pipeline import run_chimew_phase6_pipeline
 from .chimew_qualification import build_chimew_phase6_qualification
 from .contest_eda2025 import (
@@ -2053,6 +2054,12 @@ def _build_parser() -> argparse.ArgumentParser:
     pin_plan_chimew.add_argument("--assigner")
     pin_plan_chimew.add_argument("--region-count", type=int, default=31)
     pin_plan_chimew.add_argument("--out", type=Path, required=True)
+    pin_plan_chimew_ratios = pin_plan_subparsers.add_parser(
+        "chimew-materialize-ratios",
+        help="explicitly derive Chimew group capacities from lane occupancy",
+    )
+    pin_plan_chimew_ratios.add_argument("--schedule", type=Path, required=True)
+    pin_plan_chimew_ratios.add_argument("--output", "-o", type=Path, required=True)
     pin_plan_chimew_qualify = pin_plan_subparsers.add_parser(
         "chimew-qualify",
         help="seal a complete Chimew lookahead/RUDY/assignment artifact chain",
@@ -3408,6 +3415,11 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "pin-plan":
+        if args.pin_plan_command == "chimew-materialize-ratios":
+            report = materialize_chimew_schedule_ratios(read_json(args.schedule))
+            write_json(args.output, report)
+            _print_json(report["chimew_ratio_materialization"])
+            return 0
         if args.pin_plan_command == "chimew-build":
             report = run_chimew_phase6_adapter(
                 schedule_path=args.schedule,

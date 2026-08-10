@@ -743,6 +743,12 @@ plus a distinct electrical binding certificate. Chimew paper metrics remain
 under the paper provider identity, while voltage, package-pin, and
 concrete-slot checks are explicitly labelled EmuFlow extensions.
 
+For baseline schedules without per-entry paper ratios, the explicit
+`emuflow-lane-occupancy-ratio-materializer-v1` adapter derives each existing
+direction-qualified logical-lane group's exact occupancy, hash-binds the
+source schedule, and rejects mixed ratios or lane-slot collisions. This is an
+EmuFlow integration transform, not a Chimew paper claim.
+
 The complete lookahead path is sealed separately by
 `chimew-paper-kernel-chain-plus-emuflow-provenance-v1`. Its certificate binds
 the exact schedule, crossings, both grouping stages, lookahead placement,

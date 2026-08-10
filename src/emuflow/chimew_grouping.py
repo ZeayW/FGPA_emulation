@@ -8,6 +8,9 @@ two-stage bank/channel assignment gates are implemented.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import subprocess
 import tempfile
 from collections import Counter, defaultdict
@@ -22,6 +25,9 @@ CHIMEW_CROSSING_SCHEMA = "emuflow.chimew-crossing-encodings/v1"
 CHIMEW_GROUPING_SCHEMA = "emuflow.chimew-signal-groups/v1"
 CHIMEW_GROUPING_PROVIDER = "chimew-algorithm1-encoding-grouping-v1"
 CHIMEW_CROSSING_PROVIDER = "source-qualified-physical-sll-routing-v1"
+CHIMEW_SCHEDULE_RATIO_PROVIDER = (
+    "emuflow-lane-occupancy-ratio-materializer-v1"
+)
 
 
 def _popcount(value: int) -> int:
@@ -135,6 +141,74 @@ def _tdm_ratio(entry: Mapping[str, Any]) -> int:
     return _integer(
         entry.get("tdm_ratio", 1), f"{entry['id']}.tdm_ratio", minimum=1
     )
+
+
+def materialize_chimew_schedule_ratios(
+    schedule: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Make implicit lane occupancy explicit for the Chimew adapter.
+
+    This is an EmuFlow integration transform, not a Chimew paper kernel.  A
+    baseline schedule already fixes a direction-qualified logical lane and a
+    unique slot for every signal.  The number of signals occupying that lane
+    is therefore the exact serialization capacity of its existing group.
+    """
+
+    raw_entries = schedule.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise ValidationError("Chimew ratio materialization requires schedule entries")
+    explicit = ["tdm_ratio" in entry for entry in raw_entries]
+    if any(explicit):
+        if not all(explicit):
+            raise ValidationError(
+                "Chimew schedule mixes explicit and implicit TDM ratios"
+            )
+        raise ValidationError("Chimew schedule ratios are already explicit")
+
+    entry_ids = set()
+    groups: Dict[Tuple[str, str, str, int], list[str]] = defaultdict(list)
+    occupancy = set()
+    for index, entry in enumerate(raw_entries):
+        if not isinstance(entry, dict):
+            raise ValidationError(f"schedule.entries[{index}] is invalid")
+        entry_id = _string(entry.get("id"), f"schedule.entries[{index}].id")
+        link = _string(entry.get("link"), f"{entry_id}.link")
+        source = _string(entry.get("from"), f"{entry_id}.from")
+        sink = _string(entry.get("to"), f"{entry_id}.to")
+        lane = _integer(entry.get("lane"), f"{entry_id}.lane")
+        slot = _integer(entry.get("slot"), f"{entry_id}.slot")
+        if entry_id in entry_ids:
+            raise ValidationError("Chimew ratio materialization found duplicate IDs")
+        collision = (link, source, sink, lane, slot)
+        if collision in occupancy:
+            raise ValidationError(
+                "Chimew ratio materialization found a lane/slot collision"
+            )
+        entry_ids.add(entry_id)
+        occupancy.add(collision)
+        groups[(link, source, sink, lane)].append(entry_id)
+
+    result = copy.deepcopy(dict(schedule))
+    ratio_by_id = {
+        entry_id: len(member_ids)
+        for member_ids in groups.values()
+        for entry_id in member_ids
+    }
+    for entry in result["entries"]:
+        entry["tdm_ratio"] = ratio_by_id[entry["id"]]
+    source_sha256 = hashlib.sha256(
+        json.dumps(
+            schedule, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    result["chimew_ratio_materialization"] = {
+        "provider": CHIMEW_SCHEDULE_RATIO_PROVIDER,
+        "scope": "EmuFlow adapter, not a Chimew paper claim",
+        "source_schedule_sha256": source_sha256,
+        "direction_lane_groups": len(groups),
+        "max_lane_occupancy": max(map(len, groups.values())),
+    }
+    return result
 
 
 def _nearest_key(

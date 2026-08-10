@@ -10,7 +10,9 @@ from emuflow.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     CHIMEW_GROUPING_PROVIDER,
+    CHIMEW_SCHEDULE_RATIO_PROVIDER,
     build_chimew_initial_groups,
+    materialize_chimew_schedule_ratios,
     validate_chimew_crossings,
 )
 from emuflow.errors import ValidationError
@@ -189,6 +191,45 @@ class ChimewGroupingTest(unittest.TestCase):
             sizes[entry["group"]] = sizes.get(entry["group"], 0) + 1
         self.assertTrue(all(size <= 4 for size in sizes.values()))
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_lane_occupancy_materializes_explicit_adapter_ratios(self) -> None:
+        schedule = {
+            "schema": "emuflow.tdm-schedule/v1",
+            "design": "implicit-ratios",
+            "platform": "two_fpga",
+            "entries": [
+                {"id": "a0", "link": "l", "from": "A", "to": "B", "lane": 0, "slot": 0},
+                {"id": "a1", "link": "l", "from": "A", "to": "B", "lane": 0, "slot": 2},
+                {"id": "a2", "link": "l", "from": "A", "to": "B", "lane": 1, "slot": 0},
+                {"id": "b0", "link": "l", "from": "B", "to": "A", "lane": 0, "slot": 0},
+            ],
+        }
+        result = materialize_chimew_schedule_ratios(schedule)
+        ratios = {entry["id"]: entry["tdm_ratio"] for entry in result["entries"]}
+        self.assertEqual(ratios, {"a0": 2, "a1": 2, "a2": 1, "b0": 1})
+        self.assertEqual(
+            result["chimew_ratio_materialization"]["provider"],
+            CHIMEW_SCHEDULE_RATIO_PROVIDER,
+        )
+        self.assertEqual(
+            result["chimew_ratio_materialization"]["direction_lane_groups"], 3
+        )
+        self.assertNotIn("tdm_ratio", schedule["entries"][0])
+        self.assertEqual(result, materialize_chimew_schedule_ratios(schedule))
+
+    def test_ratio_materialization_rejects_ambiguous_inputs(self) -> None:
+        schedule = {
+            "entries": [
+                {"id": "a0", "link": "l", "from": "A", "to": "B", "lane": 0, "slot": 0},
+                {"id": "a1", "link": "l", "from": "A", "to": "B", "lane": 0, "slot": 0},
+            ]
+        }
+        with self.assertRaisesRegex(ValidationError, "collision"):
+            materialize_chimew_schedule_ratios(schedule)
+        schedule["entries"][1]["slot"] = 1
+        schedule["entries"][0]["tdm_ratio"] = 2
+        with self.assertRaisesRegex(ValidationError, "mixes"):
+            materialize_chimew_schedule_ratios(schedule)
 
 
 if __name__ == "__main__":

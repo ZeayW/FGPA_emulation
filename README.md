@@ -1664,6 +1664,20 @@ checker, not a second optimizer. Supplying the resulting certificate to
 `complete-artifact-chain`; omitting it remains supported for kernel-level
 experiments but is not full Chimew lookahead qualification.
 
+Baseline schedulers that expose only direction-qualified `lane` and `slot`
+records must first make their existing serialization groups explicit:
+
+```bash
+emuflow pin-plan chimew-materialize-ratios \
+  --schedule build/phase5/schedule.json \
+  --output build/chimew/schedule.json
+```
+
+This deterministic EmuFlow adapter sets each entry's `tdm_ratio` to the number
+of signals already occupying its `(link, from, to, logical lane)` group,
+hash-binds the source schedule, and rejects mixed explicit/implicit ratios or
+lane-slot collisions. It is not attributed to the Chimew paper.
+
 `emuflow pin-plan chimew-run` is the preferred end-to-end entry point. It runs
 all four native kernels once, builds the qualification certificate, consumes
 the already-certified bank/channel report without optimizing it a second
