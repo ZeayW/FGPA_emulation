@@ -20,6 +20,7 @@ class SynthesisTest(unittest.TestCase):
         self.assertIn("-noiopad -noclkbuf", script)
         self.assertIn("; flatten; opt_clean; check;", script)
         self.assertIn('write_json "build/counter.json"', script)
+        self.assertIn("delete t:$scopeinfo", script)
 
     def test_logic_only_policy_disables_hard_mapping(self) -> None:
         script = build_yosys_script(

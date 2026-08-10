@@ -17,6 +17,7 @@ _VTR_RAM_INPUTS = {
     "VTR_SP_RAM": {"addr", "data", "we"},
     "VTR_DP_RAM": {"addr1", "addr2", "data1", "data2", "we1", "we2"},
 }
+_NON_HARDWARE_CELL_TYPES = {"$scopeinfo"}
 
 
 def _is_transport_safe_sequential_input(
@@ -166,6 +167,11 @@ def import_yosys_json(
         cell_type = raw_cell.get("type")
         if not isinstance(cell_type, str) or not cell_type:
             raise ImportError(f"cell {cell_name!r}: missing type")
+        # Yosys 0.57+ exports hierarchy provenance as pinless $scopeinfo
+        # pseudo-cells by default. They carry no hardware behavior and must
+        # not consume capacity or enter the physical instance inventory.
+        if cell_type in _NON_HARDWARE_CELL_TYPES:
+            continue
         resources = classify_primitive_resources(cell_type)
         instance_resources[cell_name] = resources
         instance_types[cell_name] = cell_type

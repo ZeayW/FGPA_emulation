@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from emuflow.io import read_json, write_json
 from emuflow.yosys import import_yosys_json
 
 
@@ -44,6 +46,28 @@ class YosysImportTest(unittest.TestCase):
         self.assertEqual(stats["instances"], 8)
         self.assertEqual(stats["resource_totals"], {"ff": 4, "lut": 4})
         self.assertEqual(stats["clocks"], 1)
+
+    def test_scopeinfo_metadata_is_not_a_physical_instance(self) -> None:
+        source = read_json(ROOT / "examples/yosys/counter.json")
+        source["modules"]["counter"]["cells"]["debug_scope"] = {
+            "type": "$scopeinfo",
+            "parameters": {"TYPE": "module"},
+            "attributes": {"module": "counter"},
+            "port_directions": {},
+            "connections": {},
+        }
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "counter-with-scopeinfo.json"
+            write_json(path, source)
+            ir = import_yosys_json(path, top="counter", clocks=["clk"])
+
+        self.assertNotIn(
+            "$scopeinfo", {instance["type"] for instance in ir.value["instances"]}
+        )
+        self.assertEqual(
+            ir.resource_totals().to_dict(include_zeros=False),
+            {"ff": 4, "lut": 4},
+        )
 
 
 if __name__ == "__main__":

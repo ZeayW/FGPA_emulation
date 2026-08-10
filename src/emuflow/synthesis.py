@@ -104,6 +104,9 @@ def build_yosys_script(
         *post_mapping,
         "opt_clean",
         "check",
+        # Yosys 0.57+ exports debug-only hierarchy metadata as $scopeinfo
+        # cells by default. They are pinless and have no hardware behavior.
+        "delete t:$scopeinfo",
         # Vivado otherwise re-optimizes some mapped primitives (for example,
         # redundant PicoRV32 register-file bits) and breaks the one-to-one
         # identity contract between EmuIR, OpenPARF, XDC, and the routed
