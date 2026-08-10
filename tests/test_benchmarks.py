@@ -24,6 +24,12 @@ class RtlCatalogTest(unittest.TestCase):
         ):
             self.assertIn(runtime_path, cmake)
         self.assertIn("EMUFLOW_RTL_BENCHMARK_DATA", cmake)
+        for runtime_source in (
+            ROOT / "scripts/benchmarks/fetch.py",
+            ROOT / "benchmarks/rtl_catalog.json",
+            *(ROOT / "benchmarks/runs").glob("*.json"),
+        ):
+            self.assertTrue(runtime_source.is_file(), runtime_source)
 
     def test_catalog_entries_are_pinned_and_unique(self) -> None:
         catalog = json.loads(CATALOG.read_text(encoding="utf-8"))

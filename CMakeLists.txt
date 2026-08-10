@@ -198,7 +198,6 @@ file(
 set(
   EMUFLOW_RTL_BENCHMARK_DATA
   "${CMAKE_SOURCE_DIR}/benchmarks/rtl_catalog.json"
-  "${CMAKE_SOURCE_DIR}/scripts/benchmarks/__init__.py"
   "${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"
   ${EMUFLOW_RTL_BENCHMARK_RUNS}
 )
