@@ -106,6 +106,41 @@ class ValidationFarmTest(unittest.TestCase):
             with self.assertRaisesRegex(EmuFlowError, "already exists"):
                 prepare_validation_farm(spec, farm)
 
+    def test_prepare_content_seals_explicit_known_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            known_hosts = root / "known_hosts"
+            known_hosts.write_text("hpc1 ssh-ed25519 test-key\n", encoding="utf-8")
+            farm = root / "farm"
+            prepare_validation_farm(
+                spec, farm, ssh_known_hosts_file=known_hosts.resolve()
+            )
+            manifest = read_json(farm / "farm-manifest.json")
+            binding = manifest["ssh"]["known_hosts"]
+            self.assertEqual(binding["path"], str(known_hosts.resolve()))
+            self.assertIn(
+                f"UserKnownHostsFile={known_hosts.resolve()}",
+                manifest["ssh"]["arguments"],
+            )
+            self.assertIn(
+                "StrictHostKeyChecking=yes", manifest["ssh"]["arguments"]
+            )
+            known_hosts.write_text("hpc1 ssh-ed25519 replaced\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "seal is broken"):
+                validate_validation_farm(farm)
+
+    def test_prepare_rejects_relative_known_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            with self.assertRaisesRegex(ValidationError, "must be absolute"):
+                prepare_validation_farm(
+                    spec,
+                    root / "farm",
+                    ssh_known_hosts_file=Path("known_hosts"),
+                )
+
     def test_validation_rejects_tampered_task_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

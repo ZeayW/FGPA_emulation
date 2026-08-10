@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
@@ -76,6 +76,34 @@ def _validate_commit(value: Any) -> str:
     return commit
 
 
+def _known_hosts_binding(path: Path) -> Dict[str, str]:
+    if not path.is_absolute():
+        raise ValidationError(
+            "validation farm known_hosts path must be absolute"
+        )
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError(
+            "validation farm known_hosts must be a regular non-symlink file"
+        )
+    path = path.resolve()
+    return {"path": str(path), "sha256": _sha256(path)}
+
+
+def _validate_known_hosts_binding(value: Any) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValidationError(
+            "validation farm known_hosts binding must be an object"
+        )
+    path = Path(_require_string(value.get("path"), "known_hosts path"))
+    expected = _require_string(value.get("sha256"), "known_hosts SHA-256")
+    if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise ValidationError("validation farm known_hosts SHA-256 is invalid")
+    actual = _known_hosts_binding(path)
+    if actual["sha256"] != expected:
+        raise ValidationError("validation farm known_hosts seal is broken")
+    return actual
+
+
 def _format_value(value: str, replacements: Mapping[str, str], label: str) -> str:
     placeholder = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
     fields = set(placeholder.findall(value))
@@ -129,7 +157,12 @@ def _balanced_nodes(
     return result
 
 
-def prepare_validation_farm(spec_path: Path, output_dir: Path) -> Dict[str, Any]:
+def prepare_validation_farm(
+    spec_path: Path,
+    output_dir: Path,
+    *,
+    ssh_known_hosts_file: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Validate a farm spec and atomically reserve isolated task/run directories."""
 
     spec = read_json(spec_path)
@@ -157,6 +190,31 @@ def prepare_validation_farm(spec_path: Path, output_dir: Path) -> Dict[str, Any]
         isinstance(item, str) for item in ssh_arguments
     ):
         raise ValidationError("validation farm ssh arguments must be a string list")
+    known_hosts = None
+    if ssh_known_hosts_file is not None:
+        if ssh.get("known_hosts") is not None:
+            raise ValidationError(
+                "validation farm known_hosts is specified twice"
+            )
+        if any("UserKnownHostsFile=" in item for item in ssh_arguments):
+            raise ValidationError(
+                "validation farm SSH arguments already set UserKnownHostsFile"
+            )
+        known_hosts = _known_hosts_binding(ssh_known_hosts_file)
+        ssh_arguments = [
+            *ssh_arguments,
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            f"UserKnownHostsFile={known_hosts['path']}",
+        ]
+    elif ssh.get("known_hosts") is not None:
+        known_hosts = _validate_known_hosts_binding(ssh["known_hosts"])
+        expected_argument = f"UserKnownHostsFile={known_hosts['path']}"
+        if expected_argument not in ssh_arguments:
+            raise ValidationError(
+                "validation farm known_hosts binding is not used by SSH arguments"
+            )
     worker_argv = spec.get("worker_argv", ["{install}/bin/emuflow"])
     worker_argv = _require_string_list(worker_argv, "worker_argv")
 
@@ -290,6 +348,9 @@ def prepare_validation_farm(spec_path: Path, output_dir: Path) -> Dict[str, Any]
             _format_value(value, base_replacements, "worker_argv")
             for value in worker_argv
         ]
+        ssh_manifest = {"executable": ssh_executable, "arguments": ssh_arguments}
+        if known_hosts is not None:
+            ssh_manifest["known_hosts"] = known_hosts
         manifest = {
             "schema": FARM_MANIFEST_SCHEMA,
             "farm_id": farm_id,
@@ -297,7 +358,7 @@ def prepare_validation_farm(spec_path: Path, output_dir: Path) -> Dict[str, Any]
             "install_dir": str(install),
             "nodes": nodes,
             "slots_per_node": slots,
-            "ssh": {"executable": ssh_executable, "arguments": ssh_arguments},
+            "ssh": ssh_manifest,
             "worker_argv": worker,
             "tasks": task_records,
             "created_at": _now(),
@@ -325,6 +386,19 @@ def validate_validation_farm(farm_dir: Path) -> Dict[str, Any]:
         raise ValidationError("validation farm manifest schema is invalid")
     commit = _validate_commit(manifest.get("source_commit"))
     install = _validate_install(manifest.get("install_dir"), commit)
+    ssh = manifest.get("ssh")
+    if not isinstance(ssh, dict):
+        raise ValidationError("validation farm manifest SSH configuration is invalid")
+    if ssh.get("known_hosts") is not None:
+        binding = _validate_known_hosts_binding(ssh["known_hosts"])
+        arguments = ssh.get("arguments")
+        if (
+            not isinstance(arguments, list)
+            or f"UserKnownHostsFile={binding['path']}" not in arguments
+        ):
+            raise ValidationError(
+                "validation farm manifest does not use its known_hosts binding"
+            )
     tasks = manifest.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         raise ValidationError("validation farm manifest has no tasks")
@@ -412,6 +486,8 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
         raise EmuFlowError("validation farm launch is already in progress") from error
 
     def submit(record: Mapping[str, Any]) -> Dict[str, Any]:
+        if ssh.get("known_hosts") is not None:
+            _validate_known_hosts_binding(ssh["known_hosts"])
         task_path = Path(record["task"])
         task_dir = task_path.parent
         previous = read_json(task_dir / "state.json")

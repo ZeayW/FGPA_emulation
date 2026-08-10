@@ -267,6 +267,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     farm_prepare.add_argument("--spec", type=Path, required=True)
     farm_prepare.add_argument("--out", type=Path, required=True)
+    farm_prepare.add_argument(
+        "--ssh-known-hosts",
+        type=Path,
+        help="absolute known_hosts file to content-seal into farm submission",
+    )
     farm_validate = farm_subparsers.add_parser(
         "validate", help="verify task isolation and the pinned install contract"
     )
@@ -2411,7 +2416,11 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "validation-farm":
         if args.farm_command == "prepare":
-            report = prepare_validation_farm(args.spec, args.out)
+            report = prepare_validation_farm(
+                args.spec,
+                args.out,
+                ssh_known_hosts_file=args.ssh_known_hosts,
+            )
         elif args.farm_command == "validate":
             report = validate_validation_farm(args.farm)
         elif args.farm_command == "launch":

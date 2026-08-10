@@ -865,6 +865,12 @@ emuflow validation-farm prepare --spec farm.json --out /shared/runs/public-smoke
 emuflow validation-farm launch /shared/runs/public-smoke
 ```
 
+On coordinators without a persistent default SSH trust store, pass a reviewed
+shared file with `validation-farm prepare --ssh-known-hosts /shared/runtime/known_hosts`.
+The farm seals its SHA-256, forces strict host-key checking, and revalidates the
+file before launch and each submission. This avoids both interactive prompts
+and an insecure `StrictHostKeyChecking=no` fallback.
+
 Minimal containers may not include a usable system CA store. In that case pass
 an absolute, shared CA bundle with `--ssl-cert-file /shared/runtime/ca.crt` when
 compiling the fetch farm. The compiler seals both its path and SHA-256 into each
