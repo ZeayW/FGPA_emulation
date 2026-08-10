@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import shutil
 import stat
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from emuflow.platform import Platform
 from emuflow.vivado_board_flow import (
     build_vivado_board_top,
     run_vivado_board_flow,
+    validate_vivado_board_flow_bundle,
     validate_vivado_board_flow_report,
 )
 
@@ -308,13 +310,23 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
                     },
                 },
             )
-            generated_tcl = Path(
-                report["fpgas"][0]["artifacts"]["generated_tcl"]["path"]
+            generated_tcl = (
+                output
+                / report["fpgas"][0]["artifacts"]["generated_tcl"]["path"]
             ).read_text(encoding="utf-8")
             self.assertIn("report_design_analysis -congestion", generated_tcl)
             self.assertIn("report_utilization -slr", generated_tcl)
             self.assertIn("report_slr_crossing -file", generated_tcl)
             validate_vivado_board_flow_report(report)
+            relocated = root / "relocated-board-bundle"
+            shutil.copytree(output, relocated)
+            bundle_validation = validate_vivado_board_flow_bundle(relocated)
+            self.assertTrue(bundle_validation["bundle_relocatable"])
+            self.assertEqual(bundle_validation["artifacts_verified"], 26)
+            congestion = relocated / platform.fpgas[0].id / "congestion.rpt"
+            congestion.write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "hash differs"):
+                validate_vivado_board_flow_bundle(relocated)
             legacy_report = copy.deepcopy(report)
             legacy_report["schema"] = "emuflow.vivado-board-flow/v1"
             for fpga_record in legacy_report["fpgas"]:

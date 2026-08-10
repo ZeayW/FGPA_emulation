@@ -156,7 +156,10 @@ from .vtr_architecture import (
     validate_vtr_timing_db_file,
 )
 from .vpr import run_vpr, run_vpr_route_packed, run_vtr_yosys
-from .vivado_board_flow import run_vivado_board_flow
+from .vivado_board_flow import (
+    run_vivado_board_flow,
+    validate_vivado_board_flow_bundle,
+)
 from .vivado_board_timing import run_vivado_board_timing
 from .vivado_pin_sites import derive_vivado_pin_sites
 from .validation_farm import (
@@ -1225,6 +1228,11 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_board.add_argument("--route-directive", default="Default")
     multi_fpga_board.add_argument("--write-bitstream", action="store_true")
     multi_fpga_board.add_argument("--out", type=Path, required=True)
+    multi_fpga_board_validate = multi_fpga_subparsers.add_parser(
+        "board-validate",
+        help="rehash and validate a relocatable Vivado board-flow bundle",
+    )
+    multi_fpga_board_validate.add_argument("board", type=Path)
     multi_fpga_board_timing = multi_fpga_subparsers.add_parser(
         "board-timing",
         help=(
@@ -3037,6 +3045,9 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "board-validate":
+            _print_json(validate_vivado_board_flow_bundle(args.board))
+            return 0
         if args.multi_fpga_command == "board-timing":
             report = run_vivado_board_timing(
                 flow_root=args.flow,

@@ -28,7 +28,11 @@ from .vivado_backend import (
     import_vivado_boundary_timing,
     write_vivado_boundary_timing_query,
 )
-from .vivado_board_flow import validate_vivado_board_flow_report
+from .vivado_board_flow import (
+    VIVADO_BOARD_FLOW_SCHEMA,
+    validate_vivado_board_flow_bundle,
+    validate_vivado_board_flow_report,
+)
 
 
 VIVADO_BOARD_TIMING_SCHEMA = "emuflow.vivado-board-timing/v1"
@@ -181,6 +185,8 @@ def run_vivado_board_timing(
         raise ValidationError("Vivado board timing source report is missing")
     board_report = read_json(board_report_path)
     validate_vivado_board_flow_report(board_report)
+    if board_report.get("schema") == VIVADO_BOARD_FLOW_SCHEMA:
+        validate_vivado_board_flow_bundle(board_root)
     expected_flow_hash = board_report["source_bindings"]["flow_report_sha256"]
     flow_report_path = next(
         (
@@ -248,7 +254,10 @@ def run_vivado_board_timing(
         )
         if not isinstance(board_dcp_info, dict):
             raise ValidationError(f"{fpga_id}: routed board DCP is missing")
-        dcp = Path(board_dcp_info.get("path", "")).resolve()
+        dcp = Path(board_dcp_info.get("path", ""))
+        if not dcp.is_absolute():
+            dcp = board_root / dcp
+        dcp = dcp.resolve()
         if (
             not dcp.is_file()
             or _sha256(dcp) != board_dcp_info.get("sha256")

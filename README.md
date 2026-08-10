@@ -329,6 +329,8 @@ emuflow multi-fpga board-implement \
   --vivado /path/to/Vivado/bin/vivado \
   --out build/board-implementation
 
+emuflow multi-fpga board-validate build/board-implementation
+
 emuflow multi-fpga board-timing \
   --flow build/full-flow \
   --board build/board-implementation \
@@ -353,7 +355,9 @@ unmeasured and retains the conservative per-partition fallback.
 The result remains model-only across the PCB/GT/PCS link and is not final
 hardware timing sign-off until that latency is source-backed or measured.
 
-Board-flow report v2 also seals the raw post-route Vivado congestion report,
+Board-flow report v2 is relocatable and `board-validate` independently rehashes
+its complete declared implementation artifacts and logs. It also seals the raw
+post-route Vivado congestion report,
 per-SLR utilization report, and SLR-crossing report for every FPGA. A
 single-SLR device carries an explicit `single-slr-not-applicable` marker rather
 than fabricating crossing counts. These artifacts are the authoritative

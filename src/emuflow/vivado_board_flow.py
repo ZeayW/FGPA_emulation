@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Mapping, Sequence
 
 from .errors import EmuFlowError, ValidationError
@@ -28,6 +28,17 @@ _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS = (
     "slr_utilization.rpt",
     "slr_crossing.rpt",
 )
+_VIVADO_BOARD_ARTIFACTS = (
+    "synthesized.dcp",
+    "placed.dcp",
+    "routed.dcp",
+    "route_status.rpt",
+    "drc.rpt",
+    "timing_summary.rpt",
+    "utilization.rpt",
+    *_VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS,
+    "board_metrics.tsv",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -36,6 +47,24 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _safe_bundle_path(root: Path, raw_path: Any, context: str) -> Path:
+    if not isinstance(raw_path, str) or not raw_path:
+        raise ValidationError(f"{context} path is invalid")
+    relative = PurePosixPath(raw_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValidationError(f"{context} path is unsafe")
+    root = root.resolve()
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValidationError(f"{context} path uses a symlink")
+    path = current.resolve()
+    if path == root or root not in path.parents or not path.is_file():
+        raise ValidationError(f"{context} artifact is missing")
+    return path
 
 
 def _sv_name(value: str) -> str:
@@ -549,6 +578,73 @@ def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, An
     }
 
 
+def validate_vivado_board_flow_bundle(output_dir: Path) -> Dict[str, Any]:
+    """Rehash a relocatable v2 board-flow bundle without rerunning Vivado."""
+
+    output_dir = Path(output_dir).resolve()
+    report_path = output_dir / "vivado-board-flow-report.json"
+    if report_path.is_symlink() or not report_path.is_file():
+        raise ValidationError("Vivado board-flow bundle report is missing")
+    report = read_json(report_path)
+    validation = validate_vivado_board_flow_report(report)
+    if report.get("schema") != VIVADO_BOARD_FLOW_SCHEMA:
+        raise ValidationError(
+            "Vivado board-flow bundle validation requires relocatable v2"
+        )
+    verified_paths: set[Path] = set()
+    expected_labels = {*_VIVADO_BOARD_ARTIFACTS, "generated_tcl"}
+    for fpga_record in report["fpgas"]:
+        fpga = fpga_record["fpga"]
+        artifacts = fpga_record.get("artifacts")
+        if not isinstance(artifacts, dict) or set(artifacts) != expected_labels:
+            raise ValidationError(
+                f"{fpga}: Vivado board-flow artifact inventory is invalid"
+            )
+        for label, artifact in artifacts.items():
+            if not isinstance(artifact, dict):
+                raise ValidationError(
+                    f"{fpga}: Vivado board-flow artifact seal is invalid"
+                )
+            expected_path = (
+                f"{fpga}.vivado.tcl"
+                if label == "generated_tcl"
+                else f"{fpga}/{label}"
+            )
+            if artifact.get("path") != expected_path:
+                raise ValidationError(
+                    f"{fpga}: Vivado board-flow artifact path differs"
+                )
+            path = _safe_bundle_path(
+                output_dir,
+                artifact["path"],
+                f"{fpga} Vivado board-flow {label}",
+            )
+            if (
+                path in verified_paths
+                or _sha256(path) != artifact.get("sha256")
+                or path.stat().st_size != artifact.get("bytes")
+            ):
+                raise ValidationError(
+                    f"{fpga}: Vivado board-flow artifact hash differs"
+                )
+            verified_paths.add(path)
+        log = fpga_record.get("log")
+        expected_log = f"{fpga}/vivado-board-implementation.log"
+        if not isinstance(log, dict) or log.get("path") != expected_log:
+            raise ValidationError(f"{fpga}: Vivado board-flow log seal is invalid")
+        log_path = _safe_bundle_path(
+            output_dir, log["path"], f"{fpga} Vivado board-flow log"
+        )
+        if log_path in verified_paths or _sha256(log_path) != log.get("sha256"):
+            raise ValidationError(f"{fpga}: Vivado board-flow log hash differs")
+        verified_paths.add(log_path)
+    return {
+        **validation,
+        "artifacts_verified": len(verified_paths),
+        "bundle_relocatable": True,
+    }
+
+
 def run_vivado_board_flow(
     *,
     flow_root: Path,
@@ -797,29 +893,18 @@ def run_vivado_board_flow(
             "measured" if slr_count > 1 else "single-slr-not-applicable"
         ):
             raise ValidationError(f"{fpga_id}: Vivado SLR metrics disagree")
-        artifact_names = (
-            "synthesized.dcp",
-            "placed.dcp",
-            "routed.dcp",
-            "route_status.rpt",
-            "drc.rpt",
-            "timing_summary.rpt",
-            "utilization.rpt",
-            *_VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS,
-            "board_metrics.tsv",
-        )
         artifacts = {}
-        for name in artifact_names:
+        for name in _VIVADO_BOARD_ARTIFACTS:
             path = fpga_out / name
             if not path.is_file() or path.stat().st_size == 0:
                 raise ValidationError(f"{fpga_id}: Vivado artifact is missing")
             artifacts[name] = {
-                "path": str(path),
+                "path": str(path.relative_to(output_dir)),
                 "sha256": _sha256(path),
                 "bytes": path.stat().st_size,
             }
         artifacts["generated_tcl"] = {
-            "path": str(script),
+            "path": str(script.relative_to(output_dir)),
             "sha256": _sha256(script),
             "bytes": script.stat().st_size,
         }
@@ -871,7 +956,10 @@ def run_vivado_board_flow(
                     for path in [*xdc_sources, gt_tcl]
                 ],
                 "artifacts": artifacts,
-                "log": {"path": str(log), "sha256": _sha256(log)},
+                "log": {
+                    "path": str(log.relative_to(output_dir)),
+                    "sha256": _sha256(log),
+                },
             }
         )
 
