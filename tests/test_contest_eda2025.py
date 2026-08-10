@@ -118,6 +118,12 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 evaluation["metrics"]["contest_score"],
                 71.2 * (1.0 + 0.2 * 18.0 / 3600.0),
             )
+            with self.assertRaisesRegex(ValidationError, "finite"):
+                evaluate_eda2025_routes(
+                    normalized / "contest_instance.json",
+                    routed / "routes.json",
+                    runtime_seconds=float("inf"),
+                )
             official_routes = (root / "official" / "design.route.out").read_text()
             self.assertEqual(official_routes.count("[net "), 3)
             self.assertIn("[net 1]", official_routes)

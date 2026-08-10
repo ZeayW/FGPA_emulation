@@ -1378,9 +1378,10 @@ def evaluate_eda2025_routes(
     if (
         isinstance(runtime_seconds, bool)
         or not isinstance(runtime_seconds, (int, float))
+        or not math.isfinite(float(runtime_seconds))
         or runtime_seconds < 0
     ):
-        raise ValidationError("runtime_seconds: expected a non-negative number")
+        raise ValidationError("runtime_seconds: expected a finite non-negative number")
     fpga_ids = instance["fpga_ids"]
     topology = (
         parse_topology(new_topology_path, fpga_ids)

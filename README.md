@@ -885,8 +885,31 @@ sealed fetch and import farms and schedules each case in a fresh run directory.
 The versioned install carries the matrix and academic device template, so a
 worker does not read either input from a mutable checkout.
 
-Evaluation, BoardDB projection, and Phase 3–7 remain separate matrix gates and
-are not upgraded merely because fetch or import passed.
+EDA 2025 evaluation is also a separately sealed gate. It copies the exact
+fetched source, normalized import, routed candidate, optional changed topology,
+independent score report, and official-format outputs into one bundle. The
+validator rechecks every upstream seal and byte, reruns the evaluator, and
+requires identical official outputs:
+
+```bash
+emuflow contest evaluate-public \
+  --matrix benchmarks/contest_validation_matrix.json \
+  --case-id eda2025.case01 \
+  --source-dir fetched/input --import-dir normalized \
+  --routes routed/routes.json --out evaluation
+
+emuflow contest validate-public-evaluation \
+  --matrix benchmarks/contest_validation_matrix.json evaluation
+```
+
+`matrix-evaluate-farm-spec` accepts only passed fetch/import farms and a
+candidate root containing `<suite>-<case>/routes.json` (plus an optional
+`design.newtopo`). This keeps competing candidates isolated across HPC nodes
+while fixing the commit, install, and candidate-file SHA-256 values in every
+task before it is submitted.
+
+BoardDB projection and Phase 3–7 remain separate matrix gates and are not
+upgraded merely because fetch, import, or evaluation passed.
 
 ICCAD 2019 Problem B is supported in its official text format. The adapter
 preserves the undirected, bidirectionally shared edge capacity and the exact

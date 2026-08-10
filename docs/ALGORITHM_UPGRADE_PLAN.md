@@ -955,6 +955,13 @@ real RTL validation, and frozen-baseline comparison pass.
 
 ## 14. Immediate next action
 
+Public-contest qualification now includes a replayable EDA 2025 evaluation
+gate. It independently revalidates the pinned fetch and semantic import,
+freezes candidate routes/topology, reruns the contest evaluator, compares the
+official text outputs byte-for-byte, and seals exact artifact coverage. This
+is evaluation evidence only; the academic BoardDB projection and downstream
+RTL/physical gates remain separate claims.
+
 R0 now has a source-built C++ VTR XML importer, provider-neutral
 ArchitectureDB/Architecture TimingDB contracts, and source-built VPR exact
 packing, baseline placement, routing-resource-graph construction, detailed

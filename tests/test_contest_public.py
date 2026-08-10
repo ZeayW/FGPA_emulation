@@ -1,21 +1,27 @@
 import json
 import hashlib
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from emuflow.contest_public import (
     PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA,
+    PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA,
     PUBLIC_CONTEST_FETCH_REPORT_SCHEMA,
     PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA,
     build_contest_boarddb_farm_spec,
+    build_contest_evaluation_farm_spec,
     build_contest_fetch_farm_spec,
     build_contest_import_farm_spec,
+    evaluate_public_contest_case,
     fetch_public_contest_case,
     import_public_contest_case,
     materialize_public_contest_boarddb,
+    validate_public_contest_evaluation,
 )
 from emuflow.contest_validation_matrix import canonical_matrix_sha256
+from emuflow.cli import main
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.validation_farm import prepare_validation_farm
@@ -213,6 +219,165 @@ payload = b'abc'
                 import_public_contest_case(
                     matrix, "eda2024-repart.case1", source, root / "normalized"
                 )
+
+    def test_eda2025_evaluation_bundle_is_replayable_and_tamper_evident(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix, source = self._semantic_fixture(root, "eda2025")
+            normalized = root / "normalized"
+            import_public_contest_case(
+                matrix, "eda2025.case1", source, normalized
+            )
+            routes = root / "routes.json"
+            write_json(
+                routes,
+                {
+                    "schema": "emuflow.system-routes/v1",
+                    "routes": [
+                        {
+                            "net": "net_000001",
+                            "source": "F1",
+                            "sinks": ["F2"],
+                            "tree_edges": [{"from": "F1", "to": "F2"}],
+                        }
+                    ],
+                },
+            )
+            bundle = root / "evaluation"
+            routes_sha256 = hashlib.sha256(routes.read_bytes()).hexdigest()
+            report = evaluate_public_contest_case(
+                matrix,
+                "eda2025.case1",
+                source,
+                normalized,
+                routes,
+                bundle,
+                runtime_seconds=2.5,
+                expected_routes_sha256=routes_sha256,
+            )
+            self.assertEqual(
+                report["schema"], PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA
+            )
+            self.assertEqual(report["metrics"]["routed_cut_nets"], 1)
+            validation = validate_public_contest_evaluation(matrix, bundle)
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(
+                main(
+                    [
+                        "contest",
+                        "validate-public-evaluation",
+                        "--matrix",
+                        str(matrix),
+                        str(bundle),
+                    ]
+                ),
+                0,
+            )
+            self.assertGreaterEqual(validation["artifacts_verified"], 10)
+            self.assertTrue((bundle / "official" / "design.route.out").is_file())
+
+            mixed = root / "mixed-evaluation"
+            shutil.copytree(bundle, mixed)
+            mixed_instance_path = mixed / "import" / "contest_instance.json"
+            mixed_import_report_path = mixed / "import" / "import_report.json"
+            mixed_instance = read_json(mixed_instance_path)
+            mixed_instance["name"] = "cross-run-instance"
+            write_json(mixed_instance_path, mixed_instance)
+            mixed_import_report = read_json(mixed_import_report_path)
+            instance_record = next(
+                record
+                for record in mixed_import_report["artifacts"]
+                if record["path"] == "contest_instance.json"
+            )
+            instance_record["bytes"] = mixed_instance_path.stat().st_size
+            instance_record["sha256"] = hashlib.sha256(
+                mixed_instance_path.read_bytes()
+            ).hexdigest()
+            write_json(mixed_import_report_path, mixed_import_report)
+            mixed_report_path = mixed / "evaluation_report.json"
+            mixed_report = read_json(mixed_report_path)
+            mixed_report["upstream"]["import_report_sha256"] = hashlib.sha256(
+                mixed_import_report_path.read_bytes()
+            ).hexdigest()
+            for relative, path in {
+                "import/contest_instance.json": mixed_instance_path,
+                "import/import_report.json": mixed_import_report_path,
+            }.items():
+                record = next(
+                    item
+                    for item in mixed_report["artifacts"]
+                    if item["path"] == relative
+                )
+                record["bytes"] = path.stat().st_size
+                record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            write_json(mixed_report_path, mixed_report)
+            with self.assertRaisesRegex(ValidationError, "semantic import replay"):
+                validate_public_contest_evaluation(matrix, mixed)
+
+            unsafe = root / "unsafe-evaluation"
+            shutil.copytree(bundle, unsafe)
+            unsafe_report = read_json(unsafe / "evaluation_report.json")
+            unsafe_report["artifacts"][0]["path"] = "../outside"
+            write_json(unsafe / "evaluation_report.json", unsafe_report)
+            with self.assertRaisesRegex(ValidationError, "path is invalid"):
+                validate_public_contest_evaluation(matrix, unsafe)
+
+            file_link = root / "file-link-evaluation"
+            shutil.copytree(bundle, file_link)
+            outside_routes = root / "outside-routes.json"
+            shutil.copy2(bundle / "candidate" / "routes.json", outside_routes)
+            (file_link / "candidate" / "routes.json").unlink()
+            (file_link / "candidate" / "routes.json").symlink_to(outside_routes)
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                validate_public_contest_evaluation(matrix, file_link)
+
+            directory_link = root / "directory-link-evaluation"
+            shutil.copytree(bundle, directory_link)
+            outside_candidate = root / "outside-candidate"
+            shutil.copytree(bundle / "candidate", outside_candidate)
+            shutil.rmtree(directory_link / "candidate")
+            (directory_link / "candidate").symlink_to(
+                outside_candidate, target_is_directory=True
+            )
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                validate_public_contest_evaluation(matrix, directory_link)
+
+            with self.assertRaisesRegex(ValidationError, "overlaps"):
+                evaluate_public_contest_case(
+                    matrix,
+                    "eda2025.case1",
+                    source,
+                    normalized,
+                    routes,
+                    normalized / "evaluation",
+                )
+            with self.assertRaisesRegex(ValidationError, "finite"):
+                evaluate_public_contest_case(
+                    matrix,
+                    "eda2025.case1",
+                    source,
+                    normalized,
+                    routes,
+                    root / "nonfinite-evaluation",
+                    runtime_seconds=float("nan"),
+                )
+            routes.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "frozen candidate"):
+                evaluate_public_contest_case(
+                    matrix,
+                    "eda2025.case1",
+                    source,
+                    normalized,
+                    routes,
+                    root / "changed-candidate-evaluation",
+                    expected_routes_sha256=routes_sha256,
+                )
+
+            (bundle / "candidate" / "routes.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "seal is broken"):
+                validate_public_contest_evaluation(matrix, bundle)
 
     def test_unified_boarddb_gate_revalidates_import_and_projects_topology(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -457,6 +622,154 @@ payload = b'abc'
             self.assertIn(str(fetch_source.resolve()), command)
             self.assertIn(str(import_run.resolve()), command)
             self.assertIn("academic_vtr_4fpga_mesh.json", " ".join(command))
+
+    def test_passed_eda2025_farms_compile_to_sealed_evaluation_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix_path, source = self._semantic_fixture(root, "eda2025")
+            matrix = read_json(matrix_path)
+            suffix = "eda2025-case1"
+            commit = "d" * 40
+            install = root / "install" / commit
+            install.mkdir(parents=True)
+
+            fetch_spec = root / "fetch-spec.json"
+            write_json(
+                fetch_spec,
+                {
+                    "schema": "emuflow.validation-farm-spec/v1",
+                    "farm_id": "fetch-eval",
+                    "source_commit": commit,
+                    "install_dir": str(install),
+                    "nodes": ["hpc1"],
+                    "tasks": [
+                        {
+                            "id": "fetch-" + suffix,
+                            "command": [
+                                "{install}/bin/emuflow",
+                                "noop",
+                                "{run_dir}",
+                            ],
+                        }
+                    ],
+                },
+            )
+            fetch_farm = root / "fetch-farm"
+            prepare_validation_farm(fetch_spec, fetch_farm)
+            fetch_run = fetch_farm / "runs" / ("fetch-" + suffix)
+            fetch_source = fetch_run / "input"
+            shutil.copytree(source, fetch_source)
+            write_json(
+                fetch_farm / "tasks" / ("fetch-" + suffix) / "state.json",
+                {"status": "pass"},
+            )
+            write_json(
+                fetch_run / "fetch_report.json",
+                {
+                    "schema": PUBLIC_CONTEST_FETCH_REPORT_SCHEMA,
+                    "status": "pass",
+                    "case_id": "eda2025.case1",
+                    "matrix_sha256": canonical_matrix_sha256(matrix),
+                },
+            )
+
+            import_spec = root / "import-spec.json"
+            write_json(
+                import_spec,
+                {
+                    "schema": "emuflow.validation-farm-spec/v1",
+                    "farm_id": "import-eval",
+                    "source_commit": commit,
+                    "install_dir": str(install),
+                    "nodes": ["hpc2"],
+                    "tasks": [
+                        {
+                            "id": "import-" + suffix,
+                            "command": [
+                                "{install}/bin/emuflow",
+                                "noop",
+                                "{run_dir}",
+                            ],
+                        }
+                    ],
+                },
+            )
+            import_farm = root / "import-farm"
+            prepare_validation_farm(import_spec, import_farm)
+            import_run = import_farm / "runs" / ("import-" + suffix)
+            import_public_contest_case(
+                matrix_path, "eda2025.case1", fetch_source, import_run
+            )
+            write_json(
+                import_farm / "tasks" / ("import-" + suffix) / "state.json",
+                {"status": "pass"},
+            )
+
+            candidate = root / "candidates" / suffix
+            candidate.mkdir(parents=True)
+            write_json(
+                candidate / "routes.json",
+                {
+                    "schema": "emuflow.system-routes/v1",
+                    "routes": [
+                        {
+                            "net": "net_000001",
+                            "source": "F1",
+                            "sinks": ["F2"],
+                            "tree_edges": [{"from": "F1", "to": "F2"}],
+                        }
+                    ],
+                },
+            )
+            output = root / "evaluate-spec.json"
+            plan = build_contest_evaluation_farm_spec(
+                matrix_path,
+                fetch_farm,
+                import_farm,
+                root / "candidates",
+                source_commit=commit,
+                install_dir=install,
+                nodes=["hpc3", "hpc4"],
+                output_path=output,
+                farm_id="evaluate",
+            )
+            spec = read_json(output)
+            self.assertEqual(plan["tasks"], 1)
+            self.assertEqual(spec["tasks"][0]["id"], "evaluate-" + suffix)
+            self.assertIn("evaluate-public", spec["tasks"][0]["command"])
+            self.assertIn(str((candidate / "routes.json").resolve()), spec["tasks"][0]["command"])
+            command = spec["tasks"][0]["command"]
+            expected_index = command.index("--expected-routes-sha256") + 1
+            expected_routes_sha256 = command[expected_index]
+            self.assertEqual(
+                expected_routes_sha256,
+                hashlib.sha256((candidate / "routes.json").read_bytes()).hexdigest(),
+            )
+
+            write_json(candidate / "routes.json", {"schema": "changed", "routes": []})
+            with self.assertRaisesRegex(ValidationError, "frozen candidate"):
+                evaluate_public_contest_case(
+                    matrix_path,
+                    "eda2025.case1",
+                    fetch_source,
+                    import_run,
+                    candidate / "routes.json",
+                    root / "toctou-evaluation",
+                    expected_routes_sha256=expected_routes_sha256,
+                )
+            with self.assertRaisesRegex(ValidationError, "finite"):
+                build_contest_evaluation_farm_spec(
+                    matrix_path,
+                    fetch_farm,
+                    import_farm,
+                    root / "candidates",
+                    source_commit=commit,
+                    install_dir=install,
+                    nodes=["hpc3"],
+                    output_path=root / "nonfinite-spec.json",
+                    farm_id="nonfinite",
+                    runtime_seconds=float("inf"),
+                )
 
 
 if __name__ == "__main__":
