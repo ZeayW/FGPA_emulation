@@ -447,6 +447,7 @@ class ChimewQualificationTest(unittest.TestCase):
                         "chimew_channel": f"channel{index}",
                         "link": "AB",
                         "physical_lane": index,
+                        "direction": "either",
                         "bank_a": "A0",
                         "bank_b": "B0",
                         "package_pin_a": f"A{index}",

@@ -10,13 +10,16 @@ from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     evaluate_chimew_bank_channel_assignment,
+    validate_chimew_bank_channel_input,
 )
 from emuflow.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
+    CHIMEW_ELECTRICAL_MAP_SCHEMA_V1,
     CHIMEW_PHASE6_BINDING_PROVIDER,
     build_chimew_phase6_pin_plan,
     run_chimew_phase6_adapter,
+    validate_chimew_electrical_map,
     validate_chimew_phase6_binding,
 )
 from emuflow.chimew_qualification import (
@@ -202,6 +205,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     "chimew_channel": f"channel{lane}",
                     "link": "AB_link",
                     "physical_lane": lane,
+                    "direction": "either",
                     "bank_a": "A0",
                     "bank_b": "B0",
                     "package_pin_a": f"A{lane}",
@@ -334,7 +338,9 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
 
     def test_duplicate_concrete_lane_is_rejected(self) -> None:
         electrical_map = copy.deepcopy(self.electrical_map)
+        electrical_map["channels"][0]["direction"] = "a_to_b"
         electrical_map["channels"][1]["physical_lane"] = 0
+        electrical_map["channels"][1]["direction"] = "a_to_b"
         with self.assertRaisesRegex(ValidationError, "concrete lane"):
             build_chimew_phase6_pin_plan(
                 self.schedule,
@@ -343,6 +349,45 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 electrical_map,
                 executable=str(self.executable),
             )
+
+    def test_legacy_map_preserves_exclusive_lane_semantics(self) -> None:
+        electrical_map = copy.deepcopy(self.electrical_map)
+        electrical_map["schema"] = CHIMEW_ELECTRICAL_MAP_SCHEMA_V1
+        for channel in electrical_map["channels"]:
+            channel.pop("direction")
+        electrical_map["channels"][1]["physical_lane"] = 0
+        problem = validate_chimew_bank_channel_input(self.assignment_input)
+        with self.assertRaisesRegex(ValidationError, "concrete lane"):
+            validate_chimew_electrical_map(
+                electrical_map, self.platform, problem
+            )
+
+    def test_full_duplex_directions_may_reuse_lane_index(self) -> None:
+        electrical_map = copy.deepcopy(self.electrical_map)
+        electrical_map["channels"][0]["physical_lane"] = 0
+        electrical_map["channels"][0]["direction"] = "either"
+        electrical_map["channels"][1]["physical_lane"] = 0
+        electrical_map["channels"][1]["direction"] = "either"
+        problem = validate_chimew_bank_channel_input(self.assignment_input)
+        validated = validate_chimew_electrical_map(
+            electrical_map, self.platform, problem
+        )
+        self.assertEqual(validated["metrics"]["concrete_lanes"], 2)
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            electrical_map,
+            executable=str(self.executable),
+        )
+        self.assertEqual(
+            {entry["direction"] for entry in result["electrical_binding"]["entries"]},
+            {"a_to_b", "b_to_a"},
+        )
+        self.assertEqual(
+            {entry["physical_lane"] for entry in result["electrical_binding"]["entries"]},
+            {0},
+        )
 
     def test_path_adapter_emits_phase6_consumable_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

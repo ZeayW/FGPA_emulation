@@ -33,7 +33,8 @@ from .pin_planning import (
 from .platform import Platform
 
 
-CHIMEW_ELECTRICAL_MAP_SCHEMA = "emuflow.chimew-electrical-channel-map/v1"
+CHIMEW_ELECTRICAL_MAP_SCHEMA_V1 = "emuflow.chimew-electrical-channel-map/v1"
+CHIMEW_ELECTRICAL_MAP_SCHEMA = "emuflow.chimew-electrical-channel-map/v2"
 CHIMEW_ELECTRICAL_MAP_PROVIDER = (
     "source-qualified-boarddb-electrical-channel-map-v1"
 )
@@ -84,7 +85,8 @@ def validate_chimew_electrical_map(
 ) -> Dict[str, Any]:
     """Check concrete lanes, banks, package pins, and electrical identity."""
 
-    if document.get("schema") != CHIMEW_ELECTRICAL_MAP_SCHEMA:
+    schema = document.get("schema")
+    if schema not in {CHIMEW_ELECTRICAL_MAP_SCHEMA_V1, CHIMEW_ELECTRICAL_MAP_SCHEMA}:
         raise ValidationError("Chimew electrical channel-map schema is invalid")
     if document.get("provider") != CHIMEW_ELECTRICAL_MAP_PROVIDER:
         raise ValidationError("Chimew electrical channel map is not source-qualified")
@@ -143,7 +145,7 @@ def validate_chimew_electrical_map(
     if not isinstance(raw_channels, list):
         raise ValidationError("Chimew electrical channel records are missing")
     channels = {}
-    used_lanes = set()
+    lane_uses: Dict[Tuple[str, int], list[str]] = {}
     used_pins = set()
     for index, record in enumerate(raw_channels):
         if not isinstance(record, dict):
@@ -162,14 +164,39 @@ def validate_chimew_electrical_map(
         }:
             raise ValidationError("Chimew electrical channel link/domain mismatch")
         lane = record.get("physical_lane")
+        raw_direction = record.get("direction")
+        if schema == CHIMEW_ELECTRICAL_MAP_SCHEMA:
+            if raw_direction not in {"a_to_b", "b_to_a", "either"}:
+                raise ValidationError(
+                    "Chimew electrical channel direction is invalid"
+                )
+            direction = raw_direction
+        else:
+            if raw_direction is not None:
+                raise ValidationError(
+                    "legacy Chimew electrical maps cannot declare a direction"
+                )
+            direction = "either"
+        lane_key = (link_id, lane)
         if (
             isinstance(lane, bool)
             or not isinstance(lane, int)
             or not 0 <= lane < link.transport_bits_per_cycle_per_direction
-            or (link_id, lane) in used_lanes
         ):
             raise ValidationError("Chimew electrical concrete lane is invalid")
-        used_lanes.add((link_id, lane))
+        uses = lane_uses.setdefault(lane_key, [])
+        if direction == "either":
+            maximum_either_uses = (
+                2 if schema == CHIMEW_ELECTRICAL_MAP_SCHEMA else 1
+            )
+            if (
+                any(value != "either" for value in uses)
+                or len(uses) >= maximum_either_uses
+            ):
+                raise ValidationError("Chimew electrical concrete lane is invalid")
+        elif "either" in uses or direction in uses:
+            raise ValidationError("Chimew electrical concrete lane is invalid")
+        uses.append(direction)
         bank_a = _string(record.get("bank_a"), f"electrical.{channel_id}.bank_a")
         bank_b = _string(record.get("bank_b"), f"electrical.{channel_id}.bank_b")
         if bank_a != bank["bank_a"]["id"] or bank_b != bank["bank_b"]["id"]:
@@ -200,7 +227,7 @@ def validate_chimew_electrical_map(
             raise ValidationError("Chimew electrical channel is reserved")
         if record.get("electrical_class") != "single_ended_parallel":
             raise ValidationError(
-                "Chimew electrical v1 requires single-ended parallel channels"
+                "Chimew electrical maps require single-ended parallel channels"
             )
         voltage = _number(
             record.get("bank_voltage"), f"electrical.{channel_id}.bank_voltage"
@@ -211,6 +238,7 @@ def validate_chimew_electrical_map(
         channels[channel_id] = {
             "link": link_id,
             "physical_lane": lane,
+            "direction": direction,
             "fpga_a": domain["fpga_a"],
             "fpga_b": domain["fpga_b"],
             "bank_a": bank_a,
@@ -228,7 +256,7 @@ def validate_chimew_electrical_map(
     expected_metrics = {
         "channels": len(channels),
         "package_pins": len(used_pins),
-        "concrete_lanes": len(used_lanes),
+        "concrete_lanes": sum(len(uses) for uses in lane_uses.values()),
     }
     if not isinstance(metrics, dict) or any(
         metrics.get(field) != value for field, value in expected_metrics.items()
@@ -323,6 +351,9 @@ def build_chimew_phase6_pin_plan(
         domain = problem["domains"][group["domain"]]
         source = domain["fpga_a"] if group["direction"] == 0 else domain["fpga_b"]
         sink = domain["fpga_b"] if group["direction"] == 0 else domain["fpga_a"]
+        group_direction = "a_to_b" if group["direction"] == 0 else "b_to_a"
+        if channel["direction"] not in {"either", group_direction}:
+            raise ValidationError("Chimew assignment electrical direction mismatch")
         if (channel["fpga_a"], channel["fpga_b"]) != (
             domain["fpga_a"], domain["fpga_b"]
         ):
@@ -377,10 +408,10 @@ def build_chimew_phase6_pin_plan(
             {
                 "group": group["id"],
                 "schedule_entries": sorted(member_ids),
-                "direction": "a_to_b" if group["direction"] == 0 else "b_to_a",
                 "bank_pair": assignment["bank_pair"],
                 "channel": assignment["channel"],
                 **channel,
+                "direction": group_direction,
             }
         )
     if used_schedule_entries != set(schedule_by_id):
@@ -636,13 +667,13 @@ def validate_chimew_phase6_binding(
             < platform_link.transport_bits_per_cycle_per_direction
         ):
             raise ValidationError("Chimew electrical binding physical lane is invalid")
-        lane_key = (link, physical_lane)
-        if lane_key in lanes:
-            raise ValidationError("Chimew electrical binding reuses a concrete lane")
-        lanes.add(lane_key)
         direction = record.get("direction")
         if direction not in {"a_to_b", "b_to_a"}:
             raise ValidationError("Chimew electrical binding direction is invalid")
+        lane_key = (link, direction, physical_lane)
+        if lane_key in lanes:
+            raise ValidationError("Chimew electrical binding reuses a concrete lane")
+        lanes.add(lane_key)
         source, sink = (fpga_a, fpga_b) if direction == "a_to_b" else (fpga_b, fpga_a)
         for member in members:
             scheduled = schedule_by_id.get(member)

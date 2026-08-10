@@ -1646,8 +1646,12 @@ reruns the certified native assignment, and emits `pin_plan.json` and
 an electrical binding certificate covering concrete lane uniqueness,
 non-reserved package pins, bank identities, IOSTANDARD support, and matching
 bank voltage. Differential and serial resources remain on their existing
-source-backed Phase 6B paths and are not silently projected through this v1
-adapter.
+source-backed Phase 6B paths and are not silently projected through this
+parallel-I/O adapter. Electrical-map v2 makes lane identity direction-scoped:
+two source-qualified channels may reuse a BoardDB lane index only when the
+final assignment binds them to opposite directions of a full-duplex link and
+uses distinct package pins. Legacy v1 maps remain readable and retain their
+exclusive-lane semantics.
 
 Before sign-off, `emuflow pin-plan chimew-qualify` seals the exact schedule,
 physical-SLL crossings, initial and refined groups, lookahead positions, RUDY

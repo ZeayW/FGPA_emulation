@@ -734,7 +734,10 @@ entry's route, direction, ratio, logical lane, slot, and cycle meaning. Its
 separate source-qualified electrical map binds bank identities, non-reserved
 single-ended package pins, supported IOSTANDARDs, and matching bank voltages;
 it rejects incomplete channel coverage, package-pin reuse, physical-lane
-reuse, and placement coordinates outside recorded FPGA site bounds. The
+reuse within one link direction, and placement coordinates outside recorded
+FPGA site bounds. Electrical-map v2 admits the same lane index in opposite
+full-duplex directions only when the resources use distinct package pins;
+the final binding checker rederives the direction-qualified lane identity. The
 result is a regular `emuflow.placement-aware-pin-plan/v1` accepted by Phase 6,
 plus a distinct electrical binding certificate. Chimew paper metrics remain
 under the paper provider identity, while voltage, package-pin, and
