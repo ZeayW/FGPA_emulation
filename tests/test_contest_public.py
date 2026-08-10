@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.contest_public import (
     PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA,
@@ -192,6 +193,78 @@ payload = b'abc'
             self.assertEqual(spec["tasks"][0]["id"], "fetch-eda2023-case1")
             self.assertEqual(spec["tasks"][0]["command"][0], "{install}/bin/emuflow")
             self.assertIn("{run_dir}", spec["tasks"][0]["command"])
+
+    def test_fetch_farm_content_seals_ssl_certificate_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix, _ = self._fixture(root)
+            certificate = root / "ca-bundle.crt"
+            certificate.write_bytes(b"test certificate bundle\n")
+            digest = hashlib.sha256(certificate.read_bytes()).hexdigest()
+            spec_path = root / "farm.json"
+            report = build_contest_fetch_farm_spec(
+                matrix,
+                source_commit="a" * 40,
+                install_dir=root / "installs" / ("a" * 40),
+                nodes=["hpc1"],
+                output_path=spec_path,
+                farm_id="contest-tls",
+                ssl_cert_file=certificate.resolve(),
+            )
+            environment = read_json(spec_path)["tasks"][0]["environment"]
+            self.assertEqual(
+                environment["SSL_CERT_FILE"], str(certificate.resolve())
+            )
+            self.assertEqual(environment["EMUFLOW_SSL_CERT_SHA256"], digest)
+            self.assertEqual(report["ssl_cert_sha256"], digest)
+
+    def test_fetch_rejects_replaced_farm_bound_ssl_certificate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix, fetcher_root = self._fixture(root)
+            certificate = root / "ca-bundle.crt"
+            certificate.write_bytes(b"trusted\n")
+            environment = {
+                "SSL_CERT_FILE": str(certificate.resolve()),
+                "EMUFLOW_SSL_CERT_SHA256": hashlib.sha256(
+                    certificate.read_bytes()
+                ).hexdigest(),
+            }
+            certificate.write_bytes(b"replaced\n")
+            with patch.dict("os.environ", environment, clear=False):
+                with self.assertRaisesRegex(ValidationError, "SHA256 mismatch"):
+                    fetch_public_contest_case(
+                        matrix,
+                        "eda2023.case1",
+                        root / "run",
+                        fetcher_root=fetcher_root,
+                    )
+
+    def test_fetch_records_valid_farm_bound_ssl_certificate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            matrix, fetcher_root = self._fixture(root)
+            certificate = root / "ca-bundle.crt"
+            certificate.write_bytes(b"trusted\n")
+            digest = hashlib.sha256(certificate.read_bytes()).hexdigest()
+            with patch.dict(
+                "os.environ",
+                {
+                    "SSL_CERT_FILE": str(certificate.resolve()),
+                    "EMUFLOW_SSL_CERT_SHA256": digest,
+                },
+                clear=False,
+            ):
+                report = fetch_public_contest_case(
+                    matrix,
+                    "eda2023.case1",
+                    root / "run",
+                    fetcher_root=fetcher_root,
+                )
+            self.assertEqual(
+                report["transport_security"],
+                {"provider": "farm-bound-ca-bundle", "sha256": digest},
+            )
 
     def test_unified_import_dispatches_all_public_suite_adapters(self) -> None:
         for suite in ("eda2023", "eda2024-repart", "eda2025"):

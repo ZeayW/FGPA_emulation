@@ -865,6 +865,13 @@ emuflow validation-farm prepare --spec farm.json --out /shared/runs/public-smoke
 emuflow validation-farm launch /shared/runs/public-smoke
 ```
 
+Minimal containers may not include a usable system CA store. In that case pass
+an absolute, shared CA bundle with `--ssl-cert-file /shared/runtime/ca.crt` when
+compiling the fetch farm. The compiler seals both its path and SHA-256 into each
+task environment, and `fetch-public` rechecks the bytes before any network
+request. Ordinary host `SSL_CERT_FILE` use remains unchanged when this explicit
+farm seal is not requested; TLS verification is never disabled.
+
 After that farm passes, compile a second, separately pinned farm for semantic
 import.  The compiler accepts only `pass` fetch tasks, rechecks their provenance
 and content digests, and gives every importer a new isolated run directory:

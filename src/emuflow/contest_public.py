@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -42,6 +43,7 @@ PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA = (
 )
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_SSL_CERT_SHA256_ENV = "EMUFLOW_SSL_CERT_SHA256"
 
 
 def _sha256_file(path: Path) -> str:
@@ -62,6 +64,38 @@ def _validate_expected_sha256(
     if actual != expected:
         raise ValidationError(f"{label} SHA256 does not match the frozen candidate")
     return actual
+
+
+def _validate_bound_ssl_cert_environment() -> Optional[Dict[str, Any]]:
+    """Validate a farm-bound CA bundle before a network fetch.
+
+    Ordinary host SSL_CERT_FILE use remains supported.  The additional digest
+    variable opts into a validation-farm content seal, so the referenced trust
+    bundle cannot be replaced between farm planning and task execution.
+    """
+
+    expected = os.environ.get(_SSL_CERT_SHA256_ENV)
+    if expected is None:
+        return None
+    value = os.environ.get("SSL_CERT_FILE")
+    if not value:
+        raise ValidationError(
+            f"{_SSL_CERT_SHA256_ENV} requires SSL_CERT_FILE"
+        )
+    expected = expected.lower()
+    if _SHA256_RE.fullmatch(expected) is None:
+        raise ValidationError(
+            f"{_SSL_CERT_SHA256_ENV} must be full 64-hex"
+        )
+    path = Path(value)
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValidationError(
+            "farm-bound SSL_CERT_FILE must be an absolute regular file"
+        )
+    actual = _sha256_file(path)
+    if actual != expected:
+        raise ValidationError("farm-bound SSL certificate bundle SHA256 mismatch")
+    return {"provider": "farm-bound-ca-bundle", "sha256": actual}
 
 
 def _paths_overlap(first: Path, second: Path) -> bool:
@@ -175,6 +209,7 @@ def fetch_public_contest_case(
 ) -> Dict[str, Any]:
     """Run a pinned fetcher and independently validate its provenance."""
 
+    transport_security = _validate_bound_ssl_cert_environment()
     matrix, _ = load_contest_validation_matrix(matrix_path)
     case = _find_case(matrix, case_id)
     source = case["source"]
@@ -224,6 +259,8 @@ def fetch_public_contest_case(
         },
         "artifacts": {"source": "input", "provenance": "input/SOURCE.json"},
     }
+    if transport_security is not None:
+        report["transport_security"] = transport_security
     write_json(output_dir / "fetch_report.json", report)
     return report
 
@@ -798,6 +835,7 @@ def build_contest_fetch_farm_spec(
     tiers: Iterable[str] = ("smoke",),
     suites: Optional[Iterable[str]] = None,
     slots_per_node: int = 1,
+    ssl_cert_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Compile selected matrix fetch gates into a deterministic farm spec."""
 
@@ -811,6 +849,21 @@ def build_contest_fetch_farm_spec(
         raise ValidationError("contest farm slots per node must be positive")
     selected_tiers = set(tiers)
     selected_suites = set(suites) if suites is not None else None
+    task_environment = None
+    ssl_cert_sha256 = None
+    if ssl_cert_file is not None:
+        if not ssl_cert_file.is_absolute():
+            raise ValidationError("contest farm SSL certificate path must be absolute")
+        if ssl_cert_file.is_symlink() or not ssl_cert_file.is_file():
+            raise ValidationError(
+                "contest farm SSL certificate must be a regular non-symlink file"
+            )
+        ssl_cert_file = ssl_cert_file.resolve()
+        ssl_cert_sha256 = _sha256_file(ssl_cert_file)
+        task_environment = {
+            "SSL_CERT_FILE": str(ssl_cert_file),
+            _SSL_CERT_SHA256_ENV: ssl_cert_sha256,
+        }
     tasks = []
     for case in matrix["cases"]:
         if case["tier"] not in selected_tiers:
@@ -821,25 +874,26 @@ def build_contest_fetch_farm_spec(
             continue
         if case["source"]["revision_kind"] == "embedded-sha256":
             continue
-        tasks.append(
-            {
-                "id": "fetch-" + case["id"].replace(".", "-"),
-                "command": [
-                    "{install}/bin/emuflow",
-                    "contest",
-                    "fetch-public",
-                    "--matrix",
-                    (
-                        "{install}/share/emuflow/benchmarks/"
-                        "contest_validation_matrix.json"
-                    ),
-                    "--case-id",
-                    case["id"],
-                    "--out",
-                    "{run_dir}",
-                ],
-            }
-        )
+        task = {
+            "id": "fetch-" + case["id"].replace(".", "-"),
+            "command": [
+                "{install}/bin/emuflow",
+                "contest",
+                "fetch-public",
+                "--matrix",
+                (
+                    "{install}/share/emuflow/benchmarks/"
+                    "contest_validation_matrix.json"
+                ),
+                "--case-id",
+                case["id"],
+                "--out",
+                "{run_dir}",
+            ],
+        }
+        if task_environment is not None:
+            task["environment"] = dict(task_environment)
+        tasks.append(task)
     if not tasks:
         raise ValidationError("contest farm selection produced no fetch tasks")
     spec = {
@@ -852,7 +906,7 @@ def build_contest_fetch_farm_spec(
         "tasks": tasks,
     }
     write_json(output_path, spec)
-    return {
+    report = {
         "schema": "emuflow.contest-fetch-farm-plan/v1",
         "status": "generated",
         "farm_id": farm_id,
@@ -865,6 +919,9 @@ def build_contest_fetch_farm_spec(
         ),
         "output": str(output_path.resolve()),
     }
+    if ssl_cert_sha256 is not None:
+        report["ssl_cert_sha256"] = ssl_cert_sha256
+    return report
 
 
 def build_contest_import_farm_spec(

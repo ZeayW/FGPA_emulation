@@ -479,6 +479,11 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_farm.add_argument("--tier", action="append")
     contest_farm.add_argument("--suite", action="append")
     contest_farm.add_argument("--slots-per-node", type=int, default=1)
+    contest_farm.add_argument(
+        "--ssl-cert-file",
+        type=Path,
+        help="absolute CA bundle path to content-seal into fetch tasks",
+    )
     contest_farm.add_argument("--farm-id", required=True)
     contest_farm.add_argument("--output", "-o", type=Path, required=True)
     contest_import_farm = contest_subparsers.add_parser(
@@ -2572,6 +2577,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 tiers=args.tier or ("smoke",),
                 suites=args.suite,
                 slots_per_node=args.slots_per_node,
+                ssl_cert_file=args.ssl_cert_file,
             )
         elif args.contest_command == "matrix-import-farm-spec":
             report = build_contest_import_farm_spec(
