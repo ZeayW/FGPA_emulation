@@ -1762,6 +1762,16 @@ emuflow pin-plan chimew-run \
 
 emuflow pin-plan chimew-validate build/chimew/complete-phase6
 
+# After at least three independently routed candidates are available, bind
+# each byte-backed Chimew bundle to its full Vivado board-flow v3 bundle in a
+# chimew-vivado-correlation-input/v1 manifest, then build and replay the gate.
+emuflow pin-plan chimew-correlate \
+  --input build/chimew/correlation-input.json \
+  --output build/chimew/correlation-report.json
+emuflow pin-plan chimew-correlation-validate \
+  --input build/chimew/correlation-input.json \
+  build/chimew/correlation-report.json
+
 # The two commands below expose the same qualification and adapter boundaries
 # separately for debugging or independently supplied certified reports.
 emuflow pin-plan chimew-qualify \
@@ -1800,6 +1810,18 @@ For this provider the electrical certificate is mandatory: Phase 6 independently
 rechecks its exact schedule coverage, concrete-lane and package-pin uniqueness,
 direction, and source hashes, then seals a copy into the split manifest. Other
 pin-plan providers neither require nor accept this Chimew-specific certificate.
+
+The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
+and relocatable Vivado board-flow v3 bundles. The manifest fixes both report
+SHA-256 values before validation. For every candidate the checker independently
+revalidates both bundles, reads the official Vivado congestion CSV, extracts a
+machine-readable total from multi-SLR crossing reports, and uses final critical
+path/WNS metrics. It reports tie-aware Spearman ranks for RUDY versus maximum
+congestion level, crossing bits versus routed SLR crossings, and predicted pin
+distance versus final critical-path delay. At least three candidates and
+nonconstant data are required per metric; otherwise the result is explicitly
+`insufficient-evidence`. A qualified rank result is physical-algorithm evidence,
+not bitstream generation or hardware qualification.
 
 Phase 6B has two explicit electrical providers. For parallel I/O,
 `src/native/bsp_pin_solver.cpp` implements exact sparse minimum-cost bipartite

@@ -31,6 +31,10 @@ from .chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
+from .chimew_correlation import (
+    build_chimew_vivado_correlation,
+    validate_chimew_vivado_correlation,
+)
 from .chimew_qualification import build_chimew_phase6_qualification
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
@@ -2178,6 +2182,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="independently validate a frozen Chimew Phase 6 bundle",
     )
     pin_plan_chimew_validate.add_argument("bundle", type=Path)
+    pin_plan_chimew_correlate = pin_plan_subparsers.add_parser(
+        "chimew-correlate",
+        help="rank-correlate source-bound Chimew candidates with Vivado evidence",
+    )
+    pin_plan_chimew_correlate.add_argument("--input", type=Path, required=True)
+    pin_plan_chimew_correlate.add_argument("--output", "-o", type=Path, required=True)
+    pin_plan_chimew_correlation_validate = pin_plan_subparsers.add_parser(
+        "chimew-correlation-validate",
+        help="independently replay a Chimew/Vivado correlation report",
+    )
+    pin_plan_chimew_correlation_validate.add_argument(
+        "--input", type=Path, required=True
+    )
+    pin_plan_chimew_correlation_validate.add_argument("report", type=Path)
     pin_plan_validate = pin_plan_subparsers.add_parser(
         "validate", help="independently validate a pin plan"
     )
@@ -3602,6 +3620,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             return 0
         if args.pin_plan_command == "chimew-validate":
             report = validate_chimew_phase6_pipeline(args.bundle)
+            _print_json(report)
+            return 0
+        if args.pin_plan_command == "chimew-correlate":
+            report = build_chimew_vivado_correlation(args.input, args.output)
+            _print_json(report)
+            return 0
+        if args.pin_plan_command == "chimew-correlation-validate":
+            report = validate_chimew_vivado_correlation(args.input, args.report)
             _print_json(report)
             return 0
         schedule = read_json(args.schedule)

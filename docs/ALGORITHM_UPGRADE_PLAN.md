@@ -823,9 +823,13 @@ Vivado board-flow report v3 seals the raw post-route
 `report_design_analysis -congestion` report plus its official CSV output at
 congestion level 3 and above, `report_utilization -slr`, and
 `report_slr_crossing` outputs. Single-SLR parts receive an explicit
-not-applicable crossing marker. This is evidence collection only; the
-correlation claim remains pending until multiple source-bound Chimew
-candidates are rank-compared against these final reports.
+not-applicable crossing marker. The in-tree correlation checker now accepts a
+hash-fixed manifest of at least three byte-bound Chimew/Vivado candidate pairs,
+revalidates both complete bundles, extracts machine-readable congestion, SLR,
+critical-path and WNS evidence, and computes tie-aware Spearman ranks for the
+three predicted/final metric pairs. The correlation claim remains pending until
+multiple real source-bound candidates pass that gate; synthetic fixtures only
+validate the checker.
 Relocatable v2 bundles remain readable but do not contain congestion CSV.
 
 ## 11. Stage 7 - OpenPARF placement and Vivado handoff
