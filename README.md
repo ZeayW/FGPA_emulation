@@ -1833,6 +1833,17 @@ rechecks its exact schedule coverage, concrete-lane and package-pin uniqueness,
 direction, and source hashes, then seals a copy into the split manifest. Other
 pin-plan providers neither require nor accept this Chimew-specific certificate.
 
+The checked cross-provider contract is exercised end to end by
+`tests/test_contest_chimew_flow.py`: an ICCAD 2019 public interconnect is
+materialized with the academic VTR device template, a real counter EmuIR is
+partitioned and routed through Phases 3--5, and the resulting schedule is bound
+to byte-backed routing, placement-lookahead, netlist, architecture, and package
+pin sources.  The resulting Chimew v2 pin/electrical artifacts then drive the
+normal Phase 6 split and cycle-equivalence checker and Phase 7C runtime
+generation.  Phase 7C is deliberately reported as `generated` in this contract
+test because no physical summary is fabricated; a `pass` physical status still
+requires the independent VPR/Vivado HPC evidence gate.
+
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report
 SHA-256 values before validation. For every candidate the checker independently
