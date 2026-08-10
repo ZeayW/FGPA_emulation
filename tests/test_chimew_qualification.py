@@ -22,12 +22,19 @@ from emuflow.chimew_qualification import (
     build_chimew_phase6_qualification,
     canonical_sha256,
     validate_chimew_phase6_qualification,
+    validate_chimew_qualification_seal,
 )
 from emuflow.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
+    build_chimew_phase6_pin_plan,
+    validate_chimew_phase6_binding,
 )
-from emuflow.chimew_pipeline import CHIMEW_PIPELINE_PROVIDER
+from emuflow.chimew_pipeline import (
+    CHIMEW_PIPELINE_PROVIDER,
+    CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
+    validate_chimew_phase6_pipeline,
+)
 from emuflow.chimew_refinement import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
@@ -40,6 +47,7 @@ from emuflow.chimew_rudy import (
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
+from emuflow.platform import Platform
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -414,14 +422,60 @@ class ChimewQualificationTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            source_paths = {}
+            source_digests = {}
+            for label, payload in {
+                "routing": b"fixture routing source\n",
+                "placement": b"fixture placement source\n",
+                "netlist": b"fixture netlist source\n",
+                "architecture": b"fixture architecture source\n",
+                "package_pins": b"fixture package-pin inventory\n",
+            }.items():
+                source_paths[label] = root / f"{label}.source"
+                source_paths[label].write_bytes(payload)
+                source_digests[label] = hashlib.sha256(payload).hexdigest()
+            crossings = copy.deepcopy(self.crossings)
+            crossings["provenance"]["routing_sha256"] = source_digests[
+                "routing"
+            ]
+            positions = copy.deepcopy(self.positions)
+            positions["provenance"]["placement_sha256"] = source_digests[
+                "placement"
+            ]
+            rudy_input = copy.deepcopy(self.rudy_input)
+            rudy_input["provenance"].update(
+                {
+                    "placement_sha256": source_digests["placement"],
+                    "netlist_sha256": source_digests["netlist"],
+                    "architecture_sha256": source_digests["architecture"],
+                }
+            )
+            initial = build_chimew_initial_groups(
+                self.schedule, crossings, executable=self.executables["grouper"]
+            )
+            refined = refine_chimew_groups(
+                self.schedule,
+                crossings,
+                initial,
+                positions,
+                executable=self.executables["refiner"],
+            )
+            bank_input = copy.deepcopy(self.bank_input)
+            bank_input["provenance"].update(
+                {
+                    "grouping_sha256": canonical_sha256(refined),
+                    "placement_sha256": source_digests["placement"],
+                    "architecture_sha256": source_digests["architecture"],
+                }
+            )
             paths = {}
             for label, document in {
                 "schedule": self.schedule,
                 "platform": platform,
-                "crossings": self.crossings,
-                "positions": self.positions,
-                "rudy-input": self.rudy_input,
-                "assignment-input": self.bank_input,
+                "crossings": crossings,
+                "positions": positions,
+                "rudy-input": rudy_input,
+                "assignment-input": bank_input,
             }.items():
                 paths[label] = root / f"{label}.json"
                 write_json(paths[label], document)
@@ -436,7 +490,9 @@ class ChimewQualificationTest(unittest.TestCase):
                     "boarddb_sha256": hashlib.sha256(
                         paths["platform"].read_bytes()
                     ).hexdigest(),
-                    "package_pin_inventory_sha256": "e" * 64,
+                    "package_pin_inventory_sha256": source_digests[
+                        "package_pins"
+                    ],
                 },
                 "fpga_y_bounds": [
                     {"fpga": fpga, "y_min": 0.0, "y_max": 100.0}
@@ -478,15 +534,117 @@ class ChimewQualificationTest(unittest.TestCase):
                 arguments.extend([f"--{option}", str(paths[option])])
             for option in ("grouper", "refiner", "rudy", "assigner"):
                 arguments.extend([f"--{option}", self.executables[option]])
+            for label, source in source_paths.items():
+                arguments.extend(
+                    [f"--{label.replace('_', '-')}-source", str(source)]
+                )
             arguments.extend(["--out", str(output)])
             self.assertEqual(main(arguments), 0)
             report = read_json(output / "pipeline_report.json")
-            self.assertEqual(report["provider"], CHIMEW_PIPELINE_PROVIDER)
+            self.assertEqual(
+                report["provider"], CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER
+            )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["metrics"]["artifact_chain_disagreements"], 0)
             self.assertTrue(
                 (output / "phase6-adapter" / "qualification_certificate.json").is_file()
             )
+            self.assertEqual(main(["pin-plan", "chimew-validate", str(output)]), 0)
+            validation = validate_chimew_phase6_pipeline(output)
+            self.assertEqual(validation["artifact_hashes_verified"], 23)
+            self.assertEqual(
+                validation["qualification_scope"], "byte-bound-source-artifacts"
+            )
+            bound_plan = read_json(
+                output / "phase6-adapter" / "pin_plan.json"
+            )
+            bound_binding = read_json(
+                output / "phase6-adapter" / "electrical_binding.json"
+            )
+            self.assertEqual(
+                bound_plan["configuration"]["qualification_scope"],
+                "byte-bound-source-artifacts",
+            )
+            self.assertEqual(
+                bound_binding["provenance"]["qualification_scope"],
+                "byte-bound-source-artifacts",
+            )
+            mixed_embedded_binding = copy.deepcopy(bound_binding)
+            mixed_embedded_plan = copy.deepcopy(bound_plan)
+            mixed_embedded_certificate = mixed_embedded_binding[
+                "lookahead_qualification"
+            ]
+            mixed_embedded_certificate["source_binding"]["digests"][
+                "package_pins"
+            ] = "0" * 64
+            mixed_embedded_certificate["source_binding_sha256"] = canonical_sha256(
+                mixed_embedded_certificate["source_binding"]
+            )
+            mixed_embedded_certificate.pop("qualification_sha256")
+            mixed_embedded_certificate["qualification_sha256"] = canonical_sha256(
+                mixed_embedded_certificate
+            )
+            mixed_embedded_plan["configuration"]["qualification_sha256"] = (
+                mixed_embedded_certificate["qualification_sha256"]
+            )
+            mixed_embedded_binding["provenance"]["qualification_sha256"] = (
+                mixed_embedded_certificate["qualification_sha256"]
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "package-pin provenance does not agree"
+            ):
+                validate_chimew_phase6_binding(
+                    self.schedule,
+                    Platform.from_dict(platform),
+                    mixed_embedded_plan,
+                    mixed_embedded_binding,
+                )
+            qualification_document = read_json(
+                output / "kernels" / "qualification.json"
+            )
+            inconsistent_source = copy.deepcopy(qualification_document)
+            inconsistent_source["source_binding"]["digests"]["routing"] = (
+                "0" * 64
+            )
+            inconsistent_source["source_binding_sha256"] = canonical_sha256(
+                inconsistent_source["source_binding"]
+            )
+            inconsistent_source.pop("qualification_sha256")
+            inconsistent_source["qualification_sha256"] = canonical_sha256(
+                inconsistent_source
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "source provenance is inconsistent"
+            ):
+                validate_chimew_qualification_seal(
+                    inconsistent_source, self.schedule
+                )
+
+            mixed_package_pins = copy.deepcopy(qualification_document)
+            mixed_package_pins["source_binding"]["digests"]["package_pins"] = (
+                "0" * 64
+            )
+            mixed_package_pins["source_binding_sha256"] = canonical_sha256(
+                mixed_package_pins["source_binding"]
+            )
+            mixed_package_pins.pop("qualification_sha256")
+            mixed_package_pins["qualification_sha256"] = canonical_sha256(
+                mixed_package_pins
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "package-pin provenance does not agree"
+            ):
+                build_chimew_phase6_pin_plan(
+                    self.schedule,
+                    Platform.from_dict(platform),
+                    bank_input,
+                    electrical,
+                    qualification_document=mixed_package_pins,
+                    bank_channel_report_document=read_json(
+                        output / "kernels" / "bank_channel_report.json"
+                    ),
+                    executable=self.executables["assigner"],
+                )
 
             direct_lane = copy.deepcopy(self.schedule)
             for entry in direct_lane["entries"]:
@@ -498,6 +656,109 @@ class ChimewQualificationTest(unittest.TestCase):
             self.assertEqual(main(direct_arguments), 0)
             direct_report = read_json(direct_output / "pipeline_report.json")
             self.assertEqual(direct_report["status"], "pass")
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(direct_output)["status"], "pass"
+            )
+            downgraded_output = root / "downgraded-pipeline"
+            shutil.copytree(direct_output, downgraded_output)
+            downgraded_report = read_json(
+                downgraded_output / "pipeline_report.json"
+            )
+            downgraded_report["provider"] = CHIMEW_PIPELINE_PROVIDER
+            downgraded_report["qualification_scope"] = (
+                "declared-digest-artifact-chain"
+            )
+            for label in tuple(downgraded_report["artifacts"]):
+                if label.startswith("source_"):
+                    downgraded_report["artifacts"].pop(label)
+            shutil.rmtree(downgraded_output / "sources")
+            write_json(
+                downgraded_output / "pipeline_report.json", downgraded_report
+            )
+            with self.assertRaisesRegex(ValidationError, "certificate does not agree"):
+                validate_chimew_phase6_pipeline(downgraded_output)
+
+            legacy_output = root / "legacy-pipeline"
+            legacy_arguments = ["pin-plan", "chimew-run"]
+            for option in (
+                "schedule",
+                "platform",
+                "crossings",
+                "positions",
+                "rudy-input",
+                "assignment-input",
+                "electrical-map",
+            ):
+                legacy_arguments.extend([f"--{option}", str(paths[option])])
+            for option in ("grouper", "refiner", "rudy", "assigner"):
+                legacy_arguments.extend([f"--{option}", self.executables[option]])
+            legacy_arguments.extend(["--out", str(legacy_output)])
+            self.assertEqual(main(legacy_arguments), 0)
+            legacy_report = read_json(legacy_output / "pipeline_report.json")
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(legacy_output)[
+                    "qualification_scope"
+                ],
+                "declared-digest-artifact-chain",
+            )
+            legacy_report.pop("qualification_scope")
+            legacy_pin_path = legacy_output / "phase6-adapter" / "pin_plan.json"
+            legacy_binding_path = (
+                legacy_output / "phase6-adapter" / "electrical_binding.json"
+            )
+            legacy_adapter_path = (
+                legacy_output / "phase6-adapter" / "adapter_report.json"
+            )
+            legacy_pin = read_json(legacy_pin_path)
+            legacy_binding = read_json(legacy_binding_path)
+            legacy_adapter = read_json(legacy_adapter_path)
+            legacy_pin["configuration"].pop("qualification_scope")
+            legacy_binding["provenance"].pop("qualification_scope")
+            legacy_adapter["qualification_validation"].pop(
+                "qualification_scope"
+            )
+            write_json(legacy_pin_path, legacy_pin)
+            write_json(legacy_binding_path, legacy_binding)
+            write_json(legacy_adapter_path, legacy_adapter)
+            for label, path in {
+                "adapter_pin_plan": legacy_pin_path,
+                "adapter_electrical_binding": legacy_binding_path,
+                "adapter_report": legacy_adapter_path,
+            }.items():
+                legacy_report["artifacts"][label]["sha256"] = hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+            write_json(legacy_output / "pipeline_report.json", legacy_report)
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(legacy_output)["status"],
+                "pass",
+            )
+            (legacy_output / "unexpected.txt").write_text("unexpected\n")
+            with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
+                validate_chimew_phase6_pipeline(legacy_output)
+            (legacy_output / "unexpected.txt").unlink()
+            legacy_report["artifacts"]["schedule"]["path"] = "../schedule.json"
+            write_json(legacy_output / "pipeline_report.json", legacy_report)
+            with self.assertRaisesRegex(ValidationError, "path is unsafe"):
+                validate_chimew_phase6_pipeline(legacy_output)
+
+            adapter_tamper = root / "adapter-tamper"
+            shutil.copytree(output, adapter_tamper)
+            adapter_path = adapter_tamper / "phase6-adapter" / "adapter_report.json"
+            adapter_document = read_json(adapter_path)
+            adapter_document["provider"] = "tampered-provider"
+            write_json(adapter_path, adapter_document)
+            tamper_report = read_json(adapter_tamper / "pipeline_report.json")
+            tamper_report["artifacts"]["adapter_report"]["sha256"] = hashlib.sha256(
+                adapter_path.read_bytes()
+            ).hexdigest()
+            write_json(adapter_tamper / "pipeline_report.json", tamper_report)
+            with self.assertRaisesRegex(ValidationError, "adapter report"):
+                validate_chimew_phase6_pipeline(adapter_tamper)
+
+            (output / "sources" / "routing.source").write_bytes(b"tampered\n")
+            with self.assertRaisesRegex(ValidationError, "hash differs"):
+                validate_chimew_phase6_pipeline(output)
 
 
 if __name__ == "__main__":

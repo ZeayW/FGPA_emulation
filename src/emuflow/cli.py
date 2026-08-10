@@ -27,7 +27,10 @@ from .cross_stage import (
 )
 from .chimew_phase6 import run_chimew_phase6_adapter
 from .chimew_grouping import materialize_chimew_schedule_ratios
-from .chimew_pipeline import run_chimew_phase6_pipeline
+from .chimew_pipeline import (
+    run_chimew_phase6_pipeline,
+    validate_chimew_phase6_pipeline,
+)
 from .chimew_qualification import build_chimew_phase6_qualification
 from .contest_eda2025 import (
     evaluate_eda2025_routes,
@@ -2095,12 +2098,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--assignment-input", type=Path, required=True
     )
     pin_plan_chimew_run.add_argument("--electrical-map", type=Path, required=True)
+    pin_plan_chimew_run.add_argument("--routing-source", type=Path)
+    pin_plan_chimew_run.add_argument("--placement-source", type=Path)
+    pin_plan_chimew_run.add_argument("--netlist-source", type=Path)
+    pin_plan_chimew_run.add_argument("--architecture-source", type=Path)
+    pin_plan_chimew_run.add_argument("--package-pins-source", type=Path)
     pin_plan_chimew_run.add_argument("--grouper")
     pin_plan_chimew_run.add_argument("--refiner")
     pin_plan_chimew_run.add_argument("--rudy")
     pin_plan_chimew_run.add_argument("--assigner")
     pin_plan_chimew_run.add_argument("--region-count", type=int, default=31)
     pin_plan_chimew_run.add_argument("--out", type=Path, required=True)
+    pin_plan_chimew_validate = pin_plan_subparsers.add_parser(
+        "chimew-validate",
+        help="independently validate a frozen Chimew Phase 6 bundle",
+    )
+    pin_plan_chimew_validate.add_argument("bundle", type=Path)
     pin_plan_validate = pin_plan_subparsers.add_parser(
         "validate", help="independently validate a pin plan"
     )
@@ -3450,6 +3463,22 @@ def _dispatch(args: argparse.Namespace) -> int:
             _print_json(report)
             return 0
         if args.pin_plan_command == "chimew-run":
+            source_options = {
+                "routing": args.routing_source,
+                "placement": args.placement_source,
+                "netlist": args.netlist_source,
+                "architecture": args.architecture_source,
+                "package_pins": args.package_pins_source,
+            }
+            present_sources = {
+                label: path
+                for label, path in source_options.items()
+                if path is not None
+            }
+            if present_sources and len(present_sources) != len(source_options):
+                raise EmuFlowError(
+                    "Chimew source binding requires all five source artifacts"
+                )
             report = run_chimew_phase6_pipeline(
                 schedule_path=args.schedule,
                 platform_path=args.platform,
@@ -3459,12 +3488,17 @@ def _dispatch(args: argparse.Namespace) -> int:
                 bank_channel_input_path=args.assignment_input,
                 electrical_map_path=args.electrical_map,
                 output_dir=args.out,
+                source_paths=present_sources or None,
                 grouper=args.grouper,
                 refiner=args.refiner,
                 rudy=args.rudy,
                 assigner=args.assigner,
                 region_count=args.region_count,
             )
+            _print_json(report)
+            return 0
+        if args.pin_plan_command == "chimew-validate":
+            report = validate_chimew_phase6_pipeline(args.bundle)
             _print_json(report)
             return 0
         schedule = read_json(args.schedule)

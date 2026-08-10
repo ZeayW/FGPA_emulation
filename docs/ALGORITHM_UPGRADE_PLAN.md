@@ -736,7 +736,9 @@ single-ended package pins, supported IOSTANDARDs, and matching bank voltages;
 it rejects incomplete channel coverage, package-pin reuse, physical-lane
 reuse within one link direction, and placement coordinates outside recorded
 FPGA site bounds. Electrical-map v2 admits the same lane index in opposite
-full-duplex directions only when the resources use distinct package pins;
+full-duplex directions only when BoardDB declares per-direction capacity and
+the resources use distinct package pins; shared-bidirectional capacity remains
+exclusive;
 the final binding checker rederives the direction-qualified lane identity. The
 result is a regular `emuflow.placement-aware-pin-plan/v1` accepted by Phase 6,
 plus a distinct electrical binding certificate. Chimew paper metrics remain
@@ -758,12 +760,19 @@ cross-artifact hashes without rerunning the grouping or assignment optimizer.
 The adapter records `complete-artifact-chain` only when this self-sealed
 certificate matches its schedule and bank/channel input; otherwise it is
 explicitly `bank-electrical-only` and is not a full Chimew qualification.
-The `source-qualified-chimew-phase6-pipeline-v1` orchestration is the default
-research entry point: each native kernel runs once, the certified assignment
-report is consumed by hash instead of reoptimized, all source inputs are
-copied into an isolated output tree, and a final manifest records every file
-digest. The separate kernel and adapter commands remain available for
-debugging and external-tool integration.
+The legacy `source-qualified-chimew-phase6-pipeline-v1` orchestration runs each
+native kernel once and records every derived input and output digest, but its
+source digests are declarations rather than byte-backed evidence. The stronger
+`byte-bound-chimew-phase6-pipeline-v2` requires and copies the routing,
+placement, netlist, architecture, and package-pin source artifacts, verifies
+their byte hashes, seals that manifest into the qualification, pin plan, and
+electrical binding, and can be replayed by the in-tree near-linear
+`chimew-validate` checker without rerunning an optimizer. This byte binding
+does not by itself prove that each derived JSON was semantically generated from
+the corresponding source; that stronger claim requires a source adapter replay.
+Runs without those five sources are explicitly
+labelled `declared-digest-artifact-chain`. The separate kernel and adapter
+commands remain available for debugging and external-tool integration.
 
 Phase 6 requires that certificate whenever the Chimew provider is selected.
 It independently rechecks schedule and source hashes, exact signal coverage,

@@ -185,16 +185,23 @@ def validate_chimew_electrical_map(
         ):
             raise ValidationError("Chimew electrical concrete lane is invalid")
         uses = lane_uses.setdefault(lane_key, [])
+        direction_qualified_reuse = (
+            schema == CHIMEW_ELECTRICAL_MAP_SCHEMA
+            and link.direction == "full_duplex"
+            and link.capacity_sharing == "per_direction"
+        )
         if direction == "either":
-            maximum_either_uses = (
-                2 if schema == CHIMEW_ELECTRICAL_MAP_SCHEMA else 1
-            )
+            maximum_either_uses = 2 if direction_qualified_reuse else 1
             if (
                 any(value != "either" for value in uses)
                 or len(uses) >= maximum_either_uses
             ):
                 raise ValidationError("Chimew electrical concrete lane is invalid")
-        elif "either" in uses or direction in uses:
+        elif (
+            "either" in uses
+            or direction in uses
+            or (uses and not direction_qualified_reuse)
+        ):
             raise ValidationError("Chimew electrical concrete lane is invalid")
         uses.append(direction)
         bank_a = _string(record.get("bank_a"), f"electrical.{channel_id}.bank_a")
@@ -303,6 +310,21 @@ def build_chimew_phase6_pin_plan(
     electrical = validate_chimew_electrical_map(
         electrical_map, platform, problem
     )
+    if (
+        qualification_validation is not None
+        and qualification_validation["qualification_scope"]
+        == "byte-bound-source-artifacts"
+    ):
+        source_binding = qualification_document.get("source_binding")
+        if (
+            not isinstance(source_binding, dict)
+            or not isinstance(source_binding.get("digests"), dict)
+            or source_binding["digests"].get("package_pins")
+            != electrical["provenance"]["package_pin_inventory_sha256"]
+        ):
+            raise ValidationError(
+                "Chimew byte-bound package-pin provenance does not agree"
+            )
     if bank_channel_report_document is not None:
         if qualification_document is None:
             raise ValidationError(
@@ -464,7 +486,10 @@ def build_chimew_phase6_pin_plan(
                 {
                     "qualification_sha256": qualification_validation[
                         "qualification_sha256"
-                    ]
+                    ],
+                    "qualification_scope": qualification_validation[
+                        "qualification_scope"
+                    ],
                 }
                 if qualification_validation is not None
                 else {}
@@ -511,7 +536,10 @@ def build_chimew_phase6_pin_plan(
                 {
                     "qualification_sha256": qualification_validation[
                         "qualification_sha256"
-                    ]
+                    ],
+                    "qualification_scope": qualification_validation[
+                        "qualification_scope"
+                    ],
                 }
                 if qualification_validation is not None
                 else {}
@@ -532,6 +560,10 @@ def build_chimew_phase6_pin_plan(
         },
         "entries": sorted(binding_entries, key=lambda item: item["group"]),
     }
+    # The assignment channels may be direction-agnostic.  Validate the final,
+    # direction-resolved binding before returning so a same-direction lane
+    # collision can never escape the build path as a nominal pass.
+    validate_chimew_phase6_binding(schedule, platform, plan, binding)
     return {
         "status": "pass",
         "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
@@ -610,12 +642,39 @@ def validate_chimew_phase6_binding(
         qualification_validation = validate_chimew_qualification_seal(
             qualification, schedule
         )
-        if qualification_validation["qualification_sha256"] != qualification_sha:
+        qualification_scope = configuration.get("qualification_scope")
+        provenance_scope = provenance.get("qualification_scope")
+        expected_scope = qualification_validation["qualification_scope"]
+        legacy_scope_omitted = (
+            expected_scope == "declared-digest-artifact-chain"
+            and qualification_scope is None
+            and provenance_scope is None
+        )
+        if qualification_validation["qualification_sha256"] != qualification_sha or (
+            not legacy_scope_omitted
+            and (
+                qualification_scope != expected_scope
+                or provenance_scope != expected_scope
+            )
+        ):
             raise ValidationError("embedded Chimew qualification does not agree")
+        if expected_scope == "byte-bound-source-artifacts":
+            source_binding = qualification.get("source_binding")
+            if (
+                not isinstance(source_binding, dict)
+                or not isinstance(source_binding.get("digests"), dict)
+                or source_binding["digests"].get("package_pins")
+                != provenance.get("package_pin_inventory_sha256")
+            ):
+                raise ValidationError(
+                    "Chimew byte-bound package-pin provenance does not agree"
+                )
     elif qualification_status == "bank-electrical-only":
         if (
             "qualification_sha256" in configuration
             or "qualification_sha256" in provenance
+            or "qualification_scope" in configuration
+            or "qualification_scope" in provenance
             or "lookahead_qualification" in binding
         ):
             raise ValidationError("partial Chimew binding contains a qualification seal")
@@ -636,6 +695,7 @@ def validate_chimew_phase6_binding(
     covered = set()
     pins = set()
     lanes = set()
+    physical_lane_uses: Dict[Tuple[str, int], set[str]] = {}
     groups = set()
     link_by_id = {link.id: link for link in platform.links}
     for index, record in enumerate(raw_entries):
@@ -673,6 +733,14 @@ def validate_chimew_phase6_binding(
         lane_key = (link, direction, physical_lane)
         if lane_key in lanes:
             raise ValidationError("Chimew electrical binding reuses a concrete lane")
+        physical_key = (link, physical_lane)
+        existing_directions = physical_lane_uses.setdefault(physical_key, set())
+        if existing_directions and (
+            platform_link.direction != "full_duplex"
+            or platform_link.capacity_sharing != "per_direction"
+        ):
+            raise ValidationError("Chimew electrical binding reuses a concrete lane")
+        existing_directions.add(direction)
         lanes.add(lane_key)
         source, sink = (fpga_a, fpga_b) if direction == "a_to_b" else (fpga_b, fpga_a)
         for member in members:

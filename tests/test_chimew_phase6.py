@@ -389,6 +389,66 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             {0},
         )
 
+    def test_direction_agnostic_channels_cannot_resolve_to_one_lane_direction(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        schedule["entries"][1]["from"] = "A"
+        schedule["entries"][1]["to"] = "B"
+        schedule["entries"][1]["slot"] = 1
+        assignment = copy.deepcopy(self.assignment_input)
+        assignment["groups"][1]["direction"] = "a_to_b"
+        assignment["groups"][1]["members"][0]["fanout"]["x"] = 0.0
+        assignment["groups"][1]["members"][0]["fanins"][0]["x"] = 100.0
+        electrical_map = copy.deepcopy(self.electrical_map)
+        for channel in electrical_map["channels"]:
+            channel["physical_lane"] = 0
+            channel["direction"] = "either"
+        with self.assertRaisesRegex(
+            ValidationError, "physical pin|reuses a concrete lane"
+        ):
+            build_chimew_phase6_pin_plan(
+                schedule,
+                self.platform,
+                assignment,
+                electrical_map,
+                executable=str(self.executable),
+            )
+
+    def test_shared_bidirectional_capacity_rejects_lane_index_reuse(self) -> None:
+        platform_document = copy.deepcopy(self.platform_document)
+        platform_document["links"][0]["capacity_sharing"] = "shared_bidirectional"
+        platform = Platform.from_dict(platform_document)
+        electrical_map = copy.deepcopy(self.electrical_map)
+        electrical_map["channels"][0]["physical_lane"] = 0
+        electrical_map["channels"][0]["direction"] = "a_to_b"
+        electrical_map["channels"][1]["physical_lane"] = 0
+        electrical_map["channels"][1]["direction"] = "b_to_a"
+        problem = validate_chimew_bank_channel_input(self.assignment_input)
+        with self.assertRaisesRegex(ValidationError, "concrete lane"):
+            validate_chimew_electrical_map(electrical_map, platform, problem)
+
+        full_duplex_map = copy.deepcopy(electrical_map)
+        full_duplex_map["channels"][0]["direction"] = "either"
+        full_duplex_map["channels"][1]["direction"] = "either"
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            full_duplex_map,
+            executable=str(self.executable),
+        )
+        with self.assertRaisesRegex(ValidationError, "reuses a concrete lane"):
+            validate_chimew_phase6_binding(
+                self.schedule,
+                platform,
+                result["pin_plan"],
+                result["electrical_binding"],
+            )
+
+        for channel in electrical_map["channels"][:2]:
+            channel["direction"] = "either"
+        with self.assertRaisesRegex(ValidationError, "concrete lane"):
+            validate_chimew_electrical_map(electrical_map, platform, problem)
+
     def test_path_adapter_emits_phase6_consumable_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

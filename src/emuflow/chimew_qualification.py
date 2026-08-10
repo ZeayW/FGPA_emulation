@@ -13,7 +13,7 @@ import hashlib
 import json
 import math
 from collections import defaultdict
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 from .chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_PROVIDER,
@@ -48,6 +48,18 @@ CHIMEW_QUALIFICATION_SCHEMA = "emuflow.chimew-phase6-qualification/v1"
 CHIMEW_QUALIFICATION_PROVIDER = (
     "chimew-paper-kernel-chain-plus-emuflow-provenance-v1"
 )
+CHIMEW_BYTE_BOUND_QUALIFICATION_SCHEMA = "emuflow.chimew-phase6-qualification/v2"
+CHIMEW_BYTE_BOUND_QUALIFICATION_PROVIDER = (
+    "chimew-paper-kernel-chain-plus-emuflow-byte-provenance-v2"
+)
+CHIMEW_BYTE_BOUND_SOURCE_SCOPE = "byte-bound-source-artifacts"
+CHIMEW_BYTE_BOUND_SOURCE_LABELS = {
+    "routing",
+    "placement",
+    "netlist",
+    "architecture",
+    "package_pins",
+}
 
 
 def canonical_sha256(document: Mapping[str, Any]) -> str:
@@ -73,6 +85,25 @@ def _require_identity(
         or document.get("platform") != schedule.get("platform")
     ):
         raise ValidationError(f"Chimew {label} identity does not match the schedule")
+
+
+def _validate_source_binding(source_binding: Mapping[str, Any]) -> Dict[str, Any]:
+    if (
+        set(source_binding) != {"scope", "digests"}
+        or source_binding.get("scope") != CHIMEW_BYTE_BOUND_SOURCE_SCOPE
+    ):
+        raise ValidationError("Chimew source binding scope is invalid")
+    digests = source_binding.get("digests")
+    if not isinstance(digests, dict) or set(digests) != CHIMEW_BYTE_BOUND_SOURCE_LABELS:
+        raise ValidationError("Chimew source binding inventory is invalid")
+    for label, digest in digests.items():
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValidationError(f"Chimew {label} source binding digest is invalid")
+    return {"scope": CHIMEW_BYTE_BOUND_SOURCE_SCOPE, "digests": dict(digests)}
 
 
 def _validate_refined_grouping(
@@ -318,6 +349,8 @@ def build_chimew_phase6_qualification(
     rudy_report: Mapping[str, Any],
     bank_input: Mapping[str, Any],
     bank_report: Mapping[str, Any],
+    *,
+    source_binding: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a replayable certificate for one complete Chimew artifact chain."""
 
@@ -382,12 +415,38 @@ def build_chimew_phase6_qualification(
         "bank_channel_input": canonical_sha256(bank_input),
         "bank_channel_report": canonical_sha256(bank_report),
     }
+    validated_source_binding = (
+        _validate_source_binding(source_binding)
+        if source_binding is not None
+        else None
+    )
+    if validated_source_binding is not None:
+        source_digests = validated_source_binding["digests"]
+        if any(
+            source_digests[label] != digest
+            for label, digest in {
+                "routing": crossings["provenance"]["routing_sha256"],
+                "placement": placement_sha,
+                "netlist": rudy_problem["provenance"]["netlist_sha256"],
+                "architecture": architecture_sha,
+            }.items()
+        ):
+            raise ValidationError("Chimew source binding provenance does not agree")
+
     certificate: Dict[str, Any] = {
-        "schema": CHIMEW_QUALIFICATION_SCHEMA,
+        "schema": (
+            CHIMEW_BYTE_BOUND_QUALIFICATION_SCHEMA
+            if validated_source_binding is not None
+            else CHIMEW_QUALIFICATION_SCHEMA
+        ),
         "status": "pass",
         "design": schedule["design"],
         "platform": schedule["platform"],
-        "provider": CHIMEW_QUALIFICATION_PROVIDER,
+        "provider": (
+            CHIMEW_BYTE_BOUND_QUALIFICATION_PROVIDER
+            if validated_source_binding is not None
+            else CHIMEW_QUALIFICATION_PROVIDER
+        ),
         "claim_boundary": (
             "paper kernels plus EmuFlow provenance/legality closure; vendor DRC, "
             "timing sign-off, bitstream, and hardware qualification remain external"
@@ -408,6 +467,11 @@ def build_chimew_phase6_qualification(
             "artifact_chain_disagreements": 0,
         },
     }
+    if validated_source_binding is not None:
+        certificate["source_binding"] = validated_source_binding
+        certificate["source_binding_sha256"] = canonical_sha256(
+            validated_source_binding
+        )
     certificate["qualification_sha256"] = canonical_sha256(certificate)
     return certificate
 
@@ -423,6 +487,8 @@ def validate_chimew_phase6_qualification(
     rudy_report: Mapping[str, Any],
     bank_input: Mapping[str, Any],
     bank_report: Mapping[str, Any],
+    *,
+    source_binding: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     expected = build_chimew_phase6_qualification(
         schedule,
@@ -434,6 +500,7 @@ def validate_chimew_phase6_qualification(
         rudy_report,
         bank_input,
         bank_report,
+        source_binding=source_binding,
     )
     if dict(certificate) != expected:
         raise ValidationError("Chimew Phase 6 qualification certificate does not agree")
@@ -441,6 +508,11 @@ def validate_chimew_phase6_qualification(
         "status": "pass",
         "signals": expected["metrics"]["signals"],
         "groups": expected["metrics"]["groups"],
+        "qualification_scope": (
+            CHIMEW_BYTE_BOUND_SOURCE_SCOPE
+            if source_binding is not None
+            else "declared-digest-artifact-chain"
+        ),
         "qualification_sha256": expected["qualification_sha256"],
     }
 
@@ -449,11 +521,14 @@ def validate_chimew_qualification_seal(
     certificate: Mapping[str, Any], schedule: Mapping[str, Any]
 ) -> Dict[str, Any]:
     """Validate the certificate identity and self-seal without source artifacts."""
-    if (
-        certificate.get("schema") != CHIMEW_QUALIFICATION_SCHEMA
-        or certificate.get("provider") != CHIMEW_QUALIFICATION_PROVIDER
-        or certificate.get("status") != "pass"
-    ):
+    identity = (certificate.get("schema"), certificate.get("provider"))
+    if identity not in {
+        (CHIMEW_QUALIFICATION_SCHEMA, CHIMEW_QUALIFICATION_PROVIDER),
+        (
+            CHIMEW_BYTE_BOUND_QUALIFICATION_SCHEMA,
+            CHIMEW_BYTE_BOUND_QUALIFICATION_PROVIDER,
+        ),
+    } or certificate.get("status") != "pass":
         raise ValidationError("Chimew Phase 6 qualification certificate is invalid")
     _require_identity(schedule, "qualification certificate", certificate)
     supplied_sha = certificate.get("qualification_sha256")
@@ -461,6 +536,17 @@ def validate_chimew_qualification_seal(
     unsigned.pop("qualification_sha256", None)
     if supplied_sha != canonical_sha256(unsigned):
         raise ValidationError("Chimew Phase 6 qualification self-seal is invalid")
+    if identity[0] == CHIMEW_BYTE_BOUND_QUALIFICATION_SCHEMA:
+        source_binding = certificate.get("source_binding")
+        if not isinstance(source_binding, dict):
+            raise ValidationError("Chimew byte-bound source binding is missing")
+        validated_source_binding = _validate_source_binding(source_binding)
+        if certificate.get("source_binding_sha256") != canonical_sha256(
+            validated_source_binding
+        ):
+            raise ValidationError("Chimew byte-bound source binding seal is invalid")
+    elif "source_binding" in certificate or "source_binding_sha256" in certificate:
+        raise ValidationError("legacy Chimew qualification contains a source binding")
     artifacts = certificate.get("artifacts")
     provenance = certificate.get("provenance")
     if (
@@ -469,6 +555,16 @@ def validate_chimew_qualification_seal(
         or artifacts.get("schedule") != canonical_sha256(schedule)
     ):
         raise ValidationError("Chimew Phase 6 qualification schedule binding is broken")
+    if identity[0] == CHIMEW_BYTE_BOUND_QUALIFICATION_SCHEMA and any(
+        validated_source_binding["digests"][label] != provenance.get(field)
+        for label, field in {
+            "routing": "routing_sha256",
+            "placement": "placement_sha256",
+            "netlist": "netlist_sha256",
+            "architecture": "architecture_sha256",
+        }.items()
+    ):
+        raise ValidationError("Chimew byte-bound source provenance is inconsistent")
     metrics = certificate.get("metrics")
     if (
         not isinstance(metrics, dict)
@@ -479,6 +575,11 @@ def validate_chimew_qualification_seal(
     return {
         "status": "pass",
         "qualification_sha256": supplied_sha,
+        "qualification_scope": (
+            CHIMEW_BYTE_BOUND_SOURCE_SCOPE
+            if identity[0] == CHIMEW_BYTE_BOUND_QUALIFICATION_SCHEMA
+            else "declared-digest-artifact-chain"
+        ),
         "signals": metrics.get("signals"),
         "groups": metrics.get("groups"),
     }

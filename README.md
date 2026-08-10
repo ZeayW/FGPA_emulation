@@ -1649,17 +1649,18 @@ bank voltage. Differential and serial resources remain on their existing
 source-backed Phase 6B paths and are not silently projected through this
 parallel-I/O adapter. Electrical-map v2 makes lane identity direction-scoped:
 two source-qualified channels may reuse a BoardDB lane index only when the
-final assignment binds them to opposite directions of a full-duplex link and
-uses distinct package pins. Legacy v1 maps remain readable and retain their
-exclusive-lane semantics.
+final assignment binds them to opposite directions of a full-duplex link,
+BoardDB declares per-direction capacity, and the channels use distinct package
+pins. Shared-bidirectional links and legacy v1 maps retain exclusive-lane
+semantics.
 
 Before sign-off, `emuflow pin-plan chimew-qualify` seals the exact schedule,
 physical-SLL crossings, initial and refined groups, lookahead positions, RUDY
 input/report, and bank/channel input/report into one self-hashed certificate.
 It independently rechecks coverage, group capacity and SLL preservation, the
 RUDY bins and pass threshold, assignment legality/costs, and placement,
-architecture, grouping, and source hashes. This is a near-linear artifact
-checker, not a second optimizer. Supplying the resulting certificate to
+architecture, grouping, and declared source hashes. This is a near-linear
+artifact checker, not a second optimizer. Supplying the resulting certificate to
 `chimew-build` upgrades its status from `bank-electrical-only` to
 `complete-artifact-chain`; omitting it remains supported for kernel-level
 experiments but is not full Chimew lookahead qualification.
@@ -1683,6 +1684,14 @@ all four native kernels once, builds the qualification certificate, consumes
 the already-certified bank/channel report without optimizing it a second
 time, emits the electrical adapter artifacts, and records SHA-256 for every
 copied input and generated output in `pipeline_report.json`.
+Passing all five `--*-source` options additionally copies the routing,
+placement, netlist, architecture, and package-pin source artifacts, verifies
+their byte hashes against the derived-input provenance, seals the byte manifest
+through the qualification and electrical binding, and emits the stronger
+`byte-bound-chimew-phase6-pipeline-v2` provider. This is a byte-bound provenance
+claim, not proof that the derived JSON was semantically regenerated from those
+sources. Without the five files, the report is explicitly limited to
+`declared-digest-artifact-chain` qualification.
 
 ```bash
 emuflow pin-plan chimew-run \
@@ -1693,7 +1702,14 @@ emuflow pin-plan chimew-run \
   --rudy-input build/chimew/rudy_input.json \
   --assignment-input build/chimew/bank_channel_input.json \
   --electrical-map bsp/chimew_electrical_map.json \
+  --routing-source build/chimew/router_source \
+  --placement-source build/chimew/placement_source \
+  --netlist-source build/chimew/netlist_source \
+  --architecture-source build/chimew/architecture_source \
+  --package-pins-source bsp/package_pin_inventory \
   --out build/chimew/complete-phase6
+
+emuflow pin-plan chimew-validate build/chimew/complete-phase6
 
 # The two commands below expose the same qualification and adapter boundaries
 # separately for debugging or independently supplied certified reports.
