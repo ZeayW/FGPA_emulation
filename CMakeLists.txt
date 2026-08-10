@@ -190,6 +190,18 @@ set(
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/platforms/virtual/academic_vtr_4fpga_mesh.json"
 )
+file(
+  GLOB EMUFLOW_RTL_BENCHMARK_RUNS
+  CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/benchmarks/runs/*.json"
+)
+set(
+  EMUFLOW_RTL_BENCHMARK_DATA
+  "${CMAKE_SOURCE_DIR}/benchmarks/rtl_catalog.json"
+  "${CMAKE_SOURCE_DIR}/scripts/benchmarks/__init__.py"
+  "${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"
+  ${EMUFLOW_RTL_BENCHMARK_RUNS}
+)
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/emuflow.in"
   "${CMAKE_BINARY_DIR}/emuflow"
@@ -232,7 +244,20 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E make_directory
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/platforms/virtual"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/benchmarks"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/benchmarks/runs"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/benchmarks/rtl_catalog.json"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/rtl_catalog.json"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
@@ -254,6 +279,7 @@ add_custom_command(
     ${EMUFLOW_PYTHON_SOURCES}
     ${EMUFLOW_RUNTIME_DATA}
     ${EMUFLOW_PUBLIC_CONTEST_DATA}
+    ${EMUFLOW_RTL_BENCHMARK_DATA}
   COMMENT "Installing the in-tree EmuFlow Python control plane"
   VERBATIM
 )

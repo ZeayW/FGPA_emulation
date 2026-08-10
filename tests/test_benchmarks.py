@@ -15,6 +15,16 @@ CATALOG = ROOT / "benchmarks/rtl_catalog.json"
 
 
 class RtlCatalogTest(unittest.TestCase):
+    def test_root_install_contains_rtl_benchmark_runtime_data(self) -> None:
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        for runtime_path in (
+            "scripts/benchmarks",
+            "benchmarks/runs",
+            "benchmarks/rtl_catalog.json",
+        ):
+            self.assertIn(runtime_path, cmake)
+        self.assertIn("EMUFLOW_RTL_BENCHMARK_DATA", cmake)
+
     def test_catalog_entries_are_pinned_and_unique(self) -> None:
         catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
         self.assertEqual(catalog["schema"], "emuflow.rtl-catalog/v1")
