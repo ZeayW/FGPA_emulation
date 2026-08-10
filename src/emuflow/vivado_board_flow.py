@@ -21,10 +21,17 @@ from .vivado_netlist import emit_vivado_mapped_verilog
 
 
 LEGACY_VIVADO_BOARD_FLOW_SCHEMA = "emuflow.vivado-board-flow/v1"
-VIVADO_BOARD_FLOW_SCHEMA = "emuflow.vivado-board-flow/v2"
+VIVADO_BOARD_FLOW_SCHEMA_V2 = "emuflow.vivado-board-flow/v2"
+VIVADO_BOARD_FLOW_SCHEMA = "emuflow.vivado-board-flow/v3"
 
+_VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS_V2 = (
+    "congestion.rpt",
+    "slr_utilization.rpt",
+    "slr_crossing.rpt",
+)
 _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS = (
     "congestion.rpt",
+    "congestion.csv",
     "slr_utilization.rpt",
     "slr_crossing.rpt",
 )
@@ -342,8 +349,10 @@ def build_vivado_board_tcl(
             + _tcl_quote(str(output_dir / "timing_summary.rpt")),
             "report_utilization -hierarchical -file "
             + _tcl_quote(str(output_dir / "utilization.rpt")),
-            "report_design_analysis -congestion -file "
-            + _tcl_quote(str(output_dir / "congestion.rpt")),
+            "report_design_analysis -congestion -min_congestion_level 3 -file "
+            + _tcl_quote(str(output_dir / "congestion.rpt"))
+            + " -csv "
+            + _tcl_quote(str(output_dir / "congestion.csv")),
             "report_utilization -slr -file "
             + _tcl_quote(str(output_dir / "slr_utilization.rpt")),
             "set slrs [get_slrs -quiet]",
@@ -464,6 +473,7 @@ def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, An
     schema = report.get("schema")
     if schema not in {
         LEGACY_VIVADO_BOARD_FLOW_SCHEMA,
+        VIVADO_BOARD_FLOW_SCHEMA_V2,
         VIVADO_BOARD_FLOW_SCHEMA,
     }:
         raise ValidationError("Vivado board-flow report schema is invalid")
@@ -505,7 +515,16 @@ def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, An
         raise ValidationError("Vivado board-flow closure is incomplete")
     physical_evidence_fpgas = 0
     multi_slr_fpgas = 0
-    if schema == VIVADO_BOARD_FLOW_SCHEMA:
+    if schema in {VIVADO_BOARD_FLOW_SCHEMA_V2, VIVADO_BOARD_FLOW_SCHEMA}:
+        expected_evidence = {
+            "congestion": "congestion.rpt",
+            "slr_crossing": "slr_crossing.rpt",
+            "slr_utilization": "slr_utilization.rpt",
+        }
+        expected_artifacts = _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS_V2
+        if schema == VIVADO_BOARD_FLOW_SCHEMA:
+            expected_evidence["congestion_csv"] = "congestion.csv"
+            expected_artifacts = _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS
         for item in records:
             evidence = item.get("physical_evidence")
             artifacts = item.get("artifacts")
@@ -535,15 +554,11 @@ def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, An
                     "Vivado board-flow SLR evidence is inconsistent"
                 )
             evidence_artifacts = evidence.get("artifacts")
-            if evidence_artifacts != {
-                "congestion": "congestion.rpt",
-                "slr_crossing": "slr_crossing.rpt",
-                "slr_utilization": "slr_utilization.rpt",
-            }:
+            if evidence_artifacts != expected_evidence:
                 raise ValidationError(
                     "Vivado board-flow physical evidence inventory is invalid"
                 )
-            for name in _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS:
+            for name in expected_artifacts:
                 artifact = artifacts.get(name)
                 if (
                     not isinstance(artifact, dict)
@@ -579,7 +594,7 @@ def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, An
 
 
 def validate_vivado_board_flow_bundle(output_dir: Path) -> Dict[str, Any]:
-    """Rehash a relocatable v2 board-flow bundle without rerunning Vivado."""
+    """Rehash a relocatable v2/v3 board-flow bundle without rerunning Vivado."""
 
     output_dir = Path(output_dir).resolve()
     report_path = output_dir / "vivado-board-flow-report.json"
@@ -587,12 +602,29 @@ def validate_vivado_board_flow_bundle(output_dir: Path) -> Dict[str, Any]:
         raise ValidationError("Vivado board-flow bundle report is missing")
     report = read_json(report_path)
     validation = validate_vivado_board_flow_report(report)
-    if report.get("schema") != VIVADO_BOARD_FLOW_SCHEMA:
+    schema = report.get("schema")
+    if schema not in {VIVADO_BOARD_FLOW_SCHEMA_V2, VIVADO_BOARD_FLOW_SCHEMA}:
         raise ValidationError(
-            "Vivado board-flow bundle validation requires relocatable v2"
+            "Vivado board-flow bundle validation requires relocatable v2/v3"
         )
     verified_paths: set[Path] = set()
-    expected_labels = {*_VIVADO_BOARD_ARTIFACTS, "generated_tcl"}
+    physical_artifacts = (
+        _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS_V2
+        if schema == VIVADO_BOARD_FLOW_SCHEMA_V2
+        else _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS
+    )
+    expected_labels = {
+        "synthesized.dcp",
+        "placed.dcp",
+        "routed.dcp",
+        "route_status.rpt",
+        "drc.rpt",
+        "timing_summary.rpt",
+        "utilization.rpt",
+        *physical_artifacts,
+        "board_metrics.tsv",
+        "generated_tcl",
+    }
     for fpga_record in report["fpgas"]:
         fpga = fpga_record["fpga"]
         artifacts = fpga_record.get("artifacts")
@@ -937,6 +969,7 @@ def run_vivado_board_flow(
                     "slr_crossing_status": slr_crossing_status,
                     "artifacts": {
                         "congestion": "congestion.rpt",
+                        "congestion_csv": "congestion.csv",
                         "slr_crossing": "slr_crossing.rpt",
                         "slr_utilization": "slr_utilization.rpt",
                     },

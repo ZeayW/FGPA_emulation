@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.ir import EMUIR_SCHEMA, EmuIR
 from emuflow.platform import Platform
 from emuflow.vivado_board_flow import (
@@ -201,7 +201,7 @@ out = pathlib.Path.cwd()
 mapped = re.search(r'mapped cell coverage disagrees', script)
 for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
              'route_status.rpt', 'drc.rpt', 'timing_summary.rpt',
-             'utilization.rpt', 'congestion.rpt',
+             'utilization.rpt', 'congestion.rpt', 'congestion.csv',
              'slr_utilization.rpt', 'slr_crossing.rpt'):
     (out / name).write_text(name + '\\n')
 (out / 'board_metrics.tsv').write_text(
@@ -305,6 +305,7 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
                     "slr_crossing_status": "single-slr-not-applicable",
                     "artifacts": {
                         "congestion": "congestion.rpt",
+                        "congestion_csv": "congestion.csv",
                         "slr_crossing": "slr_crossing.rpt",
                         "slr_utilization": "slr_utilization.rpt",
                     },
@@ -315,6 +316,8 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
                 / report["fpgas"][0]["artifacts"]["generated_tcl"]["path"]
             ).read_text(encoding="utf-8")
             self.assertIn("report_design_analysis -congestion", generated_tcl)
+            self.assertIn("-min_congestion_level 3", generated_tcl)
+            self.assertIn("-csv", generated_tcl)
             self.assertIn("report_utilization -slr", generated_tcl)
             self.assertIn("report_slr_crossing -file", generated_tcl)
             validate_vivado_board_flow_report(report)
@@ -322,7 +325,24 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
             shutil.copytree(output, relocated)
             bundle_validation = validate_vivado_board_flow_bundle(relocated)
             self.assertTrue(bundle_validation["bundle_relocatable"])
-            self.assertEqual(bundle_validation["artifacts_verified"], 26)
+            self.assertEqual(bundle_validation["artifacts_verified"], 28)
+            v2_bundle = root / "relocated-board-bundle-v2"
+            shutil.copytree(output, v2_bundle)
+            v2_report_path = v2_bundle / "vivado-board-flow-report.json"
+            v2_report = read_json(v2_report_path)
+            v2_report["schema"] = "emuflow.vivado-board-flow/v2"
+            for fpga_record in v2_report["fpgas"]:
+                fpga_record["physical_evidence"]["artifacts"].pop(
+                    "congestion_csv"
+                )
+                fpga_record["artifacts"].pop("congestion.csv")
+            write_json(v2_report_path, v2_report)
+            self.assertEqual(
+                validate_vivado_board_flow_bundle(v2_bundle)[
+                    "artifacts_verified"
+                ],
+                26,
+            )
             congestion = relocated / platform.fpgas[0].id / "congestion.rpt"
             congestion.write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "hash differs"):

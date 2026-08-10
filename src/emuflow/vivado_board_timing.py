@@ -30,6 +30,7 @@ from .vivado_backend import (
 )
 from .vivado_board_flow import (
     VIVADO_BOARD_FLOW_SCHEMA,
+    VIVADO_BOARD_FLOW_SCHEMA_V2,
     validate_vivado_board_flow_bundle,
     validate_vivado_board_flow_report,
 )
@@ -185,7 +186,10 @@ def run_vivado_board_timing(
         raise ValidationError("Vivado board timing source report is missing")
     board_report = read_json(board_report_path)
     validate_vivado_board_flow_report(board_report)
-    if board_report.get("schema") == VIVADO_BOARD_FLOW_SCHEMA:
+    if board_report.get("schema") in {
+        VIVADO_BOARD_FLOW_SCHEMA_V2,
+        VIVADO_BOARD_FLOW_SCHEMA,
+    }:
         validate_vivado_board_flow_bundle(board_root)
     expected_flow_hash = board_report["source_bindings"]["flow_report_sha256"]
     flow_report_path = next(

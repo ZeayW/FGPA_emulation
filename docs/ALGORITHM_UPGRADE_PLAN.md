@@ -819,12 +819,14 @@ into the split manifest. A Chimew-labelled pin plan cannot bypass this gate.
   requires a real revision-controlled BSP.
 
 The physical side of the correlation gate is now versioned independently:
-Vivado board-flow report v2 seals the raw post-route
-`report_design_analysis -congestion`, `report_utilization -slr`, and
+Vivado board-flow report v3 seals the raw post-route
+`report_design_analysis -congestion` report plus its official CSV output at
+congestion level 3 and above, `report_utilization -slr`, and
 `report_slr_crossing` outputs. Single-SLR parts receive an explicit
 not-applicable crossing marker. This is evidence collection only; the
 correlation claim remains pending until multiple source-bound Chimew
 candidates are rank-compared against these final reports.
+Relocatable v2 bundles remain readable but do not contain congestion CSV.
 
 ## 11. Stage 7 - OpenPARF placement and Vivado handoff
 
