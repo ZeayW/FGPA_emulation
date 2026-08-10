@@ -29,6 +29,18 @@ class RtlCatalogTest(unittest.TestCase):
             '    "${CMAKE_SOURCE_DIR}/scripts/benchmarks"',
             cmake,
         )
+        self.assertNotIn(
+            '"${CMAKE_COMMAND}" -E copy_directory\n'
+            '    "${CMAKE_SOURCE_DIR}/src/emuflow"',
+            cmake,
+        )
+        self.assertIn("${EMUFLOW_PYTHON_SOURCES}", cmake)
+        self.assertTrue(list((ROOT / "src/emuflow").glob("*.py")))
+        self.assertEqual(
+            list((ROOT / "src/emuflow").glob("**/*.py")),
+            list((ROOT / "src/emuflow").glob("*.py")),
+            "the root installer copies a flat, explicit Python source list",
+        )
         for runtime_source in (
             ROOT / "scripts/benchmarks/fetch.py",
             ROOT / "benchmarks/rtl_catalog.json",

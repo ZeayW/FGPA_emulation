@@ -216,8 +216,14 @@ file(
 add_custom_command(
   OUTPUT "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/src/emuflow"
+    "${CMAKE_COMMAND}" -E rm -rf
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
+  COMMAND
+    "${CMAKE_COMMAND}" -E make_directory
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy
+    ${EMUFLOW_PYTHON_SOURCES}
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
