@@ -242,13 +242,14 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E make_directory
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/platforms/virtual"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/scripts/benchmarks"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks"
+    "${CMAKE_COMMAND}" -E copy
+    "${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks/fetch.py"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/benchmarks/runs"

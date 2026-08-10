@@ -24,6 +24,11 @@ class RtlCatalogTest(unittest.TestCase):
         ):
             self.assertIn(runtime_path, cmake)
         self.assertIn("EMUFLOW_RTL_BENCHMARK_DATA", cmake)
+        self.assertNotIn(
+            '"${CMAKE_COMMAND}" -E copy_directory\n'
+            '    "${CMAKE_SOURCE_DIR}/scripts/benchmarks"',
+            cmake,
+        )
         for runtime_source in (
             ROOT / "scripts/benchmarks/fetch.py",
             ROOT / "benchmarks/rtl_catalog.json",
