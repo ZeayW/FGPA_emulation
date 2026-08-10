@@ -913,11 +913,18 @@ sealed fetch and import farms and schedules each case in a fresh run directory.
 The versioned install carries the matrix and academic device template, so a
 worker does not read either input from a mutable checkout.
 
-EDA 2025 evaluation is also a separately sealed gate. It copies the exact
-fetched source, normalized import, routed candidate, optional changed topology,
-independent score report, and official-format outputs into one bundle. The
-validator rechecks every upstream seal and byte, reruns the evaluator, and
-requires identical official outputs:
+Public evaluation is also a separately sealed gate for EDA 2023, RePart/EDA
+2024, and EDA 2025. It copies the exact fetched source, normalized import,
+candidate, independent score report, and official-format outputs into one
+bundle. Candidate directories are suite-specific: EDA 2023 uses `routes.json`
+plus `tdm_plan.json`, EDA 2024 uses `design.fpga.out`, and EDA 2025 uses
+`routes.json` plus an optional `design.newtopo`. The validator rechecks every
+upstream seal and byte, semantically reimports the source, reruns the
+independent evaluator, and requires byte-identical regenerated official
+outputs:
+
+The multi-suite bundle uses `public-contest-evaluation-report/v2`; the earlier
+EDA 2025-only v1 bundle remains readable by the validator.
 
 ```bash
 emuflow contest evaluate-public \
@@ -931,10 +938,11 @@ emuflow contest validate-public-evaluation \
 ```
 
 `matrix-evaluate-farm-spec` accepts only passed fetch/import farms and a
-candidate root containing `<suite>-<case>/routes.json` (plus an optional
-`design.newtopo`). This keeps competing candidates isolated across HPC nodes
-while fixing the commit, install, and candidate-file SHA-256 values in every
-task before it is submitted.
+candidate root containing the corresponding files under `<suite>-<case>/`.
+This keeps competing candidates isolated across HPC nodes while fixing the
+commit, install, and every candidate-file SHA-256 value in each task before it
+is submitted. Replacing a candidate after farm planning is therefore rejected
+before evaluation.
 
 BoardDB projection and Phase 3–7 remain separate matrix gates and are not
 upgraded merely because fetch, import, or evaluation passed.

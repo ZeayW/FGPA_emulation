@@ -21,9 +21,11 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .contest_eda2023 import (
     import_eda2023_case,
+    materialize_eda2023_official_outputs,
     materialize_eda2023_rtl_boarddb,
 )
 from .contest_eda2024 import (
+    evaluate_eda2024_solution,
     import_eda2024_case,
     materialize_eda2024_rtl_boarddb,
 )
@@ -38,8 +40,11 @@ from .validation_farm import validate_validation_farm
 PUBLIC_CONTEST_FETCH_REPORT_SCHEMA = "emuflow.public-contest-fetch-report/v1"
 PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA = "emuflow.public-contest-import-report/v1"
 PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA = "emuflow.public-contest-boarddb-report/v1"
-PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA = (
+PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1 = (
     "emuflow.public-contest-evaluation-report/v1"
+)
+PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA = (
+    "emuflow.public-contest-evaluation-report/v2"
 )
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -454,17 +459,142 @@ def _validate_import_artifacts(
     return report
 
 
+def _candidate_spec_for_suite(
+    suite: str,
+    *,
+    routes_path: Optional[Path],
+    tdm_plan_path: Optional[Path],
+    solution_path: Optional[Path],
+    new_topology_path: Optional[Path],
+) -> Dict[str, Path]:
+    supplied = {
+        "routes.json": routes_path,
+        "tdm_plan.json": tdm_plan_path,
+        "design.fpga.out": solution_path,
+        "design.newtopo": new_topology_path,
+    }
+    required = {
+        "eda2023": {"routes.json", "tdm_plan.json"},
+        "eda2024-repart": {"design.fpga.out"},
+        "eda2025": {"routes.json"},
+    }.get(suite)
+    if required is None:
+        raise ValidationError(
+            f"public contest suite {suite!r} has no unified evaluate gate"
+        )
+    allowed = set(required)
+    if suite == "eda2025":
+        allowed.add("design.newtopo")
+    missing = sorted(name for name in required if supplied[name] is None)
+    unexpected = sorted(
+        name for name, path in supplied.items()
+        if path is not None and name not in allowed
+    )
+    if missing or unexpected:
+        raise ValidationError(
+            "public contest candidate files do not match suite "
+            f"{suite!r}: missing={missing}, unexpected={unexpected}"
+        )
+    resolved: Dict[str, Path] = {}
+    for name, path in supplied.items():
+        if path is None:
+            continue
+        candidate = path.resolve()
+        if not candidate.is_file():
+            raise ValidationError(f"public contest candidate {name!r} is missing")
+        resolved[name] = candidate
+    return resolved
+
+
+def _candidate_summary(candidate_dir: Path) -> Dict[str, Optional[str]]:
+    return {
+        "routes_sha256": (
+            _sha256_file(candidate_dir / "routes.json")
+            if (candidate_dir / "routes.json").is_file()
+            else None
+        ),
+        "tdm_plan_sha256": (
+            _sha256_file(candidate_dir / "tdm_plan.json")
+            if (candidate_dir / "tdm_plan.json").is_file()
+            else None
+        ),
+        "solution_sha256": (
+            _sha256_file(candidate_dir / "design.fpga.out")
+            if (candidate_dir / "design.fpga.out").is_file()
+            else None
+        ),
+        "new_topology_sha256": (
+            _sha256_file(candidate_dir / "design.newtopo")
+            if (candidate_dir / "design.newtopo").is_file()
+            else None
+        ),
+    }
+
+
+def _run_frozen_public_evaluation(
+    suite: str,
+    source_dir: Path,
+    import_dir: Path,
+    candidate_dir: Path,
+    output_dir: Path,
+    *,
+    runtime_seconds: float,
+) -> Dict[str, Any]:
+    evaluation_path = output_dir / "evaluation.json"
+    official_dir = output_dir / "official"
+    if suite == "eda2023":
+        evaluation = materialize_eda2023_official_outputs(
+            import_dir / "contest_instance.json",
+            candidate_dir / "routes.json",
+            candidate_dir / "tdm_plan.json",
+            official_dir,
+        )
+        write_json(evaluation_path, evaluation)
+        return evaluation
+    if suite == "eda2024-repart":
+        evaluation = evaluate_eda2024_solution(
+            source_dir / "design.info",
+            source_dir / "design.are",
+            source_dir / "design.net",
+            source_dir / "design.topo",
+            candidate_dir / "design.fpga.out",
+            runtime_seconds=runtime_seconds,
+            output_path=evaluation_path,
+        )
+        official_dir.mkdir()
+        shutil.copy2(
+            candidate_dir / "design.fpga.out",
+            official_dir / "design.fpga.out",
+        )
+        return evaluation
+    if suite == "eda2025":
+        topology = candidate_dir / "design.newtopo"
+        return evaluate_eda2025_routes(
+            instance_path=import_dir / "contest_instance.json",
+            routes_path=candidate_dir / "routes.json",
+            output_path=evaluation_path,
+            new_topology_path=topology if topology.is_file() else None,
+            runtime_seconds=runtime_seconds,
+            official_output_dir=official_dir,
+        )
+    raise ValidationError(f"public contest evaluation suite {suite!r} is unsupported")
+
+
 def evaluate_public_contest_case(
     matrix_path: Path,
     case_id: str,
     source_dir: Path,
     import_dir: Path,
-    routes_path: Path,
+    routes_path: Optional[Path],
     output_dir: Path,
     *,
+    tdm_plan_path: Optional[Path] = None,
+    solution_path: Optional[Path] = None,
     new_topology_path: Optional[Path] = None,
     runtime_seconds: float = 0.0,
     expected_routes_sha256: Optional[str] = None,
+    expected_tdm_plan_sha256: Optional[str] = None,
+    expected_solution_sha256: Optional[str] = None,
     expected_topology_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a self-contained, replayable public-contest evaluation bundle."""
@@ -473,10 +603,6 @@ def evaluate_public_contest_case(
     case = _find_case(matrix, case_id)
     if "evaluate" not in case["target_gates"]:
         raise ValidationError(f"public contest case {case_id!r} has no evaluate gate")
-    if case["suite"] != "eda2025":
-        raise ValidationError(
-            f"public contest suite {case['suite']!r} has no unified evaluate gate"
-        )
     if (
         isinstance(runtime_seconds, bool)
         or not isinstance(runtime_seconds, (int, float))
@@ -488,30 +614,31 @@ def evaluate_public_contest_case(
     import_dir = import_dir.resolve()
     source_validation = _validate_fetch_provenance(case, source_dir)
     import_report = _validate_import_artifacts(matrix, case, import_dir)
-    routes_path = routes_path.resolve()
-    if not routes_path.is_file():
-        raise ValidationError("public contest candidate routes are missing")
-    _validate_expected_sha256(
-        routes_path, expected_routes_sha256, label="candidate routes"
+    candidates = _candidate_spec_for_suite(
+        case["suite"],
+        routes_path=routes_path,
+        tdm_plan_path=tdm_plan_path,
+        solution_path=solution_path,
+        new_topology_path=new_topology_path,
     )
-    if new_topology_path is not None:
-        new_topology_path = new_topology_path.resolve()
-        if not new_topology_path.is_file():
-            raise ValidationError("public contest candidate topology is missing")
+    expected_by_name = {
+        "routes.json": expected_routes_sha256,
+        "tdm_plan.json": expected_tdm_plan_sha256,
+        "design.fpga.out": expected_solution_sha256,
+        "design.newtopo": expected_topology_sha256,
+    }
+    for name, expected in expected_by_name.items():
+        if name not in candidates and expected is not None:
+            raise ValidationError(
+                f"candidate {name!r} SHA256 was supplied without its file"
+            )
+    for name, path in candidates.items():
         _validate_expected_sha256(
-            new_topology_path,
-            expected_topology_sha256,
-            label="candidate topology",
-        )
-    elif expected_topology_sha256 is not None:
-        raise ValidationError(
-            "candidate topology SHA256 was supplied without a topology file"
+            path, expected_by_name[name], label=f"candidate {name}"
         )
 
     output_dir = output_dir.resolve()
-    inputs = [source_dir, import_dir, routes_path]
-    if new_topology_path is not None:
-        inputs.append(new_topology_path)
+    inputs = [source_dir, import_dir, *candidates.values()]
     if any(_paths_overlap(output_dir, path) for path in inputs):
         raise ValidationError(
             "public contest evaluation output overlaps an input path"
@@ -531,30 +658,23 @@ def evaluate_public_contest_case(
         shutil.copy2(source_dir / record["name"], frozen_source / record["name"])
     shutil.copytree(import_dir, frozen_import)
     frozen_candidate.mkdir()
-    frozen_routes = frozen_candidate / "routes.json"
-    shutil.copy2(routes_path, frozen_routes)
-    _validate_expected_sha256(
-        frozen_routes, expected_routes_sha256, label="copied candidate routes"
-    )
-    frozen_topology = None
-    if new_topology_path is not None:
-        frozen_topology = frozen_candidate / "design.newtopo"
-        shutil.copy2(new_topology_path, frozen_topology)
+    for name, path in candidates.items():
+        frozen = frozen_candidate / name
+        shutil.copy2(path, frozen)
         _validate_expected_sha256(
-            frozen_topology,
-            expected_topology_sha256,
-            label="copied candidate topology",
+            frozen,
+            expected_by_name[name],
+            label=f"copied candidate {name}",
         )
 
     evaluation_path = output_dir / "evaluation.json"
-    official_dir = output_dir / "official"
-    evaluation = evaluate_eda2025_routes(
-        instance_path=frozen_import / "contest_instance.json",
-        routes_path=frozen_routes,
-        output_path=evaluation_path,
-        new_topology_path=frozen_topology,
+    evaluation = _run_frozen_public_evaluation(
+        case["suite"],
+        frozen_source,
+        frozen_import,
+        frozen_candidate,
+        output_dir,
         runtime_seconds=runtime_seconds,
-        official_output_dir=official_dir,
     )
     report = {
         "schema": PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA,
@@ -577,14 +697,7 @@ def evaluate_public_contest_case(
             ).hexdigest(),
             "import_artifacts": len(import_report["artifacts"]),
         },
-        "candidate": {
-            "routes_sha256": hashlib.sha256(frozen_routes.read_bytes()).hexdigest(),
-            "new_topology_sha256": (
-                hashlib.sha256(frozen_topology.read_bytes()).hexdigest()
-                if frozen_topology is not None
-                else None
-            ),
-        },
+        "candidate": _candidate_summary(frozen_candidate),
         "evaluation_sha256": hashlib.sha256(evaluation_path.read_bytes()).hexdigest(),
         "metrics": evaluation["metrics"],
         "artifacts": _sealed_artifact_manifest(
@@ -627,7 +740,11 @@ def validate_public_contest_evaluation(
         raise ValidationError("public contest evaluation case id is invalid")
     case = _find_case(matrix, case_id)
     if (
-        report.get("schema") != PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA
+        report.get("schema")
+        not in {
+            PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1,
+            PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA,
+        }
         or report.get("status") != "pass"
         or report.get("suite") != case["suite"]
         or report.get("case") != case["case"]
@@ -636,8 +753,11 @@ def validate_public_contest_evaluation(
         or report.get("matrix_sha256") != canonical_matrix_sha256(matrix)
     ):
         raise ValidationError("public contest evaluation report is invalid")
-    if case["suite"] != "eda2025":
-        raise ValidationError("public contest evaluation suite is unsupported")
+    if (
+        report.get("schema") == PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1
+        and case["suite"] != "eda2025"
+    ):
+        raise ValidationError("legacy public evaluation suite is unsupported")
     _validate_sealed_manifest(
         evaluation_dir,
         report.get("artifacts"),
@@ -648,9 +768,21 @@ def validate_public_contest_evaluation(
     frozen_candidate = evaluation_dir / "candidate"
     source_validation = _validate_fetch_provenance(case, frozen_source)
     import_report = _validate_import_artifacts(matrix, case, frozen_import)
-    routes_path = frozen_candidate / "routes.json"
-    topology_path = frozen_candidate / "design.newtopo"
-    topology_arg = topology_path if topology_path.is_file() else None
+    _candidate_spec_for_suite(
+        case["suite"],
+        routes_path=(frozen_candidate / "routes.json")
+        if (frozen_candidate / "routes.json").is_file()
+        else None,
+        tdm_plan_path=(frozen_candidate / "tdm_plan.json")
+        if (frozen_candidate / "tdm_plan.json").is_file()
+        else None,
+        solution_path=(frozen_candidate / "design.fpga.out")
+        if (frozen_candidate / "design.fpga.out").is_file()
+        else None,
+        new_topology_path=(frozen_candidate / "design.newtopo")
+        if (frozen_candidate / "design.newtopo").is_file()
+        else None,
+    )
     with tempfile.TemporaryDirectory() as temporary:
         replay_root = Path(temporary)
         replay_import = replay_root / "import"
@@ -675,23 +807,31 @@ def validate_public_contest_evaluation(
             raise ValidationError(
                 "public contest semantic import replay differs"
             )
-        replay_evaluation_path = replay_root / "evaluation.json"
-        replay_official = replay_root / "official"
-        replay = evaluate_eda2025_routes(
-            instance_path=frozen_import / "contest_instance.json",
-            routes_path=routes_path,
-            output_path=replay_evaluation_path,
-            new_topology_path=topology_arg,
-            runtime_seconds=float(report["metrics"]["runtime_seconds"]),
-            official_output_dir=replay_official,
+        replay = _run_frozen_public_evaluation(
+            case["suite"],
+            frozen_source,
+            frozen_import,
+            frozen_candidate,
+            replay_root,
+            runtime_seconds=float(report["metrics"].get("runtime_seconds", 0.0)),
         )
         stored = read_json(evaluation_dir / "evaluation.json")
         if replay != stored:
             raise ValidationError("public contest evaluation replay differs")
-        for name in ("design.route.out", "design.newtopo"):
-            if (replay_official / name).read_bytes() != (
-                evaluation_dir / "official" / name
-            ).read_bytes():
+        supplied_official = {
+            path.relative_to(evaluation_dir / "official").as_posix(): path
+            for path in (evaluation_dir / "official").rglob("*")
+            if path.is_file()
+        }
+        replay_official = {
+            path.relative_to(replay_root / "official").as_posix(): path
+            for path in (replay_root / "official").rglob("*")
+            if path.is_file()
+        }
+        if set(supplied_official) != set(replay_official):
+            raise ValidationError("public contest official output set differs")
+        for name, path in supplied_official.items():
+            if path.read_bytes() != replay_official[name].read_bytes():
                 raise ValidationError(
                     f"public contest official output {name!r} differs"
                 )
@@ -708,19 +848,22 @@ def validate_public_contest_evaluation(
             ).hexdigest(),
             "import_artifacts": len(import_report["artifacts"]),
         },
-        "candidate": {
-            "routes_sha256": hashlib.sha256(routes_path.read_bytes()).hexdigest(),
-            "new_topology_sha256": (
-                hashlib.sha256(topology_path.read_bytes()).hexdigest()
-                if topology_arg is not None
-                else None
-            ),
-        },
+        "candidate": _candidate_summary(frozen_candidate),
         "evaluation_sha256": hashlib.sha256(
             (evaluation_dir / "evaluation.json").read_bytes()
         ).hexdigest(),
         "metrics": replay["metrics"],
     }
+    reported_candidate = report.get("candidate")
+    expected_candidate = expected_summary["candidate"]
+    if (
+        case["suite"] == "eda2025"
+        and isinstance(reported_candidate, dict)
+        and set(reported_candidate) == {"routes_sha256", "new_topology_sha256"}
+    ):
+        expected_summary["candidate"] = {
+            key: expected_candidate[key] for key in reported_candidate
+        }
     if any(report.get(key) != value for key, value in expected_summary.items()):
         raise ValidationError("public contest evaluation summary does not agree")
     return {
@@ -1226,7 +1369,6 @@ def build_contest_evaluation_farm_spec(
         if (
             case["tier"] not in selected_tiers
             or "evaluate" not in case["target_gates"]
-            or case["suite"] != "eda2025"
             or case["source"]["revision_kind"] == "embedded-sha256"
         ):
             continue
@@ -1251,14 +1393,15 @@ def build_contest_evaluation_farm_spec(
         _validate_import_artifacts(matrix, case, import_dir)
         candidate_dir = candidates_root / suffix
         routes_path = candidate_dir / "routes.json"
+        tdm_plan_path = candidate_dir / "tdm_plan.json"
+        solution_path = candidate_dir / "design.fpga.out"
         topology_path = candidate_dir / "design.newtopo"
-        if not routes_path.is_file():
-            raise ValidationError(
-                f"contest evaluation case {case['id']!r} has no candidate routes"
-            )
-        routes_sha256 = _sha256_file(routes_path)
-        topology_sha256 = (
-            _sha256_file(topology_path) if topology_path.is_file() else None
+        candidate_paths = _candidate_spec_for_suite(
+            case["suite"],
+            routes_path=routes_path if routes_path.is_file() else None,
+            tdm_plan_path=tdm_plan_path if tdm_plan_path.is_file() else None,
+            solution_path=solution_path if solution_path.is_file() else None,
+            new_topology_path=topology_path if topology_path.is_file() else None,
         )
         command = [
             "{install}/bin/emuflow",
@@ -1272,23 +1415,25 @@ def build_contest_evaluation_farm_spec(
             str(source_dir),
             "--import-dir",
             str(import_dir),
-            "--routes",
-            str(routes_path.resolve()),
-            "--expected-routes-sha256",
-            routes_sha256,
             "--runtime-seconds",
             str(float(runtime_seconds)),
             "--out",
             "{run_dir}",
         ]
-        if topology_path.is_file():
+        option_by_name = {
+            "routes.json": ("--routes", "--expected-routes-sha256"),
+            "tdm_plan.json": ("--tdm-plan", "--expected-tdm-plan-sha256"),
+            "design.fpga.out": ("--solution", "--expected-solution-sha256"),
+            "design.newtopo": (
+                "--new-topology",
+                "--expected-topology-sha256",
+            ),
+        }
+        for name in sorted(candidate_paths):
+            path_option, digest_option = option_by_name[name]
+            path = candidate_paths[name]
             command.extend(
-                [
-                    "--new-topology",
-                    str(topology_path.resolve()),
-                    "--expected-topology-sha256",
-                    topology_sha256,
-                ]
+                [path_option, str(path), digest_option, _sha256_file(path)]
             )
         tasks.append({"id": "evaluate-" + suffix, "command": command})
         selected_cases.append(case)
