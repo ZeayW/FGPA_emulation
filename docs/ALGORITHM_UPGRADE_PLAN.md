@@ -399,9 +399,18 @@ projected through each lossless fine/coarse map and refined by direct K-way FM
 using Eqs. 9--10, distance-two candidate moves, ineffective-move early stop,
 and best-prefix rollback. Its native priority queue invalidates gains only for
 driver-sink neighbors, pins of incident hyperedges, and nodes whose exact
-multi-resource feasibility changes as a source/target FPGA load changes. The
-independent Python oracle still performs a full gain rescan after every move,
-so incremental-state errors cannot validate themselves.
+multi-resource feasibility changes as a source/target FPGA load changes.
+Compact cases retain both the exhaustive and independent incremental Python
+move-for-move replays. Large levels instead use a separate first-party C++
+certificate checker with a multidimensional orthant range-maximum tree. That
+checker recomputes local Eq. 10 gains independently and proves the selected
+move is the globally best legal candidate after every step; changing an FPGA's
+remaining capacity only changes the range-query bound and does not invalidate
+every node crossing a resource threshold. Python still reparses the sealed
+native output and recomputes initial/final capacity, fixed, cut, connectivity,
+hop, and violation metrics in linear time. This keeps strict global-best,
+gain, early-stop, and best-prefix verification without running a second Python
+FM optimizer on every large uncoarsening level.
 
 The complete serial chain is now available as an explicit, non-default
 `mfspart` Phase 3 provider. Its adapter derives directed driver-sink records,

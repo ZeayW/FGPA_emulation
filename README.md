@@ -578,6 +578,20 @@ This is a TopoPart/DATE-2024-informed constrained-FM increment, not a claim of
 faithful TopoPart, MaPart, MFSPart, or HoPart reproduction; multilevel
 candidate propagation and paper-level ablations remain on the roadmap.
 
+An explicit non-default `--provider mfspart` supplies the separate
+source-complete MFSPart serial reproduction. Its affinity hierarchy, delayed
+propagation initializer, direct K-way FM uncoarsening, fixed-anchor margin
+coarsening, and minimum-used legalizer remain isolated from the default
+TritonPart provider. Compact refinements are checked move-for-move by both an
+exhaustive and an incremental Python oracle. Larger levels use the independent
+`emuflow_mfspart_refiner_checker`: a multidimensional range-maximum tree proves
+the globally best capacity-legal move, raw gain, early stop, and best-prefix
+rollback while capacity changes modify query bounds instead of scanning every
+threshold-crossing node. Python still performs the linear artifact/hash and
+initial/final cut, connectivity, hop, capacity, and fixed-node checks. The
+checker can be overridden for source-build validation with
+`--mfspart-refiner-checker`; installed builds resolve it automatically.
+
 ### Automatic validation archives
 
 A successful full-flow run can be archived as part of the same command. The

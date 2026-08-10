@@ -28,7 +28,13 @@ class MFSPartPhase3Test(unittest.TestCase):
         native_bin = Path(cls.temporary_directory.name) / "bin"
         native_bin.mkdir()
         cls.executables = {}
-        for name in ("coarsener", "initializer", "refiner", "legalizer"):
+        for name in (
+            "coarsener",
+            "initializer",
+            "refiner",
+            "refiner_checker",
+            "legalizer",
+        ):
             executable = (
                 native_bin / f"emuflow_mfspart_{name}"
             )
@@ -70,6 +76,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                 mfspart_coarsener=self.executables["coarsener"],
                 mfspart_initializer=self.executables["initializer"],
                 mfspart_refiner=self.executables["refiner"],
+                mfspart_refiner_checker=self.executables["refiner_checker"],
                 mfspart_legalizer=self.executables["legalizer"],
             )
             assignment = json.loads(
@@ -121,6 +128,8 @@ class MFSPartPhase3Test(unittest.TestCase):
                 self.executables["initializer"],
                 "--mfspart-refiner",
                 self.executables["refiner"],
+                "--mfspart-refiner-checker",
+                self.executables["refiner_checker"],
                 "--mfspart-legalizer",
                 self.executables["legalizer"],
             ]
@@ -158,6 +167,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                 mfspart_coarsener=self.executables["coarsener"],
                 mfspart_initializer=self.executables["initializer"],
                 mfspart_refiner=self.executables["refiner"],
+                mfspart_refiner_checker=self.executables["refiner_checker"],
                 mfspart_legalizer=self.executables["legalizer"],
             )
             assignment = json.loads(

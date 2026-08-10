@@ -20,6 +20,7 @@ MFSPART_REFINER_INPUT_SCHEMA = "emuflow.mfspart-refiner-input/v1"
 MFSPART_REFINEMENT_SCHEMA = "emuflow.mfspart-refinement/v1"
 MFSPART_REFINER_PROVIDER = "mfspart-paper-direct-kway-fm-v1"
 _GAIN_RANK_SCALE = 1_000_000_000.0
+_DEFAULT_PYTHON_REPLAY_MAX_NODES = 2_000
 
 
 def _gain_rank(value: float) -> int:
@@ -230,6 +231,48 @@ def _parse_output(path: Path, node_count: int) -> Dict[str, Any]:
         "assignment": [final[index] for index in range(node_count)],
         "metrics": metrics,
     }
+
+
+def _parse_checker_output(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        raise EmuFlowError("MFSPart refiner checker produced no output")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != "EMUFLOW_MFSPART_REFINER_CHECK_OUTPUT_V1":
+        raise ValidationError("invalid MFSPart refiner checker output header")
+    status = None
+    metrics: Dict[str, float] = {}
+    for line in lines[1:]:
+        fields = line.split()
+        try:
+            if fields[0] == "STATUS" and len(fields) == 2:
+                if status is not None:
+                    raise ValidationError("duplicate MFSPart checker status")
+                status = fields[1]
+            elif fields[0] == "METRIC" and len(fields) == 3:
+                if fields[1] in metrics:
+                    raise ValidationError("duplicate MFSPart checker metric")
+                value = float(fields[2])
+                if not math.isfinite(value):
+                    raise ValidationError("non-finite MFSPart checker metric")
+                metrics[fields[1]] = value
+            else:
+                raise ValidationError(
+                    f"invalid MFSPart checker output record {line!r}"
+                )
+        except (ValueError, IndexError) as error:
+            raise ValidationError(
+                f"malformed MFSPart checker output record {line!r}"
+            ) from error
+    required = {
+        "attempted_moves",
+        "kept_moves",
+        "objective_recomputations",
+        "orthant_tree_nodes_visited",
+        "best_cumulative_gain",
+    }
+    if status != "PASS" or set(metrics) != required:
+        raise ValidationError("incomplete MFSPart refiner checker output")
+    return metrics
 
 
 def _adjacency_and_incidence(problem: Mapping[str, Any]):
@@ -800,9 +843,105 @@ def _replay(problem: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]
     return moves, final, metrics
 
 
-def validate_mfspart_refinement(artifact: Mapping[str, Any], problem: Mapping[str, Any]) -> Dict[str, Any]:
+def validate_mfspart_refinement(
+    artifact: Mapping[str, Any],
+    problem: Mapping[str, Any],
+    *,
+    native_input_path: Optional[Path] = None,
+    native_output_path: Optional[Path] = None,
+    checker_output_path: Optional[Path] = None,
+    checker: Optional[str] = None,
+    python_replay_max_nodes: int = _DEFAULT_PYTHON_REPLAY_MAX_NODES,
+    force_python_replay: bool = False,
+) -> Dict[str, Any]:
     if artifact.get("schema") != MFSPART_REFINEMENT_SCHEMA:
         raise ValidationError("invalid MFSPart refinement schema")
+    if (
+        isinstance(python_replay_max_nodes, bool)
+        or not isinstance(python_replay_max_nodes, int)
+        or python_replay_max_nodes < 0
+    ):
+        raise ValidationError("invalid MFSPart Python replay threshold")
+    node_count = len(problem["graph"]["nodes"])
+    use_python_replay = force_python_replay or node_count <= python_replay_max_nodes
+    if not use_python_replay:
+        if (
+            native_input_path is None
+            or native_output_path is None
+            or checker_output_path is None
+        ):
+            raise ValidationError(
+                "large MFSPart refinement requires native certificate paths"
+            )
+        parsed = _parse_output(native_output_path, node_count)
+        if (
+            artifact.get("moves") != parsed["moves"]
+            or artifact.get("assignment") != parsed["assignment"]
+            or artifact.get("metrics") != parsed["metrics"]
+        ):
+            raise ValidationError("MFSPart artifact differs from sealed native output")
+        command = resolve_native_executable(
+            "emuflow_mfspart_refiner_checker", checker
+        )
+        completed = subprocess.run(
+            [
+                command,
+                str(native_input_path.resolve()),
+                str(native_output_path.resolve()),
+                str(checker_output_path.resolve()),
+            ],
+            cwd=checker_output_path.parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        (checker_output_path.parent / "mfspart_refiner_checker.log").write_text(
+            completed.stdout, encoding="utf-8"
+        )
+        if completed.returncode != 0:
+            raise ValidationError(
+                "MFSPart native certificate checker rejected refinement: "
+                + completed.stdout[-2000:]
+            )
+        checker_metrics = _parse_checker_output(checker_output_path)
+        actual_moves = artifact.get("moves")
+        if not isinstance(actual_moves, list):
+            raise ValidationError("MFSPart FM moves are invalid")
+        if checker_metrics["attempted_moves"] != len(actual_moves):
+            raise ValidationError("MFSPart checker move count mismatch")
+        kept_moves = sum(bool(move.get("kept")) for move in actual_moves)
+        if checker_metrics["kept_moves"] != kept_moves:
+            raise ValidationError("MFSPart checker kept-prefix mismatch")
+        expected_initial = _partition_metrics(problem, problem["assignment"])
+        expected_final = _partition_metrics(problem, artifact["assignment"])
+        for prefix, expected_metrics in (
+            ("initial", expected_initial),
+            ("final", expected_final),
+        ):
+            for name, expected in expected_metrics.items():
+                actual = artifact.get("metrics", {}).get(f"{prefix}_{name}")
+                if actual is None or not math.isclose(
+                    actual, expected, rel_tol=1e-12, abs_tol=1e-12
+                ):
+                    raise ValidationError(
+                        f"MFSPart FM metric mismatch for {prefix}_{name}"
+                    )
+        return {
+            "status": "pass",
+            "mode": "native-orthant-global-best-certificate",
+            "attempted_moves": len(actual_moves),
+            "kept_moves": kept_moves,
+            "best_cumulative_gain": artifact["metrics"][
+                "best_cumulative_gain"
+            ],
+            "checker_objective_recomputations": int(
+                checker_metrics["objective_recomputations"]
+            ),
+            "checker_orthant_tree_nodes_visited": int(
+                checker_metrics["orthant_tree_nodes_visited"]
+            ),
+        }
     expected_moves, expected_assignment, expected_metrics = _replay(problem)
     actual_moves = artifact.get("moves")
     if not isinstance(actual_moves, list) or len(actual_moves) != len(expected_moves):
@@ -820,6 +959,7 @@ def validate_mfspart_refinement(artifact: Mapping[str, Any], problem: Mapping[st
             raise ValidationError(f"MFSPart FM metric mismatch for {name}")
     return {
         "status": "pass",
+        "mode": "python-incremental-full-replay",
         "attempted_moves": len(actual_moves),
         "kept_moves": sum(move["kept"] for move in actual_moves),
         "best_cumulative_gain": artifact["metrics"]["best_cumulative_gain"],
@@ -845,12 +985,16 @@ def refine_mfspart_level(
     violation_lambda: float = 10_000.0,
     mu: float = 0.1,
     executable: Optional[str] = None,
+    checker: Optional[str] = None,
+    python_replay_max_nodes: int = _DEFAULT_PYTHON_REPLAY_MAX_NODES,
+    force_python_replay: bool = False,
 ) -> Dict[str, Any]:
     problem = _normalise_refinement(graph, dimensions, parts, distances, capacities, assignment, hmax=hmax, move_distance=move_distance, early_stop=early_stop, gamma=gamma, violation_lambda=violation_lambda, mu=mu)
     output_dir.mkdir(parents=True, exist_ok=True)
     input_path = output_dir / "mfspart_refiner.in"
     output_path = output_dir / "mfspart_refiner.out"
     log_path = output_dir / "mfspart_refiner.log"
+    checker_output_path = output_dir / "mfspart_refiner.check"
     _write_native_input(input_path, problem)
     command = resolve_native_executable("emuflow_mfspart_refiner", executable)
     completed = subprocess.run([command, str(input_path.resolve()), str(output_path.resolve())], cwd=output_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
@@ -867,7 +1011,20 @@ def refine_mfspart_level(
         "metrics": parsed["metrics"],
         "artifacts": {"input_sha256": _sha256(input_path), "output_sha256": _sha256(output_path)},
     }
-    artifact["validation"] = validate_mfspart_refinement(artifact, problem)
+    artifact["validation"] = validate_mfspart_refinement(
+        artifact,
+        problem,
+        native_input_path=input_path,
+        native_output_path=output_path,
+        checker_output_path=checker_output_path,
+        checker=checker,
+        python_replay_max_nodes=python_replay_max_nodes,
+        force_python_replay=force_python_replay,
+    )
+    if checker_output_path.is_file():
+        artifact["artifacts"]["checker_output_sha256"] = _sha256(
+            checker_output_path
+        )
     return artifact
 
 
@@ -886,6 +1043,9 @@ def refine_mfspart_hierarchy(
     violation_lambda: float = 10_000.0,
     mu: float = 0.1,
     executable: Optional[str] = None,
+    checker: Optional[str] = None,
+    python_replay_max_nodes: int = _DEFAULT_PYTHON_REPLAY_MAX_NODES,
+    python_replay_levels: Sequence[int] = (),
 ) -> Dict[str, Any]:
     if hierarchy.get("schema") != MFSPART_HIERARCHY_SCHEMA or initial_partition.get("schema") != MFSPART_INITIAL_SCHEMA:
         raise ValidationError("invalid MFSPart hierarchy or initial partition")
@@ -895,6 +1055,15 @@ def refine_mfspart_hierarchy(
     mappings = hierarchy["fine_to_coarse"]
     current = [initial_partition["assignment"][index] for index in range(len(levels[-1]["nodes"]))]
     reports = []
+    replay_levels = set(python_replay_levels)
+    if any(
+        isinstance(level, bool)
+        or not isinstance(level, int)
+        or level < 0
+        or level >= len(levels)
+        for level in replay_levels
+    ):
+        raise ValidationError("invalid MFSPart Python replay level")
     for level in range(len(levels) - 1, -1, -1):
         if level < len(levels) - 1:
             current = [current[mappings[level][fine]] for fine in range(len(levels[level]["nodes"]))]
@@ -914,6 +1083,9 @@ def refine_mfspart_hierarchy(
             violation_lambda=violation_lambda,
             mu=mu,
             executable=executable,
+            checker=checker,
+            python_replay_max_nodes=python_replay_max_nodes,
+            force_python_replay=level in replay_levels,
         )
         current = report["assignment"]
         reports.append({"level": level, "refinement": report})

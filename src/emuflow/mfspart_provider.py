@@ -255,6 +255,7 @@ def run_mfspart(
     coarsener: Optional[str] = None,
     initializer: Optional[str] = None,
     refiner: Optional[str] = None,
+    refiner_checker: Optional[str] = None,
     legalizer: Optional[str] = None,
 ) -> Dict[str, Any]:
     nodes, nets, dimensions = _partition_graph(
@@ -303,6 +304,7 @@ def run_mfspart(
         output_dir / "uncoarsening",
         hmax=hmax,
         executable=refiner,
+        checker=refiner_checker,
     )
     legalization = legalize_mfspart_min_used(
         hierarchy["levels"][0],

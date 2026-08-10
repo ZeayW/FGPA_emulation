@@ -44,6 +44,10 @@ class MFSPartRefinementTest(unittest.TestCase):
         cls.executable = (
             Path(cls.temporary_directory.name) / "emuflow_mfspart_refiner"
         )
+        cls.checker = (
+            Path(cls.temporary_directory.name)
+            / "emuflow_mfspart_refiner_checker"
+        )
         subprocess.run(
             [
                 compiler,
@@ -56,6 +60,21 @@ class MFSPartRefinementTest(unittest.TestCase):
                 str(ROOT / "src/native/mfspart_refiner.cpp"),
                 "-o",
                 str(cls.executable),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                compiler,
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Wpedantic",
+                "-Werror",
+                str(ROOT / "src/native/mfspart_refiner_checker.cpp"),
+                "-o",
+                str(cls.checker),
             ],
             check=True,
         )
@@ -305,6 +324,70 @@ class MFSPartRefinementTest(unittest.TestCase):
         for name, value in exhaustive_metrics.items():
             self.assertEqual(incremental_metrics[name], value)
 
+    def test_native_orthant_certificate_matches_small_python_replay(self) -> None:
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                self._violating_graph(),
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2],
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=2,
+                executable=str(self.executable),
+                checker=str(self.checker),
+                python_replay_max_nodes=0,
+            )
+        self.assertEqual(
+            artifact["validation"]["mode"],
+            "native-orthant-global-best-certificate",
+        )
+        self.assertEqual(artifact["assignment"], [0, 0])
+        self.assertIn("checker_output_sha256", artifact["artifacts"])
+
+    def test_native_certificate_rejects_non_global_move(self) -> None:
+        parts, distances, capacities = _line_problem()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            refine_mfspart_level(
+                self._violating_graph(),
+                ["cells"],
+                parts,
+                distances,
+                capacities,
+                [0, 2],
+                root,
+                hmax=1,
+                early_stop=2,
+                executable=str(self.executable),
+                checker=str(self.checker),
+                python_replay_max_nodes=0,
+            )
+            output = root / "mfspart_refiner.out"
+            lines = output.read_text(encoding="utf-8").splitlines()
+            move = next(index for index, line in enumerate(lines) if line.startswith("MOVE "))
+            fields = lines[move].split()
+            fields[2] = "0"
+            lines[move] = " ".join(fields)
+            output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    str(self.checker),
+                    str(root / "mfspart_refiner.in"),
+                    str(output),
+                    str(root / "tampered.check"),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("global-best certificate mismatch", completed.stdout)
+
     def test_incremental_oracle_scales_to_100k_sparse_nodes(self) -> None:
         node_count = 100_000
         graph = {
@@ -335,6 +418,40 @@ class MFSPartRefinementTest(unittest.TestCase):
         moves, _, metrics = _replay(problem)
         self.assertEqual(len(moves), 20)
         self.assertLess(metrics["oracle_candidate_recomputations"], 101_000)
+
+    def test_native_certificate_scales_to_100k_sparse_nodes(self) -> None:
+        node_count = 100_000
+        graph = {
+            "nodes": [
+                {"fixed_part": -1, "weights": [1]}
+                for _ in range(node_count)
+            ],
+            "nets": [
+                {"weight": 1.0, "source": node, "sinks": [node + 1]}
+                for node in range(0, node_count, 2)
+            ],
+        }
+        parts = ["F0", "F1"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = refine_mfspart_level(
+                graph,
+                ["cells"],
+                parts,
+                {"F0": {"F0": 0, "F1": 1}, "F1": {"F0": 1, "F1": 0}},
+                {part: {"cells": 200_000} for part in parts},
+                [0] * node_count,
+                Path(temporary_directory),
+                hmax=1,
+                early_stop=20,
+                executable=str(self.executable),
+                checker=str(self.checker),
+                python_replay_max_nodes=0,
+            )
+        self.assertEqual(artifact["validation"]["attempted_moves"], 20)
+        self.assertLess(
+            artifact["validation"]["checker_orthant_tree_nodes_visited"],
+            1_000,
+        )
 
     def test_high_fanout_connectivity_uses_indexed_part_counts(self) -> None:
         node_count = 10_000
@@ -369,6 +486,7 @@ class MFSPartRefinementTest(unittest.TestCase):
                 hmax=1,
                 early_stop=3,
                 executable=str(self.executable),
+                checker=str(self.checker),
             )
         self.assertEqual(artifact["validation"]["status"], "pass")
         self.assertLess(artifact["metrics"]["candidate_recomputations"], 50_000)

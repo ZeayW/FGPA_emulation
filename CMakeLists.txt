@@ -543,6 +543,17 @@ if(EMUFLOW_BUILD_MFSPART_COARSENER)
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
   add_executable(
+    emuflow_mfspart_refiner_checker
+    "${CMAKE_SOURCE_DIR}/src/native/mfspart_refiner_checker.cpp"
+  )
+  target_compile_features(emuflow_mfspart_refiner_checker PRIVATE cxx_std_17)
+  target_compile_options(emuflow_mfspart_refiner_checker PRIVATE -O3)
+  set_target_properties(
+    emuflow_mfspart_refiner_checker
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  add_executable(
     emuflow_mfspart_legalizer
     "${CMAKE_SOURCE_DIR}/src/native/mfspart_legalizer.cpp"
   )
@@ -1121,6 +1132,10 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_mfspart_refiner_cli
       COMMAND "$<TARGET_FILE:emuflow_mfspart_refiner>" --help
+    )
+    add_test(
+      NAME emuflow_mfspart_refiner_checker_cli
+      COMMAND "$<TARGET_FILE:emuflow_mfspart_refiner_checker>" --help
     )
     add_test(
       NAME emuflow_mfspart_legalizer_cli

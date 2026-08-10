@@ -131,6 +131,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/mfspart_initializer.cpp",
     "src/emuflow/mfspart_initial.py",
     "src/native/mfspart_refiner.cpp",
+    "src/native/mfspart_refiner_checker.cpp",
     "src/emuflow/mfspart_refine.py",
     "src/emuflow/mfspart_provider.py",
     "src/native/mfspart_legalizer.cpp",

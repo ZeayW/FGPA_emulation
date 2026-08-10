@@ -1664,6 +1664,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--mfspart-coarsener")
     phase3.add_argument("--mfspart-initializer")
     phase3.add_argument("--mfspart-refiner")
+    phase3.add_argument("--mfspart-refiner-checker")
     phase3.add_argument("--mfspart-legalizer")
 
     sta_parser = subparsers.add_parser(
@@ -3347,6 +3348,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             mfspart_coarsener=args.mfspart_coarsener,
             mfspart_initializer=args.mfspart_initializer,
             mfspart_refiner=args.mfspart_refiner,
+            mfspart_refiner_checker=args.mfspart_refiner_checker,
             mfspart_legalizer=args.mfspart_legalizer,
         )
         _print_json(report)

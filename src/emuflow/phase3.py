@@ -46,6 +46,7 @@ def run_phase3(
     mfspart_coarsener: Optional[str] = None,
     mfspart_initializer: Optional[str] = None,
     mfspart_refiner: Optional[str] = None,
+    mfspart_refiner_checker: Optional[str] = None,
     mfspart_legalizer: Optional[str] = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
@@ -116,6 +117,7 @@ def run_phase3(
             coarsener=mfspart_coarsener,
             initializer=mfspart_initializer,
             refiner=mfspart_refiner,
+            refiner_checker=mfspart_refiner_checker,
             legalizer=mfspart_legalizer,
         )
     else:
