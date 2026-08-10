@@ -20,7 +20,16 @@ from .vivado_backend import vivado_runtime_xdc
 from .vivado_netlist import emit_vivado_mapped_verilog
 
 
-VIVADO_BOARD_FLOW_SCHEMA = "emuflow.vivado-board-flow/v1"
+LEGACY_VIVADO_BOARD_FLOW_SCHEMA = "emuflow.vivado-board-flow/v1"
+VIVADO_BOARD_FLOW_SCHEMA = "emuflow.vivado-board-flow/v2"
+
+_VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS = (
+    "congestion.rpt",
+    "slr_utilization.rpt",
+    "slr_crossing.rpt",
+)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -304,6 +313,25 @@ def build_vivado_board_tcl(
             + _tcl_quote(str(output_dir / "timing_summary.rpt")),
             "report_utilization -hierarchical -file "
             + _tcl_quote(str(output_dir / "utilization.rpt")),
+            "report_design_analysis -congestion -file "
+            + _tcl_quote(str(output_dir / "congestion.rpt")),
+            "report_utilization -slr -file "
+            + _tcl_quote(str(output_dir / "slr_utilization.rpt")),
+            "set slrs [get_slrs -quiet]",
+            "set slr_count [llength $slrs]",
+            "set slr_crossing_status measured",
+            "if {$slr_count > 1} {",
+            "  report_slr_crossing -file "
+            + _tcl_quote(str(output_dir / "slr_crossing.rpt")),
+            "} else {",
+            "  set slr_crossing_status single-slr-not-applicable",
+            "  set slr_report [open "
+            + _tcl_quote(str(output_dir / "slr_crossing.rpt"))
+            + " w]",
+            "  puts $slr_report \"EMUFLOW_SLR_CROSSING\\tstatus\\t$slr_crossing_status\"",
+            "  puts $slr_report \"EMUFLOW_SLR_CROSSING\\tslr_count\\t$slr_count\"",
+            "  close $slr_report",
+            "}",
             "set unrouted [get_nets -quiet -filter {ROUTE_STATUS == UNROUTED}]",
             "if {[llength $unrouted] != 0} {",
             "  error \"board design has [llength $unrouted] unrouted nets\"",
@@ -342,6 +370,8 @@ def build_vivado_board_tcl(
             "puts $metrics \"drc_warnings\\t$drc_warnings\"",
             "puts $metrics \"wns_ns\\t$wns\"",
             "puts $metrics \"critical_path_ns\\t$critical_path\"",
+            "puts $metrics \"slr_count\\t$slr_count\"",
+            "puts $metrics \"slr_crossing_status\\t$slr_crossing_status\"",
             "puts $metrics \"channel_locs\\t$actual_channel_locs\"",
             "puts $metrics \"common_locs\\t$actual_common_locs\"",
             "close $metrics",
@@ -402,7 +432,11 @@ def _read_drc_rule_summary(path: Path) -> Dict[str, Dict[str, Any]]:
 
 
 def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, Any]:
-    if report.get("schema") != VIVADO_BOARD_FLOW_SCHEMA:
+    schema = report.get("schema")
+    if schema not in {
+        LEGACY_VIVADO_BOARD_FLOW_SCHEMA,
+        VIVADO_BOARD_FLOW_SCHEMA,
+    }:
         raise ValidationError("Vivado board-flow report schema is invalid")
     if report.get("status") != "pass":
         raise ValidationError("Vivado board-flow report did not pass")
@@ -440,6 +474,61 @@ def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, An
         for item in records
     ):
         raise ValidationError("Vivado board-flow closure is incomplete")
+    physical_evidence_fpgas = 0
+    multi_slr_fpgas = 0
+    if schema == VIVADO_BOARD_FLOW_SCHEMA:
+        for item in records:
+            evidence = item.get("physical_evidence")
+            artifacts = item.get("artifacts")
+            if (
+                not isinstance(evidence, dict)
+                or evidence.get("scope")
+                != "authoritative-vivado-post-route-reports"
+                or not isinstance(artifacts, dict)
+            ):
+                raise ValidationError(
+                    "Vivado board-flow physical evidence is incomplete"
+                )
+            slr_count = evidence.get("slr_count")
+            status = evidence.get("slr_crossing_status")
+            if (
+                isinstance(slr_count, bool)
+                or not isinstance(slr_count, int)
+                or slr_count < 0
+                or status
+                != (
+                    "measured"
+                    if slr_count > 1
+                    else "single-slr-not-applicable"
+                )
+            ):
+                raise ValidationError(
+                    "Vivado board-flow SLR evidence is inconsistent"
+                )
+            evidence_artifacts = evidence.get("artifacts")
+            if evidence_artifacts != {
+                "congestion": "congestion.rpt",
+                "slr_crossing": "slr_crossing.rpt",
+                "slr_utilization": "slr_utilization.rpt",
+            }:
+                raise ValidationError(
+                    "Vivado board-flow physical evidence inventory is invalid"
+                )
+            for name in _VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS:
+                artifact = artifacts.get(name)
+                if (
+                    not isinstance(artifact, dict)
+                    or re.fullmatch(r"[0-9a-f]{64}", artifact.get("sha256", ""))
+                    is None
+                    or isinstance(artifact.get("bytes"), bool)
+                    or not isinstance(artifact.get("bytes"), int)
+                    or artifact["bytes"] <= 0
+                ):
+                    raise ValidationError(
+                        "Vivado board-flow physical artifact seal is invalid"
+                    )
+            physical_evidence_fpgas += 1
+            multi_slr_fpgas += int(slr_count > 1)
     release = report.get("release")
     if (
         not isinstance(release, dict)
@@ -454,6 +543,8 @@ def validate_vivado_board_flow_report(report: Mapping[str, Any]) -> Dict[str, An
         "fpgas": len(records),
         "unrouted_nets": 0,
         "drc_errors": sum(item["closure"]["drc_errors"] for item in records),
+        "physical_evidence_fpgas": physical_evidence_fpgas,
+        "multi_slr_fpgas": multi_slr_fpgas,
         "hardware_release_authorized": False,
     }
 
@@ -700,6 +791,12 @@ def run_vivado_board_flow(
             or _integer(metrics, "unrouted_nets") != 0
         ):
             raise ValidationError(f"{fpga_id}: Vivado board metrics disagree")
+        slr_count = _integer(metrics, "slr_count")
+        slr_crossing_status = metrics.get("slr_crossing_status")
+        if slr_crossing_status != (
+            "measured" if slr_count > 1 else "single-slr-not-applicable"
+        ):
+            raise ValidationError(f"{fpga_id}: Vivado SLR metrics disagree")
         artifact_names = (
             "synthesized.dcp",
             "placed.dcp",
@@ -708,6 +805,7 @@ def run_vivado_board_flow(
             "drc.rpt",
             "timing_summary.rpt",
             "utilization.rpt",
+            *_VIVADO_PHYSICAL_EVIDENCE_ARTIFACTS,
             "board_metrics.tsv",
         )
         artifacts = {}
@@ -747,6 +845,16 @@ def run_vivado_board_flow(
                     ),
                     "wns_ns": metrics.get("wns_ns"),
                     "critical_path_ns": metrics.get("critical_path_ns"),
+                },
+                "physical_evidence": {
+                    "scope": "authoritative-vivado-post-route-reports",
+                    "slr_count": slr_count,
+                    "slr_crossing_status": slr_crossing_status,
+                    "artifacts": {
+                        "congestion": "congestion.rpt",
+                        "slr_crossing": "slr_crossing.rpt",
+                        "slr_utilization": "slr_utilization.rpt",
+                    },
                 },
                 "validation": {
                     "black_boxes": 0,

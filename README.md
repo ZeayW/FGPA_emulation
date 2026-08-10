@@ -353,6 +353,14 @@ unmeasured and retains the conservative per-partition fallback.
 The result remains model-only across the PCB/GT/PCS link and is not final
 hardware timing sign-off until that latency is source-backed or measured.
 
+Board-flow report v2 also seals the raw post-route Vivado congestion report,
+per-SLR utilization report, and SLR-crossing report for every FPGA. A
+single-SLR device carries an explicit `single-slr-not-applicable` marker rather
+than fabricating crossing counts. These artifacts are the authoritative
+physical evidence required by the Chimew correlation gate; collecting them
+does not by itself claim that lookahead RUDY or SLL estimates correlate with
+Vivado.
+
 Board-link timing is a separate versioned input rather than an undocumented
 constant. Generate the explicit model from BoardDB, then replace individual
 directed records with characterized or measured upper bounds and validate the

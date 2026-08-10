@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import stat
 import tempfile
@@ -198,7 +199,8 @@ out = pathlib.Path.cwd()
 mapped = re.search(r'mapped cell coverage disagrees', script)
 for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
              'route_status.rpt', 'drc.rpt', 'timing_summary.rpt',
-             'utilization.rpt'):
+             'utilization.rpt', 'congestion.rpt',
+             'slr_utilization.rpt', 'slr_crossing.rpt'):
     (out / name).write_text(name + '\\n')
 (out / 'board_metrics.tsv').write_text(
     'metric\\tvalue\\nvivado_version\\ttest\\npart\\t' +
@@ -207,6 +209,8 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
     'channel_primitives\\t0\\ncommon_primitives\\t0\\n' +
     'unrouted_nets\\t0\\ndrc_errors\\t2\\ndrc_warnings\\t1\\n' +
     'wns_ns\\tNA\\ncritical_path_ns\\tNA\\n' +
+    'slr_count\\t1\\n' +
+    'slr_crossing_status\\tsingle-slr-not-applicable\\n' +
     'channel_locs\\t\\ncommon_locs\\t\\n')
 """,
                 encoding="utf-8",
@@ -284,12 +288,48 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
                 )
             self.assertEqual(report["summary"]["fpgas"], 2)
             self.assertEqual(report["summary"]["drc_errors"], 4)
+            self.assertEqual(report["summary"]["physical_evidence_fpgas"], 2)
+            self.assertEqual(report["summary"]["multi_slr_fpgas"], 0)
             self.assertEqual(report["source_physical_backend"], "open")
             self.assertEqual(
                 report["fpgas"][0]["vivado_relowering"]["status"], "pass"
             )
             self.assertFalse(report["release"]["hardware_release_authorized"])
+            self.assertEqual(
+                report["fpgas"][0]["physical_evidence"],
+                {
+                    "scope": "authoritative-vivado-post-route-reports",
+                    "slr_count": 1,
+                    "slr_crossing_status": "single-slr-not-applicable",
+                    "artifacts": {
+                        "congestion": "congestion.rpt",
+                        "slr_crossing": "slr_crossing.rpt",
+                        "slr_utilization": "slr_utilization.rpt",
+                    },
+                },
+            )
+            generated_tcl = Path(
+                report["fpgas"][0]["artifacts"]["generated_tcl"]["path"]
+            ).read_text(encoding="utf-8")
+            self.assertIn("report_design_analysis -congestion", generated_tcl)
+            self.assertIn("report_utilization -slr", generated_tcl)
+            self.assertIn("report_slr_crossing -file", generated_tcl)
             validate_vivado_board_flow_report(report)
+            legacy_report = copy.deepcopy(report)
+            legacy_report["schema"] = "emuflow.vivado-board-flow/v1"
+            for fpga_record in legacy_report["fpgas"]:
+                fpga_record.pop("physical_evidence")
+            self.assertEqual(
+                validate_vivado_board_flow_report(legacy_report)[
+                    "physical_evidence_fpgas"
+                ],
+                0,
+            )
+            report["fpgas"][0]["physical_evidence"][
+                "slr_crossing_status"
+            ] = "measured"
+            with self.assertRaisesRegex(ValidationError, "SLR evidence"):
+                validate_vivado_board_flow_report(report)
             with self.assertRaisesRegex(ValidationError, "bitstream"):
                 run_vivado_board_flow(
                     flow_root=flow,
