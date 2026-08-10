@@ -9,6 +9,7 @@ from unittest.mock import patch
 from emuflow.contest_public import (
     PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA,
     PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA,
+    PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1,
     PUBLIC_CONTEST_FETCH_REPORT_SCHEMA,
     PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA,
     build_contest_boarddb_farm_spec,
@@ -349,6 +350,20 @@ payload = b'abc'
             self.assertGreaterEqual(validation["artifacts_verified"], 10)
             self.assertTrue((bundle / "official" / "design.route.out").is_file())
 
+            legacy = root / "legacy-evaluation"
+            shutil.copytree(bundle, legacy)
+            legacy_report = read_json(legacy / "evaluation_report.json")
+            legacy_report["schema"] = PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1
+            legacy_report["candidate"] = {
+                key: legacy_report["candidate"][key]
+                for key in ("routes_sha256", "new_topology_sha256")
+            }
+            write_json(legacy / "evaluation_report.json", legacy_report)
+            self.assertEqual(
+                validate_public_contest_evaluation(matrix, legacy)["status"],
+                "pass",
+            )
+
             mixed = root / "mixed-evaluation"
             shutil.copytree(bundle, mixed)
             mixed_instance_path = mixed / "import" / "contest_instance.json"
@@ -451,6 +466,154 @@ payload = b'abc'
             )
             with self.assertRaisesRegex(ValidationError, "seal is broken"):
                 validate_public_contest_evaluation(matrix, bundle)
+
+    def test_eda2023_and_eda2024_use_the_same_sealed_evaluation_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            case23 = root / "case23"
+            case23.mkdir()
+            matrix23, source23 = self._semantic_fixture(case23, "eda2023")
+            normalized23 = root / "case23" / "normalized"
+            import_public_contest_case(
+                matrix23, "eda2023.case1", source23, normalized23
+            )
+            routes23 = root / "case23" / "routes.json"
+            write_json(
+                routes23,
+                {
+                    "schema": "emuflow.system-routes/v1",
+                    "routes": [
+                        {
+                            "net": "net_0000000",
+                            "source": "Die0",
+                            "sinks": ["Die2"],
+                            "tree_edges": [
+                                {
+                                    "from": "Die0",
+                                    "to": "Die1",
+                                    "link": "die_link_000_001",
+                                },
+                                {
+                                    "from": "Die1",
+                                    "to": "Die2",
+                                    "link": "die_link_001_002",
+                                },
+                            ],
+                        },
+                        {
+                            "net": "net_0000002",
+                            "source": "Die1",
+                            "sinks": ["Die3"],
+                            "tree_edges": [
+                                {
+                                    "from": "Die1",
+                                    "to": "Die2",
+                                    "link": "die_link_001_002",
+                                },
+                                {
+                                    "from": "Die2",
+                                    "to": "Die3",
+                                    "link": "die_link_002_003",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            )
+            tdm23 = root / "case23" / "tdm_plan.json"
+            write_json(
+                tdm23,
+                {
+                    "schema": "emuflow.contest-eda2023-tdm/v1",
+                    "instance": "eda2023-case1",
+                    "provider": "cpp-lagrangian-kkt-direction-separated-v1",
+                    "hops": [
+                        {
+                            "index": 0,
+                            "net": "net_0000000",
+                            "official_net_id": 0,
+                            "link": "die_link_001_002",
+                            "direction": 0,
+                            "from": "Die1",
+                            "to": "Die2",
+                            "ratio": 4,
+                            "lane": 0,
+                        },
+                        {
+                            "index": 1,
+                            "net": "net_0000002",
+                            "official_net_id": 2,
+                            "link": "die_link_001_002",
+                            "direction": 0,
+                            "from": "Die1",
+                            "to": "Die2",
+                            "ratio": 4,
+                            "lane": 0,
+                        },
+                    ],
+                },
+            )
+            bundle23 = root / "case23" / "evaluation"
+            report23 = evaluate_public_contest_case(
+                matrix23,
+                "eda2023.case1",
+                source23,
+                normalized23,
+                routes23,
+                bundle23,
+                tdm_plan_path=tdm23,
+                expected_routes_sha256=hashlib.sha256(
+                    routes23.read_bytes()
+                ).hexdigest(),
+                expected_tdm_plan_sha256=hashlib.sha256(
+                    tdm23.read_bytes()
+                ).hexdigest(),
+            )
+            self.assertEqual(report23["metrics"]["max_tdm_ratio"], 4)
+            self.assertEqual(
+                validate_public_contest_evaluation(matrix23, bundle23)["status"],
+                "pass",
+            )
+            self.assertTrue(
+                (bundle23 / "official" / "design.tdm.out").is_file()
+            )
+
+            case24 = root / "case24"
+            case24.mkdir()
+            matrix24, source24 = self._semantic_fixture(
+                case24, "eda2024-repart"
+            )
+            normalized24 = root / "case24" / "normalized"
+            import_public_contest_case(
+                matrix24, "eda2024-repart.case1", source24, normalized24
+            )
+            solution24 = root / "case24" / "design.fpga.out"
+            solution24.write_text("F1: a\nF2: b\n", encoding="utf-8")
+            bundle24 = root / "case24" / "evaluation"
+            report24 = evaluate_public_contest_case(
+                matrix24,
+                "eda2024-repart.case1",
+                source24,
+                normalized24,
+                None,
+                bundle24,
+                solution_path=solution24,
+                runtime_seconds=3.0,
+                expected_solution_sha256=hashlib.sha256(
+                    solution24.read_bytes()
+                ).hexdigest(),
+            )
+            self.assertEqual(report24["metrics"]["total_hop_distance"], 3)
+            self.assertEqual(
+                validate_public_contest_evaluation(matrix24, bundle24)["status"],
+                "pass",
+            )
+            (bundle24 / "candidate" / "design.fpga.out").write_text(
+                "F1: a b\nF2:\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "seal is broken"):
+                validate_public_contest_evaluation(matrix24, bundle24)
 
     def test_unified_boarddb_gate_revalidates_import_and_projects_topology(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -695,6 +858,34 @@ payload = b'abc'
             self.assertIn(str(fetch_source.resolve()), command)
             self.assertIn(str(import_run.resolve()), command)
             self.assertIn("academic_vtr_4fpga_mesh.json", " ".join(command))
+
+            candidate = root / "candidates" / suffix
+            candidate.mkdir(parents=True)
+            solution = candidate / "design.fpga.out"
+            solution.write_text("F1: a\nF2: b\n", encoding="utf-8")
+            evaluation_spec = root / "eda2024-evaluation-spec.json"
+            evaluation_plan = build_contest_evaluation_farm_spec(
+                matrix_path,
+                fetch_farm,
+                import_farm,
+                root / "candidates",
+                source_commit=commit,
+                install_dir=install,
+                nodes=["hpc3", "hpc4"],
+                output_path=evaluation_spec,
+                farm_id="eda2024-evaluation",
+            )
+            evaluation_command = read_json(evaluation_spec)["tasks"][0]["command"]
+            self.assertEqual(evaluation_plan["tasks"], 1)
+            self.assertIn("--solution", evaluation_command)
+            self.assertIn(str(solution.resolve()), evaluation_command)
+            expected_index = (
+                evaluation_command.index("--expected-solution-sha256") + 1
+            )
+            self.assertEqual(
+                evaluation_command[expected_index],
+                hashlib.sha256(solution.read_bytes()).hexdigest(),
+            )
 
     def test_passed_eda2025_farms_compile_to_sealed_evaluation_task(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

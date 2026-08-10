@@ -951,6 +951,33 @@ def evaluate_eda2023_solution(
     return _evaluate_eda2023_model(instance, model, plan)
 
 
+def materialize_eda2023_official_outputs(
+    instance_path: Path,
+    routes_path: Path,
+    tdm_plan_path: Path,
+    output_dir: Path,
+) -> Dict[str, Any]:
+    """Rebuild the two official-format files from a checked candidate.
+
+    This deliberately does not run an optimizer.  It independently parses the
+    routed tree and TDM plan, evaluates their legality, and then serializes the
+    canonical contest outputs.  The public contest bundle validator uses this
+    as a deterministic replay boundary.
+    """
+
+    instance = _load_instance(instance_path)
+    model = _route_model(instance, read_json(routes_path))
+    plan = read_json(tdm_plan_path)
+    evaluation = _evaluate_eda2023_model(instance, model, plan)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if any(output_dir.iterdir()):
+        raise ValidationError(
+            f"EDA 2023 official output directory is not empty: {output_dir}"
+        )
+    _write_official_outputs(output_dir, instance, model, plan, evaluation)
+    return evaluation
+
+
 def _format_weight(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:.1f}"
 

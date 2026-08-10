@@ -449,8 +449,12 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_evaluate_public.add_argument("--case-id", required=True)
     contest_evaluate_public.add_argument("--source-dir", type=Path, required=True)
     contest_evaluate_public.add_argument("--import-dir", type=Path, required=True)
-    contest_evaluate_public.add_argument("--routes", type=Path, required=True)
+    contest_evaluate_public.add_argument("--routes", type=Path)
     contest_evaluate_public.add_argument("--expected-routes-sha256")
+    contest_evaluate_public.add_argument("--tdm-plan", type=Path)
+    contest_evaluate_public.add_argument("--expected-tdm-plan-sha256")
+    contest_evaluate_public.add_argument("--solution", type=Path)
+    contest_evaluate_public.add_argument("--expected-solution-sha256")
     contest_evaluate_public.add_argument("--new-topology", type=Path)
     contest_evaluate_public.add_argument("--expected-topology-sha256")
     contest_evaluate_public.add_argument(
@@ -528,7 +532,7 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_boarddb_farm.add_argument("--output", "-o", type=Path, required=True)
     contest_evaluation_farm = contest_subparsers.add_parser(
         "matrix-evaluate-farm-spec",
-        help="compile passed public imports and frozen routes into evaluation tasks",
+        help="compile passed public imports and frozen candidates into evaluation tasks",
     )
     contest_evaluation_farm.add_argument("matrix", type=Path)
     contest_evaluation_farm.add_argument("--fetch-farm", type=Path, required=True)
@@ -2573,9 +2577,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.import_dir,
                 args.routes,
                 args.out,
+                tdm_plan_path=args.tdm_plan,
+                solution_path=args.solution,
                 new_topology_path=args.new_topology,
                 runtime_seconds=args.runtime_seconds,
                 expected_routes_sha256=args.expected_routes_sha256,
+                expected_tdm_plan_sha256=args.expected_tdm_plan_sha256,
+                expected_solution_sha256=args.expected_solution_sha256,
                 expected_topology_sha256=args.expected_topology_sha256,
             )
         elif args.contest_command == "validate-public-evaluation":
