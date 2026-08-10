@@ -5,8 +5,9 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from scripts.benchmarks.fetch import fetch_archive
+from scripts.benchmarks.fetch import fetch, fetch_archive
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +72,39 @@ class RtlCatalogTest(unittest.TestCase):
             )
             self.assertEqual(stamp["revision"], "a" * 40)
             self.assertEqual(stamp["archive_sha256"], digest)
+
+    def test_git_fetch_uses_legacy_compatible_sparse_checkout(self) -> None:
+        design = {
+            "id": "legacy-git-fixture",
+            "revision": "a" * 40,
+            "repository": "https://github.com/example/fixture.git",
+            "sparse_paths": ["/LICENSE", "/rtl"],
+        }
+        commands = []
+
+        def fake_run(command, **kwargs):
+            commands.append((list(command), kwargs.get("cwd")))
+            if command[:2] == ["git", "init"]:
+                (Path(command[2]) / ".git" / "info").mkdir(parents=True)
+            return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch("scripts.benchmarks.fetch.subprocess.run", fake_run):
+                destination = fetch(design, root)
+            self.assertEqual(destination, root / design["id"])
+            self.assertEqual(
+                (destination / ".git" / "info" / "sparse-checkout").read_text(
+                    encoding="utf-8"
+                ),
+                "/LICENSE\n/rtl\n",
+            )
+        flattened = [argument for command, _cwd in commands for argument in command]
+        self.assertNotIn("-C", flattened)
+        self.assertNotIn("sparse-checkout", flattened)
+        self.assertTrue(
+            all(cwd == destination for command, cwd in commands[1:])
+        )
 
 
 if __name__ == "__main__":

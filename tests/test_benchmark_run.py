@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SERV_SPEC = ROOT / "benchmarks" / "runs" / "serv_l1.json"
 PICORV32_SPEC = ROOT / "benchmarks" / "runs" / "picorv32_l2.json"
 PICORV32_X32_SPEC = ROOT / "benchmarks" / "runs" / "picorv32_x32_l5.json"
+SECWORKS_AES_SPEC = ROOT / "benchmarks" / "runs" / "secworks_aes_l3.json"
 KOIOS_DLA_MEDIUM_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_dla_medium_l5.json"
 )
@@ -51,6 +52,27 @@ class BenchmarkRunTest(unittest.TestCase):
             self.assertEqual(
                 [path.name for path in sources],
                 ["picorv32.v", "picorv32_x32_top.v"],
+            )
+
+    def test_secworks_aes_l3_spec_and_sources(self) -> None:
+        spec = BenchmarkRun.load(SECWORKS_AES_SPEC)
+        self.assertEqual(spec.value["design_id"], "secworks_aes")
+        self.assertEqual(spec.value["top"], "aes")
+        self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
+        source_root = ROOT / "third_party" / "rtl" / "secworks_aes"
+        if source_root.is_dir():
+            sources = spec.resolve_sources(source_root)
+            self.assertEqual(
+                [path.name for path in sources],
+                [
+                    "aes.v",
+                    "aes_core.v",
+                    "aes_decipher_block.v",
+                    "aes_encipher_block.v",
+                    "aes_inv_sbox.v",
+                    "aes_key_mem.v",
+                    "aes_sbox.v",
+                ],
             )
 
     def test_koios_dla_medium_spec_and_source(self) -> None:

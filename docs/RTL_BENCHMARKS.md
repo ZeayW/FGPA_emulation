@@ -18,6 +18,20 @@ Fetch one design:
 python3 scripts/benchmarks/fetch.py fetch picorv32
 ```
 
+The checked-in run contracts cover SERV L1, PicoRV32 L2, secworks AES L3,
+the PicoRV32 x32 L5 scale harness, and the current Koios L5 fixtures. Run the
+AES progression rung with:
+
+```bash
+python3 scripts/benchmarks/fetch.py fetch secworks_aes
+emuflow benchmark benchmarks/runs/secworks_aes_l3.json \
+  --source-root third_party/rtl/secworks_aes \
+  --out build/secworks-aes-l3
+```
+
+Its `logic-only` policy is an open-flow integration baseline, not a claim that
+its mapped QoR matches the upstream Kintex-7 result.
+
 ## Recommended progression
 
 The source catalog and fetcher cover the following progression:

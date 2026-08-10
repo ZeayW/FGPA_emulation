@@ -9,7 +9,7 @@ import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,8 +33,8 @@ def find_design(catalog: Dict[str, Any], design_id: str) -> Dict[str, Any]:
     raise SystemExit(f"unknown design {design_id!r}; choose one of: {choices}")
 
 
-def run(command: List[str]) -> None:
-    subprocess.run(command, check=True)
+def run(command: List[str], cwd: Optional[Path] = None) -> None:
+    subprocess.run(command, check=True, cwd=cwd)
 
 
 def _archive_stamp_matches(destination: Path, design: Dict[str, Any]) -> bool:
@@ -129,10 +129,11 @@ def fetch(design: Dict[str, Any], destination_root: Path) -> Path:
                 "nor a Git checkout; refusing to replace it"
             )
         completed = subprocess.run(
-            ["git", "-C", str(destination), "rev-parse", "HEAD"],
+            ["git", "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
+            cwd=destination,
         )
         current = completed.stdout.strip()
         if current != revision:
@@ -149,39 +150,37 @@ def fetch(design: Dict[str, Any], destination_root: Path) -> Path:
     run(
         [
             "git",
-            "-C",
-            str(destination),
             "remote",
             "add",
             "origin",
             design["repository"],
-        ]
+        ],
+        cwd=destination,
     )
-    run(["git", "-C", str(destination), "sparse-checkout", "init", "--no-cone"])
+    # Use the original sparse-checkout plumbing rather than `git -C` or the
+    # newer `git sparse-checkout` porcelain.  This remains compatible with the
+    # Git 1.8 clients still installed on some validation gateways.
+    run(
+        ["git", "config", "core.sparseCheckout", "true"],
+        cwd=destination,
+    )
+    sparse_info = destination / ".git" / "info"
+    sparse_info.mkdir(parents=True, exist_ok=True)
+    (sparse_info / "sparse-checkout").write_text(
+        "\n".join(design["sparse_paths"]) + "\n", encoding="utf-8"
+    )
     run(
         [
             "git",
-            "-C",
-            str(destination),
-            "sparse-checkout",
-            "set",
-            "--no-cone",
-            *design["sparse_paths"],
-        ]
-    )
-    run(
-        [
-            "git",
-            "-C",
-            str(destination),
             "fetch",
             "--depth",
             "1",
             "origin",
             revision,
-        ]
+        ],
+        cwd=destination,
     )
-    run(["git", "-C", str(destination), "checkout", "--detach", "FETCH_HEAD"])
+    run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=destination)
     return destination
 
 
