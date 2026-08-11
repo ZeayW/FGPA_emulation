@@ -10,6 +10,8 @@
 #include <future>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -383,6 +385,172 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
           std::max(result.potentials[sink], unique_cost[left]);
     }
     return result;
+  }
+
+  // Large physical banks often contain many signal groups with exactly the
+  // same ranked cost row.  Collapsing those indistinguishable left vertices
+  // into demand vertices preserves the integer min-cost-flow problem while
+  // avoiding one copy of the dense row per signal.  The expanded result is
+  // accepted only after every original residual edge is checked against the
+  // expanded dual, so this is an exact certified path rather than a heuristic.
+  const auto compressed_assignment = [&]() -> std::optional<AssignmentResult> {
+    if (!std::all_of(capacities.begin(), capacities.end(),
+                     [](int capacity) { return capacity == 1; })) {
+      return std::nullopt;
+    }
+    using CostRow = std::vector<std::pair<int, std::int64_t>>;
+    std::vector<CostRow> rows(left_count);
+    for (const CandidateEdge& candidate : candidates) {
+      if (candidate.left < 0 || candidate.left >= left_count ||
+          candidate.right < 0 || candidate.right >= right_count) {
+        return std::nullopt;
+      }
+      rows[candidate.left].push_back({candidate.right, candidate.cost});
+    }
+    std::map<CostRow, int> type_by_row;
+    std::vector<CostRow> type_rows;
+    std::vector<std::vector<int>> members_by_type;
+    for (int left = 0; left < left_count; ++left) {
+      CostRow& row = rows[left];
+      std::sort(row.begin(), row.end());
+      if (row.empty() ||
+          std::adjacent_find(row.begin(), row.end(),
+                             [](const auto& lhs, const auto& rhs) {
+                               return lhs.first == rhs.first;
+                             }) != row.end()) {
+        return std::nullopt;
+      }
+      auto [position, inserted] =
+          type_by_row.emplace(row, static_cast<int>(type_rows.size()));
+      if (inserted) {
+        type_rows.push_back(row);
+        members_by_type.push_back({});
+      }
+      members_by_type[position->second].push_back(left);
+    }
+    const int type_count = static_cast<int>(type_rows.size());
+    if (type_count == 0 || type_count > left_count / 4) {
+      return std::nullopt;
+    }
+
+    const int compressed_first_right = 1;
+    const int compressed_first_type = compressed_first_right + right_count;
+    const int compressed_sink = compressed_first_type + type_count;
+    MinCostFlow flow(compressed_sink + 1);
+    for (int right = 0; right < right_count; ++right) {
+      flow.add_edge(source, compressed_first_right + right, 1, 0);
+    }
+    struct CompressedReference {
+      int right = -1;
+      int type = -1;
+      std::int64_t cost = 0;
+      int edge_index = -1;
+    };
+    std::vector<CompressedReference> references;
+    for (int type = 0; type < type_count; ++type) {
+      for (const auto& [right, cost] : type_rows[type]) {
+        const int edge_index =
+            flow.add_edge(compressed_first_right + right,
+                          compressed_first_type + type, 1, cost);
+        references.push_back({right, type, cost, edge_index});
+      }
+      flow.add_edge(compressed_first_type + type, compressed_sink,
+                    static_cast<int>(members_by_type[type].size()), 0);
+    }
+    const auto [assigned, total] = flow.solve(source, compressed_sink, left_count);
+    if (assigned != left_count) {
+      throw std::runtime_error("no complete Chimew assignment exists");
+    }
+    std::vector<std::vector<std::pair<int, std::int64_t>>> selected_by_type(
+        type_count);
+    for (const CompressedReference& reference : references) {
+      const int node = compressed_first_right + reference.right;
+      if (flow.edge(node, reference.edge_index).capacity == 0) {
+        selected_by_type[reference.type].push_back(
+            {reference.right, reference.cost});
+      }
+    }
+
+    AssignmentResult result;
+    result.right_for_left.assign(left_count, -1);
+    result.cost_for_left.assign(left_count, 0);
+    result.total_cost = total;
+    const std::vector<std::int64_t> compressed_potentials =
+        flow.certificate_potentials();
+    result.potentials.assign(sink + 1, 0);
+    result.potentials[source] = compressed_potentials[source];
+    for (int right = 0; right < right_count; ++right) {
+      result.potentials[first_right + right] =
+          compressed_potentials[compressed_first_right + right];
+    }
+    for (int type = 0; type < type_count; ++type) {
+      auto& selected = selected_by_type[type];
+      std::sort(selected.begin(), selected.end());
+      if (selected.size() != members_by_type[type].size()) {
+        return std::nullopt;
+      }
+      for (std::size_t index = 0; index < selected.size(); ++index) {
+        const int left = members_by_type[type][index];
+        result.right_for_left[left] = selected[index].first;
+        result.cost_for_left[left] = selected[index].second;
+        result.potentials[first_left + left] =
+            compressed_potentials[compressed_first_type + type];
+      }
+    }
+    result.potentials[sink] = compressed_potentials[compressed_sink];
+
+    std::vector<char> used_right(right_count, false);
+    for (int left = 0; left < left_count; ++left) {
+      const int right = result.right_for_left[left];
+      if (right < 0 || used_right[right]) {
+        return std::nullopt;
+      }
+      used_right[right] = true;
+      const __int128 reverse_reduced =
+          -static_cast<__int128>(result.cost_for_left[left]) +
+          static_cast<__int128>(result.potentials[first_left + left]) -
+          static_cast<__int128>(result.potentials[first_right + right]);
+      if (reverse_reduced < 0) {
+        return std::nullopt;
+      }
+    }
+    for (const CandidateEdge& candidate : candidates) {
+      if (result.right_for_left[candidate.left] == candidate.right) {
+        continue;
+      }
+      const __int128 forward_reduced =
+          static_cast<__int128>(candidate.cost) +
+          static_cast<__int128>(
+              result.potentials[first_right + candidate.right]) -
+          static_cast<__int128>(
+              result.potentials[first_left + candidate.left]);
+      if (forward_reduced < 0) {
+        return std::nullopt;
+      }
+    }
+    for (int right = 0; right < right_count; ++right) {
+      const __int128 right_potential =
+          static_cast<__int128>(result.potentials[first_right + right]);
+      const __int128 source_potential =
+          static_cast<__int128>(result.potentials[source]);
+      const __int128 reduced = used_right[right]
+                                   ? right_potential - source_potential
+                                   : source_potential - right_potential;
+      if (reduced < 0) {
+        return std::nullopt;
+      }
+    }
+    for (int left = 0; left < left_count; ++left) {
+      if (static_cast<__int128>(result.potentials[sink]) -
+              static_cast<__int128>(result.potentials[first_left + left]) <
+          0) {
+        return std::nullopt;
+      }
+    }
+    return result;
+  }();
+  if (compressed_assignment.has_value()) {
+    return *compressed_assignment;
   }
 
   MinCostFlow flow(sink + 1);

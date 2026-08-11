@@ -1731,7 +1731,11 @@ alternative. Edge ranks independently reconstruct Algorithm 2's source
 fanout distance plus per-signal mean sink-fanin distance. Every matching emits
 a residual-dual optimality certificate, which Python checks in linear time
 in the materialized candidate graph instead of running a second large
-optimizer. Independent bank pairs are solved concurrently without changing
+optimizer. Repeated identical ranked-cost rows inside a dense physical bank
+are solved as exact demand-compressed rows and expanded deterministically;
+the native kernel accepts that expansion only after checking every residual
+edge of the original uncompressed graph against the expanded dual.
+Independent bank pairs are solved concurrently without changing
 their candidates, tie-breaks, or certificates. Automatic concurrency is
 bounded at eight workers to control dense-graph memory; memory-rich runs may
 set `EMUFLOW_CHIMEW_BANK_WORKERS` to a positive integer up to 256. The

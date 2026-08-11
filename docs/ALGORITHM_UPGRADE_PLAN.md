@@ -737,7 +737,10 @@ potentials. Python independently reconstructs every legal edge and Algorithm
 requiring non-negative reduced cost on every residual edge. This check is
 linear in the candidate graph and deliberately avoids replaying a second full
 optimizer on large designs. Small fixtures still compare behavior against
-hand-derived optima and reject tampered dual certificates. The standalone
+hand-derived optima and reject tampered dual certificates. Dense banks with
+repeated identical ranked-cost rows use an exact demand-compressed native
+flow; deterministic expansion is accepted only after the same residual-dual
+conditions are checked on every original edge. The standalone
 result remains `not-a-phase6-pin-plan` until an adapter applies EmuFlow's
 electrical and concrete-slot extensions without changing the paper claims.
 

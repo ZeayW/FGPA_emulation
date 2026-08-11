@@ -227,6 +227,45 @@ class ChimewBankChannelTest(unittest.TestCase):
         self.assertEqual(parallel, serial)
         self.assertEqual(parallel["metrics"]["certificate_disagreements"], 0)
 
+    def test_identical_channel_cost_rows_are_exactly_certified(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["bank_pairs"] = [copy.deepcopy(document["bank_pairs"][0])]
+        document["bank_pairs"][0]["channels"] = [
+            {
+                "id": f"near{channel}",
+                "order": channel,
+                "pin_a": {"x": 0.0, "y": float(channel)},
+                "pin_b": {"x": 100.0, "y": float(channel)},
+            }
+            for channel in range(16)
+        ]
+        document["groups"] = [
+            {
+                "id": f"common{group}",
+                "domain": "AB",
+                "kind": "common_signal",
+                "direction": "a_to_b",
+                "members": [member(f"signal{group}", 8.0, 8.0)],
+            }
+            for group in range(16)
+        ]
+        document["metrics"] = {
+            "groups": 16,
+            "signals": 16,
+            "fanins": 16,
+            "bank_pairs": 1,
+            "channels": 16,
+        }
+        result = evaluate_chimew_bank_channel_assignment(
+            document, executable=str(self.executable)
+        )
+        self.assertEqual(len(result["assignments"]), 16)
+        self.assertEqual(
+            len({record["channel"] for record in result["assignments"]}), 16
+        )
+        self.assertEqual(result["metrics"]["certificate_disagreements"], 0)
+        self.assertEqual(result["metrics"]["certified_matchings"], 3)
+
     def test_invalid_parallel_bank_worker_override_is_rejected(self) -> None:
         with mock.patch.dict(
             "os.environ", {"EMUFLOW_CHIMEW_BANK_WORKERS": "invalid"}
