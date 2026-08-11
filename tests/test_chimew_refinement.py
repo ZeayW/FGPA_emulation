@@ -1,4 +1,5 @@
 import copy
+import random
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ from emuflow.chimew_refinement import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
     CHIMEW_REFINEMENT_PROVIDER,
+    _pairwise_objective,
     refine_chimew_groups,
     validate_chimew_positions,
 )
@@ -162,6 +164,32 @@ class ChimewRefinementTest(unittest.TestCase):
                 self.positions,
                 executable=str(self.refiner),
             )
+
+    def test_prefix_sum_pairwise_objective_matches_exhaustive(self) -> None:
+        random_generator = random.Random(731)
+        for size in range(1, 80):
+            positions = {
+                f"n{index}": random_generator.uniform(-1000.0, 1000.0)
+                for index in range(size)
+            }
+            members = {0: set(positions)}
+            ordered = sorted(positions.values())
+            exhaustive = sum(
+                abs(lhs - rhs)
+                for index, lhs in enumerate(ordered)
+                for rhs in ordered[index + 1 :]
+            )
+            self.assertAlmostEqual(
+                _pairwise_objective(members, positions, {0}),
+                exhaustive,
+                places=7,
+            )
+
+    def test_large_pairwise_objective_is_linearithmic(self) -> None:
+        positions = {f"n{index}": float(index % 257) for index in range(100_000)}
+        members = {0: set(positions)}
+        objective = _pairwise_objective(members, positions, {0})
+        self.assertGreater(objective, 0.0)
 
 
 if __name__ == "__main__":

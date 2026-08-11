@@ -173,12 +173,23 @@ def _median(values: Sequence[float]) -> float:
 def _pairwise_objective(
     members: Mapping[int, set[str]], positions: Mapping[str, float], groups: set[int]
 ) -> float:
+    """Return the sum of absolute y differences within each group.
+
+    For sorted values ``y[i]``, every value contributes ``i * y[i]`` as the
+    larger endpoint and the prefix sum as the smaller endpoints.  This is
+    mathematically identical to enumerating every pair, but avoids the
+    quadratic replay cost for large TDM groups.
+    """
+
     objective = 0.0
     for group in groups:
-        entry_ids = sorted(members.get(group, set()))
-        for lhs, entry_id in enumerate(entry_ids):
-            for other_id in entry_ids[lhs + 1 :]:
-                objective += abs(positions[entry_id] - positions[other_id])
+        values = sorted(
+            positions[entry_id] for entry_id in members.get(group, set())
+        )
+        prefix = 0.0
+        for index, value in enumerate(values):
+            objective += value * index - prefix
+            prefix += value
     return objective
 
 

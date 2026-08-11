@@ -73,12 +73,16 @@ double pairwise_objective(const std::vector<Signal>& signals,
     if (found == members.end()) {
       continue;
     }
-    const auto& indices = found->second;
-    for (auto lhs = indices.begin(); lhs != indices.end(); ++lhs) {
-      for (auto rhs = std::next(lhs); rhs != indices.end(); ++rhs) {
-        objective += std::abs(signals[*lhs].source_y -
-                              signals[*rhs].source_y);
-      }
+    std::vector<double> values;
+    values.reserve(found->second.size());
+    for (int index : found->second) {
+      values.push_back(signals[index].source_y);
+    }
+    std::sort(values.begin(), values.end());
+    double prefix = 0.0;
+    for (std::size_t index = 0; index < values.size(); ++index) {
+      objective += values[index] * static_cast<double>(index) - prefix;
+      prefix += values[index];
     }
   }
   return objective;
