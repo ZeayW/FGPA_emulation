@@ -2,14 +2,18 @@
 // Chimew Section 3.4 two-stage bank/channel assignment kernel.
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <queue>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -434,6 +438,37 @@ struct Stage2Result {
   AssignmentResult assignment;
 };
 
+int bank_worker_count(std::size_t jobs) {
+  if (jobs == 0) {
+    return 0;
+  }
+  unsigned int requested = std::thread::hardware_concurrency();
+  if (requested == 0) {
+    requested = 1;
+  }
+  bool explicitly_requested = false;
+  if (const char* override_value =
+          std::getenv("EMUFLOW_CHIMEW_BANK_WORKERS")) {
+    char* end = nullptr;
+    const long parsed = std::strtol(override_value, &end, 10);
+    if (override_value[0] == '\0' || end == nullptr || *end != '\0' ||
+        parsed <= 0 || parsed > 256) {
+      throw std::runtime_error(
+          "EMUFLOW_CHIMEW_BANK_WORKERS must be an integer in [1, 256]");
+    }
+    requested = static_cast<unsigned int>(parsed);
+    explicitly_requested = true;
+  }
+  // Candidate graphs are dense.  Bound automatic parallelism so a large
+  // platform cannot multiply peak memory by every available host core; an
+  // explicit override remains available on memory-rich validation nodes.
+  if (!explicitly_requested) {
+    requested = std::min(requested, 8U);
+  }
+  return static_cast<int>(
+      std::min<std::size_t>(jobs, static_cast<std::size_t>(requested)));
+}
+
 Stage2Result solve_bank(const Input& input, int bank_index,
                         const std::vector<int>& groups, int priority) {
   const BankPair& bank = input.banks[bank_index];
@@ -516,22 +551,52 @@ void run(const std::string& input_path, const std::string& output_path) {
   for (int group = 0; group < static_cast<int>(input.groups.size()); ++group) {
     groups_by_bank[stage1.right_for_left[group]].push_back(group);
   }
-  std::vector<std::pair<Stage2Result, Stage2Result>> alternatives;
+  std::vector<std::pair<Stage2Result, Stage2Result>> alternatives(
+      input.banks.size());
   std::vector<int> chosen_priority(input.banks.size(), 0);
-  std::int64_t stage2_total = 0;
+  std::vector<std::int64_t> selected_cost(input.banks.size(), 0);
+  std::vector<int> active_banks;
   for (int bank = 0; bank < static_cast<int>(input.banks.size()); ++bank) {
-    if (groups_by_bank[bank].empty()) {
-      alternatives.push_back({Stage2Result{}, Stage2Result{}});
-      continue;
+    if (!groups_by_bank[bank].empty()) {
+      active_banks.push_back(bank);
     }
-    const Stage2Result first = solve_bank(input, bank, groups_by_bank[bank], 0);
-    const Stage2Result second = solve_bank(input, bank, groups_by_bank[bank], 1);
-    alternatives.push_back({first, second});
-    chosen_priority[bank] =
-        second.assignment.total_cost < first.assignment.total_cost ? 1 : 0;
-    stage2_total += chosen_priority[bank] == 0
-                        ? first.assignment.total_cost
-                        : second.assignment.total_cost;
+  }
+  std::atomic<std::size_t> next_bank{0};
+  std::vector<std::future<void>> workers;
+  const int worker_count = bank_worker_count(active_banks.size());
+  workers.reserve(worker_count);
+  for (int worker = 0; worker < worker_count; ++worker) {
+    workers.push_back(std::async(std::launch::async, [&]() {
+      while (true) {
+        const std::size_t job = next_bank.fetch_add(1);
+        if (job >= active_banks.size()) {
+          return;
+        }
+        const int bank = active_banks[job];
+        Stage2Result first =
+            solve_bank(input, bank, groups_by_bank[bank], 0);
+        Stage2Result second =
+            solve_bank(input, bank, groups_by_bank[bank], 1);
+        const int priority =
+            second.assignment.total_cost < first.assignment.total_cost ? 1
+                                                                        : 0;
+        selected_cost[bank] = priority == 0 ? first.assignment.total_cost
+                                             : second.assignment.total_cost;
+        chosen_priority[bank] = priority;
+        alternatives[bank] =
+            {std::move(first), std::move(second)};
+      }
+    }));
+  }
+  for (std::future<void>& worker : workers) {
+    worker.get();
+  }
+  std::int64_t stage2_total = 0;
+  for (std::int64_t cost : selected_cost) {
+    if (cost > std::numeric_limits<std::int64_t>::max() - stage2_total) {
+      throw std::runtime_error("Chimew assignment cost is out of range");
+    }
+    stage2_total += cost;
   }
 
   std::ofstream output(output_path);

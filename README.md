@@ -1730,7 +1730,12 @@ channel matchings, one for each TDM direction priority, using the lower-cost
 alternative. Edge ranks independently reconstruct Algorithm 2's source
 fanout distance plus per-signal mean sink-fanin distance. Every matching emits
 a residual-dual optimality certificate, which Python checks in linear time
-instead of running a second large optimizer. The standalone kernel result is
+in the materialized candidate graph instead of running a second large
+optimizer. Independent bank pairs are solved concurrently without changing
+their candidates, tie-breaks, or certificates. Automatic concurrency is
+bounded at eight workers to control dense-graph memory; memory-rich runs may
+set `EMUFLOW_CHIMEW_BANK_WORKERS` to a positive integer up to 256. The
+standalone kernel result is
 reconciled with EmuFlow's voltage, IOSTANDARD, direction, and concrete-slot
 contracts by the Phase 6 adapter. The fully source-qualified provider remains
 the paper-facing path. The open academic default uses a distinct

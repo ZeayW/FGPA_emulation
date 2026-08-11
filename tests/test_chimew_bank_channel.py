@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
@@ -202,6 +203,37 @@ class ChimewBankChannelTest(unittest.TestCase):
         self.assertEqual(assignments["tdm_ab"]["bank_pair"], "near")
         self.assertEqual(assignments["common_far"]["bank_pair"], "far")
         self.assertEqual(result["metrics"]["certificate_disagreements"], 0)
+
+    def test_parallel_banks_are_deterministic_and_certified(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["domains"].append(
+            {"id": "CD", "fpga_a": "C", "fpga_b": "D"}
+        )
+        document["bank_pairs"][1]["domain"] = "CD"
+        document["groups"][3]["domain"] = "CD"
+        with mock.patch.dict(
+            "os.environ", {"EMUFLOW_CHIMEW_BANK_WORKERS": "1"}
+        ):
+            serial = evaluate_chimew_bank_channel_assignment(
+                document, executable=str(self.executable)
+            )
+        with mock.patch.dict(
+            "os.environ", {"EMUFLOW_CHIMEW_BANK_WORKERS": "4"}
+        ):
+            parallel = evaluate_chimew_bank_channel_assignment(
+                document, executable=str(self.executable)
+            )
+        self.assertEqual(parallel, serial)
+        self.assertEqual(parallel["metrics"]["certificate_disagreements"], 0)
+
+    def test_invalid_parallel_bank_worker_override_is_rejected(self) -> None:
+        with mock.patch.dict(
+            "os.environ", {"EMUFLOW_CHIMEW_BANK_WORKERS": "invalid"}
+        ):
+            with self.assertRaisesRegex(EmuFlowError, "must be an integer"):
+                evaluate_chimew_bank_channel_assignment(
+                    self.document, executable=str(self.executable)
+                )
 
     def test_normalized_coordinates_and_bad_provenance_are_rejected(self) -> None:
         normalized = copy.deepcopy(self.document)
