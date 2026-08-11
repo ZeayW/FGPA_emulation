@@ -1886,10 +1886,14 @@ emuflow contest eda2023-chimew-ab \
 This path is explicitly `contest-derived-virtual-die-algorithm-validation`.
 EDA 2023 supplies node-to-die placement, SLL/Wire topology, routed hops, and
 TDM ratios, but no intra-die site placement or package-pin BSP. The adapter
-therefore preserves the real contest data and creates a clearly labelled
-synthetic electrical inventory. Its grouping, crossing, distance, runtime,
-and scaling results are valid algorithm comparisons; they are not vendor
-placement/routing, timing, DRC, bitstream, or hardware-closure evidence.
+therefore derives each scheduled external hop's source and sink SLL masks from
+the complete routed tree, uses the nearest route-local dies as placement
+anchors, and creates a clearly labelled synthetic electrical inventory. The
+v2 A/B report exposes `routed_sll_crossing_bits` and
+`routed_source_pairwise_y` as the meaningful contest-backed grouping metrics.
+Package-pin distance remains synthetic. Grouping, route-local crossing,
+runtime, and scaling results are valid algorithm comparisons; they are not
+vendor placement/routing, timing, DRC, bitstream, or hardware-closure evidence.
 
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report
