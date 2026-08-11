@@ -734,9 +734,12 @@ units.
 Each min-cost result includes a primal assignment and residual-graph node
 potentials. Python independently reconstructs every legal edge and Algorithm
 2 cost, checks capacity and direction intervals, and proves optimality by
-requiring non-negative reduced cost on every residual edge. This check is
-linear in the candidate graph and deliberately avoids replaying a second full
-optimizer on large designs. Small fixtures still compare behavior against
+requiring non-negative reduced cost on every residual edge. Identifier-free
+physical rows with the same dual are canonicalized: Python checks every
+selected reverse edge and every distinct row against every eligible channel,
+which is exactly equivalent to checking the repeated expanded graph. It does
+not replay a second optimizer on large designs. Small fixtures still compare
+behavior against
 hand-derived optima and reject tampered dual certificates. Dense banks with
 repeated identical ranked-cost rows use an exact demand-compressed native
 flow; deterministic expansion is accepted only after the same residual-dual

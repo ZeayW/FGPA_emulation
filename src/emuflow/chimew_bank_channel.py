@@ -420,6 +420,128 @@ def _verify_certificate(
             raise EmuFlowError("Chimew residual-dual certificate has a negative reduced cost")
 
 
+def _group_cost_signature(group: Mapping[str, Any]) -> Tuple[Any, ...]:
+    """Return an exact, identifier-free signature for one Algorithm 2 row."""
+
+    members = []
+    for member in group["members"]:
+        members.append(
+            (
+                member["fanout"],
+                tuple(sorted(member["fanins"])),
+            )
+        )
+    return group["kind"], group["direction"], tuple(sorted(members))
+
+
+def _verify_stage2_certificate(
+    bank: Mapping[str, Any],
+    all_groups: Sequence[Mapping[str, Any]],
+    groups: Sequence[int],
+    priority: int,
+    assignments: Mapping[int, Tuple[int, int]],
+    potentials: Sequence[int],
+    expected_total: int,
+    cost_scale: int,
+) -> None:
+    """Check the expanded channel matching using exact repeated-row classes.
+
+    Groups with identical physical coordinates, direction, kind, and dual
+    potential induce exactly the same residual-cost row.  Checking one
+    representative row plus every selected reverse edge proves the original
+    expanded certificate without materializing the repeated dense graph.
+    """
+
+    right_count = len(bank["channels"])
+    left_count = len(groups)
+    source = 0
+    first_right = 1
+    first_left = first_right + right_count
+    sink = first_left + left_count
+    if len(potentials) != sink + 1 or set(assignments) != set(range(left_count)):
+        raise EmuFlowError("Chimew assignment certificate dimensions are invalid")
+
+    direction_counts = [0, 0]
+    for group_index in groups:
+        group = all_groups[group_index]
+        if group["kind"] == 0:
+            direction_counts[group["direction"]] += 1
+
+    def eligible(group: Mapping[str, Any], right: int) -> bool:
+        first, second = priority, 1 - priority
+        if right < direction_counts[first]:
+            return group["kind"] == 0 and group["direction"] == first
+        if right < direction_counts[first] + direction_counts[second]:
+            return group["kind"] == 0 and group["direction"] == second
+        return group["kind"] == 1
+
+    used = [0] * right_count
+    total = 0
+    row_classes: Dict[Tuple[Any, ...], list[int]] = {}
+    for left, group_index in enumerate(groups):
+        right, cost = assignments[left]
+        if right < 0 or right >= right_count:
+            raise EmuFlowError("Chimew assignment uses a channel from another bank")
+        group = all_groups[group_index]
+        if not eligible(group, right):
+            raise EmuFlowError("Chimew assignment selects an ineligible channel")
+        channel = bank["channels"][right]
+        expected_cost = _candidate_cost(
+            group, channel["pin_a"], channel["pin_b"], cost_scale
+        )
+        if cost != expected_cost:
+            raise EmuFlowError("Chimew assignment selects a wrong-cost edge")
+        used[right] += 1
+        total += cost
+        row_classes.setdefault(
+            (_group_cost_signature(group), potentials[first_left + left]), []
+        ).append(left)
+        reverse_reduced = (
+            -cost
+            + potentials[first_left + left]
+            - potentials[first_right + right]
+        )
+        if reverse_reduced < 0:
+            raise EmuFlowError(
+                "Chimew residual-dual certificate has a negative reduced cost"
+            )
+    if total != expected_total or any(use > 1 for use in used):
+        raise EmuFlowError("Chimew assignment primal certificate is invalid")
+
+    for right, use in enumerate(used):
+        start, end = (
+            (first_right + right, source)
+            if use
+            else (source, first_right + right)
+        )
+        if potentials[start] - potentials[end] < 0:
+            raise EmuFlowError(
+                "Chimew residual-dual certificate has a negative reduced cost"
+            )
+    for left in range(left_count):
+        if potentials[sink] - potentials[first_left + left] < 0:
+            raise EmuFlowError(
+                "Chimew residual-dual certificate has a negative reduced cost"
+            )
+
+    for (_, left_potential), members in row_classes.items():
+        representative = all_groups[groups[members[0]]]
+        selected_right = assignments[members[0]][0] if len(members) == 1 else None
+        for right, channel in enumerate(bank["channels"]):
+            if not eligible(representative, right) or right == selected_right:
+                continue
+            cost = _candidate_cost(
+                representative,
+                channel["pin_a"],
+                channel["pin_b"],
+                cost_scale,
+            )
+            if cost + potentials[first_right + right] - left_potential < 0:
+                raise EmuFlowError(
+                    "Chimew residual-dual certificate has a negative reduced cost"
+                )
+
+
 def evaluate_chimew_bank_channel_assignment(
     document: Mapping[str, Any], *, executable: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -469,36 +591,12 @@ def evaluate_chimew_bank_channel_assignment(
             continue
         bank = problem["banks"][bank_index]
         alternatives = []
-        direction_counts = [0, 0]
-        for group_index in groups:
-            group = problem["groups"][group_index]
-            if group["kind"] == 0:
-                direction_counts[group["direction"]] += 1
         channel_position = {channel["index"]: position for position, channel in enumerate(bank["channels"])}
         for priority in (0, 1):
             key = (bank_index, priority)
             alternative = native["alternatives"].get(key)
             if alternative is None:
                 raise EmuFlowError("Chimew package-pin alternative is missing")
-            candidates = []
-            first, second = priority, 1 - priority
-            for right, channel in enumerate(bank["channels"]):
-                required_kind, required_direction = 1, None
-                if right < direction_counts[first]:
-                    required_kind, required_direction = 0, first
-                elif right < direction_counts[first] + direction_counts[second]:
-                    required_kind, required_direction = 0, second
-                for left, group_index in enumerate(groups):
-                    group = problem["groups"][group_index]
-                    eligible = group["kind"] == 1 if required_kind == 1 else group["kind"] == 0 and group["direction"] == required_direction
-                    if eligible:
-                        candidates.append(
-                            (
-                                right,
-                                left,
-                                _candidate_cost(group, channel["pin_a"], channel["pin_b"], problem["cost_scale"]),
-                            )
-                        )
             local_assignments = {}
             if set(alternative["assignments"]) != set(groups):
                 raise EmuFlowError("Chimew package-pin assignment is incomplete")
@@ -508,14 +606,15 @@ def evaluate_chimew_bank_channel_assignment(
                     raise EmuFlowError("Chimew assignment uses a channel from another bank")
                 local_assignments[left] = (channel_position[channel_index], cost)
             label = f"BANK{bank_index}P{priority}"
-            _verify_certificate(
-                len(bank["channels"]),
-                [1] * len(bank["channels"]),
-                len(groups),
-                candidates,
+            _verify_stage2_certificate(
+                bank,
+                problem["groups"],
+                groups,
+                priority,
                 local_assignments,
                 native["potentials"].get(label, []),
                 alternative["cost"],
+                problem["cost_scale"],
             )
             alternatives.append(alternative["cost"])
             checked_alternatives += 1

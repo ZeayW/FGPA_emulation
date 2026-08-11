@@ -1729,9 +1729,12 @@ assignment: a capacitated bank-pair min-cost flow followed by two exact
 channel matchings, one for each TDM direction priority, using the lower-cost
 alternative. Edge ranks independently reconstruct Algorithm 2's source
 fanout distance plus per-signal mean sink-fanin distance. Every matching emits
-a residual-dual optimality certificate, which Python checks in linear time
-in the materialized candidate graph instead of running a second large
-optimizer. Repeated identical ranked-cost rows inside a dense physical bank
+a residual-dual optimality certificate, which Python checks without running
+a second optimizer. It canonicalizes identifier-free physical cost rows,
+checks every selected reverse edge, and checks every distinct row/dual class
+against all eligible channels; this is exactly equivalent to checking every
+expanded residual edge while avoiding repeated dense rows. Repeated identical
+ranked-cost rows inside a dense physical bank
 are solved as exact demand-compressed rows and expanded deterministically;
 the native kernel accepts that expansion only after checking every residual
 edge of the original uncompressed graph against the expanded dual.

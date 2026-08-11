@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from emuflow import chimew_bank_channel as bank_channel_module
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     CHIMEW_BANK_CHANNEL_PROVIDER,
     _verify_certificate,
+    _verify_stage2_certificate,
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
@@ -256,15 +258,21 @@ class ChimewBankChannelTest(unittest.TestCase):
             "bank_pairs": 1,
             "channels": 16,
         }
-        result = evaluate_chimew_bank_channel_assignment(
-            document, executable=str(self.executable)
-        )
+        with mock.patch.object(
+            bank_channel_module,
+            "_candidate_cost",
+            wraps=bank_channel_module._candidate_cost,
+        ) as candidate_cost:
+            result = evaluate_chimew_bank_channel_assignment(
+                document, executable=str(self.executable)
+            )
         self.assertEqual(len(result["assignments"]), 16)
         self.assertEqual(
             len({record["channel"] for record in result["assignments"]}), 16
         )
         self.assertEqual(result["metrics"]["certificate_disagreements"], 0)
         self.assertEqual(result["metrics"]["certified_matchings"], 3)
+        self.assertLess(candidate_cost.call_count, 100)
 
     def test_invalid_parallel_bank_worker_override_is_rejected(self) -> None:
         with mock.patch.dict(
@@ -308,6 +316,35 @@ class ChimewBankChannelTest(unittest.TestCase):
                 {0: (0, 5)},
                 [0, 0, 0, 0],
                 5,
+            )
+
+    def test_compact_repeated_row_certificate_rejects_tampering(self) -> None:
+        bank = {
+            "channels": [
+                {"pin_a": (0.0, 0.0), "pin_b": (100.0, 0.0)},
+                {"pin_a": (0.0, 20.0), "pin_b": (100.0, 20.0)},
+            ]
+        }
+        group = {
+            "kind": 1,
+            "direction": 0,
+            "members": [
+                {
+                    "fanout": (0.0, 0.0),
+                    "fanins": [(100.0, 0.0)],
+                }
+            ],
+        }
+        with self.assertRaisesRegex(EmuFlowError, "negative reduced cost"):
+            _verify_stage2_certificate(
+                bank,
+                [group],
+                [0],
+                0,
+                {0: (0, 0)},
+                [0, 0, 0, 100_000, 100_000],
+                0,
+                1000,
             )
 
     def test_200_group_sparse_certificate_regression(self) -> None:
