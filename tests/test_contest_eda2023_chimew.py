@@ -87,6 +87,8 @@ class Eda2023ContestChimewTest(unittest.TestCase):
             }
             for index in range(8)
         ]
+        nets[0]["sink_nodes"].append("g_extra")
+        nets[0]["sink_dies"].append("Die3")
         write_json(
             imported / "contest_instance.json",
             {
@@ -107,7 +109,7 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                     for net in nets
                     for node, die in [
                         (net["source_node"], net["source_die"]),
-                        (net["sink_nodes"][0], net["sink_dies"][0]),
+                        *zip(net["sink_nodes"], net["sink_dies"]),
                     ]
                 },
                 "parameters": {},
@@ -205,7 +207,7 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                                         "to": "Die3",
                                     }
                                 ]
-                                if net["sink_dies"] == ["Die3"]
+                                if "Die3" in net["sink_dies"]
                                 else []
                             ),
                         ],
@@ -256,7 +258,7 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                 report["qualification"], EDA2023_CONTEST_CHIMEW_QUALIFICATION
             )
             self.assertEqual(report["metrics"]["signals"], 8)
-            self.assertEqual(report["metrics"]["routed_sll_hops"], 8)
+            self.assertEqual(report["metrics"]["routed_sll_hops"], 9)
             self.assertLessEqual(
                 report["metrics"]["chimew"]["routed_sll_crossing_bits"],
                 report["metrics"]["baseline"]["routed_sll_crossing_bits"],
@@ -269,13 +271,20 @@ class Eda2023ContestChimewTest(unittest.TestCase):
             self.assertEqual(
                 actual,
                 [
+                    ([0], [0], 3),
+                    ([], [0], 2),
+                    ([0], [0], 3),
+                    ([], [], 0),
                     ([0], [], 1),
                     ([], [0], 2),
                     ([0], [0], 3),
                     ([], [], 0),
-                ]
-                * 2,
+                ],
             )
+            bank_input = read_json(
+                root / "ab/materialized/inputs/bank_channel_input.json"
+            )
+            self.assertEqual(bank_input["metrics"]["fanins"], 9)
             self.assertEqual(
                 read_json(root / "ab/chimew/pipeline_report.json")["provider"],
                 CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,

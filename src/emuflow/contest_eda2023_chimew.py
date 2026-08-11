@@ -416,7 +416,7 @@ def materialize_eda2023_contest_chimew_inputs(
         "slls_per_fpga": sll_count,
         "provenance": {
             "producer": EDA2023_CONTEST_CHIMEW_PROVIDER,
-            "producer_version": "1",
+            "producer_version": "2",
             "routing_sha256": routing_sha,
             "claim_boundary": (
                 "contest-routed die/SLL abstraction; not intra-die vendor routing"
@@ -660,7 +660,11 @@ def materialize_eda2023_contest_chimew_inputs(
         "metrics": {
             "groups": len(bank_groups),
             "signals": len(schedule_entries),
-            "fanins": len(schedule_entries),
+            "fanins": sum(
+                len(member["fanins"])
+                for group in bank_groups
+                for member in group["members"]
+            ),
             "bank_pairs": len(bank_pairs),
             "channels": len(electrical_channels),
         },
