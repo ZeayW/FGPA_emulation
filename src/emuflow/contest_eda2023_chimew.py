@@ -47,11 +47,11 @@ from .tdm import TDM_SCHEDULE_SCHEMA
 
 
 EDA2023_CONTEST_CHIMEW_MATERIALIZATION_SCHEMA = (
-    "emuflow.eda2023-contest-chimew-materialization/v1"
+    "emuflow.eda2023-contest-chimew-materialization/v2"
 )
-EDA2023_CONTEST_CHIMEW_AB_SCHEMA = "emuflow.eda2023-contest-chimew-ab/v1"
+EDA2023_CONTEST_CHIMEW_AB_SCHEMA = "emuflow.eda2023-contest-chimew-ab/v2"
 EDA2023_CONTEST_CHIMEW_PROVIDER = (
-    "eda2023-routed-die-lookahead+synthetic-electrical-map-v1"
+    "eda2023-route-local-sll-lookahead+synthetic-electrical-map-v2"
 )
 EDA2023_CONTEST_CHIMEW_QUALIFICATION = (
     "contest-derived-virtual-die-algorithm-validation"
@@ -118,6 +118,147 @@ def _guarded_points(points: list[Tuple[float, float]]) -> Tuple[list[Tuple[float
         unique.append((unique[0][0], unique[0][1] + 0.5))
         guards += 1
     return unique, guards
+
+
+def _sll_index(
+    edge: Mapping[str, Any],
+    die_location: Mapping[str, Tuple[str, int]],
+) -> int:
+    source_fpga, source_index = die_location[edge["from"]]
+    sink_fpga, sink_index = die_location[edge["to"]]
+    if source_fpga != sink_fpga or abs(source_index - sink_index) != 1:
+        raise ValidationError("EDA 2023 SLL link is inconsistent with hierarchy")
+    return min(source_index, sink_index)
+
+
+def _routed_external_crossings(
+    routes: Mapping[str, Any],
+    instance_links: Mapping[str, Mapping[str, Any]],
+    die_location: Mapping[str, Tuple[str, int]],
+) -> Dict[Tuple[str, str, str, str], Dict[str, Any]]:
+    """Map each routed inter-FPGA edge to its local source/sink SLL masks.
+
+    Phase 5 only emits TDM records for constrained external links.  The SLL
+    segments that feed and fan out from that external edge remain in the
+    Phase 4 route tree, so derive Chimew's two endpoint encodings from the
+    nearest same-FPGA SLL prefix and suffix instead of looking at the TDM
+    edge's own link kind.
+    """
+
+    raw_routes = routes.get("routes")
+    if not isinstance(raw_routes, list):
+        raise ValidationError("EDA 2023 routes array is invalid")
+    result: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    seen_nets = set()
+    for route in raw_routes:
+        if not isinstance(route, dict):
+            raise ValidationError("EDA 2023 route record is invalid")
+        net = route.get("net")
+        source = route.get("source")
+        route_sinks = route.get("sinks")
+        raw_edges = route.get("tree_edges")
+        if (
+            not isinstance(net, str)
+            or not net
+            or net in seen_nets
+            or source not in die_location
+            or not isinstance(route_sinks, list)
+            or not route_sinks
+            or len(set(route_sinks)) != len(route_sinks)
+            or any(sink not in die_location for sink in route_sinks)
+            or not isinstance(raw_edges, list)
+        ):
+            raise ValidationError("EDA 2023 routed tree identity is invalid")
+        seen_nets.add(net)
+        incoming: Dict[str, Mapping[str, Any]] = {}
+        outgoing: Dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        edges = []
+        for edge in raw_edges:
+            if not isinstance(edge, dict):
+                raise ValidationError("EDA 2023 routed tree edge is invalid")
+            link_id = edge.get("link")
+            edge_source = edge.get("from")
+            edge_sink = edge.get("to")
+            if (
+                link_id not in instance_links
+                or edge_source not in die_location
+                or edge_sink not in die_location
+                or (edge_source, edge_sink)
+                not in (
+                    tuple(instance_links[link_id]["endpoints"]),
+                    tuple(reversed(instance_links[link_id]["endpoints"])),
+                )
+                or edge_sink in incoming
+            ):
+                raise ValidationError("EDA 2023 routed tree edge is inconsistent")
+            incoming[edge_sink] = edge
+            outgoing[edge_source].append(edge)
+            edges.append(edge)
+
+        if source in incoming:
+            raise ValidationError("EDA 2023 routed tree source has an incoming edge")
+        reachable = {source}
+        stack = [source]
+        while stack:
+            node = stack.pop()
+            for edge in outgoing.get(node, []):
+                if edge["to"] in reachable:
+                    raise ValidationError("EDA 2023 routed tree contains a cycle")
+                reachable.add(edge["to"])
+                stack.append(edge["to"])
+        if len(reachable) != len(edges) + 1 or not set(route_sinks).issubset(
+            reachable
+        ):
+            raise ValidationError("EDA 2023 routed tree is disconnected")
+
+        for edge in edges:
+            link = instance_links[edge["link"]]
+            if link.get("kind") != "wire":
+                continue
+            source_slls = set()
+            node = edge["from"]
+            while node != source:
+                parent = incoming.get(node)
+                if parent is None:
+                    raise ValidationError("EDA 2023 routed tree is disconnected")
+                parent_link = instance_links[parent["link"]]
+                if parent_link.get("kind") != "sll":
+                    break
+                source_slls.add(_sll_index(parent, die_location))
+                node = parent["from"]
+            source_anchor = node
+
+            sink_slls = set()
+            sink_anchors = set()
+            stack = [edge["to"]]
+            visited = set()
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    raise ValidationError("EDA 2023 routed tree contains a cycle")
+                visited.add(node)
+                children = outgoing.get(node, [])
+                if node in route_sinks or not children:
+                    sink_anchors.add(node)
+                for child in children:
+                    child_link = instance_links[child["link"]]
+                    if child_link.get("kind") != "sll":
+                        sink_anchors.add(node)
+                        continue
+                    sink_slls.add(_sll_index(child, die_location))
+                    stack.append(child["to"])
+            key = (net, edge["link"], edge["from"], edge["to"])
+            if key in result:
+                raise ValidationError("EDA 2023 routed external edge is duplicated")
+            if not sink_anchors:
+                raise ValidationError("EDA 2023 routed external edge has no local sink")
+            result[key] = {
+                "source_slls": sorted(source_slls),
+                "sink_slls": sorted(sink_slls),
+                "source_anchor": source_anchor,
+                "sink_anchors": sorted(sink_anchors),
+            }
+    return result
 
 
 def materialize_eda2023_contest_chimew_inputs(
@@ -232,24 +373,36 @@ def materialize_eda2023_contest_chimew_inputs(
     routing_sha = _sha256(routes_path)
     placement_sha = _sha256(instance_path)
     architecture_sha = _sha256(hierarchy_path)
+    routed_crossings = _routed_external_crossings(
+        routes, instance_links, die_location
+    )
     crossing_entries = []
     total_crossings = 0
+    route_context_by_entry: Dict[str, Dict[str, Any]] = {}
     for entry in schedule_entries:
         link_record = instance_links[entry["link"]]
-        source_slls: list[int] = []
-        if link_record.get("kind") == "sll":
-            source_fpga, source_index = die_location[entry["from"]]
-            sink_fpga, sink_index = die_location[entry["to"]]
-            if source_fpga != sink_fpga or abs(source_index - sink_index) != 1:
-                raise ValidationError("EDA 2023 SLL link is inconsistent with hierarchy")
-            source_slls = [min(source_index, sink_index)]
-        encoding = sum(1 << value for value in source_slls)
-        total_crossings += len(source_slls)
+        if link_record.get("kind") != "wire":
+            raise ValidationError(
+                "EDA 2023 Phase 6 schedule contains an intra-FPGA SLL hop"
+            )
+        key = (entry["net"], entry["link"], entry["from"], entry["to"])
+        if key not in routed_crossings:
+            raise ValidationError(
+                "EDA 2023 TDM hop is not bound to a routed external edge"
+            )
+        route_context = routed_crossings[key]
+        route_context_by_entry[entry["id"]] = route_context
+        source_slls = route_context["source_slls"]
+        sink_slls = route_context["sink_slls"]
+        encoding = sum(1 << value for value in source_slls) | (
+            sum(1 << value for value in sink_slls) << sll_count
+        )
+        total_crossings += len(source_slls) + len(sink_slls)
         crossing_entries.append(
             {
                 "schedule_entry": entry["id"],
                 "source_slls": source_slls,
-                "sink_slls": [],
+                "sink_slls": sink_slls,
                 "encoding": encoding,
             }
         )
@@ -290,7 +443,9 @@ def materialize_eda2023_contest_chimew_inputs(
         "entries": [
             {
                 "schedule_entry": entry["id"],
-                "source_y": die_points[entry["from"]][1],
+                "source_y": die_points[
+                    route_context_by_entry[entry["id"]]["source_anchor"]
+                ][1],
             }
             for entry in schedule_entries
         ],
@@ -322,14 +477,19 @@ def materialize_eda2023_contest_chimew_inputs(
             {
                 "id": entry_id,
                 "fanout": {
-                    "x": die_points[entry["from"]][0],
-                    "y": die_points[entry["from"]][1],
+                    "x": die_points[
+                        route_context_by_entry[entry_id]["source_anchor"]
+                    ][0],
+                    "y": die_points[
+                        route_context_by_entry[entry_id]["source_anchor"]
+                    ][1],
                 },
                 "fanins": [
                     {
-                        "x": die_points[entry["to"]][0],
-                        "y": die_points[entry["to"]][1],
+                        "x": die_points[sink][0],
+                        "y": die_points[sink][1],
                     }
+                    for sink in route_context_by_entry[entry_id]["sink_anchors"]
                 ],
             }
         )
@@ -505,6 +665,16 @@ def materialize_eda2023_contest_chimew_inputs(
             "channels": len(electrical_channels),
         },
     }
+    domain_endpoints = sorted(
+        {
+            endpoint
+            for domain in domains
+            for endpoint in (domain["fpga_a"], domain["fpga_b"])
+        }
+    )
+    physical_fpga_ys: Dict[str, list[float]] = defaultdict(list)
+    for die, (physical_fpga, _) in die_location.items():
+        physical_fpga_ys[physical_fpga].append(die_points[die][1])
     electrical_map = {
         "schema": CHIMEW_ELECTRICAL_MAP_SCHEMA,
         "provider": CHIMEW_ELECTRICAL_MAP_PROVIDER,
@@ -519,10 +689,10 @@ def materialize_eda2023_contest_chimew_inputs(
         "fpga_y_bounds": [
             {
                 "fpga": die,
-                "y_min": point[1] - 1.0,
-                "y_max": point[1] + 1.0,
+                "y_min": min(physical_fpga_ys[die_location[die][0]]) - 1.0,
+                "y_max": max(physical_fpga_ys[die_location[die][0]]) + 1.0,
             }
-            for die, point in sorted(die_points.items())
+            for die in domain_endpoints
         ],
         "channels": electrical_channels,
         "metrics": {
@@ -585,6 +755,45 @@ def materialize_eda2023_contest_chimew_inputs(
     return report
 
 
+def _routed_group_metrics(
+    plan: Mapping[str, Any],
+    crossings: Mapping[str, Any],
+    positions: Mapping[str, Any],
+) -> Dict[str, float]:
+    group_by_entry = {
+        record["schedule_entry"]: record["group"] for record in plan["entries"]
+    }
+    encoding_by_entry = {
+        record["schedule_entry"]: record["encoding"]
+        for record in crossings["entries"]
+    }
+    position_by_entry = {
+        record["schedule_entry"]: float(record["source_y"])
+        for record in positions["entries"]
+    }
+    if set(group_by_entry) != set(encoding_by_entry) or set(group_by_entry) != set(
+        position_by_entry
+    ):
+        raise ValidationError("EDA 2023 A/B plans do not cover routed signals")
+    encodings: Dict[int, int] = defaultdict(int)
+    grouped_positions: Dict[int, list[float]] = defaultdict(list)
+    for entry_id, group in group_by_entry.items():
+        encodings[group] |= encoding_by_entry[entry_id]
+        grouped_positions[group].append(position_by_entry[entry_id])
+    pairwise_y = 0.0
+    for values in grouped_positions.values():
+        prefix = 0.0
+        for index, value in enumerate(sorted(values)):
+            pairwise_y += value * index - prefix
+            prefix += value
+    return {
+        "routed_sll_crossing_bits": float(
+            sum(bin(encoding).count("1") for encoding in encodings.values())
+        ),
+        "routed_source_pairwise_y": pairwise_y,
+    }
+
+
 def run_eda2023_contest_chimew_ab(
     *,
     import_dir: Path,
@@ -642,16 +851,25 @@ def run_eda2023_contest_chimew_ab(
     baseline_path = output_dir / "baseline_pin_plan.json"
     write_json(baseline_path, baseline)
     chimew_plan = read_json(pipeline_root / "phase6-adapter" / "pin_plan.json")
+    crossings = read_json(Path(artifacts["crossings"]["path"]))
+    positions = read_json(Path(artifacts["positions"]["path"]))
     metric_fields = ("objective", "crossing_bits", "position_sse", "pin_distance")
     baseline_metrics = {field: baseline["metrics"][field] for field in metric_fields}
     chimew_metrics = {field: chimew_plan["metrics"][field] for field in metric_fields}
+    baseline_metrics.update(_routed_group_metrics(baseline, crossings, positions))
+    chimew_metrics.update(_routed_group_metrics(chimew_plan, crossings, positions))
+    comparison_fields = (
+        *metric_fields,
+        "routed_sll_crossing_bits",
+        "routed_source_pairwise_y",
+    )
     improvements = {
         f"{field}_improvement_percent": (
             100.0 * (baseline_metrics[field] - chimew_metrics[field]) / baseline_metrics[field]
             if baseline_metrics[field]
             else 0.0
         )
-        for field in metric_fields
+        for field in comparison_fields
     }
     report = {
         "schema": EDA2023_CONTEST_CHIMEW_AB_SCHEMA,

@@ -59,20 +59,31 @@ class Eda2023ContestChimewTest(unittest.TestCase):
         dies = [f"Die{index}" for index in range(4)]
         links = [
             {
-                "id": f"die_link_{index:03d}_{index + 1:03d}",
-                "endpoints": [dies[index], dies[index + 1]],
+                "id": "die_link_000_001",
+                "endpoints": ["Die0", "Die1"],
                 "capacity": 16,
                 "kind": "sll",
-            }
-            for index in range(3)
+            },
+            {
+                "id": "die_link_001_002",
+                "endpoints": ["Die1", "Die2"],
+                "capacity": 16,
+                "kind": "wire",
+            },
+            {
+                "id": "die_link_002_003",
+                "endpoints": ["Die2", "Die3"],
+                "capacity": 16,
+                "kind": "sll",
+            },
         ]
         nets = [
             {
                 "id": index,
                 "source_node": f"g{2 * index}",
-                "source_die": dies[index % 3],
+                "source_die": dies[0 if index % 4 in (0, 2) else 1],
                 "sink_nodes": [f"g{2 * index + 1}"],
-                "sink_dies": [dies[index % 3 + 1]],
+                "sink_dies": [dies[3 if index % 4 in (1, 2) else 2]],
             }
             for index in range(8)
         ]
@@ -81,9 +92,14 @@ class Eda2023ContestChimewTest(unittest.TestCase):
             {
                 "schema": "emuflow.contest-eda2023-instance/v1",
                 "name": "eda2023-chimew-fixture",
-                "fpgas": ["FPGA0"],
+                "fpgas": ["FPGA0", "FPGA1"],
                 "dies": dies,
-                "die_to_fpga": {die: "FPGA0" for die in dies},
+                "die_to_fpga": {
+                    "Die0": "FPGA0",
+                    "Die1": "FPGA0",
+                    "Die2": "FPGA1",
+                    "Die3": "FPGA1",
+                },
                 "links": links,
                 "nets": nets,
                 "node_positions": {
@@ -103,9 +119,16 @@ class Eda2023ContestChimewTest(unittest.TestCase):
             {
                 "schema": "emuflow.die-hierarchy/v1",
                 "platform": "eda2023-chimew-fixture",
-                "physical_fpgas": [{"id": "FPGA0", "dies": dies}],
+                "physical_fpgas": [
+                    {"id": "FPGA0", "dies": ["Die0", "Die1"]},
+                    {"id": "FPGA1", "dies": ["Die2", "Die3"]},
+                ],
                 "links": [
-                    {"id": link["id"], "capacity": 16, "kind": "sll"}
+                    {
+                        "id": link["id"],
+                        "capacity": 16,
+                        "kind": link["kind"],
+                    }
                     for link in links
                 ],
             },
@@ -150,7 +173,45 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                 "design": "eda2023-chimew-fixture",
                 "platform": "eda2023-chimew-fixture",
                 "constraints": {},
-                "routes": [],
+                "routes": [
+                    {
+                        "id": f"d{index:06d}",
+                        "net": f"net_{index:07d}",
+                        "source": net["source_die"],
+                        "sinks": net["sink_dies"],
+                        "width_bits": 1,
+                        "tree_edges": [
+                            *(
+                                [
+                                    {
+                                        "link": links[0]["id"],
+                                        "from": "Die0",
+                                        "to": "Die1",
+                                    }
+                                ]
+                                if net["source_die"] == "Die0"
+                                else []
+                            ),
+                            {
+                                "link": links[1]["id"],
+                                "from": "Die1",
+                                "to": "Die2",
+                            },
+                            *(
+                                [
+                                    {
+                                        "link": links[2]["id"],
+                                        "from": "Die2",
+                                        "to": "Die3",
+                                    }
+                                ]
+                                if net["sink_dies"] == ["Die3"]
+                                else []
+                            ),
+                        ],
+                    }
+                    for index, net in enumerate(nets)
+                ],
             },
         )
         tdm = root / "tdm_plan.json"
@@ -165,10 +226,10 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                         "index": index,
                         "net": f"net_{index:07d}",
                         "official_net_id": index,
-                        "link": links[index % 3]["id"],
-                        "from": links[index % 3]["endpoints"][index % 2],
-                        "to": links[index % 3]["endpoints"][1 - index % 2],
-                        "direction": index % 2,
+                        "link": links[1]["id"],
+                        "from": "Die1",
+                        "to": "Die2",
+                        "direction": 0,
                         "lane": index % 4,
                         "ratio": 2,
                         "continuous_ratio": 2.0,
@@ -195,6 +256,26 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                 report["qualification"], EDA2023_CONTEST_CHIMEW_QUALIFICATION
             )
             self.assertEqual(report["metrics"]["signals"], 8)
+            self.assertEqual(report["metrics"]["routed_sll_hops"], 8)
+            self.assertLessEqual(
+                report["metrics"]["chimew"]["routed_sll_crossing_bits"],
+                report["metrics"]["baseline"]["routed_sll_crossing_bits"],
+            )
+            crossings = read_json(root / "ab/materialized/inputs/crossings.json")
+            actual = [
+                (entry["source_slls"], entry["sink_slls"], entry["encoding"])
+                for entry in crossings["entries"]
+            ]
+            self.assertEqual(
+                actual,
+                [
+                    ([0], [], 1),
+                    ([], [0], 2),
+                    ([0], [0], 3),
+                    ([], [], 0),
+                ]
+                * 2,
+            )
             self.assertEqual(
                 read_json(root / "ab/chimew/pipeline_report.json")["provider"],
                 CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
@@ -210,6 +291,25 @@ class Eda2023ContestChimewTest(unittest.TestCase):
             document["hops"][0]["link"] = "missing"
             write_json(tdm, document)
             with self.assertRaisesRegex(ValidationError, "TDM hop is invalid"):
+                materialize_eda2023_contest_chimew_inputs(
+                    import_dir=imported,
+                    routes_path=routes,
+                    tdm_plan_path=tdm,
+                    output_dir=root / "materialized",
+                    grouper=self.executables["grouper"],
+                    refiner=self.executables["refiner"],
+                )
+
+    def test_tdm_hop_must_match_routed_external_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            imported, routes, tdm = self._fixture(root)
+            document = read_json(tdm)
+            document["hops"][0]["from"] = "Die2"
+            document["hops"][0]["to"] = "Die1"
+            document["hops"][0]["direction"] = 1
+            write_json(tdm, document)
+            with self.assertRaisesRegex(ValidationError, "routed external edge"):
                 materialize_eda2023_contest_chimew_inputs(
                     import_dir=imported,
                     routes_path=routes,
