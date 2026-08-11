@@ -348,6 +348,10 @@ void rebuild(Group& group, const std::vector<Signal>& signals) {
 }
 
 void refine_groups(const Input& input, std::vector<Group>& groups) {
+  std::map<int, std::vector<int>> groups_by_ratio;
+  for (int group = 0; group < static_cast<int>(groups.size()); ++group) {
+    groups_by_ratio[groups[group].ratio].push_back(group);
+  }
   for (int iteration = 0; iteration < input.refinement_iterations; ++iteration) {
     std::vector<std::vector<int>> candidates(groups.size());
     for (int group = 0; group < static_cast<int>(groups.size()); ++group) {
@@ -377,40 +381,47 @@ void refine_groups(const Input& input, std::vector<Group>& groups) {
     int best_b = -1;
     int best_ia = -1;
     int best_ib = -1;
-    for (int a = 0; a < static_cast<int>(groups.size()); ++a) {
-      for (int b = a + 1; b < static_cast<int>(groups.size()); ++b) {
-        if (groups[a].ratio != groups[b].ratio) {
-          continue;
-        }
-        const double before =
-            group_cost(groups[a], input.signals, input.crossing_weight,
-                       input.position_weight) +
-            group_cost(groups[b], input.signals, input.crossing_weight,
-                       input.position_weight);
-        for (int ia : candidates[a]) {
-          for (int ib : candidates[b]) {
-            const int sa = groups[a].signals[ia];
-            const int sb = groups[b].signals[ib];
-            if ((input.signals[sa].slot != input.signals[sb].slot) &&
-                (groups[a].slots.count(input.signals[sb].slot) ||
-                 groups[b].slots.count(input.signals[sa].slot))) {
-              continue;
-            }
-            const double after =
-                cost_after_swap(
-                    groups[a], input.signals[sa], input.signals[sb],
-                    input.crossing_weight, input.position_weight) +
-                cost_after_swap(
-                    groups[b], input.signals[sb], input.signals[sa],
-                    input.crossing_weight, input.position_weight);
-            const double delta = after - before;
-            if (std::make_tuple(delta, a, b, ia, ib) <
-                std::make_tuple(best_delta, best_a, best_b, best_ia, best_ib)) {
-              best_delta = delta;
-              best_a = a;
-              best_b = b;
-              best_ia = ia;
-              best_ib = ib;
+    for (const auto& [ratio, same_ratio_groups] : groups_by_ratio) {
+      static_cast<void>(ratio);
+      for (int a_offset = 0;
+           a_offset < static_cast<int>(same_ratio_groups.size());
+           ++a_offset) {
+        const int a = same_ratio_groups[a_offset];
+        for (int b_offset = a_offset + 1;
+             b_offset < static_cast<int>(same_ratio_groups.size());
+             ++b_offset) {
+          const int b = same_ratio_groups[b_offset];
+          const double before =
+              group_cost(groups[a], input.signals, input.crossing_weight,
+                         input.position_weight) +
+              group_cost(groups[b], input.signals, input.crossing_weight,
+                         input.position_weight);
+          for (int ia : candidates[a]) {
+            for (int ib : candidates[b]) {
+              const int sa = groups[a].signals[ia];
+              const int sb = groups[b].signals[ib];
+              if ((input.signals[sa].slot != input.signals[sb].slot) &&
+                  (groups[a].slots.count(input.signals[sb].slot) ||
+                   groups[b].slots.count(input.signals[sa].slot))) {
+                continue;
+              }
+              const double after =
+                  cost_after_swap(
+                      groups[a], input.signals[sa], input.signals[sb],
+                      input.crossing_weight, input.position_weight) +
+                  cost_after_swap(
+                      groups[b], input.signals[sb], input.signals[sa],
+                      input.crossing_weight, input.position_weight);
+              const double delta = after - before;
+              if (std::make_tuple(delta, a, b, ia, ib) <
+                  std::make_tuple(best_delta, best_a, best_b, best_ia,
+                                  best_ib)) {
+                best_delta = delta;
+                best_a = a;
+                best_b = b;
+                best_ia = ia;
+                best_ib = ib;
+              }
             }
           }
         }
