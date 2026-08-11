@@ -53,6 +53,7 @@ from .contest_eda2023 import (
     materialize_eda2023_rtl_boarddb,
     optimize_eda2023_tdm,
 )
+from .contest_eda2023_chimew import run_eda2023_contest_chimew_ab
 from .contest_iccad2019 import (
     evaluate_iccad2019_solution,
     import_iccad2019_instance,
@@ -625,6 +626,22 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2023_evaluate.add_argument("--routes", type=Path, required=True)
     eda2023_evaluate.add_argument("--tdm-plan", type=Path, required=True)
     eda2023_evaluate.add_argument("--output", "-o", type=Path)
+    eda2023_chimew = contest_subparsers.add_parser(
+        "eda2023-chimew-ab",
+        help=(
+            "compare Chimew with the previous placement-aware Phase 6 baseline "
+            "on a frozen EDA 2023 routed-die result"
+        ),
+    )
+    eda2023_chimew.add_argument("--import-dir", type=Path, required=True)
+    eda2023_chimew.add_argument("--routes", type=Path, required=True)
+    eda2023_chimew.add_argument("--tdm-plan", type=Path, required=True)
+    eda2023_chimew.add_argument("--grouper")
+    eda2023_chimew.add_argument("--refiner")
+    eda2023_chimew.add_argument("--rudy")
+    eda2023_chimew.add_argument("--assigner")
+    eda2023_chimew.add_argument("--pin-planner")
+    eda2023_chimew.add_argument("--out", type=Path, required=True)
     iccad2019_import = contest_subparsers.add_parser(
         "iccad2019-import",
         help="normalize an official ICCAD 2019 Problem B instance",
@@ -2714,6 +2731,18 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             if args.output is not None:
                 write_json(args.output, report)
+        elif args.contest_command == "eda2023-chimew-ab":
+            report = run_eda2023_contest_chimew_ab(
+                import_dir=args.import_dir,
+                routes_path=args.routes,
+                tdm_plan_path=args.tdm_plan,
+                output_dir=args.out,
+                grouper=args.grouper,
+                refiner=args.refiner,
+                rudy=args.rudy,
+                assigner=args.assigner,
+                pin_planner=args.pin_planner,
+            )
         elif args.contest_command == "eda2024-evaluate":
             solution = args.solution or args.case_dir / "design.fpga.out"
             report = evaluate_eda2024_solution(

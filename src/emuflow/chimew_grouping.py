@@ -13,7 +13,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -251,30 +251,46 @@ def _oracle_groups(
     group_count = 0
     crossing_bits = 0
     for (_, ratio), indices in sorted(buckets.items()):
-        multiplicity = Counter(encodings[entries[index]["id"]] for index in indices)
-        remaining = sorted(
-            indices,
-            key=lambda index: (
-                -_popcount(encodings[entries[index]["id"]]),
-                -encodings[entries[index]["id"]],
-                index,
-            ),
+        remaining_by_encoding: Dict[int, deque[int]] = defaultdict(deque)
+        for index in indices:
+            remaining_by_encoding[encodings[entries[index]["id"]]].append(index)
+        multiplicity = Counter(
+            {encoding: len(remaining) for encoding, remaining in remaining_by_encoding.items()}
         )
-        while remaining:
-            target = encodings[entries[remaining[0]]["id"]]
+        remaining_count = len(indices)
+        while remaining_count:
+            target = min(
+                (
+                    encoding
+                    for encoding, remaining in remaining_by_encoding.items()
+                    if remaining
+                ),
+                key=lambda encoding: (
+                    -_popcount(encoding),
+                    -encoding,
+                    remaining_by_encoding[encoding][0],
+                ),
+            )
             members = []
-            while remaining and len(members) < ratio:
-                selected = min(
-                    remaining,
-                    key=lambda index: _nearest_key(
-                        encodings[entries[index]["id"]], target, multiplicity, index
+            while remaining_count and len(members) < ratio:
+                selected_encoding = min(
+                    (
+                        encoding
+                        for encoding, remaining in remaining_by_encoding.items()
+                        if remaining
+                    ),
+                    key=lambda encoding: _nearest_key(
+                        encoding,
+                        target,
+                        multiplicity,
+                        remaining_by_encoding[encoding][0],
                     ),
                 )
-                encoding = encodings[entries[selected]["id"]]
+                selected = remaining_by_encoding[selected_encoding].popleft()
                 members.append(selected)
-                target |= encoding
-                multiplicity[encoding] -= 1
-                remaining.remove(selected)
+                target |= selected_encoding
+                multiplicity[selected_encoding] -= 1
+                remaining_count -= 1
             for index in members:
                 assignment[entries[index]["id"]] = group_count
             crossing_bits += _popcount(target)

@@ -11,6 +11,7 @@ from emuflow.chimew_grouping import (
     CHIMEW_CROSSING_SCHEMA,
     CHIMEW_GROUPING_PROVIDER,
     CHIMEW_SCHEDULE_RATIO_PROVIDER,
+    _oracle_groups,
     build_chimew_initial_groups,
     materialize_chimew_schedule_ratios,
     validate_chimew_crossings,
@@ -190,6 +191,121 @@ class ChimewGroupingTest(unittest.TestCase):
         for entry in result["entries"]:
             sizes[entry["group"]] = sizes.get(entry["group"], 0) + 1
         self.assertTrue(all(size <= 4 for size in sizes.values()))
+        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_encoding_buckets_match_exhaustive_selection_trace(self) -> None:
+        randomizer = random.Random(918)
+        for count in range(1, 80):
+            entries = [
+                {
+                    "id": f"e{index:03d}",
+                    "link": f"l{index % 2}",
+                    "from": "a",
+                    "to": "b",
+                    "tdm_ratio": 1 + index % 7,
+                }
+                for index in range(count)
+            ]
+            encodings = {
+                entry["id"]: randomizer.randrange(64) for entry in entries
+            }
+
+            def exhaustive():
+                from collections import Counter, defaultdict
+
+                buckets = defaultdict(list)
+                for index, entry in enumerate(entries):
+                    buckets[
+                        ((entry["link"], entry["from"], entry["to"]), entry["tdm_ratio"])
+                    ].append(index)
+                assignment = {}
+                group_count = crossing_bits = 0
+                for (_, ratio), indices in sorted(buckets.items()):
+                    multiplicity = Counter(encodings[entries[index]["id"]] for index in indices)
+                    remaining = sorted(
+                        indices,
+                        key=lambda index: (
+                            -bin(encodings[entries[index]["id"]]).count("1"),
+                            -encodings[entries[index]["id"]],
+                            index,
+                        ),
+                    )
+                    while remaining:
+                        target = encodings[entries[remaining[0]]["id"]]
+                        members = []
+                        while remaining and len(members) < ratio:
+                            def key(index):
+                                encoding = encodings[entries[index]["id"]]
+                                category = 0 if encoding == target else 1 if encoding | target == target else 2
+                                return (
+                                    category,
+                                    bin(encoding ^ target).count("1") if category == 2 else 0,
+                                    -bin(encoding).count("1"),
+                                    multiplicity[encoding],
+                                    -encoding,
+                                    index,
+                                )
+
+                            selected = min(remaining, key=key)
+                            encoding = encodings[entries[selected]["id"]]
+                            target |= encoding
+                            members.append(selected)
+                            multiplicity[encoding] -= 1
+                            remaining.remove(selected)
+                        for index in members:
+                            assignment[entries[index]["id"]] = group_count
+                        crossing_bits += bin(target).count("1")
+                        group_count += 1
+                return assignment, group_count, crossing_bits
+
+            self.assertEqual(_oracle_groups(entries, encodings), exhaustive())
+
+    def test_large_repeated_encoding_bucket_is_scalable(self) -> None:
+        count = 20_000
+        schedule = {
+            "design": "large-repeated-encoding",
+            "platform": "two_fpga",
+            "entries": [
+                {
+                    "id": f"s{index:05d}",
+                    "link": "link0",
+                    "from": "fpga0",
+                    "to": "fpga1",
+                    "tdm_ratio": 64,
+                }
+                for index in range(count)
+            ],
+        }
+        crossings = {
+            "schema": CHIMEW_CROSSING_SCHEMA,
+            "design": schedule["design"],
+            "platform": schedule["platform"],
+            "provider": CHIMEW_CROSSING_PROVIDER,
+            "slls_per_fpga": 2,
+            "provenance": {
+                "producer": "scale-fixture",
+                "producer_version": "1",
+                "routing_sha256": "c" * 64,
+            },
+            "metrics": {
+                "signals": count,
+                "physical_sll_crossings": count,
+            },
+            "entries": [
+                {
+                    "schedule_entry": entry["id"],
+                    "source_slls": [index % 2],
+                    "sink_slls": [],
+                    "encoding": 1 << (index % 2),
+                }
+                for index, entry in enumerate(schedule["entries"])
+            ],
+        }
+        result = build_chimew_initial_groups(
+            schedule, crossings, executable=str(self.executable)
+        )
+        self.assertEqual(result["metrics"]["signals"], count)
+        self.assertEqual(result["metrics"]["groups"], (count + 63) // 64)
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
     def test_lane_occupancy_materializes_explicit_adapter_ratios(self) -> None:

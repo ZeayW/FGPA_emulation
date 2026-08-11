@@ -1870,6 +1870,27 @@ generation.  Phase 7C is deliberately reported as `generated` in this contract
 test because no physical summary is fabricated; a `pass` physical status still
 requires the independent VPR/Vivado HPC evidence gate.
 
+Larger EDA 2023 cases can exercise the same kernels at the contest's native
+die-graph scale. The command below binds the frozen contest instance, die
+hierarchy, routed tree, and TDM plan by SHA-256, then compares Chimew against
+the previous placement-aware Phase 6 planner using identical position hints:
+
+```bash
+emuflow contest eda2023-chimew-ab \
+  --import-dir build/eda2023-case7/import \
+  --routes build/eda2023-case7/candidate/routes.json \
+  --tdm-plan build/eda2023-case7/candidate/tdm_plan.json \
+  --out build/eda2023-case7/chimew-ab
+```
+
+This path is explicitly `contest-derived-virtual-die-algorithm-validation`.
+EDA 2023 supplies node-to-die placement, SLL/Wire topology, routed hops, and
+TDM ratios, but no intra-die site placement or package-pin BSP. The adapter
+therefore preserves the real contest data and creates a clearly labelled
+synthetic electrical inventory. Its grouping, crossing, distance, runtime,
+and scaling results are valid algorithm comparisons; they are not vendor
+placement/routing, timing, DRC, bitstream, or hardware-closure evidence.
+
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report
 SHA-256 values before validation. For every candidate the checker independently
