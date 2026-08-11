@@ -41,6 +41,7 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                     compiler,
                     "-std=c++17",
                     "-O2",
+                    "-pthread",
                     str(ROOT / "src/native" / source),
                     "-o",
                     str(executable),

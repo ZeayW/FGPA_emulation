@@ -567,6 +567,7 @@ if(EMUFLOW_BUILD_MFSPART_COARSENER)
 endif()
 
 if(EMUFLOW_BUILD_PIN_PLANNER)
+  find_package(Threads REQUIRED)
   add_executable(
     emuflow_pin_planner
     "${CMAKE_SOURCE_DIR}/src/native/placement_aware_pin_planner.cpp"
@@ -617,6 +618,10 @@ if(EMUFLOW_BUILD_PIN_PLANNER)
   )
   target_compile_features(emuflow_chimew_bank_channel_assigner PRIVATE cxx_std_17)
   target_compile_options(emuflow_chimew_bank_channel_assigner PRIVATE -O3)
+  target_link_libraries(
+    emuflow_chimew_bank_channel_assigner
+    PRIVATE Threads::Threads
+  )
   set_target_properties(
     emuflow_chimew_bank_channel_assigner
     PROPERTIES

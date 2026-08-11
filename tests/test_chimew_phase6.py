@@ -50,6 +50,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 compiler,
                 "-std=c++17",
                 "-O2",
+                "-pthread",
                 str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
                 "-o",
                 str(cls.executable),
