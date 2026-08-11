@@ -172,15 +172,13 @@ double signal_sum_y2(const Signal& signal) {
       signal.sink_y * signal.sink_y;
 }
 
-unsigned long long crossing_after(
-    const Group& group, unsigned long long remove,
-    unsigned long long add) {
+unsigned long long crossing_without(
+    const Group& group, unsigned long long remove) {
   unsigned long long result = 0;
   for (int bit = 0; bit < 64; ++bit) {
     const unsigned long long mask = 1ULL << bit;
     int count = group.bit_counts[bit];
     count -= (remove & mask) != 0;
-    count += (add & mask) != 0;
     if (count > 0) {
       result |= mask;
     }
@@ -201,6 +199,7 @@ double cost_if_added(
 
 double cost_after_swap(
     const Group& group, const Signal& remove, const Signal& add,
+    unsigned long long crossing_without_remove,
     double crossing_weight, double position_weight) {
   const double sum =
       group.sum_y - signal_sum_y(remove) + signal_sum_y(add);
@@ -209,7 +208,7 @@ double cost_after_swap(
   const double values = 2.0 * group.signals.size();
   const double spread = std::max(0.0, sum2 - sum * sum / values);
   return crossing_weight *
-          popcount(crossing_after(group, remove.crossing, add.crossing)) +
+          popcount(crossing_without_remove | add.crossing) +
       position_weight * spread;
 }
 
@@ -354,6 +353,9 @@ void refine_groups(const Input& input, std::vector<Group>& groups) {
   }
   for (int iteration = 0; iteration < input.refinement_iterations; ++iteration) {
     std::vector<std::vector<int>> candidates(groups.size());
+    std::vector<std::vector<unsigned long long>>
+        crossing_without_candidate(groups.size());
+    std::vector<double> group_costs(groups.size());
     for (int group = 0; group < static_cast<int>(groups.size()); ++group) {
       const double mean = group_mean_y(groups[group], input.signals);
       candidates[group].resize(groups[group].signals.size());
@@ -375,6 +377,15 @@ void refine_groups(const Input& input, std::vector<Group>& groups) {
       if (candidates[group].size() > 16) {
         candidates[group].resize(16);
       }
+      crossing_without_candidate[group].reserve(candidates[group].size());
+      for (int candidate : candidates[group]) {
+        crossing_without_candidate[group].push_back(crossing_without(
+            groups[group],
+            input.signals[groups[group].signals[candidate]].crossing));
+      }
+      group_costs[group] =
+          group_cost(groups[group], input.signals, input.crossing_weight,
+                     input.position_weight);
     }
     double best_delta = -1.0e-12;
     int best_a = -1;
@@ -391,13 +402,15 @@ void refine_groups(const Input& input, std::vector<Group>& groups) {
              b_offset < static_cast<int>(same_ratio_groups.size());
              ++b_offset) {
           const int b = same_ratio_groups[b_offset];
-          const double before =
-              group_cost(groups[a], input.signals, input.crossing_weight,
-                         input.position_weight) +
-              group_cost(groups[b], input.signals, input.crossing_weight,
-                         input.position_weight);
-          for (int ia : candidates[a]) {
-            for (int ib : candidates[b]) {
+          const double before = group_costs[a] + group_costs[b];
+          for (int a_candidate = 0;
+               a_candidate < static_cast<int>(candidates[a].size());
+               ++a_candidate) {
+            const int ia = candidates[a][a_candidate];
+            for (int b_candidate = 0;
+                 b_candidate < static_cast<int>(candidates[b].size());
+                 ++b_candidate) {
+              const int ib = candidates[b][b_candidate];
               const int sa = groups[a].signals[ia];
               const int sb = groups[b].signals[ib];
               if ((input.signals[sa].slot != input.signals[sb].slot) &&
@@ -408,9 +421,11 @@ void refine_groups(const Input& input, std::vector<Group>& groups) {
               const double after =
                   cost_after_swap(
                       groups[a], input.signals[sa], input.signals[sb],
+                      crossing_without_candidate[a][a_candidate],
                       input.crossing_weight, input.position_weight) +
                   cost_after_swap(
                       groups[b], input.signals[sb], input.signals[sa],
+                      crossing_without_candidate[b][b_candidate],
                       input.crossing_weight, input.position_weight);
               const double delta = after - before;
               if (std::make_tuple(delta, a, b, ia, ib) <
