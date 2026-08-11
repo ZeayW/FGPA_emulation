@@ -1707,6 +1707,10 @@ lookahead coordinates from OpenPARF, materializes the plan, and independently
 reconstructs group capacity, slot collisions, objective values, and split
 netlists. Its validation report includes the reconstructed logical-lane
 baseline and objective, crossing-bit, and pin-distance improvements.
+Independent link-direction domains may be solved concurrently by setting
+`EMUFLOW_PIN_PLANNER_WORKERS` to a positive integer. Results are merged in
+BoardDB domain order, so the parallel and serial artifacts are byte-identical;
+the default remains one worker unless the caller explicitly allocates more.
 
 Four Chimew kernels now sit beside that production baseline and are composed
 by the default open academic physical path described above. The first

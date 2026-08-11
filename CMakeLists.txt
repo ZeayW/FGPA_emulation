@@ -574,6 +574,7 @@ if(EMUFLOW_BUILD_PIN_PLANNER)
   )
   target_compile_features(emuflow_pin_planner PRIVATE cxx_std_17)
   target_compile_options(emuflow_pin_planner PRIVATE -O3)
+  target_link_libraries(emuflow_pin_planner PRIVATE Threads::Threads)
   set_target_properties(
     emuflow_pin_planner
     PROPERTIES

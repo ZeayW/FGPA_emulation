@@ -1,4 +1,5 @@
 import copy
+import os
 import subprocess
 import tempfile
 import unittest
@@ -30,6 +31,7 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
                 "c++",
                 "-std=c++17",
                 "-O2",
+                "-pthread",
                 str(
                     ROOT
                     / "src/native/placement_aware_pin_planner.cpp"
@@ -119,13 +121,21 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
             executable=str(self.executable),
             refinement_iterations=20,
         )
-        second = build_pin_plan(
-            self.schedule,
-            self.platform,
-            self.positions,
-            executable=str(self.executable),
-            refinement_iterations=20,
-        )
+        previous_workers = os.environ.get("EMUFLOW_PIN_PLANNER_WORKERS")
+        os.environ["EMUFLOW_PIN_PLANNER_WORKERS"] = "2"
+        try:
+            second = build_pin_plan(
+                self.schedule,
+                self.platform,
+                self.positions,
+                executable=str(self.executable),
+                refinement_iterations=20,
+            )
+        finally:
+            if previous_workers is None:
+                os.environ.pop("EMUFLOW_PIN_PLANNER_WORKERS", None)
+            else:
+                os.environ["EMUFLOW_PIN_PLANNER_WORKERS"] = previous_workers
         self.assertEqual(first, second)
         self.assertEqual(first["provider"], PIN_PLAN_PROVIDER)
         self.assertEqual(first["metrics"]["groups"], 2)

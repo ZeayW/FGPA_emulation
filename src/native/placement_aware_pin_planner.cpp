@@ -9,19 +9,24 @@
 // distinct from the planned faithful Chimew reproduction.
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -57,6 +62,11 @@ struct Group {
   std::array<int, 64> bit_counts{};
   double sum_y = 0.0;
   double sum_y2 = 0.0;
+};
+
+struct DomainResult {
+  std::vector<std::tuple<int, int, int>> assignments;
+  std::vector<double> group_objectives;
 };
 
 int popcount(unsigned long long value) {
@@ -484,30 +494,104 @@ std::vector<int> assign_pins(
   return result;
 }
 
+DomainResult solve_domain(const Input& input, int domain) {
+  DomainResult result;
+  std::vector<Group> groups = initial_grouping(input, domain);
+  refine_groups(input, groups);
+  std::sort(groups.begin(), groups.end(), [&](const Group& a, const Group& b) {
+    return std::make_tuple(a.ratio, group_mean_y(a, input.signals),
+                           a.signals) <
+           std::make_tuple(b.ratio, group_mean_y(b, input.signals),
+                           b.signals);
+  });
+  const std::vector<int> pins =
+      assign_pins(input, groups, input.domains[domain].lanes);
+  result.group_objectives.reserve(groups.size());
+  for (int index = 0; index < static_cast<int>(groups.size()); ++index) {
+    result.group_objectives.push_back(
+        group_cost(groups[index], input.signals, input.crossing_weight,
+                   input.position_weight));
+    for (int signal : groups[index].signals) {
+      result.assignments.emplace_back(signal, index, pins[index]);
+    }
+  }
+  return result;
+}
+
+int worker_count(const Input& input) {
+  const char* value = std::getenv("EMUFLOW_PIN_PLANNER_WORKERS");
+  if (value == nullptr || *value == '\0') {
+    return 1;
+  }
+  std::string token(value);
+  std::size_t consumed = 0;
+  int workers = 0;
+  try {
+    workers = std::stoi(token, &consumed);
+  } catch (const std::exception&) {
+    throw std::runtime_error(
+        "EMUFLOW_PIN_PLANNER_WORKERS must be a positive integer");
+  }
+  if (consumed != token.size() || workers <= 0) {
+    throw std::runtime_error(
+        "EMUFLOW_PIN_PLANNER_WORKERS must be a positive integer");
+  }
+  return std::min(workers, static_cast<int>(input.domains.size()));
+}
+
 void run(const std::string& input_path, const std::string& output_path) {
   const Input input = read_input(input_path);
+  std::vector<DomainResult> domain_results(input.domains.size());
+  std::atomic<int> next_domain{0};
+  std::exception_ptr failure;
+  std::mutex failure_mutex;
+  const auto solve = [&]() {
+    while (true) {
+      const int domain = next_domain.fetch_add(1);
+      if (domain >= static_cast<int>(input.domains.size())) {
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> lock(failure_mutex);
+        if (failure) {
+          return;
+        }
+      }
+      try {
+        domain_results[domain] = solve_domain(input, domain);
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(failure_mutex);
+        if (!failure) {
+          failure = std::current_exception();
+        }
+        return;
+      }
+    }
+  };
+  std::vector<std::thread> workers;
+  const int requested_workers = worker_count(input);
+  for (int index = 1; index < requested_workers; ++index) {
+    workers.emplace_back(solve);
+  }
+  solve();
+  for (std::thread& worker : workers) {
+    worker.join();
+  }
+  if (failure) {
+    std::rethrow_exception(failure);
+  }
+
   std::vector<std::tuple<int, int, int>> assignments;
   int next_group = 0;
   double objective = 0.0;
-  for (int domain = 0; domain < static_cast<int>(input.domains.size());
-       ++domain) {
-    std::vector<Group> groups = initial_grouping(input, domain);
-    refine_groups(input, groups);
-    std::sort(groups.begin(), groups.end(), [&](const Group& a, const Group& b) {
-      return std::make_tuple(a.ratio, group_mean_y(a, input.signals),
-                             a.signals) <
-          std::make_tuple(b.ratio, group_mean_y(b, input.signals), b.signals);
-    });
-    const std::vector<int> pins =
-        assign_pins(input, groups, input.domains[domain].lanes);
-    for (int index = 0; index < static_cast<int>(groups.size()); ++index) {
-      objective += group_cost(groups[index], input.signals,
-                              input.crossing_weight, input.position_weight);
-      for (int signal : groups[index].signals) {
-        assignments.emplace_back(signal, next_group + index, pins[index]);
-      }
+  for (const DomainResult& domain : domain_results) {
+    for (double group_objective : domain.group_objectives) {
+      objective += group_objective;
     }
-    next_group += static_cast<int>(groups.size());
+    for (const auto& [signal, group, pin] : domain.assignments) {
+      assignments.emplace_back(signal, next_group + group, pin);
+    }
+    next_group += static_cast<int>(domain.group_objectives.size());
   }
   std::sort(assignments.begin(), assignments.end());
   std::ofstream output(output_path);

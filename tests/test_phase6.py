@@ -326,6 +326,7 @@ class Phase6Test(unittest.TestCase):
                     "c++",
                     "-std=c++17",
                     "-O2",
+                    "-pthread",
                     str(
                         ROOT
                         / "src/native/placement_aware_pin_planner.cpp"
