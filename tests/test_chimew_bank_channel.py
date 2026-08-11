@@ -186,6 +186,23 @@ class ChimewBankChannelTest(unittest.TestCase):
         )
         self.assertEqual(common["channel_cost"], 0.5)
 
+    def test_unique_bank_candidate_fast_path_is_certified(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["domains"].append(
+            {"id": "CD", "fpga_a": "C", "fpga_b": "D"}
+        )
+        document["bank_pairs"][1]["domain"] = "CD"
+        document["groups"][3]["domain"] = "CD"
+        result = evaluate_chimew_bank_channel_assignment(
+            document, executable=str(self.executable)
+        )
+        assignments = {
+            record["group"]: record for record in result["assignments"]
+        }
+        self.assertEqual(assignments["tdm_ab"]["bank_pair"], "near")
+        self.assertEqual(assignments["common_far"]["bank_pair"], "far")
+        self.assertEqual(result["metrics"]["certificate_disagreements"], 0)
+
     def test_normalized_coordinates_and_bad_provenance_are_rejected(self) -> None:
         normalized = copy.deepcopy(self.document)
         normalized["coordinate_system"] = "normalized-xy"

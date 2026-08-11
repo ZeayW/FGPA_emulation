@@ -336,6 +336,51 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
   const int first_right = 1;
   const int first_left = first_right + right_count;
   const int sink = first_left + left_count;
+
+  // A materialized platform commonly has exactly one legal bank for every
+  // group.  Running one residual-graph traversal per group in that case is
+  // mathematically redundant and turns an otherwise linear stage-1 binding
+  // into a quadratic workload.  Build the same unique feasible assignment
+  // directly and emit a residual-dual certificate that the independent
+  // Python checker verifies in exactly the same way as the general solver.
+  std::vector<int> unique_right(left_count, -1);
+  std::vector<std::int64_t> unique_cost(left_count, 0);
+  bool unique_candidate = true;
+  for (const CandidateEdge& candidate : candidates) {
+    if (candidate.left < 0 || candidate.left >= left_count ||
+        candidate.right < 0 || candidate.right >= right_count ||
+        unique_right[candidate.left] >= 0) {
+      unique_candidate = false;
+      break;
+    }
+    unique_right[candidate.left] = candidate.right;
+    unique_cost[candidate.left] = candidate.cost;
+  }
+  if (unique_candidate &&
+      std::find(unique_right.begin(), unique_right.end(), -1) ==
+          unique_right.end()) {
+    std::vector<int> used(right_count, 0);
+    AssignmentResult result;
+    result.right_for_left = unique_right;
+    result.cost_for_left = unique_cost;
+    result.potentials.assign(sink + 1, 0);
+    for (int left = 0; left < left_count; ++left) {
+      const int right = unique_right[left];
+      if (++used[right] > capacities[right]) {
+        throw std::runtime_error("no complete Chimew assignment exists");
+      }
+      if (unique_cost[left] >
+          std::numeric_limits<std::int64_t>::max() - result.total_cost) {
+        throw std::runtime_error("Chimew assignment cost is out of range");
+      }
+      result.total_cost += unique_cost[left];
+      result.potentials[first_left + left] = unique_cost[left];
+      result.potentials[sink] =
+          std::max(result.potentials[sink], unique_cost[left]);
+    }
+    return result;
+  }
+
   MinCostFlow flow(sink + 1);
   for (int right = 0; right < right_count; ++right) {
     flow.add_edge(source, first_right + right, capacities[right], 0);
