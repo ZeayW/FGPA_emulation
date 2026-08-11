@@ -652,7 +652,7 @@ legal frame length, completion slot, maximum ratio, and lane usage.
 - *TDM Signal Grouping and Package Pin Assignment for 2.5D Multi-FPGA
   Systems with Lookahead Placement* (Chimew), FPGA 2026.
 
-### Current gap
+### Integrated baseline and Chimew routes
 
 The current balanced coloring, pairwise swaps, and Hungarian assignment are a
 baseline. They do not faithfully reproduce Chimew's die-crossing encoding,
@@ -664,9 +664,11 @@ The baseline therefore emits provider-neutral identities
 `electrical-package-pin-min-cost-flow-v1`, and
 `placement-aware-pin-split-v1`.  Historical artifacts using the former
 `chimew-*` identities remain readable for schema-v1 compatibility, but new
-artifacts do not claim paper reproduction.  A future Chimew provider must use
-a distinct identity and pass the paper-specific acceptance gates below before
-it can become selectable.
+artifacts do not claim paper reproduction. The Chimew provider now uses a
+distinct identity and passes the paper-specific kernel, certificate, and
+electrical-adapter gates below. In the open academic physical flow it is the
+default Phase 6 route; the previous static split remains an explicit A/B
+baseline.
 
 The first paper-specific kernel is isolated as
 `chimew-algorithm1-encoding-grouping-v1`.  It reproduces Algorithm 1's
@@ -675,10 +677,14 @@ group encoding, and ratio capacity in first-party C++, with an independent
 Python decision replay.  Its input requires
 `source-qualified-physical-sll-routing-v1`: explicit source/sink SLL indices,
 an independently reconstructed encoding, and hash-sealed physical-routing
-provenance.  Normalized y regions are rejected.  The result is marked
-`not-a-phase6-pin-plan`; it is deliberately not selectable until the
-position-based refinement, existing concrete-slot contract, RUDY gate, and
-two-stage bank/channel assignment are reconciled and verified.
+provenance. Normalized y regions are rejected by that paper-facing provider.
+The open academic flow uses the separate
+`academic-virtual-region-routing-lookahead-v1` identity for normalized
+OpenPARF regions and therefore makes only an algorithm-integration claim. The
+standalone result is marked
+`not-a-phase6-pin-plan`; selection occurs only through the integrated pipeline,
+which adds the verified position refinement, RUDY gate, two-stage assignment,
+and concrete electrical-slot adapter.
 
 The next isolated kernel is
 `chimew-section3.3.2-bounded-inference-v1`. Its input requires physical-site

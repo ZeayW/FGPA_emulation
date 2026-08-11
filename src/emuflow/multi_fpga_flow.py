@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -11,6 +13,8 @@ from .board_link_timing import (
     directed_route_link_delays,
     validate_board_link_timing,
 )
+from .academic_chimew import materialize_academic_chimew_inputs
+from .chimew_pipeline import run_chimew_phase6_pipeline
 from .cross_stage import run_cross_stage_optimization
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
@@ -50,7 +54,122 @@ MULTI_FPGA_FLOW_PROVIDER = (
     "profiled-yosys+partition+system-route+tdm+split-transport+runtime"
 )
 MULTI_FPGA_MAPPING_PROFILES = ("vtr-hard-blocks", "generic-soft")
+MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
+PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v1"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
+
+
+def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
+    records = value["fpgas"]
+    return {
+        "total_wirelength": sum(
+            int(record["stages"]["vpr_route"]["metrics"]["wirelength"])
+            for record in records
+        ),
+        "worst_critical_path_ns": max(
+            float(record["critical_path_ns"]) for record in records
+        ),
+        "worst_wns_ns": min(
+            float(record["physical_result"]["timing"]["wns_ns"])
+            for record in records
+        ),
+        "unrouted_nets": sum(
+            int(record["physical_result"]["closure"]["unrouted_nets"])
+            for record in records
+        ),
+        "drc_violations": sum(
+            int(record["physical_result"]["closure"]["drc_violations"])
+            for record in records
+        ),
+    }
+
+
+def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
+    if (
+        report.get("schema") != PHASE6_AB_COMPARISON_SCHEMA
+        or report.get("status") != "pass"
+        or report.get("selected_provider") != "chimew"
+        or report.get("baseline_provider") != "historical-default-static-phase6"
+        or report.get("qualification") != "academic-virtual-physical-model"
+    ):
+        raise ValidationError("Phase 6 A/B comparison identity is invalid")
+    upstream = report.get("frozen_upstream")
+    if not isinstance(upstream, dict) or set(upstream) != {
+        "emuir_sha256",
+        "assignment_sha256",
+        "routes_sha256",
+        "schedule_sha256",
+        "platform_sha256",
+    }:
+        raise ValidationError("Phase 6 A/B frozen-upstream seal is invalid")
+    for digest in upstream.values():
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValidationError("Phase 6 A/B upstream digest is invalid")
+    arms = (report.get("baseline"), report.get("chimew"))
+    if not all(isinstance(arm, dict) for arm in arms):
+        raise ValidationError("Phase 6 A/B arms are incomplete")
+    baseline_arm, chimew_arm = arms
+    for label, arm in (("baseline", baseline_arm), ("chimew", chimew_arm)):
+        physical_report = arm.get("physical")
+        if not isinstance(physical_report, dict):
+            raise ValidationError(f"Phase 6 A/B {label} physical report is missing")
+        validate_multi_fpga_physical_report(physical_report)
+    baseline = report.get("baseline_physical")
+    chimew = report.get("chimew_physical")
+    delta = report.get("physical_delta")
+    required_metrics = {
+        "total_wirelength",
+        "worst_critical_path_ns",
+        "worst_wns_ns",
+        "unrouted_nets",
+        "drc_violations",
+    }
+    if not all(
+        isinstance(value, dict) and set(value) == required_metrics
+        for value in (baseline, chimew)
+    ) or not isinstance(delta, dict):
+        raise ValidationError("Phase 6 A/B physical metrics are incomplete")
+    if baseline != _phase6_physical_metrics(baseline_arm["physical"]):
+        raise ValidationError("Phase 6 A/B baseline metrics were not reconstructed")
+    if chimew != _phase6_physical_metrics(chimew_arm["physical"]):
+        raise ValidationError("Phase 6 A/B Chimew metrics were not reconstructed")
+    for metrics in (baseline, chimew):
+        for key, value in metrics.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValidationError(
+                    f"Phase 6 A/B metric {key!r} is not finite"
+                )
+        if metrics["unrouted_nets"] != 0 or metrics["drc_violations"] != 0:
+            raise ValidationError("Phase 6 A/B physical arm did not close")
+    expected_delta = {
+        "total_wirelength": (
+            chimew["total_wirelength"] - baseline["total_wirelength"]
+        ),
+        "worst_critical_path_ns": (
+            chimew["worst_critical_path_ns"]
+            - baseline["worst_critical_path_ns"]
+        ),
+        "worst_wns_ns": chimew["worst_wns_ns"] - baseline["worst_wns_ns"],
+    }
+    if delta != expected_delta:
+        raise ValidationError("Phase 6 A/B physical deltas disagree")
+    pin_metrics = report.get("pin_plan_metrics")
+    if not isinstance(pin_metrics, dict) or pin_metrics.get("signals") is None:
+        raise ValidationError("Phase 6 A/B Chimew pin metrics are missing")
+    return {
+        "status": "pass",
+        "wirelength_delta": expected_delta["total_wirelength"],
+        "critical_path_delta_ns": expected_delta["worst_critical_path_ns"],
+        "wns_delta_ns": expected_delta["worst_wns_ns"],
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -119,6 +238,23 @@ def validate_multi_fpga_flow_report(
         if runtime.get("physical", {}).get("status") != "pass":
             raise ValidationError(
                 "multi-FPGA runtime is not closed against physical results"
+            )
+    phase6_comparison = report.get("phase6_comparison")
+    phase6_comparison_validation = None
+    if phase6_comparison is not None:
+        if physical is None:
+            raise ValidationError(
+                "Phase 6 A/B comparison requires a physical flow result"
+            )
+        phase6_comparison_validation = validate_phase6_ab_comparison(
+            phase6_comparison
+        )
+        if (
+            phase6_comparison["chimew"]["physical"] != physical
+            or phase6_comparison["chimew"]["phase6"] != stages["split"]
+        ):
+            raise ValidationError(
+                "Phase 6 A/B selected arm differs from canonical flow"
             )
     link_timing = report.get("board_link_timing")
     if link_timing is not None:
@@ -256,6 +392,14 @@ def validate_multi_fpga_flow_report(
         "hardware_bsp_status": (
             "pass" if hardware_bsp is not None else "not-requested"
         ),
+        "phase6_provider": (
+            "chimew" if phase6_comparison is not None else "baseline"
+        ),
+        "phase6_comparison_status": (
+            phase6_comparison_validation["status"]
+            if phase6_comparison_validation is not None
+            else "not-requested"
+        ),
     }
 
 
@@ -315,6 +459,12 @@ def run_multi_fpga_flow(
     simulation_frames: int = 16,
     equivalence_cycles: int = 16,
     equivalence_seed: int = 20260727,
+    phase6_provider: str = "auto",
+    phase6_chimew_region_count: int = 4,
+    phase6_chimew_grouper: Optional[str] = None,
+    phase6_chimew_refiner: Optional[str] = None,
+    phase6_chimew_rudy: Optional[str] = None,
+    phase6_chimew_assigner: Optional[str] = None,
     physical: bool = False,
     physical_backend: str = "open",
     physical_architecture: Optional[Path] = None,
@@ -348,6 +498,21 @@ def run_multi_fpga_flow(
             "unsupported multi-FPGA mapping profile "
             f"{mapping_profile!r}; expected one of "
             f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
+        )
+    if phase6_provider not in MULTI_FPGA_PHASE6_PROVIDERS:
+        raise EmuFlowError(
+            "unsupported Phase 6 provider "
+            f"{phase6_provider!r}; expected one of "
+            f"{', '.join(MULTI_FPGA_PHASE6_PROVIDERS)}"
+        )
+    if not 2 <= phase6_chimew_region_count <= 31:
+        raise EmuFlowError("--phase6-chimew-region-count must be in [2, 31]")
+    if phase6_provider == "chimew" and (
+        not physical or physical_backend != "open"
+    ):
+        raise EmuFlowError(
+            "--phase6-provider chimew requires --physical with "
+            "--physical-backend open"
         )
     if timing_backend not in {"opensta", "vivado"}:
         raise EmuFlowError(
@@ -832,26 +997,177 @@ def run_multi_fpga_flow(
     schedule_path = phase5_root / "schedule.json"
 
     phase6_root = output_dir / "split"
-    phase6_report = run_phase6(
-        ir_path,
-        assignment_path,
-        schedule_path,
-        platform_path,
-        phase6_root,
-        equivalence_cycles=equivalence_cycles,
-        equivalence_seed=equivalence_seed,
+    schedule_document = read_json(schedule_path)
+    scheduled_signals = schedule_document.get("entries", [])
+    if phase6_provider == "chimew" and not scheduled_signals:
+        raise EmuFlowError(
+            "--phase6-provider chimew requires at least one scheduled "
+            "inter-FPGA signal"
+        )
+    use_academic_chimew = (
+        phase6_provider == "chimew"
+        or (
+            phase6_provider == "auto"
+            and physical
+            and physical_backend == "open"
+            and bool(scheduled_signals)
+        )
     )
+    baseline_physical_report = None
+    phase6_comparison = None
+    effective_physical_architecture = physical_architecture
+    if use_academic_chimew:
+        comparison_root = output_dir / "phase6-comparison"
+        baseline_root = comparison_root / "baseline"
+        baseline_split = baseline_root / "split"
+        baseline_phase6_started = time.monotonic()
+        baseline_phase6_report = run_phase6(
+            ir_path,
+            assignment_path,
+            schedule_path,
+            platform_path,
+            baseline_split,
+            equivalence_cycles=equivalence_cycles,
+            equivalence_seed=equivalence_seed,
+        )
+        baseline_phase6_seconds = time.monotonic() - baseline_phase6_started
+        baseline_physical_started = time.monotonic()
+        baseline_physical_report = run_multi_fpga_physical_flow(
+            baseline_split,
+            platform_path,
+            schedule_path,
+            baseline_root / "physical",
+            backend="open",
+            architecture=physical_architecture,
+            architecture_id=physical_architecture_id,
+            yosys=yosys,
+            vpr=physical_vpr,
+            architecture_importer=physical_architecture_importer,
+            packed_importer=physical_packed_importer,
+            route_checker=physical_route_checker,
+            openparf_install=physical_openparf_install,
+            openparf_python=physical_openparf_python,
+            seed=physical_seed,
+            route_channel_width=physical_route_channel_width,
+            original_ir_path=ir_path if timing_driven else None,
+            assignment_path=assignment_path if timing_driven else None,
+            routes_path=routes_path if timing_driven else None,
+            path_database_path=path_database_path if timing_driven else None,
+            workers=physical_workers,
+        )
+        baseline_physical_seconds = time.monotonic() - baseline_physical_started
+        if effective_physical_architecture is None:
+            fetched_architecture = (
+                baseline_root / "physical/architecture/vtr-flagship.xml"
+            )
+            if not fetched_architecture.is_file():
+                raise ValidationError(
+                    "academic Chimew prepass did not retain its VTR "
+                    "architecture source"
+                )
+            effective_physical_architecture = fetched_architecture
+        lookahead_root = comparison_root / "lookahead"
+        lookahead = materialize_academic_chimew_inputs(
+            ir_path=ir_path,
+            schedule_path=schedule_path,
+            routes_path=routes_path,
+            platform_path=platform_path,
+            physical_report=baseline_physical_report,
+            output_dir=lookahead_root,
+            region_count=phase6_chimew_region_count,
+            grouper=phase6_chimew_grouper,
+            refiner=phase6_chimew_refiner,
+        )
+        inputs = lookahead["artifacts"]
+        sources_map = lookahead["sources"]
+        chimew_pipeline_root = comparison_root / "chimew"
+        pipeline = run_chimew_phase6_pipeline(
+            schedule_path,
+            platform_path,
+            Path(inputs["crossings"]["path"]),
+            Path(inputs["positions"]["path"]),
+            Path(inputs["rudy_input"]["path"]),
+            Path(inputs["bank_channel_input"]["path"]),
+            Path(inputs["electrical_map"]["path"]),
+            chimew_pipeline_root,
+            source_paths={
+                label: Path(path) for label, path in sources_map.items()
+            },
+            grouper=phase6_chimew_grouper,
+            refiner=phase6_chimew_refiner,
+            rudy=phase6_chimew_rudy,
+            assigner=phase6_chimew_assigner,
+            region_count=phase6_chimew_region_count,
+        )
+        adapter_root = chimew_pipeline_root / "phase6-adapter"
+        chimew_phase6_started = time.monotonic()
+        phase6_report = run_phase6(
+            ir_path,
+            assignment_path,
+            schedule_path,
+            platform_path,
+            phase6_root,
+            equivalence_cycles=equivalence_cycles,
+            equivalence_seed=equivalence_seed,
+            pin_plan_path=adapter_root / "pin_plan.json",
+            position_hints_path=adapter_root / "position_hints.json",
+            electrical_binding_path=adapter_root / "electrical_binding.json",
+        )
+        chimew_phase6_seconds = time.monotonic() - chimew_phase6_started
+        phase6_comparison = {
+            "schema": PHASE6_AB_COMPARISON_SCHEMA,
+            "status": "pending-physical-comparison",
+            "selected_provider": "chimew",
+            "baseline_provider": "historical-default-static-phase6",
+            "qualification": "academic-virtual-physical-model",
+            "frozen_upstream": {
+                "emuir_sha256": _sha256(ir_path),
+                "assignment_sha256": _sha256(assignment_path),
+                "routes_sha256": _sha256(routes_path),
+                "schedule_sha256": _sha256(schedule_path),
+                "platform_sha256": _sha256(platform_path),
+            },
+            "claim_boundary": {
+                "lookahead": (
+                    "normalized virtual regions from an open physical "
+                    "prepass, not final device SLR/SLL closure"
+                ),
+                "electrical": (
+                    "synthetic academic package-pin inventory, not a BSP"
+                ),
+            },
+            "baseline": {
+                "phase6": baseline_phase6_report,
+                "physical": baseline_physical_report,
+                "phase6_runtime_seconds": baseline_phase6_seconds,
+                "physical_runtime_seconds": baseline_physical_seconds,
+            },
+            "lookahead": lookahead,
+            "chimew_pipeline": pipeline,
+            "chimew_phase6_runtime_seconds": chimew_phase6_seconds,
+        }
+    else:
+        phase6_report = run_phase6(
+            ir_path,
+            assignment_path,
+            schedule_path,
+            platform_path,
+            phase6_root,
+            equivalence_cycles=equivalence_cycles,
+            equivalence_seed=equivalence_seed,
+        )
 
     physical_report = None
     physical_summary_path = None
     if physical:
+        physical_started = time.monotonic()
         physical_report = run_multi_fpga_physical_flow(
             phase6_root,
             platform_path,
             schedule_path,
             output_dir / "physical",
             backend=physical_backend,
-            architecture=physical_architecture,
+            architecture=effective_physical_architecture,
             architecture_id=physical_architecture_id,
             yosys=yosys,
             vpr=physical_vpr,
@@ -874,7 +1190,55 @@ def run_multi_fpga_flow(
             ),
             workers=physical_workers,
         )
+        physical_seconds = time.monotonic() - physical_started
         physical_summary_path = output_dir / "physical/physical-summary.json"
+        if phase6_comparison is not None and baseline_physical_report is not None:
+            baseline_metrics = _phase6_physical_metrics(
+                baseline_physical_report
+            )
+            chimew_metrics = _phase6_physical_metrics(physical_report)
+            pin_metrics = read_json(
+                output_dir
+                / "phase6-comparison/chimew/phase6-adapter/pin_plan.json"
+            )["metrics"]
+            phase6_comparison.update(
+                {
+                    "status": "pass",
+                    "chimew": {
+                        "phase6": phase6_report,
+                        "physical": physical_report,
+                        "phase6_runtime_seconds": phase6_comparison[
+                            "chimew_phase6_runtime_seconds"
+                        ],
+                        "physical_runtime_seconds": physical_seconds,
+                    },
+                    "baseline_physical": baseline_metrics,
+                    "chimew_physical": chimew_metrics,
+                    "physical_delta": {
+                        "total_wirelength": (
+                            chimew_metrics["total_wirelength"]
+                            - baseline_metrics["total_wirelength"]
+                        ),
+                        "worst_critical_path_ns": (
+                            chimew_metrics["worst_critical_path_ns"]
+                            - baseline_metrics["worst_critical_path_ns"]
+                        ),
+                        "worst_wns_ns": (
+                            chimew_metrics["worst_wns_ns"]
+                            - baseline_metrics["worst_wns_ns"]
+                        ),
+                    },
+                    "pin_plan_metrics": pin_metrics,
+                    "chimew_physical_runtime_seconds": physical_seconds,
+                }
+            )
+            phase6_comparison["validation"] = (
+                validate_phase6_ab_comparison(phase6_comparison)
+            )
+            write_json(
+                output_dir / "phase6-comparison/comparison-report.json",
+                phase6_comparison,
+            )
 
     runtime_root = output_dir / "runtime"
     runtime_report = run_phase7c(
@@ -923,6 +1287,11 @@ def run_multi_fpga_flow(
         **(
             {"physical": physical_report}
             if physical_report is not None
+            else {}
+        ),
+        **(
+            {"phase6_comparison": phase6_comparison}
+            if phase6_comparison is not None
             else {}
         ),
         "stages": {
@@ -991,6 +1360,19 @@ def run_multi_fpga_flow(
                     },
                 }
                 if physical_report is not None
+                else {}
+            ),
+            **(
+                {
+                    "phase6_comparison_report": {
+                        "path": "phase6-comparison/comparison-report.json",
+                        "sha256": _sha256(
+                            output_dir
+                            / "phase6-comparison/comparison-report.json"
+                        ),
+                    }
+                }
+                if phase6_comparison is not None
                 else {}
             ),
             **(

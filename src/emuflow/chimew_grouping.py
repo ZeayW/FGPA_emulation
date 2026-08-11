@@ -25,6 +25,9 @@ CHIMEW_CROSSING_SCHEMA = "emuflow.chimew-crossing-encodings/v1"
 CHIMEW_GROUPING_SCHEMA = "emuflow.chimew-signal-groups/v1"
 CHIMEW_GROUPING_PROVIDER = "chimew-algorithm1-encoding-grouping-v1"
 CHIMEW_CROSSING_PROVIDER = "source-qualified-physical-sll-routing-v1"
+CHIMEW_ACADEMIC_CROSSING_PROVIDER = (
+    "academic-virtual-region-routing-lookahead-v1"
+)
 CHIMEW_SCHEDULE_RATIO_PROVIDER = (
     "emuflow-lane-occupancy-ratio-materializer-v1"
 )
@@ -68,9 +71,22 @@ def validate_chimew_crossings(
 
     if document.get("schema") != CHIMEW_CROSSING_SCHEMA:
         raise ValidationError("Chimew crossing encoding schema is invalid")
-    if document.get("provider") != CHIMEW_CROSSING_PROVIDER:
+    provider = document.get("provider")
+    if provider not in {
+        CHIMEW_CROSSING_PROVIDER,
+        CHIMEW_ACADEMIC_CROSSING_PROVIDER,
+    }:
         raise ValidationError(
             "Chimew crossings require source-qualified physical SLL routing"
+        )
+    if provider == CHIMEW_ACADEMIC_CROSSING_PROVIDER and (
+        document.get("qualification")
+        != "academic-virtual-region-lookahead"
+        or document.get("coordinate_system") != "normalized-placement-y"
+    ):
+        raise ValidationError(
+            "academic Chimew crossings require an explicit virtual-region "
+            "qualification"
         )
     if (
         document.get("design") != schedule.get("design")

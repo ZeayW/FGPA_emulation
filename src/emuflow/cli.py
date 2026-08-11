@@ -1081,6 +1081,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--equivalence-seed", type=int, default=20260727
     )
     multi_fpga_compile.add_argument(
+        "--phase6-provider",
+        choices=("auto", "chimew", "baseline"),
+        default="auto",
+        help=(
+            "Phase 6 algorithm; auto selects academic Chimew for an open "
+            "physical run with scheduled crossings and otherwise retains "
+            "the board-independent baseline"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--phase6-chimew-region-count", type=int, default=4
+    )
+    multi_fpga_compile.add_argument("--phase6-chimew-grouper")
+    multi_fpga_compile.add_argument("--phase6-chimew-refiner")
+    multi_fpga_compile.add_argument("--phase6-chimew-rudy")
+    multi_fpga_compile.add_argument("--phase6-chimew-assigner")
+    multi_fpga_compile.add_argument(
         "--physical",
         action="store_true",
         help=(
@@ -3238,6 +3255,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             simulation_frames=args.simulation_frames,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
+            phase6_provider=args.phase6_provider,
+            phase6_chimew_region_count=args.phase6_chimew_region_count,
+            phase6_chimew_grouper=args.phase6_chimew_grouper,
+            phase6_chimew_refiner=args.phase6_chimew_refiner,
+            phase6_chimew_rudy=args.phase6_chimew_rudy,
+            phase6_chimew_assigner=args.phase6_chimew_assigner,
             physical=args.physical,
             physical_backend=args.physical_backend,
             physical_architecture=args.physical_architecture,

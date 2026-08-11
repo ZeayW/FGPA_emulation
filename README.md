@@ -278,6 +278,28 @@ then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
 
+For the source-complete academic physical flow, Phase 6 now defaults to
+`--phase6-provider auto`. When `--physical --physical-backend open` has at
+least one scheduled inter-FPGA signal, `auto` runs a frozen historical Phase 6
+and open-physical prepass, derives byte-bound Chimew lookahead inputs from the
+resulting VPR/OpenPARF artifacts, and promotes the certified Chimew pin plan to
+the canonical Phase 6 split. The same command then runs the canonical open
+physical flow and emits `phase6-comparison/comparison-report.json`, sealing the
+common EmuIR, assignment, routes, schedule, and BoardDB hashes and reporting
+baseline-versus-Chimew pin metrics, wirelength, critical path, WNS, closure,
+and runtime. Use `--phase6-provider baseline` to reproduce the previous
+static split/lane behavior. A compile without open physical lookahead keeps
+that baseline because it cannot honestly invent placement evidence.
+
+The academic adapter divides normalized OpenPARF placement into explicit
+virtual regions for the Chimew crossing encoding and synthesizes a virtual
+single-ended package-pin inventory from BoardDB lane capacity. These inputs
+are labelled `academic-virtual-physical-model`: they validate the algorithm
+and its integration, not real SLR/SLL routing or BSP electrical closure. Raw
+physical-site coordinates still drive position refinement, RUDY, and the
+two-stage distance objective. Real hardware qualification continues to
+require revision-controlled device regions and package/electrical data.
+
 With `--cross-stage-iterations N`, the same command runs the checked Phase
 3--5 TDM-feedback line search. The selected candidate—not merely the initial
 partition—is promoted to the canonical partition, route, and schedule, then
@@ -1686,8 +1708,9 @@ reconstructs group capacity, slot collisions, objective values, and split
 netlists. Its validation report includes the reconstructed logical-lane
 baseline and objective, crossing-bit, and pin-distance improvements.
 
-Four non-selectable Chimew research kernels now sit beside that production
-baseline. The first reproduces FPGA 2026 Algorithm 1 from explicit,
+Four Chimew kernels now sit beside that production baseline and are composed
+by the default open academic physical path described above. The first
+reproduces FPGA 2026 Algorithm 1 from explicit,
 source-qualified physical SLL-crossing encodings. The second only swaps
 equal-encoding signals using physical-site source-y coordinates, preserving
 every group capacity and SLL encoding while independently checking a
@@ -1707,9 +1730,12 @@ channel matchings, one for each TDM direction priority, using the lower-cost
 alternative. Edge ranks independently reconstruct Algorithm 2's source
 fanout distance plus per-signal mean sink-fanin distance. Every matching emits
 a residual-dual optimality certificate, which Python checks in linear time
-instead of running a second large optimizer. The result remains a standalone
-paper kernel until its abstract banks/channels are reconciled with EmuFlow's
-voltage, IOSTANDARD, clock, differential-pair, and concrete-slot contracts.
+instead of running a second large optimizer. The standalone kernel result is
+reconciled with EmuFlow's voltage, IOSTANDARD, direction, and concrete-slot
+contracts by the Phase 6 adapter. The fully source-qualified provider remains
+the paper-facing path. The open academic default uses a distinct
+virtual-region provider and never relabels normalized cuts as physical SLL
+evidence.
 
 The reconciliation path is now implemented for source-qualified
 single-ended parallel channels. `emuflow pin-plan chimew-build` consumes the
