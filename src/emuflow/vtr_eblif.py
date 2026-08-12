@@ -290,6 +290,7 @@ def validate_vtr_eblif_report(report: Mapping[str, Any]) -> Dict[str, Any]:
         instances
         + report.get("memory_atom_expansion", 0)
         + report.get("ff_control_luts", 0)
+        + report.get("output_alias_luts", 0)
     )
     if report.get("emitted_atoms") != expected_atoms:
         raise ValidationError("VTR eBLIF atom accounting is inconsistent")
@@ -313,6 +314,10 @@ def validate_vtr_eblif_report(report: Mapping[str, Any]) -> Dict[str, Any]:
             or identity in identities
             or record.get("direction") not in {"input", "output"}
             or not isinstance(record.get("net"), str)
+            or (
+                "source_net" in record
+                and not isinstance(record.get("source_net"), str)
+            )
             or not isinstance(record.get("packed_block"), str)
         ):
             raise ValidationError("VTR eBLIF top-port map is inconsistent")
@@ -322,6 +327,7 @@ def validate_vtr_eblif_report(report: Mapping[str, Any]) -> Dict[str, Any]:
         "source_instances": instances,
         "emitted_atoms": expected_atoms,
         "memory_atom_expansion": report.get("memory_atom_expansion", 0),
+        "output_alias_luts": report.get("output_alias_luts", 0),
         "top_ports": len(top_ports),
     }
 
@@ -354,7 +360,23 @@ def emit_vtr_eblif(
     model = f"emuflow_partition_{top_digest}"
     inputs = []
     outputs = []
+    output_aliases = []
     top_ports = []
+    output_port_bits = [
+        (port["id"], bit, pins.top[(port["id"], bit)])
+        for port in ir.value["ports"]
+        if port["direction"] == "output"
+        for bit in range(port["width"])
+        if (port["id"], bit) in pins.top
+    ]
+    output_net_counts = Counter(
+        net for _port_id, _bit, net in output_port_bits
+    )
+    output_alias_names = {
+        (port_id, bit): f"emuflow_top_output_{index:06d}"
+        for index, (port_id, bit, _net) in enumerate(output_port_bits)
+        if output_net_counts[_net] > 1
+    }
     for port in ir.value["ports"]:
         target = inputs if port["direction"] == "input" else outputs
         if port["direction"] not in {"input", "output"}:
@@ -364,22 +386,37 @@ def emit_vtr_eblif(
         for bit in range(port["width"]):
             net = pins.top.get((port["id"], bit))
             if net is not None:
-                target.append(net)
+                external_net = net
+                if (
+                    port["direction"] == "output"
+                    and output_net_counts[net] > 1
+                ):
+                    # A multicast source may feed multiple independent
+                    # top-level transport ports.  eBLIF output pads are named
+                    # by their output net; reusing the logical source net
+                    # would make VPR collapse those physical pads into one
+                    # packed I/O block.  Give every output port bit its own
+                    # pad net and preserve the logical connection with a
+                    # one-input buffer.
+                    external_net = output_alias_names[(port["id"], bit)]
+                    output_aliases.append((net, external_net))
+                target.append(external_net)
                 top_ports.append(
                     {
                         "port": port["id"],
                         "bit": bit,
                         "direction": port["direction"],
-                        "net": net,
+                        "net": external_net,
+                        "source_net": net,
                         # VPR names an output pad block "out:<net>" and an
                         # input pad block with the atom net itself.  Preserve
                         # that exact packed-block identity so a later physical
                         # stage can bind Phase-6 package anchors to the packed
                         # I/O cluster without guessing from netlist order.
                         "packed_block": (
-                            f"out:{net}"
+                            f"out:{external_net}"
                             if port["direction"] == "output"
-                            else net
+                            else external_net
                         ),
                     }
                 )
@@ -387,6 +424,8 @@ def emit_vtr_eblif(
     lines.append(".inputs" + (" " + " ".join(sorted(set(inputs))) if inputs else ""))
     lines.append(".outputs" + (" " + " ".join(sorted(set(outputs))) if outputs else ""))
     lines.extend((".names emuflow_const0", ".names emuflow_const1", "1"))
+    for source_net, output_net in output_aliases:
+        lines.extend((f".names {source_net} {output_net}", "1 1"))
 
     ff_control_luts = 0
     memory_atom_expansion = 0
@@ -433,8 +472,9 @@ def emit_vtr_eblif(
             top_ports, key=lambda item: (item["port"], item["bit"])
         ),
         "ff_control_luts": ff_control_luts,
+        "output_alias_luts": len(output_aliases),
         "memory_atom_expansion": memory_atom_expansion,
-        "emitted_atoms": base_atoms + ff_control_luts,
+        "emitted_atoms": base_atoms + ff_control_luts + len(output_aliases),
         "hard_block_atoms": dict(sorted(hard_block_atoms.items())),
         "dangling_outputs": pins.dangling,
         "output": str(output_path),

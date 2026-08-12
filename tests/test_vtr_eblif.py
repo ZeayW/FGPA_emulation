@@ -41,6 +41,7 @@ class VtrEblifTest(unittest.TestCase):
                     "bit": 0,
                     "direction": "input",
                     "net": "shared_net",
+                    "source_net": "shared_net",
                     "packed_block": "shared_net",
                 },
                 {
@@ -48,6 +49,7 @@ class VtrEblifTest(unittest.TestCase):
                     "bit": 0,
                     "direction": "input",
                     "net": "shared_net",
+                    "source_net": "shared_net",
                     "packed_block": "shared_net",
                 },
             ],
@@ -135,8 +137,8 @@ class VtrEblifTest(unittest.TestCase):
                 "id": "q",
                 "name": "q",
                 "drivers": [_endpoint("ff", "Q")],
-                "sinks": [_endpoint(None, "q")],
-                "fanout": 1,
+                "sinks": [_endpoint(None, "q"), _endpoint(None, "q_alias")],
+                "fanout": 2,
                 "cut_class": "register_output",
             },
         ]
@@ -162,6 +164,7 @@ class VtrEblifTest(unittest.TestCase):
                     ("clk", "input"),
                     ("we", "input"),
                     ("q", "output"),
+                    ("q_alias", "output"),
                 )
             ],
             "instances": instances,
@@ -187,10 +190,20 @@ class VtrEblifTest(unittest.TestCase):
         self.assertEqual(report["source_instances"], 4)
         self.assertEqual(report["memory_atom_expansion"], 1)
         self.assertEqual(report["ff_control_luts"], 1)
-        self.assertEqual(report["emitted_atoms"], 6)
+        self.assertEqual(report["emitted_atoms"], 8)
+        self.assertEqual(report["output_alias_luts"], 2)
         self.assertEqual(text.count(".subckt single_port_ram "), 2)
         self.assertEqual(text.count(".subckt multiply "), 1)
         self.assertIn(".latch ", text)
+        output_ports = [
+            item for item in report["top_ports"]
+            if item["direction"] == "output"
+        ]
+        self.assertEqual(len(output_ports), 2)
+        self.assertEqual(len({item["packed_block"] for item in output_ports}), 2)
+        self.assertEqual({item["source_net"] for item in output_ports}, {"n5"})
+        for item in output_ports:
+            self.assertIn(f".names n5 {item['net']}\n1 1", text)
         self.assertEqual(report["validation"]["status"], "pass")
 
     def test_unsupported_primitive_is_rejected(self) -> None:
