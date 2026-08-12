@@ -208,6 +208,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "clock_nets": {
                         "fabric_clk": "fabric_clk",
                         "clk": "clk",
+                        "virtual_clock_enable": "virtual_clock_enable",
                     },
                 }
 
@@ -312,6 +313,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     architecture=architecture,
                     workers=2,
                 )
+                for item in report["fpgas"]:
+                    runtime_sdc = Path(item["stages"]["runtime_sdc"]["path"])
+                    self.assertNotIn(
+                        "virtual_clock_enable",
+                        runtime_sdc.read_text(encoding="utf-8"),
+                    )
 
         self.assertEqual(report["summary"]["fpgas"], 2)
         self.assertEqual(report["summary"]["original_cells"], 2)

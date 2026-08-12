@@ -85,7 +85,9 @@ def _write_vpr_runtime_sdc(
         {
             net
             for clock_id, net in clock_nets.items()
-            if clock_id != "fabric_clk" and isinstance(net, str) and net
+            if clock_id not in {"fabric_clk", "virtual_clock_enable"}
+            and isinstance(net, str)
+            and net
         }
     )
     if not dut_nets:
