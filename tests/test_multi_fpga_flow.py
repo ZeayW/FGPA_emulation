@@ -16,6 +16,7 @@ from emuflow.multi_fpga_flow import (
 )
 from emuflow.platform import Platform
 from emuflow.tdm import reconstruct_tdm_schedule_timing_paths
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import (
     tdm_partition_feedback,
     tdm_ratio_optimizer,
@@ -30,6 +31,55 @@ PLATFORM = (
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_complete_flow_selects_parallel_global_route_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            output = root / "global-route"
+            timing_paths = root / "paths.json"
+            write_json(
+                timing_paths,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "counter",
+                    "paths": [
+                        {
+                            "id": "counter-cut",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 1.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["q[0]", "q[2]"],
+                        }
+                    ],
+                },
+            )
+            report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=output,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                router=str(tlr_router()),
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
+                route_candidate_workers=2,
+                timing_paths=timing_paths,
+                frame_slots=32,
+                tdm_provider=(
+                    "deterministic-round-barrier-earliest-slot-v2"
+                ),
+                equivalence_cycles=2,
+            )
+            phase4 = report["stages"]["system_route"]
+            self.assertEqual(phase4["provider"], GLOBAL_CANDIDATE_PROVIDER)
+            self.assertEqual(
+                phase4["candidate_generation"]["requested_workers"], 2
+            )
+            self.assertEqual(
+                phase4["candidate_generation"]["ordering"],
+                "demand-index-then-generator-index",
+            )
+
     def test_checked_board_independent_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "multi"

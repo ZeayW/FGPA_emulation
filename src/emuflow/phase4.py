@@ -209,6 +209,12 @@ def run_phase4(
     }
     if timing_paths is not None:
         report["artifacts"]["timing_paths"] = "timing_paths.normalized.json"
+    if provider == GLOBAL_CANDIDATE_PROVIDER:
+        report["candidate_generation"] = {
+            "requested_workers": candidate_workers,
+            "ordering": "demand-index-then-generator-index",
+            "route_artifact_deterministic": True,
+        }
     if candidate_pool_path.is_file():
         report["artifacts"]["candidate_pool"] = "route_candidate_pool.json"
     if tdm_feedback is not None:

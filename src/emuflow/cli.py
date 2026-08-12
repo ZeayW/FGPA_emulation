@@ -1046,6 +1046,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--timing-paths", type=Path)
     multi_fpga_compile.add_argument("--router")
+    multi_fpga_compile.add_argument(
+        "--route-provider",
+        choices=(
+            NATIVE_ROUTER_PROVIDER,
+            TLR_PROVIDER,
+            ROUTE_TDM_PROVIDER,
+            GLOBAL_CANDIDATE_PROVIDER,
+        ),
+        help="explicit Phase 4 provider for the complete flow",
+    )
+    multi_fpga_compile.add_argument(
+        "--route-candidate-workers",
+        type=int,
+        default=1,
+        help="parallel deterministic candidate generators for global routing",
+    )
     multi_fpga_compile.add_argument("--frame-slots", type=int)
     multi_fpga_compile.add_argument(
         "--optimize-frame-slots",
@@ -3309,6 +3325,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             board_link_timing_db=args.board_link_timing_db,
             timing_paths=args.timing_paths,
             router=args.router,
+            route_provider=args.route_provider,
+            route_candidate_workers=args.route_candidate_workers,
             frame_slots=args.frame_slots,
             optimize_frame_slots=args.optimize_frame_slots,
             route_max_iterations=args.route_max_iterations,

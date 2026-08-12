@@ -184,6 +184,8 @@ def run_frame_length_search(
     route_constraints: Optional[Path] = None,
     route_max_iterations: Optional[int] = None,
     router: Optional[str] = None,
+    route_provider: Optional[str] = None,
+    candidate_workers: int = 1,
     tdm_provider: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
     timing_dag_optimizer: Optional[str] = None,
@@ -235,6 +237,8 @@ def run_frame_length_search(
                 max_iterations=route_max_iterations,
                 timing_paths_path=timing_paths_path,
                 router=router,
+                provider=route_provider,
+                candidate_workers=candidate_workers,
             )
             phase5 = run_phase5(
                 route_root / "routes.json",

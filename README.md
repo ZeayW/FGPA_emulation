@@ -287,6 +287,13 @@ then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
 
+The complete flow accepts `--route-provider timing-aware-global-candidate-v1`
+to select the checked multi-tree global Phase 4 provider and
+`--route-candidate-workers N` to parallelize its deterministic candidate
+generation. These options propagate through direct, minimum-frame, and
+cross-stage Phase 3--5 execution, so a complete Phase 7 WNS/TNS experiment
+cannot silently fall back to the historical routing provider.
+
 For the source-complete academic physical flow, Phase 6 now defaults to
 `--phase6-provider auto`. When `--physical --physical-backend open` has at
 least one scheduled inter-FPGA signal, `auto` runs a frozen historical Phase 6
