@@ -92,7 +92,68 @@ foreach line [lrange $map_lines 1 end] {
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
 
-set timing_paths [list]
+set output [open $output_path w]
+puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
+set emitted 0
+set queried_paths 0
+
+# Path handles returned by find_timing_paths are owned by OpenSTA and may be
+# invalidated by a subsequent query.  Serialize each query immediately instead
+# of retaining those handles across the per-cut-net loop.
+proc emuflow_emit_timing_paths {timing_paths output_var emitted_var} {
+  global emuir_by_mapped_net
+  upvar 1 $output_var output
+  upvar 1 $emitted_var emitted
+  foreach path_end $timing_paths {
+    set endpoint_clock [get_property $path_end endpoint_clock]
+    if {$endpoint_clock eq "NULL"} {
+      continue
+    }
+    set clock_name [get_property $endpoint_clock name]
+    set clock_period [get_property $endpoint_clock period]
+    set slack [get_property $path_end slack]
+    set points [get_property $path_end points]
+    if {[llength $points] == 0} {
+      continue
+    }
+    set fixed_delay [get_property [lindex $points end] arrival]
+    set startpoint [get_property $path_end startpoint]
+    set endpoint [get_property $path_end endpoint]
+    set start_name [get_property $startpoint full_name]
+    set end_name [get_property $endpoint full_name]
+
+    set path_nets [list]
+    unset -nocomplain seen_net
+    array set seen_net {}
+    foreach point $points {
+      set pin [get_property $point pin]
+      foreach net [get_nets -quiet -of_objects $pin] {
+        set mapped_name [get_property $net full_name]
+        if {![info exists emuir_by_mapped_net($mapped_name)]} {
+          set mapped_name [get_property $net name]
+        }
+        if {[info exists emuir_by_mapped_net($mapped_name)]} {
+          set emuir_name $emuir_by_mapped_net($mapped_name)
+          if {![info exists seen_net($emuir_name)]} {
+            set seen_net($emuir_name) 1
+            lappend path_nets $emuir_name
+          }
+        }
+      }
+    }
+    if {[llength $path_nets] == 0} {
+      continue
+    }
+    set path_hex [list]
+    foreach net $path_nets {
+      lappend path_hex [emuflow_hex_encode $net]
+    }
+    set path_id "$start_name->$end_name#[format %08d $emitted]"
+    puts $output "[emuflow_hex_encode $path_id]\t[emuflow_hex_encode $clock_name]\t$clock_period\t$slack\t$fixed_delay\t[join $path_hex ,]"
+    incr emitted
+  }
+}
+
 if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     $env(EMUFLOW_STA_THROUGH_NETS) ne ""} {
   set through_path [file normalize $env(EMUFLOW_STA_THROUGH_NETS)]
@@ -135,7 +196,9 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
       foreach path_end [find_timing_paths -path_delay max \
           -from [list $through_pin] -group_count 1 -endpoint_count 1 \
           -sort_by_slack] {
-        lappend timing_paths $path_end
+        set timing_paths [list $path_end]
+        incr queried_paths
+        emuflow_emit_timing_paths $timing_paths output emitted
       }
     }
     if {$driver_count == 0} {
@@ -145,61 +208,12 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
 } else {
   set timing_paths [find_timing_paths -path_delay max \
     -group_count $max_paths -endpoint_count 1 -sort_by_slack]
-}
-set output [open $output_path w]
-puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
-set emitted 0
-foreach path_end $timing_paths {
-  set endpoint_clock [get_property $path_end endpoint_clock]
-  if {$endpoint_clock eq "NULL"} {
-    continue
-  }
-  set clock_name [get_property $endpoint_clock name]
-  set clock_period [get_property $endpoint_clock period]
-  set slack [get_property $path_end slack]
-  set points [get_property $path_end points]
-  if {[llength $points] == 0} {
-    continue
-  }
-  set fixed_delay [get_property [lindex $points end] arrival]
-  set startpoint [get_property $path_end startpoint]
-  set endpoint [get_property $path_end endpoint]
-  set start_name [get_property $startpoint full_name]
-  set end_name [get_property $endpoint full_name]
-
-  set path_nets [list]
-  unset -nocomplain seen_net
-  array set seen_net {}
-  foreach point $points {
-    set pin [get_property $point pin]
-    foreach net [get_nets -quiet -of_objects $pin] {
-      set mapped_name [get_property $net full_name]
-      if {![info exists emuir_by_mapped_net($mapped_name)]} {
-        set mapped_name [get_property $net name]
-      }
-      if {[info exists emuir_by_mapped_net($mapped_name)]} {
-        set emuir_name $emuir_by_mapped_net($mapped_name)
-        if {![info exists seen_net($emuir_name)]} {
-          set seen_net($emuir_name) 1
-          lappend path_nets $emuir_name
-        }
-      }
-    }
-  }
-  if {[llength $path_nets] == 0} {
-    continue
-  }
-  set path_hex [list]
-  foreach net $path_nets {
-    lappend path_hex [emuflow_hex_encode $net]
-  }
-  set path_id "$start_name->$end_name#[format %08d $emitted]"
-  puts $output "[emuflow_hex_encode $path_id]\t[emuflow_hex_encode $clock_name]\t$clock_period\t$slack\t$fixed_delay\t[join $path_hex ,]"
-  incr emitted
+  set queried_paths [llength $timing_paths]
+  emuflow_emit_timing_paths $timing_paths output emitted
 }
 close $output
 
 if {$emitted == 0} {
   error "OpenSTA found no timing paths containing mapped EmuIR nets"
 }
-puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=[llength $timing_paths] emitted_paths=$emitted output=$output_path"
+puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"

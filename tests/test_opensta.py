@@ -77,6 +77,11 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("direction] ne \"output\"", script)
         self.assertIn("-from [list $through_pin]", script)
         self.assertIn("-endpoint_count 1", script)
+        self.assertIn("proc emuflow_emit_timing_paths", script)
+        query = script.index("find_timing_paths -path_delay max", script.index("foreach line [lrange $through_lines"))
+        emit = script.index("emuflow_emit_timing_paths", query)
+        next_query = script.find("find_timing_paths -path_delay max", query + 1)
+        self.assertLess(emit, next_query)
 
     def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:
         source = {
