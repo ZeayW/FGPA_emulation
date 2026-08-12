@@ -100,7 +100,9 @@ class AcademicChimewTest(unittest.TestCase):
             phase5 / "schedule.json",
         )
 
-    def _physical_report(self, root: Path, assignment_path: Path) -> dict:
+    def _physical_report(
+        self, root: Path, assignment_path: Path, *, encoded_atoms: bool = False
+    ) -> dict:
         assignment = read_json(assignment_path)["instance_assignment"]
         records = []
         for fpga in ("fpga0", "fpga1"):
@@ -115,7 +117,12 @@ class AcademicChimewTest(unittest.TestCase):
             placement_lines = []
             for index, atom in enumerate(atoms):
                 cluster = f"cluster_{index}"
-                clusters.append({"name": cluster, "atoms": [atom]})
+                clusters.append(
+                    {
+                        "name": cluster,
+                        "atoms": [f"i{index}" if encoded_atoms else atom],
+                    }
+                )
                 placement_lines.append(
                     f"{cluster} {index + 1} {2 * index + 1} 0 0 #{index}"
                 )
@@ -126,8 +133,21 @@ class AcademicChimewTest(unittest.TestCase):
             packed = fpga_root / "packed.json"
             write_json(packed, {"clusters": clusters})
             placement_ir = fpga_root / "placement.emuir.json"
-            write_json(placement_ir, {"schema": "test"})
+            write_json(
+                placement_ir,
+                {
+                    "schema": "test",
+                    "instances": [{"id": atom} for atom in atoms],
+                },
+            )
             write_json(fpga_root / "architecture.json", {"schema": "test"})
+            boundary = fpga_root / "boundary-identities.json"
+            write_json(
+                boundary,
+                {
+                    "endpoints": [],
+                },
+            )
             records.append(
                 {
                     "fpga": fpga,
@@ -137,11 +157,38 @@ class AcademicChimewTest(unittest.TestCase):
                             "artifacts": {"vpr_placement": str(placement)}
                         },
                         "packed_contract": {"output": str(packed)},
-                        "placement_ir": {"output": str(placement_ir)},
+                        "placement_ir": {
+                            "output": str(placement_ir),
+                            "boundary_identity": {"output": str(boundary)},
+                        },
                     },
                 }
             )
         return {"fpgas": records}
+
+    def test_vtr_atom_indices_map_back_to_source_instances(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir, assignment, routes, schedule = self._upstream(root)
+            lookahead = materialize_academic_chimew_inputs(
+                ir_path=ir,
+                schedule_path=schedule,
+                routes_path=routes,
+                platform_path=PLATFORM,
+                physical_report=self._physical_report(
+                    root / "physical", assignment, encoded_atoms=True
+                ),
+                output_dir=root / "lookahead",
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+            )
+            self.assertEqual(
+                lookahead["metrics"]["placement_endpoint_fallbacks"], 0
+            )
+            self.assertEqual(
+                lookahead["metrics"]["placed_source_instances"],
+                lookahead["metrics"]["source_instances"],
+            )
 
     def test_materialized_inputs_run_complete_source_bound_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -47,6 +48,11 @@ ACADEMIC_CHIMEW_LOOKAHEAD_PROVIDER = (
 )
 ACADEMIC_CHIMEW_TIMING_WEIGHT_PROVIDER = (
     "partition-projected-sta-criticality-v1"
+)
+
+
+_VTR_INSTANCE_ATOM_RE = re.compile(
+    r"^i(?P<index>[0-9]+)(?:(?:__bit[0-9]+)|(?:__control))?$"
 )
 
 
@@ -87,6 +93,7 @@ def _instance_locations(
 ) -> Tuple[
     Dict[str, Dict[str, Tuple[float, float, float, float]]],
     Dict[str, Tuple[float, float]],
+    Dict[str, Dict[str, Tuple[float, float, float, float]]],
     Path,
     Path,
 ]:
@@ -98,6 +105,9 @@ def _instance_locations(
     placement_records = []
     architecture_records = []
     locations: Dict[
+        str, Dict[str, Tuple[float, float, float, float]]
+    ] = {}
+    boundary_locations: Dict[
         str, Dict[str, Tuple[float, float, float, float]]
     ] = {}
     y_bounds: Dict[str, Tuple[float, float]] = {}
@@ -127,7 +137,27 @@ def _instance_locations(
                 )
         cluster_locations = _parse_vpr_placement(placement_path)
         packed = read_json(packed_path)
-        raw_instance_map: Dict[str, Tuple[float, float]] = {}
+        placement_ir = read_json(Path(lowering["output"]))
+        raw_instances = placement_ir.get("instances")
+        if not isinstance(raw_instances, list) or not raw_instances:
+            raise ValidationError(
+                f"academic Chimew prepass FPGA {fpga!r} has no placement instances"
+            )
+        instance_order = []
+        for index, instance in enumerate(raw_instances):
+            instance_id = instance.get("id") if isinstance(instance, Mapping) else None
+            if not isinstance(instance_id, str) or not instance_id:
+                raise ValidationError(
+                    f"academic Chimew placement instance {index} is malformed"
+                )
+            instance_order.append(instance_id)
+        if len(instance_order) != len(set(instance_order)):
+            raise ValidationError(
+                f"academic Chimew prepass FPGA {fpga!r} has duplicate instances"
+            )
+        known_instances = set(instance_order)
+        instance_points: Dict[str, list[Tuple[float, float]]] = defaultdict(list)
+        unmapped_atoms = 0
         for cluster in packed.get("clusters", []):
             point = cluster_locations.get(cluster.get("name"))
             if point is None:
@@ -135,15 +165,30 @@ def _instance_locations(
                     f"packed cluster {cluster.get('name')!r} has no placement"
                 )
             for atom in cluster.get("atoms", []):
-                if atom in raw_instance_map:
-                    raise ValidationError(
-                        f"lookahead atom {atom!r} occurs in multiple clusters"
-                    )
-                raw_instance_map[atom] = point
-        if not raw_instance_map:
+                instance_id = atom if atom in known_instances else None
+                if instance_id is None and isinstance(atom, str):
+                    match = _VTR_INSTANCE_ATOM_RE.fullmatch(atom)
+                    if match is not None:
+                        instance_index = int(match.group("index"))
+                        if instance_index < len(instance_order):
+                            instance_id = instance_order[instance_index]
+                if instance_id is None:
+                    # VPR may retain constant/helper atoms which are not
+                    # source EmuIR instances. They cannot be timing endpoints.
+                    unmapped_atoms += 1
+                    continue
+                instance_points[instance_id].append(point)
+        if not instance_points:
             raise ValidationError(
-                f"academic Chimew prepass FPGA {fpga!r} has no placed atoms"
+                f"academic Chimew prepass FPGA {fpga!r} has no source-mapped atoms"
             )
+        raw_instance_map = {
+            instance: (
+                sum(point[0] for point in points) / len(points),
+                sum(point[1] for point in points) / len(points),
+            )
+            for instance, points in instance_points.items()
+        }
         x_values = [point[0] for point in raw_instance_map.values()]
         y_values = [point[1] for point in raw_instance_map.values()]
         x_min, x_max = min(x_values), max(x_values)
@@ -163,6 +208,42 @@ def _instance_locations(
             for atom, point in raw_instance_map.items()
         }
         locations[fpga] = instance_map
+        boundary_path = lowering.get("boundary_identity", {}).get("output")
+        if not isinstance(boundary_path, str) or not Path(boundary_path).is_file():
+            raise ValidationError(
+                f"academic Chimew prepass FPGA {fpga!r} has no boundary identity"
+            )
+        boundary_document = read_json(Path(boundary_path))
+        boundary_map: Dict[str, Tuple[float, float, float, float]] = {}
+        for endpoint in boundary_document.get("endpoints", []):
+            if not isinstance(endpoint, Mapping):
+                raise ValidationError("academic Chimew boundary endpoint is malformed")
+            entry_id = endpoint.get("schedule_entry")
+            registers = endpoint.get("merged_ir", {}).get(
+                "boundary_register_instances"
+            )
+            if not isinstance(entry_id, str) or not isinstance(registers, list):
+                raise ValidationError("academic Chimew boundary endpoint is incomplete")
+            points = [instance_map.get(instance) for instance in registers]
+            present = [point for point in points if point is not None]
+            if not present:
+                # Some boundary identities are not exposed by the current
+                # schedule (for example a superseded lane endpoint).  Keep
+                # only placed identities here and require coverage when an
+                # active entry actually needs the forwarding fallback below.
+                continue
+            point = (
+                sum(value[0] for value in present) / len(present),
+                sum(value[1] for value in present) / len(present),
+                sum(value[2] for value in present) / len(present),
+                sum(value[3] for value in present) / len(present),
+            )
+            if entry_id in boundary_map:
+                raise ValidationError(
+                    f"academic Chimew boundary entry {entry_id!r} is duplicated"
+                )
+            boundary_map[entry_id] = point
+        boundary_locations[fpga] = boundary_map
         placement_records.append(
             {
                 "fpga": fpga,
@@ -184,6 +265,12 @@ def _instance_locations(
                     }
                     for instance, point in sorted(instance_map.items())
                 ],
+                "atom_mapping": {
+                    "provider": "vtr-eblif-deterministic-instance-order-v1",
+                    "source_instances": len(instance_order),
+                    "placed_source_instances": len(instance_map),
+                    "unmapped_helper_atoms": unmapped_atoms,
+                },
             }
         )
         architecture_records.append(
@@ -210,7 +297,13 @@ def _instance_locations(
             "fpgas": architecture_records,
         },
     )
-    return locations, y_bounds, placement_source, architecture_source
+    return (
+        locations,
+        y_bounds,
+        boundary_locations,
+        placement_source,
+        architecture_source,
+    )
 
 
 def _centroid(
@@ -440,9 +533,23 @@ def materialize_academic_chimew_inputs(
     (
         locations,
         fpga_y_bounds,
+        boundary_locations,
         placement_source,
         architecture_source,
     ) = _instance_locations(physical_report, output_dir)
+    placement_mapping_records = read_json(placement_source)["fpgas"]
+    total_placed_source_instances = sum(
+        record["atom_mapping"]["placed_source_instances"]
+        for record in placement_mapping_records
+    )
+    total_source_instances = sum(
+        record["atom_mapping"]["source_instances"]
+        for record in placement_mapping_records
+    )
+    total_unmapped_helper_atoms = sum(
+        record["atom_mapping"]["unmapped_helper_atoms"]
+        for record in placement_mapping_records
+    )
     placement_sha = _sha256(placement_source)
     architecture_sha = _sha256(architecture_source)
     net_by_id = {net["id"]: net for net in ir["nets"]}
@@ -454,6 +561,7 @@ def materialize_academic_chimew_inputs(
     )
     entry_points: Dict[str, Dict[str, Any]] = {}
     fallbacks = 0
+    forwarded_boundary_endpoints = 0
     for entry in schedule.get("entries", []):
         net = net_by_id.get(entry.get("net"))
         if net is None:
@@ -473,9 +581,21 @@ def materialize_academic_chimew_inputs(
         source_x, source_y, source_norm_y, source_fallback = _centroid(
             entry["from"], drivers, locations
         )
+        if source_fallback:
+            boundary = boundary_locations.get(entry["from"], {}).get(entry["id"])
+            if boundary is not None:
+                source_x, source_y, _source_norm_x, source_norm_y = boundary
+                source_fallback = False
+                forwarded_boundary_endpoints += 1
         sink_x, sink_y, sink_norm_y, sink_fallback = _centroid(
             entry["to"], sinks, locations
         )
+        if sink_fallback:
+            boundary = boundary_locations.get(entry["to"], {}).get(entry["id"])
+            if boundary is not None:
+                sink_x, sink_y, _sink_norm_x, sink_norm_y = boundary
+                sink_fallback = False
+                forwarded_boundary_endpoints += 1
         fallbacks += int(source_fallback) + int(sink_fallback)
         # Separate FPGA canvases in x while preserving physical-site y.
         source_x += fpga_order[entry["from"]] * coordinate_scale
@@ -862,6 +982,10 @@ def materialize_academic_chimew_inputs(
         "metrics": {
             "signals": len(schedule["entries"]),
             "placement_endpoint_fallbacks": fallbacks,
+            "forwarded_boundary_endpoints": forwarded_boundary_endpoints,
+            "placed_source_instances": total_placed_source_instances,
+            "source_instances": total_source_instances,
+            "unmapped_helper_atoms": total_unmapped_helper_atoms,
             "predicted_sll_crossings": total_crossings,
             "groups": len(group_records),
             "virtual_package_pins": len(package_records),
