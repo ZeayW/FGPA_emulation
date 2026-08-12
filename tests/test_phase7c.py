@@ -499,12 +499,9 @@ class Phase7CTest(unittest.TestCase):
             "original_ir_sha256": "b" * 64,
             "assignment_sha256": "c" * 64,
             "routes_sha256": hashlib.sha256(
-                (json.dumps(
-                    self.routes,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ) + "\n").encode("utf-8")
+                (json.dumps(self.routes, indent=2, sort_keys=True) + "\n").encode(
+                    "utf-8"
+                )
             ).hexdigest(),
             "original_paths": 2,
             "original_path_ids_sha256": path_id_set_sha256(path_ids),

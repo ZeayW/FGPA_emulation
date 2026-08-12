@@ -234,12 +234,12 @@ def _local_path_database(
             )
     records.sort(key=lambda item: item["path"])
     if source is not None:
-        encoded_routes = json.dumps(
-            routes,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8") + b"\n"
+        # Match io.write_json() byte-for-byte.  The certificate binds the
+        # concrete routes artifact, not merely an arbitrary equivalent JSON
+        # serialization.
+        encoded_routes = (
+            json.dumps(routes, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
         if hashlib.sha256(encoded_routes).hexdigest() != source["routes_sha256"]:
             raise ValidationError(
                 "physical local path timing is bound to another route artifact"
