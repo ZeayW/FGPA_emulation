@@ -190,6 +190,31 @@ class ChimewBankChannelTest(unittest.TestCase):
         )
         self.assertEqual(common["channel_cost"], 0.5)
 
+    def test_dedicated_direction_bank_uses_its_full_lane_inventory(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["bank_pairs"] = [document["bank_pairs"][0]]
+        document["groups"] = [
+            {
+                "id": "high_y_ab",
+                "domain": "AB",
+                "kind": "tdm_group",
+                "direction": "a_to_b",
+                "members": [member("high_y", 40.0, 40.0)],
+            }
+        ]
+        document["metrics"] = {
+            "groups": 1,
+            "signals": 1,
+            "fanins": 1,
+            "bank_pairs": 1,
+            "channels": 3,
+        }
+        result = evaluate_chimew_bank_channel_assignment(
+            document, executable=str(self.executable)
+        )
+        self.assertEqual(result["assignments"][0]["channel"], "near2")
+        self.assertEqual(result["assignments"][0]["channel_cost"], 0.0)
+
     def test_unique_bank_candidate_fast_path_is_certified(self) -> None:
         document = copy.deepcopy(self.document)
         document["domains"].append(

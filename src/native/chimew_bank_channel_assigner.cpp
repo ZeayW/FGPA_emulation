@@ -641,10 +641,21 @@ Stage2Result solve_bank(const Input& input, int bank_index,
                         const std::vector<int>& groups, int priority) {
   const BankPair& bank = input.banks[bank_index];
   int direction_counts[2] = {0, 0};
+  int common_count = 0;
   for (int group_index : groups) {
     const Group& group = input.groups[group_index];
     if (group.kind == 0) {
       ++direction_counts[group.direction];
+    } else {
+      ++common_count;
+    }
+  }
+  int dedicated_direction = -1;
+  if (common_count == 0) {
+    if (direction_counts[0] > 0 && direction_counts[1] == 0) {
+      dedicated_direction = 0;
+    } else if (direction_counts[1] > 0 && direction_counts[0] == 0) {
+      dedicated_direction = 1;
     }
   }
   std::vector<CandidateEdge> candidates;
@@ -664,10 +675,14 @@ Stage2Result solve_bank(const Input& input, int bank_index,
     const Channel& channel = input.channels[bank.channels[right]];
     for (int left = 0; left < static_cast<int>(groups.size()); ++left) {
       const Group& group = input.groups[groups[left]];
-      const bool eligible =
-          required_kind == 0
-              ? group.kind == 0 && group.direction == required_direction
-              : group.kind == 1;
+      const bool eligible = dedicated_direction >= 0
+                                ? group.kind == 0 &&
+                                      group.direction == dedicated_direction
+                                : (required_kind == 0
+                                       ? group.kind == 0 &&
+                                             group.direction ==
+                                                 required_direction
+                                       : group.kind == 1);
       if (!eligible) {
         continue;
       }

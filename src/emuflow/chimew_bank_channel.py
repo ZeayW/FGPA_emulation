@@ -462,12 +462,36 @@ def _verify_stage2_certificate(
         raise EmuFlowError("Chimew assignment certificate dimensions are invalid")
 
     direction_counts = [0, 0]
+    common_count = 0
     for group_index in groups:
         group = all_groups[group_index]
         if group["kind"] == 0:
             direction_counts[group["direction"]] += 1
+        else:
+            common_count += 1
+
+    dedicated_direction = None
+    if common_count == 0:
+        active_directions = [
+            direction
+            for direction, count in enumerate(direction_counts)
+            if count > 0
+        ]
+        if len(active_directions) == 1:
+            dedicated_direction = active_directions[0]
 
     def eligible(group: Mapping[str, Any], right: int) -> bool:
+        # A per-direction BoardDB lane inventory is represented by a bank
+        # whose groups are all TDM signals in one direction.  Every channel
+        # in that bank is physically available to that direction; applying
+        # the paper's shared-bank direction partition here would incorrectly
+        # reserve all unused channels for a direction/common-signal class
+        # that is absent from the domain.
+        if dedicated_direction is not None:
+            return (
+                group["kind"] == 0
+                and group["direction"] == dedicated_direction
+            )
         first, second = priority, 1 - priority
         if right < direction_counts[first]:
             return group["kind"] == 0 and group["direction"] == first

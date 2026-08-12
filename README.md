@@ -1850,7 +1850,13 @@ two source-qualified channels may reuse a BoardDB lane index only when the
 final assignment binds them to opposite directions of a full-duplex link,
 BoardDB declares per-direction capacity, and the channels use distinct package
 pins. Shared-bidirectional links and legacy v1 maps retain exclusive-lane
-semantics.
+semantics. A direction-qualified bank is also treated as an EmuFlow
+integration extension to the paper's shared-bank ordering rule: when every
+group in that bank is a TDM group in the same direction and no common signal
+is present, all channels in the bank remain eligible. This prevents an
+independent per-direction lane inventory from silently reserving its unused
+lanes for a direction class that is absent from the domain; mixed-direction
+and common-signal banks continue to use the original priority alternatives.
 
 Before sign-off, `emuflow pin-plan chimew-qualify` seals the exact schedule,
 physical-SLL crossings, initial and refined groups, lookahead positions, RUDY
