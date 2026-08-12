@@ -122,13 +122,19 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     if {[llength $through_pins] == 0} {
       error "through net '$mapped_name' has no timing pins"
     }
-    # Query one connected pin at a time.  Passing a multi-pin collection to
-    # OpenSTA 2.6's -through option can crash inside the Tcl collection path.
-    # Any path through the net traverses at least one of its connected pins,
-    # so the union preserves the requested net coverage.
+    # Query one connected pin at a time as both a start and an end constraint.
+    # OpenSTA 2.6 crashes in its -through collection path for both net and pin
+    # objects.  A path containing the net starts at its driver-side pin or ends
+    # through one of its sink-side pins, so the union provides the same net
+    # coverage without using the faulty command path.
     foreach through_pin $through_pins {
       foreach path_end [find_timing_paths -path_delay max \
-          -through [list $through_pin] -group_count 1 -endpoint_count 1 \
+          -from [list $through_pin] -group_count 1 -endpoint_count 1 \
+          -sort_by_slack] {
+        lappend timing_paths $path_end
+      }
+      foreach path_end [find_timing_paths -path_delay max \
+          -to [list $through_pin] -group_count 1 -endpoint_count 1 \
           -sort_by_slack] {
         lappend timing_paths $path_end
       }
