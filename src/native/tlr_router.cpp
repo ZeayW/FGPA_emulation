@@ -272,12 +272,13 @@ Input read_input(const std::string& path) {
 class Router {
  public:
   explicit Router(Input model)
-      : Router(std::make_shared<const Input>(std::move(model))) {}
+      : Router(std::make_shared<const Input>(std::move(model)), nullptr) {}
 
  private:
-  explicit Router(std::shared_ptr<const Input> model)
+  explicit Router(std::shared_ptr<const Input> model,
+                  const Input* borrowed_model)
       : owned_model_(std::move(model)),
-        model_(*owned_model_),
+        model_(owned_model_ ? *owned_model_ : *borrowed_model),
         adjacency_(model_.node_count),
         usage_(capacity_domain_count(), 0),
         history_(capacity_domain_count(), 0.0),
@@ -350,7 +351,11 @@ class Router {
           const CandidateGenerator generator = generators[index];
           futures.push_back(std::async(
               std::launch::async, [this, generator]() {
-                Router worker(owned_model_);
+                // The parent router owns the immutable model until every
+                // future has joined.  Borrow it here so worker teardown does
+                // not repeatedly release (and, on older libstdc++ builds,
+                // occasionally destroy) the very large Input object.
+                Router worker(std::shared_ptr<const Input>{}, &model_);
                 worker.lock_shared_directions();
                 return Generated{
                     generator,
@@ -1492,9 +1497,15 @@ class Router {
   }
 
   Route hop_bounded_shortest_path_tree(
-      int demand_index, const std::set<int>& discouraged) const {
+      int demand_index, const std::set<int>& discouraged,
+      int hop_limit = -1) const {
     const Demand& demand = model_.demands[demand_index];
-    const int stride = model_.max_route_hops + 1;
+    const int maximum_hops =
+        hop_limit > 0 ? hop_limit : model_.max_route_hops;
+    if (maximum_hops <= 0) {
+      throw std::runtime_error("hop-bounded routing needs a positive limit");
+    }
+    const int stride = maximum_hops + 1;
     const int state_count = model_.node_count * stride;
     using QueueItem = std::pair<double, int>;
     std::priority_queue<QueueItem, std::vector<QueueItem>,
@@ -1514,7 +1525,7 @@ class Router {
       }
       const int node = state / stride;
       const int hops = state % stride;
-      if (hops == model_.max_route_hops) {
+      if (hops == maximum_hops) {
         continue;
       }
       for (int arc_index : adjacency_[node]) {
@@ -1547,7 +1558,7 @@ class Router {
     std::set<int> union_arcs;
     for (int sink : demand.sinks) {
       int best_state = -1;
-      for (int hops = 0; hops <= model_.max_route_hops; ++hops) {
+      for (int hops = 0; hops <= maximum_hops; ++hops) {
         const int state = sink * stride + hops;
         if (best_state < 0 || distance[state] < distance[best_state]) {
           best_state = state;
@@ -1596,7 +1607,7 @@ class Router {
     double max_delay = 0.0;
     for (int sink : demand.sinks) {
       if (hop_depth[sink] < 0 ||
-          hop_depth[sink] > model_.max_route_hops) {
+          hop_depth[sink] > maximum_hops) {
         throw std::runtime_error("hop-bounded tree does not span sink");
       }
       double delay = 0.0;
@@ -1651,11 +1662,12 @@ class Router {
   Route shortest_path_tree_with_limit(
       int demand_index, const std::set<int>& discouraged,
       int hop_limit) const {
-    Input limited_model = model_;
-    limited_model.max_route_hops = hop_limit;
-    Router worker(std::move(limited_model));
-    return worker.hop_bounded_shortest_path_tree(
-        demand_index, discouraged);
+    // A previous implementation cloned the complete Input merely to replace
+    // max_route_hops.  On a 100k+ demand design that made the adaptive-hop
+    // generator quadratic in input size.  Keep the shared immutable model
+    // and pass the per-demand limit as local search state instead.
+    return hop_bounded_shortest_path_tree(
+        demand_index, discouraged, hop_limit);
   }
 
   int minimum_hop_lower_bound(int demand_index) const {

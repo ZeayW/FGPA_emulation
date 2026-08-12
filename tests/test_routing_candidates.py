@@ -1,4 +1,5 @@
 import copy
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,20 @@ from tests.test_phase4 import _assignment, _link, _platform_value
 
 
 class RouteCandidatePoolTest(unittest.TestCase):
+    def test_adaptive_hop_does_not_clone_the_complete_input(self) -> None:
+        source = (
+            Path(__file__).parents[1] / "src" / "native" / "tlr_router.cpp"
+        ).read_text(encoding="utf-8")
+        helper = re.search(
+            r"Route shortest_path_tree_with_limit\([^}]+\n  \}",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(helper)
+        body = helper.group(0)
+        self.assertNotIn("Input limited_model", body)
+        self.assertIn("hop_limit", body)
+
     def _fixture(self):
         platform = Platform.from_dict(
             _platform_value(
