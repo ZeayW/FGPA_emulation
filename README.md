@@ -1832,6 +1832,14 @@ price changes the chosen candidate route. This establishes a checked
 one-round Phase 4/5 feedback edge; iterative trust-region orchestration and
 large-case QoR qualification remain pending.
 
+Baseline Phase 5 timing and feedback reconstruction uses the route trees and
+concrete schedule directly instead of materializing the academic optimizer's
+dense hop/path model.  The sparse checker is field-for-field regression-tested
+against the dense reconstruction, including its negative validation cases;
+this keeps public contest scale runs near-linear without weakening the
+certificate.  Academic ratio and timing-DAG providers still build their dense
+model once and share it across optimization, scheduling, timing, and feedback.
+
 The Phase 5 ratio plan also seals a deterministic clock/protocol compatibility
 artifact. The normal pausible-clock transport uses `global-frame-cdc`: all
 observed STA clock identities remain visible as evidence, while lanes may be
