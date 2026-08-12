@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterable
@@ -50,7 +49,7 @@ def _sha256(path: Path) -> str:
 
 
 def _normalized_json_sha256(path: Path, root: Path) -> str:
-    """Hash JSON semantics while normalizing only its own flow-root prefix."""
+    """Hash deterministic bytes while normalizing only their flow root."""
 
     root_texts = {root.absolute().as_posix(), root.resolve().as_posix()}
     root_texts.update(
@@ -58,24 +57,9 @@ def _normalized_json_sha256(path: Path, root: Path) -> str:
         if text.startswith("/private/")
     )
 
-    def normalize(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: normalize(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [normalize(item) for item in value]
-        if isinstance(value, str):
-            for root_text in sorted(root_texts, key=len, reverse=True):
-                value = value.replace(root_text, "$FLOW_ROOT")
-            return value
-        return value
-
-    try:
-        value = read_json(path)
-    except (OSError, ValueError, TypeError):
-        return _sha256(path)
-    encoded = json.dumps(
-        normalize(value), sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    encoded = path.read_bytes()
+    for root_text in sorted(root_texts, key=len, reverse=True):
+        encoded = encoded.replace(root_text.encode("utf-8"), b"$FLOW_ROOT")
     return hashlib.sha256(encoded).hexdigest()
 
 
