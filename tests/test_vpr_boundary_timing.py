@@ -11,6 +11,24 @@ from emuflow.vpr_boundary_timing import (
 
 
 class VprBoundaryTimingTest(unittest.TestCase):
+    def test_native_traversal_excludes_clock_capture_constraint_edges(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "engines"
+            / "vtr"
+            / "vpr"
+            / "src"
+            / "analysis"
+            / "timing_reports.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(source.count("if (!is_data_delay_edge(edge))"), 2)
+        self.assertIn("tatum::EdgeType::PRIMITIVE_COMBINATIONAL", source)
+        self.assertIn("tatum::EdgeType::PRIMITIVE_CLOCK_LAUNCH", source)
+        self.assertIn("tatum::EdgeType::INTERCONNECT", source)
+        self.assertIn(
+            "Clock-capture edges carry setup/hold constraints", source
+        )
+
     def test_query_maps_emuir_objects_to_vpr_atom_pins(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

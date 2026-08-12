@@ -125,6 +125,12 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
     std::vector<float> results(queries.size(), negative_infinity);
     std::vector<float> distances(timing_graph.nodes().size(),
                                  negative_infinity);
+    const auto is_data_delay_edge = [&](tatum::EdgeId edge) {
+        const tatum::EdgeType type = timing_graph.edge_type(edge);
+        return type == tatum::EdgeType::PRIMITIVE_COMBINATIONAL
+               || type == tatum::EdgeType::PRIMITIVE_CLOCK_LAUNCH
+               || type == tatum::EdgeType::INTERCONNECT;
+    };
     const auto relax_delay = [&](tatum::EdgeId edge) {
         const float delay = delay_calc.max_edge_delay(timing_graph, edge).value();
         if (!std::isfinite(delay)) {
@@ -157,6 +163,17 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                             if (timing_graph.edge_disabled(edge)) {
                                 continue;
                             }
+                            // Clock-capture edges carry setup/hold constraints,
+                            // not routed data-path delay.  They are evaluated
+                            // through DelayCalculator::setup_time()/hold_time()
+                            // by tatum and are deliberately unsupported by
+                            // max_edge_delay().  A boundary traversal may reach
+                            // a sequential data input, so exclude the capture
+                            // arc instead of asking the routed-delay calculator
+                            // to treat it as a data edge.
+                            if (!is_data_delay_edge(edge)) {
+                                continue;
+                            }
                             const tatum::NodeId sink =
                                 timing_graph.edge_sink_node(edge);
                             float& value = distances[std::size_t(sink)];
@@ -183,6 +200,9 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                         for (tatum::EdgeId edge :
                              timing_graph.node_out_edges(node)) {
                             if (timing_graph.edge_disabled(edge)) {
+                                continue;
+                            }
+                            if (!is_data_delay_edge(edge)) {
                                 continue;
                             }
                             const tatum::NodeId sink =
