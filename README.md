@@ -216,6 +216,15 @@ bound.
 Both original-target-clock and virtual-runtime-clock system slack are
 reported.
 
+Local Phase 7 physical timing and Phase 7C answer different questions. The
+former reports each implemented FPGA's endpoint-complete WNS/TNS under the
+physical DUT/fabric constraints; for a multi-FPGA result, overall WNS is the
+minimum per-FPGA WNS and overall TNS is the sum of the per-FPGA TNS values.
+Those are the primary final QoR metrics for comparing Phase 6 providers.
+Phase 7C separately composes routed logic, TDM, and board-link delays into the
+pausible-clock system contract. A valid end-to-end comparison reports both;
+neither may be substituted for the other.
+
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
@@ -260,14 +269,14 @@ contract and is a planned semantic extension, not a partitioner tuning flag.
 | --- | --- | --- |
 | Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; VPR consumes the original XML for exact mode-aware packing |
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
-| Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB; Vivado uses the selected Xilinx part database |
+| Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB, retains bounded alternate endpoint paths, and can query explicitly selected cut nets; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
 | TDM | Selectable in-tree C++17 path-Lagrangian or ASP-DAC 2026 timing-DAG continuous optimizer, TODAES 2020 displacement DP, timing-path-guided slot local search, and independent checkers/oracles | The timing-DAG provider implements arrival propagation (Eq. 8), KKT ratio/domain-dual updates (Eqs. 13/19), delay-cost multiplier flow (Eqs. 16/17), path-dual normalization (Eq. 15), and residual scaling (Eq. 20). Both continuous providers share the same checked discrete legalization and concrete scheduling contracts |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming missing reference-clock/reset package bindings |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
-| FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
+| FPGA routing/timing | Root-built VTR/VPR or optional external Vivado | Both providers must pass the common cell-accounting, zero-unrouted-net, zero-DRC, clock, and timing-result contract before Phase 7C; the open route additionally exports and independently checks endpoint-complete WNS, TNS, and failing-endpoint counts. Phase 6 boundary IDs key exact routed TX source-to-port and RX port-to-shadow-register delays returned by either provider |
 | Proprietary provider | First-party adapters/Tcl plus external Vivado | Selectable but not source-complete; produces vendor-device implementation results, not board/bitstream sign-off |
 | Hardware BSP | In-tree open PCS/runtime-sync RTL plus source-backed Arm MPS4 topology/pin inventory | Phase 6C derives channel/common quad topology and binds the open PCS to source-visible GTY recipes; the optional Vivado gate jointly routes DUT, TDM, PCS, sync, and GT, then feeds routed FPGA logic/boundary timing back into Phase 7C. Real refclk/reset binding, measured board-link/elastic-buffer latency, bitstream, and hardware qualification remain open gates |
 
@@ -286,10 +295,11 @@ resulting VPR/OpenPARF artifacts, and promotes the certified Chimew pin plan to
 the canonical Phase 6 split. The same command then runs the canonical open
 physical flow and emits `phase6-comparison/comparison-report.json`, sealing the
 common EmuIR, assignment, routes, schedule, and BoardDB hashes and reporting
-baseline-versus-Chimew pin metrics, wirelength, critical path, WNS, closure,
-and runtime. Use `--phase6-provider baseline` to reproduce the previous
-static split/lane behavior. A compile without open physical lookahead keeps
-that baseline because it cannot honestly invent placement evidence.
+baseline-versus-Chimew pin metrics, wirelength, critical path, per-FPGA and
+aggregate WNS/TNS, failing endpoints, closure, and runtime. Use
+`--phase6-provider baseline` to reproduce the previous static split/lane
+behavior. A compile without open physical lookahead keeps that baseline
+because it cannot honestly invent placement evidence.
 
 The academic adapter divides normalized OpenPARF placement into explicit
 virtual regions for the Chimew crossing encoding and synthesizes a virtual
@@ -299,6 +309,33 @@ and its integration, not real SLR/SLL routing or BSP electrical closure. Raw
 physical-site coordinates still drive position refinement, RUDY, and the
 two-stage distance objective. Real hardware qualification continues to
 require revision-controlled device regions and package/electrical data.
+
+### Phase 6 provider promotion and Phase 7 timing acceptance
+
+A Phase 6 legality check, pin-plan comparison, or contest-scale result is an
+intermediate milestone, not a final QoR result. Promoting a Phase 6 provider
+requires a frozen baseline/candidate A/B on real synthesizable RTL, with both
+canonical splits continuing through the complete physical Phase 7 flow under
+identical architecture, constraints, seed, and backend settings. Both arms
+must retain zero unrouted nets, zero DRC violations, complete cell accounting,
+and independently valid timing reports.
+
+The required comparison contains per-FPGA WNS/TNS, overall WNS (the minimum
+per-FPGA/domain slack), overall TNS (the sum of negative endpoint slacks without
+double counting), failing endpoints, critical path, runtime, and absolute
+baseline-to-candidate deltas. Percentage improvement is negative-slack deficit
+reduction: for a negative baseline, compare the reduction in `-WNS` or `-TNS`;
+if the baseline already closes, the percentage is `N/A` and a closure
+transition is reported separately. Phase 6 crossing, grouping, RUDY, position,
+wirelength, and pin-distance metrics remain diagnostic explanations.
+
+The open VPR route now provides this endpoint-complete contract and binds its
+machine-readable WNS, TNS, logical failing endpoints, and failing endpoint
+constraints back to the console report. The current Vivado physical adapter
+still exports WNS but not independently reconstructed endpoint-complete TNS;
+therefore it can provide routed implementation evidence, but it cannot support
+a final Phase 6 TNS claim until that extraction is added. The repository-wide
+acceptance policy is recorded in [AGENTS.md](AGENTS.md).
 
 With `--cross-stage-iterations N`, the same command runs the checked Phase
 3--5 TDM-feedback line search. The selected candidate—not merely the initial
@@ -1130,7 +1167,11 @@ academic architecture and is not vendor sign-off.
 Independent FPGA partitions run concurrently when `--physical-workers N` is
 greater than one; their artifacts remain isolated and the aggregate report is
 written deterministically in BoardDB FPGA order. The equivalent standalone
-`emuflow multi-fpga physical` command uses `--workers N`.
+`emuflow multi-fpga physical` command uses `--workers N`. The compile default
+is deliberately `N=1`; large HPC runs should set it explicitly and record the
+same value for both sides of an A/B comparison. For a 32-FPGA run, start from a
+measured value such as 8 and raise it only after checking memory and tool-token
+pressure.
 
 To use the identical flow boundary with a concrete Xilinx part, select the
 Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:
@@ -1163,7 +1204,11 @@ project timing paths onto selected cut nets, and drive timing-aware system
 routing and TDM.
 Passing a public VTR TimingDB with
 `--architecture-timing-db build/architecture/timing.json` automatically
-enables this mode.
+enables this mode. OpenSTA retains one bounded alternate path per endpoint in
+the global export rather than collapsing a clock group to a single worst path.
+After a partition is selected, the provider can also issue directed
+through-net queries for the actual cut nets, so a timing-relevant cut is not
+silently absent merely because it fell outside the global worst-path prefix.
 
 For a Xilinx platform, `--timing-backend vivado --timing-vivado PATH` replaces
 only that TimingPathDB producer. The downstream partitioning, system routing,
@@ -1175,6 +1220,16 @@ For emulation-speed optimization, pass a known-feasible upper bound such as
 `--frame-slots 4096 --optimize-frame-slots`. The flow then searches for the
 minimum frame that still passes route capacity, ratio legalization, concrete
 lane/slot scheduling, precedence, barrier, collision, and transport checks.
+The open physical backend constrains the actual fabric and DUT clock nets in
+VPR and exports the complete Tatum setup endpoint population. Each
+`physical-partition-result/v1` carries WNS, TNS, logical failing endpoints,
+failing endpoint constraints, and `timing_met`; negative slack is retained as
+a valid measured result rather than rejected or rewritten as closure. The
+checker binds those values to both VPR's console output and its machine timing
+summary, including the documented rounding tolerance for a multi-clock Fmax.
+This makes a baseline-versus-candidate timing regression observable even when
+neither arm meets the target period.
+
 Every multi-FPGA run also emits the Phase 7C pausible-clock runtime contract;
 its virtual DUT frequency is the fabric frequency divided by the selected
 frame length. Original-clock path slack and emulation runtime frequency are
@@ -1195,10 +1250,12 @@ physical RAMB clock pin reported for synchronous RAM launches while recovering
 its exact logical RAM output bit from EmuIR net identity. Its boundary adapter
 anchors each TX query at the stable output-port bit, recovers a routed net
 renamed by synthesis, and constrains paths through a combinational driver when
-that pin is not a legal timing startpoint. A physical run passes only if local
-P&R/DRC and the combined virtual runtime-clock slack both close.
-Original target-clock slack remains a reported optimization metric rather than
-the pausible-clock execution gate.
+that pin is not a legal timing startpoint. A physical run requires successful
+P&R, zero unrouted nets/DRC violations, an internally consistent local timing
+result, and closed combined virtual runtime-clock timing. Local
+original-target-clock WNS/TNS remains a reported physical QoR metric rather
+than the pausible-clock execution gate; `timing_met=false` is therefore a
+meaningful result, not a malformed artifact.
 
 ### Source-backed Arm MPS4 BoardDB
 
@@ -1471,6 +1528,32 @@ The per-FPGA command refuses a non-empty output directory and writes a
 hash-bound `open-physical-flow-report.json`. Use `--logic-only` for RTL that
 must deliberately avoid hard-block inference, or `--architecture` to provide
 another VTR XML explicitly.
+
+For a materially larger multi-FPGA acceptance run, the repository includes
+`benchmarks/rtl/picorv32_x32_ring_top.v`. It instantiates 32 pinned PicoRV32
+cores and couples them through a registered ring so that synthesis cannot turn
+the benchmark into 32 independent islands with a vacuous Phase 6. A complete
+open A/B run uses the same frozen Phase 1--5 artifacts for the historical
+baseline and Chimew candidate, then runs physical Phase 7 for
+both and compares the WNS/TNS contract above. The `auto` provider performs
+that sealed A/B path in one command:
+
+```bash
+emuflow multi-fpga compile \
+  third_party/rtl/picorv32/picorv32.v \
+  benchmarks/rtl/picorv32_x32_ring_top.v \
+  --top picorv32_x32_ring_top --clock clk \
+  --platform platforms/virtual/academic_vtr_4fpga_mesh.json \
+  --timing-driven --clock-period clk=10 \
+  --physical --physical-backend open --physical-workers 4 \
+  --phase6-provider auto \
+  --out build/picorv32-x32-ring-chimew-ab
+```
+
+This connected harness is an acceptance target, not a checked-in QoR claim.
+Final Chimew promotion remains pending until both physical arms have produced
+sealed, comparable WNS/TNS results; README does not infer such numbers from a
+Phase 6-only or contest-only run.
 
 The equivalent explicit stage commands are shown below for development and
 debugging.
@@ -1875,7 +1958,7 @@ rechecks its exact schedule coverage, concrete-lane and package-pin uniqueness,
 direction, and source hashes, then seals a copy into the split manifest. Other
 pin-plan providers neither require nor accept this Chimew-specific certificate.
 
-The checked cross-provider contract is exercised end to end by
+The checked cross-provider contract is exercised through Phase 6 by
 `tests/test_contest_chimew_flow.py`: an ICCAD 2019 public interconnect is
 materialized with the academic VTR device template, a real counter EmuIR is
 partitioned and routed through Phases 3--5, and the resulting schedule is bound
@@ -1910,6 +1993,13 @@ v2 A/B report exposes `routed_sll_crossing_bits` and
 Package-pin distance remains synthetic. Grouping, route-local crossing,
 runtime, and scaling results are valid algorithm comparisons; they are not
 vendor placement/routing, timing, DRC, bitstream, or hardware-closure evidence.
+This distinction applies equally to the larger public `case6`, `case7`, and
+`case9` inputs. They are valuable parallel HPC tests for route-local crossing,
+grouping, legality, determinism, runtime, and memory scaling, but their
+communication-graph records are not synthesizable RTL and cannot continue to
+physical Phase 7. Consequently they cannot provide final WNS/TNS and cannot
+replace the connected PicoRV32 (or another real RTL) baseline-versus-Chimew
+acceptance run.
 
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report
