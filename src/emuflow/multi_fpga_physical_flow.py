@@ -657,6 +657,7 @@ def run_multi_fpga_physical_flow(
                 merged_ir,
                 boundary_identity_path,
                 boundary_query_path,
+                eblif_report=eblif_report,
             )
             boundary_raw_path = (
                 fpga_root / "vpr-route" / "boundary-timing.tsv"

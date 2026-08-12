@@ -205,6 +205,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "output_sha256": _sha256(output),
                     "emitted_atoms": 2,
                     "source_instances": 2,
+                    "top_ports": [],
                     "clock_nets": {
                         "fabric_clk": "fabric_clk",
                         "clk": "clk",

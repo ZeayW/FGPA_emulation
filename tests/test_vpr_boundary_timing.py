@@ -118,6 +118,8 @@ class VprBoundaryTimingTest(unittest.TestCase):
                         "merged_ir": {
                             "logical_net": "logical",
                             "external_net": "tx-external",
+                            "external_port": "tx_port",
+                            "external_port_bit": 0,
                             "boundary_register_instances": [],
                         },
                     },
@@ -128,6 +130,8 @@ class VprBoundaryTimingTest(unittest.TestCase):
                         "merged_ir": {
                             "logical_net": None,
                             "external_net": "rx-external",
+                            "external_port": "rx_port",
+                            "external_port_bit": 0,
                             "boundary_register_instances": [
                                 "__emuflow_transport__/shadow_ff"
                             ],
@@ -137,21 +141,43 @@ class VprBoundaryTimingTest(unittest.TestCase):
             }
             write_json(identity_path, identities)
             report = write_vpr_boundary_timing_query(
-                ir_path, identity_path, query_path
+                ir_path,
+                identity_path,
+                query_path,
+                eblif_report={
+                    "top_ports": [
+                        {
+                            "port": "tx_port",
+                            "bit": 0,
+                            "direction": "output",
+                            "net": "emuflow_top_output_000000",
+                            "source_net": "tx-external",
+                            "packed_block": "out:emuflow_top_output_000000",
+                        },
+                        {
+                            "port": "rx_port",
+                            "bit": 0,
+                            "direction": "input",
+                            "net": "rx-external",
+                            "source_net": "rx-external",
+                            "packed_block": "rx-external",
+                        },
+                    ]
+                },
             )
             self.assertEqual(report["endpoints"], 2)
             self.assertEqual(
                 query_path.read_text(encoding="utf-8").splitlines()[1:],
                 [
-                    "tx0\ttx\ti0.out[0]\tout:n1.outpad[0]",
-                    "rx0\trx\tn2.inpad[0]\ti1.D[0]",
+                    "tx0\ttx\ti0.out[0]\tout:emuflow_top_output_000000.outpad[0]",
+                    "rx0\trx\trx-external.inpad[0]\ti1.D[0]",
                 ],
             )
             timing_tsv = root / "timing.tsv"
             timing_tsv.write_text(
                 "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"
-                "tx0\ttx\t1.25\ti0.out[0]\tout:n1.outpad[0]\n"
-                "rx0\trx\t0.75\tn2.inpad[0]\ti1.D[0]\n",
+                "tx0\ttx\t1.25\ti0.out[0]\tout:emuflow_top_output_000000.outpad[0]\n"
+                "rx0\trx\t0.75\trx-external.inpad[0]\ti1.D[0]\n",
                 encoding="utf-8",
             )
             output = root / "boundary-timing.json"

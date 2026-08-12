@@ -86,6 +86,8 @@ def write_vpr_boundary_timing_query(
     ir_path: Path,
     identity_path: Path,
     output_path: Path,
+    *,
+    eblif_report: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     identities = read_json(identity_path)
@@ -102,6 +104,31 @@ def write_vpr_boundary_timing_query(
         instance["id"]: instance for instance in ir.value["instances"]
     }
     nets = {net["id"]: net for net in ir.value["nets"]}
+    top_ports = None
+    if eblif_report is not None:
+        records = eblif_report.get("top_ports")
+        if not isinstance(records, list):
+            raise ValidationError("VPR boundary eBLIF top-port map is invalid")
+        top_ports = {}
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ValidationError(
+                    "VPR boundary eBLIF top-port record is invalid"
+                )
+            identity = (record.get("port"), record.get("bit"))
+            if (
+                not isinstance(identity[0], str)
+                or isinstance(identity[1], bool)
+                or not isinstance(identity[1], int)
+                or identity in top_ports
+                or record.get("direction") not in {"input", "output"}
+                or not isinstance(record.get("net"), str)
+                or not isinstance(record.get("packed_block"), str)
+            ):
+                raise ValidationError(
+                    "VPR boundary eBLIF top-port map is inconsistent"
+                )
+            top_ports[identity] = record
     lines = [VPR_BOUNDARY_QUERY_HEADER]
     seen = set()
     for endpoint in identities.get("endpoints", []):
@@ -121,11 +148,28 @@ def write_vpr_boundary_timing_query(
             raise ValidationError(
                 f"VPR boundary endpoint {endpoint_id!r} external net is absent"
             )
-        io_pin = (
-            f"out:n{net_index[external_net]}.outpad[0]"
-            if kind == "tx"
-            else f"n{net_index[external_net]}.inpad[0]"
-        )
+        if top_ports is None:
+            io_pin = (
+                f"out:n{net_index[external_net]}.outpad[0]"
+                if kind == "tx"
+                else f"n{net_index[external_net]}.inpad[0]"
+            )
+        else:
+            external_port = merged.get("external_port")
+            external_bit = merged.get("external_port_bit")
+            record = top_ports.get((external_port, external_bit))
+            expected_direction = "output" if kind == "tx" else "input"
+            if (
+                record is None
+                or record["direction"] != expected_direction
+                or record.get("source_net", record["net"]) != external_net
+            ):
+                raise ValidationError(
+                    f"VPR boundary endpoint {endpoint_id!r} disagrees with "
+                    "the eBLIF top-port map"
+                )
+            suffix = "outpad[0]" if kind == "tx" else "inpad[0]"
+            io_pin = f"{record['packed_block']}.{suffix}"
         registers = merged.get("boundary_register_instances")
         if not isinstance(registers, list):
             raise ValidationError(
