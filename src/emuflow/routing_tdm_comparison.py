@@ -158,7 +158,9 @@ def _tdm_metrics(stage: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _global_timing_metrics(report: Dict[str, Any]) -> Dict[str, Any]:
+def _global_timing_metrics(
+    root: Path, report: Dict[str, Any]
+) -> Dict[str, Any]:
     timing = report.get("runtime", {}).get("system_timing")
     if not isinstance(timing, dict) or timing.get("status") not in {
         "pass", "fail"
@@ -169,6 +171,27 @@ def _global_timing_metrics(report: Dict[str, Any]) -> Dict[str, Any]:
             "routing/TDM A/B requires whole-design timing; a per-FPGA or "
             "cross-FPGA-only subset is not global timing"
         )
+    binding = timing.get("source_binding")
+    expected_binding = {
+        "path_database_sha256": "timing_path_database",
+        "original_ir_sha256": "emuir",
+        "assignment_sha256": "assignment",
+        "routes_sha256": "routes",
+    }
+    if not isinstance(binding, dict) or set(binding) != {
+        *expected_binding,
+        "original_paths",
+        "original_path_ids_sha256",
+    }:
+        raise ValidationError(
+            "routing/TDM A/B whole-design timing source binding is missing"
+        )
+    for field, artifact in expected_binding.items():
+        if binding[field] != _checked_artifact(root, report, artifact):
+            raise ValidationError(
+                f"routing/TDM A/B whole-design timing {field!r} disagrees "
+                "with its flow artifact"
+            )
     paths = timing.get("paths")
     summary = timing.get("summary")
     if not isinstance(paths, list) or not paths or not isinstance(summary, dict):
@@ -207,6 +230,9 @@ def _global_timing_metrics(report: Dict[str, Any]) -> Dict[str, Any]:
         or representatives > original
         or not isinstance(coverage, (int, float))
         or float(coverage) != 1.0
+        or binding["original_paths"] != original
+        or binding["original_path_ids_sha256"]
+        != summary.get("original_path_ids_sha256")
     ):
         raise ValidationError("routing/TDM A/B global timing coverage is incomplete")
     result = {
@@ -434,7 +460,7 @@ def build_system_route_tdm_ab_comparison(
             "route": _route_metrics(report["stages"]["system_route"]),
             "tdm": _tdm_metrics(report["stages"]["tdm"]),
             "physical": physical,
-            "global_timing": _global_timing_metrics(report),
+            "global_timing": _global_timing_metrics(root, report),
         }
     baseline_physical = arms["baseline"]["physical"]
     upgrade_physical = arms["upgrade"]["physical"]

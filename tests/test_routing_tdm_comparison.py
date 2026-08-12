@@ -84,7 +84,10 @@ class RoutingTdmComparisonTest(unittest.TestCase):
 
     def _report(self, root: Path, route: str, tdm: str, value: float):
         artifacts = {}
-        for key in ("emuir", "assignment", "timing_path_database", "partition_net_weights"):
+        for key in (
+            "emuir", "assignment", "timing_path_database",
+            "partition_net_weights", "routes",
+        ):
             path = root / f"{key}.json"
             write_json(path, {"kind": key})
             artifacts[key] = {"path": path.name, "sha256": _sha256(path)}
@@ -139,6 +142,17 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                         "original_cross_fpga_paths": 1,
                         "compressed_representative_paths": 1,
                         "original_path_coverage": 1.0,
+                        "original_path_ids_sha256": "f" * 64,
+                    },
+                    "source_binding": {
+                        "path_database_sha256": artifacts[
+                            "timing_path_database"
+                        ]["sha256"],
+                        "original_ir_sha256": artifacts["emuir"]["sha256"],
+                        "assignment_sha256": artifacts["assignment"]["sha256"],
+                        "routes_sha256": artifacts["routes"]["sha256"],
+                        "original_paths": 2,
+                        "original_path_ids_sha256": "f" * 64,
                     },
                     "target_clock": {
                         "worst_slack_bound_ns": global_slack,
@@ -223,6 +237,36 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                         baseline, upgrade, root / "comparison.json"
                     )
 
+    def test_rejects_whole_design_timing_bound_to_another_route(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+            )
+            up_report = self._report(
+                upgrade, GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER, -0.25,
+            )
+            base_report["runtime"]["system_timing"]["source_binding"][
+                "routes_sha256"
+            ] = "0" * 64
+            write_json(baseline / "multi-fpga-flow-report.json", base_report)
+            write_json(upgrade / "multi-fpga-flow-report.json", up_report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "routes_sha256.*disagrees"
+                ):
+                    build_system_route_tdm_ab_comparison(
+                        baseline, upgrade, root / "comparison.json"
+                    )
+
     def test_normalizes_only_ephemeral_opensta_staging_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -247,6 +291,9 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                     "paths": [{"arrival_ns": 1.25}],
                 })
                 report["artifacts"]["timing_path_database"]["sha256"] = _sha256(path)
+                report["runtime"]["system_timing"]["source_binding"][
+                    "path_database_sha256"
+                ] = _sha256(path)
                 write_json(flow_root / "multi-fpga-flow-report.json", report)
             with patch(
                 "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
@@ -300,6 +347,9 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                     {"source": str(flow_root / "frontend/phase1/frontend.json")},
                 )
                 report["artifacts"]["emuir"]["sha256"] = _sha256(emuir)
+                report["runtime"]["system_timing"]["source_binding"][
+                    "original_ir_sha256"
+                ] = _sha256(emuir)
                 write_json(flow_root / "multi-fpga-flow-report.json", report)
             with patch(
                 "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
@@ -313,6 +363,9 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             up_report["artifacts"]["emuir"]["sha256"] = _sha256(
                 upgrade / "emuir.json"
             )
+            up_report["runtime"]["system_timing"]["source_binding"][
+                "original_ir_sha256"
+            ] = _sha256(upgrade / "emuir.json")
             write_json(upgrade / "multi-fpga-flow-report.json", up_report)
             with patch(
                 "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",

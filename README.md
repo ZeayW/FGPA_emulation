@@ -220,17 +220,18 @@ Local Phase 7 physical timing and Phase 7C answer different questions. The
 former reports each implemented FPGA's endpoint-complete physical WNS/TNS
 under local DUT/fabric constraints. Its minimum WNS and summed TNS are
 per-FPGA physical aggregates, not the default whole-design timing result.
-Phase 7C composes routed logic, TDM, and board-link delays into every original
-cross-FPGA TimingPathDB member in the pausible-clock system contract; its
-global WNS/TNS are the primary final QoR metrics. A valid end-to-end comparison
-also reports the labelled per-FPGA diagnostics, but never substitutes them for
-global timing.
+Phase 7C forms the exact union of every original TimingPathDB member.  It uses
+the post-route endpoint path for members local to one FPGA, and composes routed
+logic, TDM, and board-link delays for members that cross FPGAs in the
+pausible-clock system contract.  WNS/TNS over that complete, disjoint union are
+the primary final QoR metrics. A valid end-to-end comparison also reports the
+labelled per-FPGA diagnostics, but never substitutes them for global timing.
 
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
-| Fully open physical route | Implemented through unified cross-FPGA physical/TDM timing and exercised end to end on a large, four-FPGA Koios DLA design using VPR → OpenPARF → VPR |
-| Vivado physical route | Implemented and exercised end to end on a large, four-FPGA Koios DLA design, including unified cross-FPGA timing, routed DUT logic segments, and stable RAMB endpoint recovery |
+| Fully open physical route | Implemented through whole-design physical/TDM timing; the former large Koios run proves the cross-FPGA subset, while a new complete original-path A/B rerun is the current final-QoR gate |
+| Vivado physical route | Implemented for routed DUT logic segments and stable RAMB endpoint recovery; its former large Koios evidence is likewise a cross-FPGA subset until same-FPGA original-path timing is exported |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
 The flow is board-abstracted. Synthesis, partitioning, routing, TDM, logical
@@ -315,7 +316,9 @@ emuflow multi-fpga compare-routing-tdm \
 
 The report is labelled
 `complete-phase7-whole-design-timing-source-bound-ab` and requires exact,
-disjoint coverage of 100% of original local and cross-FPGA paths. A Phase
+disjoint coverage of 100% of original local and cross-FPGA paths. Its timing
+certificate is byte-bound to the arm's actual EmuIR, assignment, routes, and
+TimingPathDB; the A/B gate independently rehashes and cross-checks all four. A Phase
 4/5-only run, mixed
 upstream artifacts, a changed flow report, incomplete TimingPathDB member
 coverage, or either arm with an unrouted net/DRC violation is rejected rather

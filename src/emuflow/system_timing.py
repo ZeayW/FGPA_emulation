@@ -610,6 +610,11 @@ def build_system_timing(
             "provider": physical_summary.get("provider"),
             "qualification": physical_summary.get("qualification"),
         },
+        # Preserve the byte-level identity of the original whole-design
+        # timing population and every artifact used to classify it as local
+        # or cross-FPGA.  Final A/B qualification cross-checks this binding
+        # against the concrete artifacts in each flow arm.
+        "source_binding": original_source,
         "target_clock": {
             "closure_gate": False,
             "worst_path": target_worst["path"],
