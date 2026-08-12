@@ -17,6 +17,8 @@ from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import (
     build_tdm_schedule,
     reconstruct_tdm_schedule_timing,
+    reconstruct_tdm_schedule_timing_paths,
+    reconstruct_tdm_schedule_timing_paths_from_routes,
     schedule_to_systemverilog_testbench,
     simulate_tdm_schedule,
     validate_tdm_schedule,
@@ -576,9 +578,23 @@ class Phase5Test(unittest.TestCase):
                     simulation_frames=1,
                     provider="deterministic-round-barrier-earliest-slot-v2",
                 )
-            self.assertEqual(prepare_model.call_count, 1)
+            self.assertEqual(prepare_model.call_count, 0)
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["tdm_feedback_validation"]["status"], "pass")
+
+    def test_sparse_baseline_timing_matches_dense_optimizer_model(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        schedule = build_tdm_schedule(routes, platform)
+        dense = reconstruct_tdm_schedule_timing_paths(
+            routes,
+            platform,
+            schedule,
+            model=_prepare_model(routes, platform),
+        )
+        sparse = reconstruct_tdm_schedule_timing_paths_from_routes(
+            routes, platform, schedule
+        )
+        self.assertEqual(sparse, dense)
 
     def test_native_ratio_capacity_product_uses_64_bit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

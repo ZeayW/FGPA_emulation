@@ -12,6 +12,7 @@ from .errors import ValidationError
 from .platform import Platform
 from .tdm import (
     reconstruct_tdm_schedule_timing_paths,
+    reconstruct_tdm_schedule_timing_paths_from_routes,
     validate_tdm_schedule,
 )
 
@@ -41,16 +42,20 @@ def _reconstruct_tdm_feedback(
         ratio_plan,
         prepared_ratio_model=prepared_ratio_model,
     )
-    timing_paths = (
-        reconstruct_tdm_schedule_timing_paths(
-            routes,
-            platform,
-            schedule,
-            model=prepared_ratio_model,
+    timing_paths = []
+    if isinstance(routes.get("timing"), dict):
+        timing_paths = (
+            reconstruct_tdm_schedule_timing_paths(
+                routes,
+                platform,
+                schedule,
+                model=prepared_ratio_model,
+            )
+            if prepared_ratio_model is not None
+            else reconstruct_tdm_schedule_timing_paths_from_routes(
+                routes, platform, schedule
+            )
         )
-        if isinstance(routes.get("timing"), dict)
-        else []
-    )
     path_by_entry = defaultdict(list)
     normalized_by_path = {}
     domains_by_entry = {

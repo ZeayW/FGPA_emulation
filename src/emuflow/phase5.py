@@ -68,13 +68,6 @@ def run_phase5(
     timing_validation = None
     candidate_selection = None
     prepared_ratio_model = None
-    if isinstance(routes.get("timing"), dict):
-        # Timing reconstruction and the independently rebuilt feedback use
-        # the same immutable route/platform model.  Large contest instances
-        # can contain millions of imported path members, so rebuilding this
-        # index once for each downstream report turns an otherwise linear
-        # Phase 5 pass into several redundant full-input traversals.
-        prepared_ratio_model = _prepare_model(routes, platform)
     if provider == TDM_BASELINE_PROVIDER:
         if (
             ratio_optimizer is not None
@@ -85,6 +78,7 @@ def run_phase5(
                 "native TDM optimizers require the academic Phase 5 provider"
             )
     elif provider in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}:
+        prepared_ratio_model = _prepare_model(routes, platform)
         if (
             provider == TDM_RATIO_PROVIDER
             and timing_dag_optimizer is not None

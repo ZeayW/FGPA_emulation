@@ -997,27 +997,28 @@ def reconstruct_tdm_schedule_timing(
     ratio bound, so baseline and academic schedules are evaluated with the
     same timing model.
     """
-    from .tdm_ratio import _normalized_slack, _prepare_model
-
     if model is None:
-        model = _prepare_model(routes, platform)
-    entries = {}
-    for entry in schedule["entries"]:
-        key = _hop_key(
-            entry["demand"],
-            entry["link"],
-            entry["from"],
-            entry["to"],
+        records = reconstruct_tdm_schedule_timing_paths_from_routes(
+            routes, platform, schedule
         )
-        if key in entries:
-            raise ValidationError(
-                f"schedule timing reconstruction found duplicate hop {key}"
+    else:
+        entries = {}
+        for entry in schedule["entries"]:
+            key = _hop_key(
+                entry["demand"],
+                entry["link"],
+                entry["from"],
+                entry["to"],
             )
-        entries[key] = entry
-
-    records = reconstruct_tdm_schedule_timing_paths(
-        routes, platform, schedule, model=model, entries=entries
-    )
+            if key in entries:
+                raise ValidationError(
+                    "schedule timing reconstruction found duplicate hop "
+                    f"{key}"
+                )
+            entries[key] = entry
+        records = reconstruct_tdm_schedule_timing_paths(
+            routes, platform, schedule, model=model, entries=entries
+        )
     if not records:
         raise ValidationError(
             "schedule timing reconstruction has no timing paths"
@@ -1150,6 +1151,197 @@ def reconstruct_tdm_schedule_timing_paths(
                     for item in timing_path.get("cut_transitions", [])
                 ],
                 "routed_hops": len(timing_path["hops"]),
+                "scheduled_hops": scheduled_hops,
+            }
+        )
+    return records
+
+
+def reconstruct_tdm_schedule_timing_paths_from_routes(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    schedule: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """Reconstruct concrete timing without the optimizer's dense model.
+
+    The production ratio optimizer needs a hop-indexed representation, but
+    baseline scheduling and concrete feedback only need the route trees used
+    by each imported path.  Building the optimizer model on large public
+    cases needlessly materializes and indexes every hop/path several times.
+    This independent route-key reconstruction keeps the baseline checker
+    linear in the serialized route and timing-path sizes.
+    """
+    from .tdm_ratio import _normalized_slack
+    from .routing import normalize_route_constraints, route_link_delay_ns
+
+    timing = routes.get("timing")
+    if not isinstance(timing, dict) or not isinstance(
+        timing.get("paths"), list
+    ):
+        raise ValidationError(
+            "schedule timing reconstruction requires routes.timing.paths"
+        )
+    normalization = timing.get("normalization")
+    if not isinstance(normalization, dict):
+        raise ValidationError(
+            "schedule timing reconstruction requires timing normalization"
+        )
+    constraints = normalize_route_constraints(
+        routes.get("constraints"), platform
+    )
+    route_by_net = {}
+    route_paths = {}
+    longest_sink = {}
+    for route in routes["routes"]:
+        net = route["net"]
+        if net in route_by_net:
+            raise ValidationError(f"duplicate route net {net!r}")
+        route_by_net[net] = route
+        paths_by_node = {route["source"]: (0.0, [])}
+        for _depth, edge in _route_hops(route):
+            parent_delay, parent_path = paths_by_node[edge["from"]]
+            base_delay = route_link_delay_ns(
+                platform,
+                edge["link"],
+                edge["from"],
+                edge["to"],
+                constraints,
+            )
+            paths_by_node[edge["to"]] = (
+                parent_delay + base_delay,
+                [*parent_path, edge],
+            )
+        candidates = [
+            (paths_by_node[sink][0], sink)
+            for sink in route["sinks"]
+        ]
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        longest_sink[net] = candidates[0][1]
+        route_paths[net] = {
+            sink: paths_by_node[sink][1] for sink in route["sinks"]
+        }
+
+    entries = {}
+    for entry in schedule["entries"]:
+        key = _hop_key(
+            entry["demand"],
+            entry["link"],
+            entry["from"],
+            entry["to"],
+        )
+        if key in entries:
+            raise ValidationError(
+                f"schedule timing reconstruction found duplicate hop {key}"
+            )
+        entries[key] = entry
+    links = _link_by_id(platform)
+    records = []
+    for index, timing_path in enumerate(timing["paths"]):
+        cut_nets = timing_path.get("cut_nets")
+        if not isinstance(cut_nets, list) or not cut_nets:
+            raise ValidationError(
+                f"routes.timing.paths[{index}].cut_nets: invalid"
+            )
+        transitions = timing_path.get("cut_transitions")
+        if transitions is None:
+            transitions = [
+                {
+                    "net": net,
+                    "from": route_by_net[net]["source"],
+                    "to": longest_sink[net],
+                }
+                for net in cut_nets
+            ]
+        delay_ns = float(timing_path["fixed_delay_ns"])
+        transport_delay_ns = 0.0
+        scheduled_hops = []
+        seen_hops = set()
+        for net, transition in zip(cut_nets, transitions):
+            route = route_by_net.get(net)
+            if (
+                route is None
+                or transition.get("net") != net
+                or transition.get("from") != route["source"]
+                or transition.get("to") not in route["sinks"]
+            ):
+                raise ValidationError(
+                    f"routes.timing.paths[{index}].cut_transitions: invalid"
+                )
+            for edge in route_paths[net][transition["to"]]:
+                key = _hop_key(
+                    route["id"],
+                    edge["link"],
+                    edge["from"],
+                    edge["to"],
+                )
+                if key in seen_hops:
+                    raise ValidationError(
+                        f"routes.timing.paths[{index}]: duplicate routed hop"
+                    )
+                seen_hops.add(key)
+                entry = entries.get(key)
+                if entry is None:
+                    raise ValidationError(
+                        "schedule timing reconstruction is missing routed "
+                        f"hop {key}"
+                    )
+                wait_slots = entry["slot"] - entry["ready_slot"]
+                if wait_slots < 0:
+                    raise ValidationError(
+                        "schedule timing reconstruction found a negative "
+                        f"wait for hop {key}"
+                    )
+                link = links[edge["link"]]
+                base_delay = route_link_delay_ns(
+                    platform,
+                    edge["link"],
+                    edge["from"],
+                    edge["to"],
+                    constraints,
+                )
+                beta_ns = 1000.0 / link.fabric_clock_mhz
+                hop_delay = base_delay + beta_ns * wait_slots
+                delay_ns += hop_delay
+                transport_delay_ns += hop_delay
+                scheduled_hops.append(
+                    {
+                        "schedule_entry": entry["id"],
+                        "demand": route["id"],
+                        "link": edge["link"],
+                        "from": edge["from"],
+                        "to": edge["to"],
+                        "tx_endpoint": f"__emuflow_tx_{entry['id']}",
+                        "rx_endpoint": f"__emuflow_rx_{entry['id']}",
+                        "base_link_delay_ns": base_delay,
+                        "tdm_wait_slots": wait_slots,
+                        "tdm_slot_ns": beta_ns,
+                        "link_tdm_delay_ns": hop_delay,
+                    }
+                )
+        period = float(timing_path["clock_period_ns"])
+        slack = period - delay_ns
+        records.append(
+            {
+                "path": timing_path["path"],
+                "clock_domain": timing_path["clock_domain"],
+                "clock_period_ns": period,
+                "preplacement_fixed_delay_ns": float(
+                    timing_path["fixed_delay_ns"]
+                ),
+                "transport_delay_ns": transport_delay_ns,
+                "delay_ns": delay_ns,
+                "slack_ns": slack,
+                "normalized_slack": _normalized_slack(
+                    period, slack, normalization
+                ),
+                "cut_nets": list(cut_nets),
+                "compressed_path_ids": list(
+                    timing_path.get(
+                        "compressed_path_ids", [timing_path["path"]]
+                    )
+                ),
+                "cut_transitions": [dict(item) for item in transitions],
+                "routed_hops": len(scheduled_hops),
                 "scheduled_hops": scheduled_hops,
             }
         )
