@@ -247,6 +247,9 @@ def _timing_weights(
     timing_paths_path: Optional[Path],
     schedule: Mapping[str, Any],
     routes: Mapping[str, Any],
+    *,
+    scale: float = 9.0,
+    path_scope: str = "exact-hop",
 ) -> Tuple[Dict[str, float], Optional[Path], Dict[str, int]]:
     """Return a stable per-entry timing weight for the EmuFlow extension.
 
@@ -257,6 +260,10 @@ def _timing_weights(
     matching; this adapter merely materializes the source-bound weights.
     """
 
+    if not math.isfinite(scale) or scale < 0.0:
+        raise ValidationError("academic Chimew timing weight scale is invalid")
+    if path_scope not in {"exact-hop", "whole-net"}:
+        raise ValidationError("academic Chimew timing path scope is invalid")
     if timing_paths_path is None:
         return {}, None, {"exact_path_hops": 0, "whole_net_fallbacks": 0}
     document = read_json(timing_paths_path)
@@ -329,7 +336,11 @@ def _timing_weights(
             slack = float(path["slack_ns"])
             value = max(0.0, min(1.0, 1.0 - slack / period))
         selected_entries: set[str] = set()
-        route_timing = route_timing_paths.get(path.get("id"))
+        route_timing = (
+            route_timing_paths.get(path.get("id"))
+            if path_scope == "exact-hop"
+            else None
+        )
         if route_timing is not None:
             for transition in route_timing.get("cut_transitions", []):
                 if not isinstance(transition, Mapping):
@@ -386,7 +397,7 @@ def _timing_weights(
         for entry in selected_entries:
             criticality[entry] = max(criticality.get(entry, 0.0), value)
     weights = {
-        entry["id"]: 1.0 + 9.0 * criticality.get(entry["id"], 0.0) ** 2.0
+        entry["id"]: 1.0 + scale * criticality.get(entry["id"], 0.0) ** 2.0
         for entry in schedule.get("entries", [])
     }
     return weights, timing_paths_path, {
@@ -404,6 +415,8 @@ def materialize_academic_chimew_inputs(
     physical_report: Mapping[str, Any],
     output_dir: Path,
     timing_paths_path: Optional[Path] = None,
+    timing_weight_scale: float = 9.0,
+    timing_path_scope: str = "exact-hop",
     region_count: int = 4,
     grouper: Optional[str] = None,
     refiner: Optional[str] = None,
@@ -417,7 +430,11 @@ def materialize_academic_chimew_inputs(
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     timing_weights, timing_source, timing_coverage = _timing_weights(
-        timing_paths_path, schedule, routes
+        timing_paths_path,
+        schedule,
+        routes,
+        scale=timing_weight_scale,
+        path_scope=timing_path_scope,
     )
     link_by_id = {link.id: link for link in platform.links}
     (
@@ -874,6 +891,8 @@ def materialize_academic_chimew_inputs(
                         weight > 1.0 for weight in timing_weights.values()
                     ),
                     "maximum_weight": max(timing_weights.values()),
+                    "weight_scale": timing_weight_scale,
+                    "path_scope": timing_path_scope,
                     "exact_path_hops": timing_coverage[
                         "exact_path_hops"
                     ],

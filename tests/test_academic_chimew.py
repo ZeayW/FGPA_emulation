@@ -474,6 +474,13 @@ class AcademicChimewTest(unittest.TestCase):
             self.assertEqual(weights["less"], 3.25)
             self.assertEqual(coverage["whole_net_fallbacks"], 2)
 
+    def test_timing_weight_ablation_controls_are_validated(self) -> None:
+        schedule = {"design": "d", "entries": []}
+        with self.assertRaisesRegex(ValidationError, "weight scale"):
+            _timing_weights(None, schedule, {}, scale=-1.0)
+        with self.assertRaisesRegex(ValidationError, "path scope"):
+            _timing_weights(None, schedule, {}, path_scope="invalid")
+
     def test_comparison_validator_rejects_tampered_delta(self) -> None:
         digest = "a" * 64
         def physical(wirelength: int, critical: float, wns: float) -> dict:
