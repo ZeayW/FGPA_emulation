@@ -244,8 +244,10 @@ def _crossed_boundaries(value: float, anchor: float, count: int) -> list[int]:
 
 
 def _timing_weights(
-    timing_paths_path: Optional[Path], schedule: Mapping[str, Any]
-) -> Tuple[Dict[str, float], Optional[Path]]:
+    timing_paths_path: Optional[Path],
+    schedule: Mapping[str, Any],
+    routes: Mapping[str, Any],
+) -> Tuple[Dict[str, float], Optional[Path], Dict[str, int]]:
     """Return a stable per-entry timing weight for the EmuFlow extension.
 
     Chimew's published geometric assignment treats signals uniformly.  The
@@ -256,19 +258,31 @@ def _timing_weights(
     """
 
     if timing_paths_path is None:
-        return {}, None
+        return {}, None, {"exact_path_hops": 0, "whole_net_fallbacks": 0}
     document = read_json(timing_paths_path)
     if document.get("schema") != "emuflow.sta-paths/v1":
         raise ValidationError("academic Chimew timing path schema is invalid")
     if document.get("design") != schedule.get("design"):
         raise ValidationError("academic Chimew timing path design differs")
-    entries_by_net: Dict[str, list[str]] = defaultdict(list)
+    entries_by_net: Dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for entry in schedule.get("entries", []):
-        entries_by_net[entry["net"]].append(entry["id"])
+        entries_by_net[entry["net"]].append(entry)
+    route_timing_paths = {
+        item["path"]: item
+        for item in routes.get("timing", {}).get("paths", [])
+        if isinstance(item, Mapping) and isinstance(item.get("path"), str)
+    }
+    route_by_net = {
+        item["net"]: item
+        for item in routes.get("routes", [])
+        if isinstance(item, Mapping) and isinstance(item.get("net"), str)
+    }
     criticality: Dict[str, float] = {}
     paths = document.get("paths")
     if not isinstance(paths, list) or not paths:
         raise ValidationError("academic Chimew timing paths are empty")
+    validated_paths: list[Tuple[Mapping[str, Any], float]] = []
+    negative_deficits: list[float] = []
     for index, path in enumerate(paths):
         if not isinstance(path, Mapping):
             raise ValidationError(
@@ -290,19 +304,95 @@ def _timing_weights(
             raise ValidationError(
                 f"academic Chimew timing paths[{index}] is malformed"
             )
-        value = max(0.0, min(1.0, 1.0 - float(slack) / float(period)))
-        for net in cut_nets:
-            if not isinstance(net, str):
-                raise ValidationError(
-                    f"academic Chimew timing paths[{index}] has an invalid cut net"
+        normalized = path.get("normalized_slack")
+        if normalized is None:
+            normalized = float(slack) / float(period)
+        if (
+            isinstance(normalized, bool)
+            or not isinstance(normalized, (int, float))
+            or not math.isfinite(float(normalized))
+        ):
+            raise ValidationError(
+                f"academic Chimew timing paths[{index}] has invalid normalized slack"
+            )
+        normalized_value = float(normalized)
+        validated_paths.append((path, normalized_value))
+        negative_deficits.append(max(0.0, -normalized_value))
+    maximum_deficit = max(negative_deficits, default=0.0)
+    exact_path_hops = 0
+    whole_net_fallbacks = 0
+    for path, normalized_slack in validated_paths:
+        if maximum_deficit > 0.0:
+            value = max(0.0, -normalized_slack) / maximum_deficit
+        else:
+            period = float(path["clock_period_ns"])
+            slack = float(path["slack_ns"])
+            value = max(0.0, min(1.0, 1.0 - slack / period))
+        selected_entries: set[str] = set()
+        route_timing = route_timing_paths.get(path.get("id"))
+        if route_timing is not None:
+            for transition in route_timing.get("cut_transitions", []):
+                if not isinstance(transition, Mapping):
+                    raise ValidationError(
+                        "academic Chimew route timing transition is invalid"
+                    )
+                net = transition.get("net")
+                source = transition.get("from")
+                target = transition.get("to")
+                route = route_by_net.get(net)
+                if route is None:
+                    raise ValidationError(
+                        f"academic Chimew timing path route for {net!r} is absent"
+                    )
+                parents: Dict[str, Tuple[str, str]] = {}
+                for edge in route.get("tree_edges", []):
+                    if not isinstance(edge, Mapping):
+                        raise ValidationError(
+                            "academic Chimew route tree edge is invalid"
+                        )
+                    parents[edge["to"]] = (edge["from"], edge["link"])
+                current = target
+                while current != source:
+                    parent = parents.get(current)
+                    if parent is None:
+                        raise ValidationError(
+                            f"academic Chimew route tree does not reach {target!r}"
+                        )
+                    previous, link = parent
+                    matches = [
+                        entry["id"]
+                        for entry in entries_by_net.get(net, [])
+                        if entry.get("from") == previous
+                        and entry.get("to") == current
+                        and entry.get("link") == link
+                    ]
+                    if len(matches) != 1:
+                        raise ValidationError(
+                            "academic Chimew timing hop does not identify one schedule entry"
+                        )
+                    selected_entries.add(matches[0])
+                    current = previous
+            exact_path_hops += len(selected_entries)
+        else:
+            whole_net_fallbacks += 1
+            for net in path["cut_nets"]:
+                if not isinstance(net, str):
+                    raise ValidationError(
+                        "academic Chimew timing path has an invalid cut net"
+                    )
+                selected_entries.update(
+                    entry["id"] for entry in entries_by_net.get(net, [])
                 )
-            for entry in entries_by_net.get(net, []):
-                criticality[entry] = max(criticality.get(entry, 0.0), value)
+        for entry in selected_entries:
+            criticality[entry] = max(criticality.get(entry, 0.0), value)
     weights = {
         entry["id"]: 1.0 + 9.0 * criticality.get(entry["id"], 0.0) ** 2.0
         for entry in schedule.get("entries", [])
     }
-    return weights, timing_paths_path
+    return weights, timing_paths_path, {
+        "exact_path_hops": exact_path_hops,
+        "whole_net_fallbacks": whole_net_fallbacks,
+    }
 
 
 def materialize_academic_chimew_inputs(
@@ -325,8 +415,9 @@ def materialize_academic_chimew_inputs(
     ir = read_json(ir_path)
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
-    timing_weights, timing_source = _timing_weights(
-        timing_paths_path, schedule
+    routes = read_json(routes_path)
+    timing_weights, timing_source, timing_coverage = _timing_weights(
+        timing_paths_path, schedule, routes
     )
     link_by_id = {link.id: link for link in platform.links}
     (
@@ -383,7 +474,6 @@ def materialize_academic_chimew_inputs(
         }
 
     routing_source = output_dir / "sources" / "routing.json"
-    routes = read_json(routes_path)
     write_json(
         routing_source,
         {
@@ -784,6 +874,12 @@ def materialize_academic_chimew_inputs(
                         weight > 1.0 for weight in timing_weights.values()
                     ),
                     "maximum_weight": max(timing_weights.values()),
+                    "exact_path_hops": timing_coverage[
+                        "exact_path_hops"
+                    ],
+                    "whole_net_fallbacks": timing_coverage[
+                        "whole_net_fallbacks"
+                    ],
                 }
             }
             if timing_source is not None

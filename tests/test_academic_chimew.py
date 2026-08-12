@@ -7,7 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.academic_chimew import materialize_academic_chimew_inputs
+from emuflow.academic_chimew import (
+    _timing_weights,
+    materialize_academic_chimew_inputs,
+)
 from emuflow.chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
@@ -355,6 +358,121 @@ class AcademicChimewTest(unittest.TestCase):
             }
             self.assertEqual(weights[critical_entry["id"]], 10.0)
             self.assertEqual(weights[duplicate["id"]], 10.0)
+
+    def test_timing_weight_selects_only_the_exact_multicast_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            timing = root / "timing.json"
+            write_json(
+                timing,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "d",
+                    "paths": [
+                        {
+                            "id": "critical",
+                            "clock_period_ns": 4.0,
+                            "slack_ns": -4.0,
+                            "normalized_slack": -0.5,
+                            "cut_nets": ["n"],
+                        }
+                    ],
+                },
+            )
+            schedule = {
+                "design": "d",
+                "entries": [
+                    {
+                        "id": "side-branch",
+                        "net": "n",
+                        "from": "a",
+                        "to": "b",
+                        "link": "ab",
+                    },
+                    {
+                        "id": "critical-hop-0",
+                        "net": "n",
+                        "from": "a",
+                        "to": "c",
+                        "link": "ac",
+                    },
+                    {
+                        "id": "critical-hop-1",
+                        "net": "n",
+                        "from": "c",
+                        "to": "d",
+                        "link": "cd",
+                    },
+                ],
+            }
+            routes = {
+                "routes": [
+                    {
+                        "net": "n",
+                        "tree_edges": [
+                            {"from": "a", "to": "b", "link": "ab"},
+                            {"from": "a", "to": "c", "link": "ac"},
+                            {"from": "c", "to": "d", "link": "cd"},
+                        ],
+                    }
+                ],
+                "timing": {
+                    "paths": [
+                        {
+                            "path": "critical",
+                            "cut_transitions": [
+                                {"net": "n", "from": "a", "to": "d"}
+                            ],
+                        }
+                    ]
+                },
+            }
+            weights, source, coverage = _timing_weights(
+                timing, schedule, routes
+            )
+            self.assertEqual(source, timing)
+            self.assertEqual(weights["side-branch"], 1.0)
+            self.assertEqual(weights["critical-hop-0"], 10.0)
+            self.assertEqual(weights["critical-hop-1"], 10.0)
+            self.assertEqual(
+                coverage, {"exact_path_hops": 2, "whole_net_fallbacks": 0}
+            )
+
+    def test_negative_slack_severity_does_not_saturate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            timing = Path(temporary_directory) / "timing.json"
+            write_json(
+                timing,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "d",
+                    "paths": [
+                        {
+                            "clock_period_ns": 4.0,
+                            "slack_ns": -4.0,
+                            "normalized_slack": -0.5,
+                            "cut_nets": ["worst"],
+                        },
+                        {
+                            "clock_period_ns": 4.0,
+                            "slack_ns": -2.0,
+                            "normalized_slack": -0.25,
+                            "cut_nets": ["less-critical"],
+                        },
+                    ],
+                },
+            )
+            schedule = {
+                "design": "d",
+                "entries": [
+                    {"id": "worst", "net": "worst"},
+                    {"id": "less", "net": "less-critical"},
+                ],
+            }
+            weights, _, coverage = _timing_weights(timing, schedule, {})
+            self.assertEqual(weights["worst"], 10.0)
+            self.assertEqual(weights["less"], 3.25)
+            self.assertEqual(coverage["whole_net_fallbacks"], 2)
 
     def test_comparison_validator_rejects_tampered_delta(self) -> None:
         digest = "a" * 64

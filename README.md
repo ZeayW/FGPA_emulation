@@ -2009,10 +2009,15 @@ acceptance run.
 
 For timing-driven open compilation, the academic Chimew adapter also seals the
 projected `emuflow.sta-paths/v1` database and applies the existing bounded
-`1 + 9 * criticality^2` weight to each scheduled hop of every critical cut
-net.  The native two-stage matching remains exact and independently
-certificate-checked; only its per-signal geometric cost is weighted.  This is
-an explicit EmuFlow integration extension, not a claim about the Chimew paper.
+`1 + 9 * criticality^2` weight only to the routed hops traversed by each
+critical end-to-end path.  Criticality is ranked by normalized negative-slack
+severity, so distinct failing paths do not all saturate to the same weight;
+multicast side branches outside the timed source-to-sink path retain unit
+weight.  The native two-stage matching remains exact and independently
+certificate-checked; only its per-signal geometric cost is weighted.  Inputs
+without route-path identity use an explicitly reported whole-net compatibility
+fallback.  This is an explicit EmuFlow integration extension, not a claim
+about the Chimew paper.
 It aligns Phase 6 lane/package-pin choices with the final Phase 7C system
 timing objective.  Promotion still requires a frozen full-Phase7 A/B: final
 target-clock system WNS/TNS are primary, while per-FPGA WNS, crossing bits,
