@@ -53,6 +53,10 @@ def _reconstruct_tdm_feedback(
     )
     path_by_entry = defaultdict(list)
     normalized_by_path = {}
+    domains_by_entry = {
+        entry["id"]: entry["capacity_key"]
+        for entry in schedule["entries"]
+    }
     for path in timing_paths:
         normalized_by_path[path["path"]] = path["normalized_slack"]
         for hop in path["scheduled_hops"]:
@@ -117,13 +121,8 @@ def _reconstruct_tdm_feedback(
             ],
             "capacity_domains": sorted(
                 {
-                    entry["capacity_key"]
-                    for entry in schedule["entries"]
-                    if entry["id"]
-                    in {
-                        hop["schedule_entry"]
-                        for hop in path["scheduled_hops"]
-                    }
+                    domains_by_entry[hop["schedule_entry"]]
+                    for hop in path["scheduled_hops"]
                 }
             ),
         }

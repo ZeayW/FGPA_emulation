@@ -164,6 +164,32 @@ class TdmFeedbackTest(unittest.TestCase):
                 routes, platform, changed_schedule, feedback
             )
 
+    def test_feedback_domain_projection_is_indexed_by_schedule_entry(self) -> None:
+        platform, assignment, _, timing, constraints = self._timing_fixture()
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider=GLOBAL_CANDIDATE_PROVIDER,
+        )
+        schedule = build_tdm_schedule(routes, platform)
+        feedback = build_tdm_feedback(routes, platform, schedule)
+        domains = {
+            entry["id"]: entry["capacity_key"]
+            for entry in schedule["entries"]
+        }
+        scheduled_entries = {
+            path["path"]: path["scheduled_entries"]
+            for path in feedback["paths"]
+        }
+        for path in feedback["paths"]:
+            self.assertEqual(
+                path["capacity_domains"],
+                sorted({domains[item] for item in scheduled_entries[path["path"]]}),
+            )
+
     def test_phase4_requires_and_revalidates_feedback_sources(self) -> None:
         (
             platform,

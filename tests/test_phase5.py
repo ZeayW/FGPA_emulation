@@ -1590,6 +1590,36 @@ class Phase5Test(unittest.TestCase):
         self.assertEqual(completion["d"]["source_ready_slot"], 2)
         self.assertEqual(completion["d"]["transport_round"], 1)
 
+    def test_many_transport_rounds_do_not_rescan_prior_rounds(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "many-rounds",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=0)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [(f"n{index}", "a", ["b"]) for index in range(128)],
+            frame_slots=512,
+        )
+        for index, route in enumerate(routes["routes"]):
+            route["transport_round"] = index
+        schedule = build_tdm_schedule(routes, platform)
+        validation = validate_tdm_schedule(routes, platform, schedule)
+        self.assertEqual(validation["transport_rounds"], 128)
+        self.assertEqual(validation["max_transport_round"], 127)
+        self.assertEqual(
+            sorted(
+                (
+                    item["transport_round"],
+                    item["source_ready_slot"],
+                )
+                for item in schedule["demand_completions"]
+            ),
+            [(index, index) for index in range(128)],
+        )
+
     def test_latency_can_make_route_capacity_schedule_infeasible(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

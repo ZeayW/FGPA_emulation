@@ -220,20 +220,22 @@ def build_tdm_schedule(
         raw_routes, planned_hops
     )
     completion_by_round: Dict[int, int] = {}
+    prior_round_completion = -1
+    active_round = None
     entry_index = 0
     for route in ordered_routes:
         transport_round = route.get("transport_round", 0)
-        prior_completions = [
-            completion
-            for round_index, completion in completion_by_round.items()
-            if round_index < transport_round
-        ]
-        source_ready_slot = max(
-            (
-                completion + COMBINATIONAL_SETTLE_SLOTS
-                for completion in prior_completions
-            ),
-            default=0,
+        if transport_round != active_round:
+            if active_round is not None:
+                prior_round_completion = max(
+                    prior_round_completion,
+                    completion_by_round[active_round],
+                )
+            active_round = transport_round
+        source_ready_slot = (
+            prior_round_completion + COMBINATIONAL_SETTLE_SLOTS
+            if prior_round_completion >= 0
+            else 0
         )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
@@ -728,20 +730,22 @@ def validate_tdm_schedule(
 
     ordered_routes, active_rounds = _round_order(routes["routes"])
     completion_by_round: Dict[int, int] = {}
+    prior_round_completion = -1
+    active_round = None
     completions = []
     for route in ordered_routes:
         transport_round = route.get("transport_round", 0)
-        prior_completions = [
-            completion
-            for round_index, completion in completion_by_round.items()
-            if round_index < transport_round
-        ]
-        source_ready_slot = max(
-            (
-                completion + COMBINATIONAL_SETTLE_SLOTS
-                for completion in prior_completions
-            ),
-            default=0,
+        if transport_round != active_round:
+            if active_round is not None:
+                prior_round_completion = max(
+                    prior_round_completion,
+                    completion_by_round[active_round],
+                )
+            active_round = transport_round
+        source_ready_slot = (
+            prior_round_completion + COMBINATIONAL_SETTLE_SLOTS
+            if prior_round_completion >= 0
+            else 0
         )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
