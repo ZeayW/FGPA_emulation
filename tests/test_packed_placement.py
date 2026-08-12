@@ -131,6 +131,72 @@ class PackedPlacementTest(unittest.TestCase):
         self.assertEqual(config["generic_cluster_placement_flag"], 1)
         self.assertEqual(config["logic_area_type_names"], ["clb"])
 
+    def test_run_reports_fixed_io_anchor_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packed_path, architecture_path = self._inputs(root)
+            packed = read_json(packed_path)
+            architecture = ArchitectureDB.load(architecture_path)
+            by_instance = {
+                cluster["instance"]: cluster for cluster in packed["clusters"]
+            }
+            clb_site = next(
+                site for site in architecture.value["sites"]
+                if site["type"] == "clb"
+            )
+            io_sites = [
+                site for site in architecture.value["sites"]
+                if site["type"] == "io"
+            ]
+            seed = root / "seed.place"
+            seed.write_text(
+                "\n".join(
+                    [
+                        "Netlist_File: fixture.net Netlist_ID: fixture",
+                        "Array size: 12 x 12 logic blocks",
+                        "",
+                        f"{by_instance['clb[0]']['name']} "
+                        f"{clb_site['x']} {clb_site['y']} 0 0 #0",
+                        f"{by_instance['io[1]']['name']} "
+                        f"{io_sites[0]['x']} {io_sites[0]['y']} 0 0 #1",
+                        f"{by_instance['io[2]']['name']} "
+                        f"{io_sites[-1]['x']} {io_sites[-1]['y']} 0 0 #2",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "placement"
+
+            def keep_seed(config, **_kwargs):
+                return Path(config).parent / "design.pl"
+
+            with patch(
+                "emuflow.packed_placement.run_openparf",
+                side_effect=keep_seed,
+            ):
+                report = run_packed_openparf_placement(
+                    packed_path,
+                    architecture_path,
+                    output,
+                    seed_placement_path=seed,
+                    fixed_io_targets={by_instance["io[1]"]["name"]: 1.0},
+                )
+
+        anchors = report["fixed_io_anchor_validation"]
+        self.assertEqual(anchors["status"], "pass")
+        self.assertEqual(anchors["anchors"], 1)
+        max_y = max(site["y"] for site in io_sites)
+        expected_y = max(io_sites[0]["y"], io_sites[-1]["y"])
+        expected_normalized_y = float(expected_y) / float(max_y)
+        self.assertAlmostEqual(
+            anchors["entries"][0]["actual_normalized_y"],
+            expected_normalized_y,
+        )
+        self.assertLessEqual(
+            anchors["max_absolute_error"], 1.0 / max_y + 1.0e-12
+        )
+
     def test_vpr_placement_seeds_movable_openparf_clusters(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

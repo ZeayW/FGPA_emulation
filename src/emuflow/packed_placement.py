@@ -807,6 +807,39 @@ def run_packed_openparf_placement(
         placement,
         vpr_place_path,
     )
+    anchor_records = []
+    if fixed_io_targets:
+        packed = read_json(packed_path)
+        architecture = ArchitectureDB.load(architecture_path)
+        name_map = read_json(bookshelf_dir / "name_map.json")
+        final_locations = _read_openparf_cluster_placement(
+            placement,
+            packed,
+            architecture,
+            name_map,
+        )
+        cluster_id_by_name = {
+            cluster["name"]: cluster["id"] for cluster in packed["clusters"]
+        }
+        io_slots = [
+            (site["x"], site["y"], z)
+            for site in architecture.value["sites"]
+            for z in range(_cluster_capacity(architecture, site).get("io", 0))
+        ]
+        height_scale = max(1, max(slot[1] for slot in io_slots))
+        for name, target in sorted(fixed_io_targets.items()):
+            x, y, z = final_locations[cluster_id_by_name[name]]
+            normalized_y = float(y) / float(height_scale)
+            anchor_records.append(
+                {
+                    "cluster": name,
+                    "target_normalized_y": float(target),
+                    "actual": {"x": x, "y": y, "z": z},
+                    "actual_normalized_y": normalized_y,
+                    "absolute_error": abs(normalized_y - float(target)),
+                }
+            )
+    anchor_errors = [item["absolute_error"] for item in anchor_records]
     report = {
         "schema": PACKED_PLACEMENT_REPORT_SCHEMA,
         "status": "pass",
@@ -825,6 +858,17 @@ def run_packed_openparf_placement(
             "vpr_placement": str(vpr_place_path.resolve()),
         },
         "vpr_placement": placement_report,
+        "fixed_io_anchor_validation": {
+            "status": "pass",
+            "anchors": len(anchor_records),
+            "mean_absolute_error": (
+                sum(anchor_errors) / len(anchor_errors)
+                if anchor_errors
+                else 0.0
+            ),
+            "max_absolute_error": max(anchor_errors, default=0.0),
+            "entries": anchor_records,
+        },
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "packed-placement-report.json", report)
