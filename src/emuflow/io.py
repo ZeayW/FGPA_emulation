@@ -13,7 +13,12 @@ def read_json(path: Path) -> Dict[str, Any]:
     return value
 
 
-def write_json(path: Path, value: Dict[str, Any]) -> None:
+def write_json(
+    path: Path,
+    value: Dict[str, Any],
+    *,
+    compact: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
         f".{path.name}.{uuid.uuid4().hex}.tmp"
@@ -26,7 +31,13 @@ def write_json(path: Path, value: Dict[str, Any]) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             descriptor = -1
-            json.dump(value, stream, indent=2, sort_keys=True)
+            json.dump(
+                value,
+                stream,
+                indent=None if compact else 2,
+                separators=(",", ":") if compact else None,
+                sort_keys=True,
+            )
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())

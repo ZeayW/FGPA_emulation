@@ -308,13 +308,18 @@ def run_phase5(
         report["artifacts"]["ratio_plan"] = "ratio_plan.json"
     output_dir.mkdir(parents=True, exist_ok=True)
     if ratio_plan is not None:
-        write_json(output_dir / "ratio_plan.json", ratio_plan)
-    write_json(output_dir / "schedule.json", schedule)
+        write_json(output_dir / "ratio_plan.json", ratio_plan, compact=True)
+    # Phase 5 machine artifacts can contain one record per routed hop.  Using
+    # compact JSON keeps the encoder on CPython's C fast path; pretty-printing
+    # a million-hop schedule can otherwise dominate the actual optimizer.
+    write_json(output_dir / "schedule.json", schedule, compact=True)
     (output_dir / "schedule.tsv").write_text(
         schedule_to_tsv(schedule), encoding="utf-8"
     )
-    write_json(output_dir / "transport_manifest.json", manifest)
-    write_json(output_dir / "tdm_feedback.json", feedback)
+    write_json(
+        output_dir / "transport_manifest.json", manifest, compact=True
+    )
+    write_json(output_dir / "tdm_feedback.json", feedback, compact=True)
     (output_dir / "transport_schedule_tb.sv").write_text(
         schedule_to_systemverilog_testbench(
             routes,
