@@ -147,6 +147,7 @@ from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
     ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
@@ -1831,6 +1832,7 @@ def _build_parser() -> argparse.ArgumentParser:
             NATIVE_ROUTER_PROVIDER,
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
+            GLOBAL_CANDIDATE_PROVIDER,
         ],
         default=None,
         help=(

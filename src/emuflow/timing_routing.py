@@ -36,6 +36,7 @@ STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"
 NATIVE_ROUTER_PROVIDER = "native-load-balanced-v1"
 TLR_PROVIDER = "timing-aware-load-balanced-v1"
 ROUTE_TDM_PROVIDER = "timing-aware-route-tdm-cooptimized-v1"
+GLOBAL_CANDIDATE_PROVIDER = "timing-aware-global-candidate-v1"
 
 
 def _number(value: Any, context: str, *, positive: bool = False) -> float:
@@ -572,10 +573,20 @@ def _write_native_input(
 ) -> None:
     normalization = model["normalization"]
     with path.open("w", encoding="utf-8") as stream:
-        stream.write("EMUFLOW_TLR_INPUT_V7\n")
+        stream.write(
+            "EMUFLOW_TLR_INPUT_V8\n"
+            if provider == GLOBAL_CANDIDATE_PROVIDER
+            else "EMUFLOW_TLR_INPUT_V7\n"
+        )
+        topology_mode = {
+            NATIVE_ROUTER_PROVIDER: 0,
+            TLR_PROVIDER: 0,
+            ROUTE_TDM_PROVIDER: 1,
+            GLOBAL_CANDIDATE_PROVIDER: 2,
+        }[provider]
         stream.write(
             "PARAM "
-            f"{node_count} {int(provider == ROUTE_TDM_PROVIDER)} "
+            f"{node_count} {topology_mode} "
             f"{constraints['max_iterations']} "
             f"{constraints.get('reroute_rounds', 8)} "
             f"{constraints.get('lambda_load', 2.0):.17g} "
@@ -623,6 +634,7 @@ def _write_native_input(
 def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]:
     routes = {}
     candidates: Dict[int, Dict[str, Any]] = defaultdict(dict)
+    selections = {}
     locks = {}
     timing = {}
     metrics: Dict[str, Any] = {}
@@ -667,6 +679,16 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                         else [int(item) for item in fields[4].split(",")]
                     ),
                 }
+            elif fields[0] == "SELECTION" and len(fields) == 3:
+                demand_index = int(fields[1])
+                if (
+                    fields[2] not in ROUTE_CANDIDATE_GENERATORS
+                    or demand_index in selections
+                ):
+                    raise EmuFlowError(
+                        "TLR router returned duplicate/unknown selection"
+                    )
+                selections[demand_index] = fields[2]
             elif fields[0] == "PATH" and len(fields) == 6:
                 timing[int(fields[1])] = {
                     "delay_ns": float(fields[2]),
@@ -685,6 +707,9 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                     "selected_delay_demand_balanced",
                     "total_link_bit_hops",
                     "estimated_max_tdm_ratio",
+                    "master_rounds",
+                    "master_switches",
+                    "master_exact",
                 }:
                     value = int(value)
                 metrics[fields[1]] = value
@@ -710,7 +735,14 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
         "total_link_bit_hops",
     }
     if output_v2:
-        expected_metrics.add("steiner_candidate_feasible")
+        expected_metrics.update(
+            {
+                "steiner_candidate_feasible",
+                "master_rounds",
+                "master_switches",
+                "master_exact",
+            }
+        )
         if set(candidates) != set(routes):
             raise EmuFlowError(
                 "TLR router candidate demand coverage is not exact"
@@ -719,6 +751,10 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
             raise EmuFlowError(
                 "TLR router did not return each selected route as a candidate"
             )
+        if set(selections) != set(routes):
+            raise EmuFlowError(
+                "TLR router master selection coverage is not exact"
+            )
     if set(metrics) != expected_metrics:
         raise EmuFlowError(
             "TLR router returned incomplete metric coverage"
@@ -726,6 +762,7 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
     return {
         "routes": routes,
         "candidates": candidates,
+        "selections": selections,
         "direction_locks": locks,
         "timing": timing,
         "metrics": metrics,
@@ -764,6 +801,7 @@ def route_system_native(
         NATIVE_ROUTER_PROVIDER,
         TLR_PROVIDER,
         ROUTE_TDM_PROVIDER,
+        GLOBAL_CANDIDATE_PROVIDER,
     }:
         raise ValueError(f"unsupported native routing provider {provider!r}")
     if provider == NATIVE_ROUTER_PROVIDER and timing_paths is not None:
@@ -797,6 +835,8 @@ def route_system_native(
                 f"{completed.returncode}: {detail}"
             )
         native = _parse_native_output(native_output, model)
+    for name in ("master_rounds", "master_switches", "master_exact"):
+        native["metrics"].setdefault(name, 0)
 
     # The native-only records are no longer needed after output parsing.  On
     # multi-million-demand cases, releasing them before materializing the
@@ -998,10 +1038,50 @@ def route_system_native(
                     ),
                 }
             }
-            if provider == ROUTE_TDM_PROVIDER
+            if provider in {ROUTE_TDM_PROVIDER, GLOBAL_CANDIDATE_PROVIDER}
             else {}
         ),
     }
+    if provider == GLOBAL_CANDIDATE_PROVIDER:
+        result["metrics"].update(
+            {
+                "master_rounds": native["metrics"]["master_rounds"],
+                "master_switches": native["metrics"]["master_switches"],
+                "master_exact": bool(native["metrics"]["master_exact"]),
+            }
+        )
+        result["joint_optimization"]["method"] = (
+            "checked-candidate-pool+deterministic-global-coordinate-lns-v1"
+        )
+        result["joint_optimization"]["candidate_generation"][
+            "master_selection"
+        ] = [
+            {
+                "demand": model["demands"][index]["id"],
+                "generator": native["selections"][index],
+            }
+            for index in range(len(model["demands"]))
+        ]
+        selected_candidates = {
+            (candidate["demand_id"], candidate["generator"]): candidate
+            for candidate in candidate_pool["candidates"]
+        }
+        route_by_id = {route["id"]: route for route in routes}
+        for record in result["joint_optimization"]["candidate_generation"][
+            "master_selection"
+        ]:
+            candidate = selected_candidates[
+                (record["demand"], "refined-final")
+            ]
+            route = route_by_id[record["demand"]]
+            if (
+                route["tree_edges"] != candidate["tree_edges"]
+                or route["predicted_max_delay_ns"]
+                != candidate["predicted_max_delay_ns"]
+            ):
+                raise EmuFlowError(
+                    "TLR router refined candidate does not match final routes"
+                )
     if timing_paths is not None:
         result["timing"] = {
             "schema": STA_PATHS_SCHEMA,
@@ -1264,6 +1344,7 @@ def validate_native_system_routes(
         NATIVE_ROUTER_PROVIDER,
         TLR_PROVIDER,
         ROUTE_TDM_PROVIDER,
+        GLOBAL_CANDIDATE_PROVIDER,
     }:
         raise ValidationError(
             "routes.provider: expected a supported native routing provider"
@@ -1274,15 +1355,46 @@ def validate_native_system_routes(
         )
     if provider != NATIVE_ROUTER_PROVIDER and timing_paths is None:
         raise ValidationError("timing-aware routes require normalized STA input")
-    if routes.get("provider") == ROUTE_TDM_PROVIDER:
+    if routes.get("provider") in {
+        ROUTE_TDM_PROVIDER,
+        GLOBAL_CANDIDATE_PROVIDER,
+    }:
         joint = routes.get("joint_optimization")
-        if not isinstance(joint, dict) or joint.get("method") != (
-            "dac25-informed-delay-demand-balanced+"
-            "aspdac26-timing-refinement-v2"
-        ):
+        expected_method = (
+            "checked-candidate-pool+deterministic-global-coordinate-lns-v1"
+            if routes.get("provider") == GLOBAL_CANDIDATE_PROVIDER
+            else (
+                "dac25-informed-delay-demand-balanced+"
+                "aspdac26-timing-refinement-v2"
+            )
+        )
+        if not isinstance(joint, dict) or joint.get("method") != expected_method:
             raise ValidationError(
                 "routes.joint_optimization: invalid co-optimization metadata"
             )
+        if provider == GLOBAL_CANDIDATE_PROVIDER:
+            selection = joint.get("candidate_generation", {}).get(
+                "master_selection"
+            )
+            if (
+                not isinstance(selection, list)
+                or len(selection) != len(routes.get("routes", []))
+                or {
+                    record.get("demand")
+                    for record in selection
+                    if isinstance(record, dict)
+                }
+                != {route.get("id") for route in routes.get("routes", [])}
+                or any(
+                    not isinstance(record, dict)
+                    or record.get("generator") not in ROUTE_CANDIDATE_GENERATORS
+                    or record.get("generator") == "refined-final"
+                    for record in selection
+                )
+            ):
+                raise ValidationError(
+                    "routes.joint_optimization master selection is invalid"
+                )
     locks = routes.get("direction_locks")
     if not isinstance(locks, list):
         raise ValidationError("routes.direction_locks: expected an array")

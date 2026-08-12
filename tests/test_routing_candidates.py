@@ -6,13 +6,18 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.routing import demands_from_assignment, normalize_route_constraints
-from emuflow.routing_candidates import validate_route_candidate_pool
+from emuflow.routing_candidates import (
+    exact_route_candidate_selection,
+    validate_route_candidate_pool,
+)
 from emuflow.routing_oracle import exact_route_tree_selection
 from emuflow.timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
     ROUTE_TDM_PROVIDER,
     compress_sta_paths,
     normalize_sta_paths,
     route_system_native,
+    validate_native_system_routes,
 )
 from tests.native_build import tlr_router
 from tests.test_phase4 import _assignment, _link, _platform_value
@@ -152,6 +157,145 @@ class RouteCandidatePoolTest(unittest.TestCase):
             ):
                 validate_route_candidate_pool(
                     assignment, platform, broken_tree
+                )
+
+    def test_global_candidate_provider_matches_exact_restricted_master(
+        self,
+    ) -> None:
+        platform, assignment, timing, constraints = self._fixture()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "pool.json"
+            routes = route_system_native(
+                assignment,
+                platform,
+                constraints,
+                timing,
+                executable=str(tlr_router()),
+                provider=GLOBAL_CANDIDATE_PROVIDER,
+                candidate_pool_path=path,
+            )
+            import json
+
+            pool = json.loads(path.read_text(encoding="utf-8"))
+            oracle = exact_route_candidate_selection(
+                assignment, platform, pool, timing
+            )
+            selection = routes["joint_optimization"][
+                "candidate_generation"
+            ]["master_selection"]
+            self.assertIn(selection, oracle["optimal_selections"])
+            self.assertTrue(routes["metrics"]["master_exact"])
+            self.assertEqual(routes["metrics"]["master_rounds"], 1)
+            self.assertEqual(
+                validate_native_system_routes(
+                    assignment, platform, routes, timing
+                )["status"],
+                "pass",
+            )
+
+    def test_global_master_mixes_generators_across_demands(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "mixed_master",
+                ["a", "b", "c", "d", "e"],
+                [
+                    _link("bc", "b", "c", lanes=4),
+                    _link("ae", "a", "e", lanes=4),
+                    _link("cd", "c", "d", lanes=4),
+                    _link("ad", "a", "d", lanes=4),
+                    _link("ac", "a", "c", lanes=4),
+                    _link("bd", "b", "d", lanes=4),
+                    _link("de", "d", "e", lanes=4),
+                    _link("ce", "c", "e", lanes=4),
+                    _link("ab", "a", "b", lanes=4),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [
+                ("n0", "a", ["c"]),
+                ("n1", "b", ["e"]),
+                ("n2", "e", ["d", "c"]),
+            ],
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": f"p{index}",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": float(index),
+                            "fixed_delay_ns": fixed,
+                            "cut_nets": [f"n{index}"],
+                        }
+                        for index, fixed in enumerate((5.0, 10.0, 5.0))
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 8,
+                "reroute_rounds": 0,
+                "link_delay_ns": {
+                    "bc": 1.2,
+                    "ae": 1.2,
+                    "cd": 1.5,
+                    "ad": 2.0,
+                    "ac": 0.9,
+                    "bd": 1.5,
+                    "de": 1.0,
+                    "ce": 3.0,
+                    "ab": 1.2,
+                },
+            },
+            platform,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            pool_path = Path(temporary) / "pool.json"
+            routes = route_system_native(
+                assignment,
+                platform,
+                constraints,
+                timing,
+                executable=str(tlr_router()),
+                provider=GLOBAL_CANDIDATE_PROVIDER,
+                candidate_pool_path=pool_path,
+            )
+            import json
+
+            pool = json.loads(pool_path.read_text(encoding="utf-8"))
+            oracle = exact_route_candidate_selection(
+                assignment, platform, pool, timing
+            )
+            selection = routes["joint_optimization"][
+                "candidate_generation"
+            ]["master_selection"]
+            self.assertIn(selection, oracle["optimal_selections"])
+            self.assertEqual(
+                [item["generator"] for item in selection],
+                [
+                    "shortest-path-tree",
+                    "shortest-path-tree",
+                    "nearest-terminal-steiner",
+                ],
+            )
+            self.assertEqual(routes["metrics"]["master_switches"], 1)
+
+            tampered = copy.deepcopy(routes)
+            tampered["joint_optimization"]["candidate_generation"][
+                "master_selection"
+            ][0]["generator"] = "refined-final"
+            with self.assertRaisesRegex(ValidationError, "master selection"):
+                validate_native_system_routes(
+                    assignment, platform, tampered, timing
                 )
 
 

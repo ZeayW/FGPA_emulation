@@ -499,9 +499,15 @@ This is classified as a **paper-informed extension**, not yet a faithful DAC
 2025 reproduction: the public EmuFlow BoardDB model is more general than the
 contest topology, and paper benchmark/result reproduction is still pending.
 The exported pool and exact-oracle coverage gate are implemented without
-changing the default selector.  The remaining topology gap is candidate-tree
-column generation or LNS over a larger KMB/Mehlhorn and shallow-light pool,
-followed by global master selection.
+changing the default selector.  The opt-in
+`timing-aware-global-candidate-v1` provider now solves the restricted master
+exactly when the candidate product has at most 200,000 combinations and uses
+deterministic coordinate LNS above that boundary.  Its Python oracle
+independently enumerates compact products and reconstructs capacity, route
+delay, quantized TDM delay, normalized slack, utilization, and bit-hops.
+The remaining topology gap is candidate-tree column generation over a larger
+KMB/Mehlhorn and shallow-light pool, plus batch-conflict LNS and concrete
+Phase 5 feedback.
 
 ### Selected primary route
 

@@ -1741,6 +1741,17 @@ default selector, so this milestone does not change the selected route or QoR;
 it establishes the checked input boundary for the planned global candidate-
 tree master selection.
 
+The opt-in Phase 4 provider `timing-aware-global-candidate-v1` consumes that
+boundary in the native kernel.  For compact pools it exhaustively solves the
+restricted master over one tree per demand; larger candidate products use a
+deterministic coordinate large-neighborhood search.  Every move is accepted
+only after global capacity and the same lexicographic route/TDM timing
+objective are recomputed.  A separate Python oracle exhaustively evaluates
+the compact candidate product, and regression coverage includes a case whose
+global optimum mixes shortest-path and nearest-terminal Steiner trees across
+different demands.  This provider remains non-default pending large public-
+case and complete Phase 7 WNS/TNS comparison.
+
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The default provider builds standalone OpenSTA from
 `engines/openroad/src/sta`, renders the versioned open FPGA timing model, and

@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -129,11 +130,12 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
-  const bool input_v7 = magic == "EMUFLOW_TLR_INPUT_V7";
+  const bool input_v8 = magic == "EMUFLOW_TLR_INPUT_V8";
+  const bool input_v7 = magic == "EMUFLOW_TLR_INPUT_V7" || input_v8;
   const bool input_v6 = magic == "EMUFLOW_TLR_INPUT_V6";
   const bool input_v5 = magic == "EMUFLOW_TLR_INPUT_V5";
   const bool input_v4 = magic == "EMUFLOW_TLR_INPUT_V4";
-  if (!input_v7 && !input_v6 && !input_v5 && !input_v4 &&
+  if (!input_v8 && !input_v7 && !input_v6 && !input_v5 && !input_v4 &&
       magic != "EMUFLOW_TLR_INPUT_V3") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
@@ -226,7 +228,7 @@ Input read_input(const std::string& path) {
     }
   }
   if (model.node_count <= 0 || model.topology_mode < 0 ||
-      model.topology_mode > 1 || model.arcs.empty() ||
+      model.topology_mode > 2 || model.arcs.empty() ||
       model.demands.empty()) {
     throw std::runtime_error("input must contain nodes, arcs, and demands");
   }
@@ -286,7 +288,7 @@ class Router {
     history_ = initial_history;
     Candidate balanced;
     Candidate steiner;
-    if (model_.topology_mode == 1) {
+    if (model_.topology_mode >= 1) {
       balanced = route_candidate(order, true);
       balanced_candidate_routes_ = balanced.routes;
       history_ = initial_history;
@@ -297,12 +299,19 @@ class Router {
     baseline_candidate_feasible_ = baseline.feasible;
     balanced_candidate_feasible_ = balanced.feasible;
     steiner_candidate_feasible_ = steiner.feasible;
-    if (!baseline.feasible && !balanced.feasible) {
+    shortest_candidate_generated_ = baseline.generated;
+    balanced_candidate_generated_ = balanced.generated;
+    steiner_candidate_generated_ = steiner.generated;
+    if (!baseline.feasible && !balanced.feasible &&
+        model_.topology_mode != 2) {
       throw std::runtime_error("routing infeasible after capacity iterations");
     }
 
     const Candidate* selected = nullptr;
-    if (!baseline.feasible) {
+    if (model_.topology_mode == 2 && !baseline.feasible &&
+        !balanced.feasible && steiner.feasible) {
+      selected = &steiner;
+    } else if (!baseline.feasible) {
       selected = &balanced;
     } else if (!balanced.feasible) {
       selected = &baseline;
@@ -311,11 +320,29 @@ class Router {
           ? &balanced
           : &baseline;
     }
+    if (selected == nullptr && model_.topology_mode == 2) {
+      selected = baseline.generated
+          ? &baseline
+          : balanced.generated ? &balanced : &steiner;
+    }
+    if (selected == nullptr || !selected->generated) {
+      throw std::runtime_error("routing candidates could not span all sinks");
+    }
     routes_ = selected->routes;
     usage_ = selected->usage;
     history_ = selected->history;
     completed_iterations_ = selected->iterations;
     selected_balanced_ = selected == &balanced;
+    master_selection_.assign(
+        model_.demands.size(),
+        selected == &steiner
+            ? "nearest-terminal-steiner"
+            : selected_balanced_
+                ? "delay-demand-balanced"
+                : "shortest-path-tree");
+    if (model_.topology_mode == 2) {
+      run_candidate_master(order);
+    }
 
     Objective best = objective();
     for (int round = 0; round < model_.reroute_rounds; ++round) {
@@ -345,9 +372,8 @@ class Router {
       bool reroute_ok = true;
       try {
         for (int demand : affected) {
-          routes_[demand] = selected_balanced_
-              ? delay_demand_balanced_tree(demand, discouraged)
-              : shortest_path_tree(demand, discouraged);
+          routes_[demand] = route_for_generator(
+              demand, master_selection_[demand], discouraged);
           add_usage(routes_[demand], model_.demands[demand].width);
         }
       } catch (const std::runtime_error&) {
@@ -393,14 +419,19 @@ class Router {
     }
     write_candidate_routes(output, "shortest-path-tree",
                            shortest_candidate_routes_,
-                           baseline_candidate_feasible_);
+                           shortest_candidate_generated_);
     write_candidate_routes(output, "delay-demand-balanced",
                            balanced_candidate_routes_,
-                           balanced_candidate_feasible_);
+                           balanced_candidate_generated_);
     write_candidate_routes(output, "nearest-terminal-steiner",
                            steiner_candidate_routes_,
-                           steiner_candidate_feasible_);
+                           steiner_candidate_generated_);
     write_candidate_routes(output, "refined-final", routes_, true);
+    for (int demand = 0;
+         demand < static_cast<int>(master_selection_.size()); ++demand) {
+      output << "SELECTION " << demand << ' '
+             << master_selection_[demand] << '\n';
+    }
     for (int path_index = 0;
          path_index < static_cast<int>(model_.paths.size()); ++path_index) {
       const auto [delay, slack, normalized] = path_metrics(path_index);
@@ -417,6 +448,10 @@ class Router {
            << static_cast<int>(balanced_candidate_feasible_) << '\n';
     output << "METRIC steiner_candidate_feasible "
            << static_cast<int>(steiner_candidate_feasible_) << '\n';
+    output << "METRIC master_rounds " << master_rounds_ << '\n';
+    output << "METRIC master_switches " << master_switches_ << '\n';
+    output << "METRIC master_exact "
+           << static_cast<int>(master_exact_) << '\n';
     output << "METRIC selected_delay_demand_balanced "
            << static_cast<int>(selected_balanced_) << '\n';
     output << "METRIC worst_slack_ns " << final.worst_slack_ns << '\n';
@@ -434,6 +469,7 @@ class Router {
 
  private:
   struct Candidate {
+    bool generated = false;
     bool feasible = false;
     int iterations = 0;
     std::vector<Route> routes;
@@ -473,6 +509,12 @@ class Router {
         reachable = false;
       }
       result.iterations = iteration;
+      if (reachable) {
+        result.generated = true;
+        result.routes = routes_;
+        result.usage = usage_;
+        result.history = history_;
+      }
       if (reachable && capacity_legal()) {
         result.feasible = true;
         result.routes = routes_;
@@ -489,9 +531,6 @@ class Router {
         }
       }
     }
-    result.routes = routes_;
-    result.usage = usage_;
-    result.history = history_;
     return result;
   }
 
@@ -515,6 +554,147 @@ class Router {
         }
       }
       output << '\n';
+    }
+  }
+
+  Route route_for_generator(
+      int demand, const std::string& generator,
+      const std::set<int>& discouraged) const {
+    if (generator == "delay-demand-balanced") {
+      return delay_demand_balanced_tree(demand, discouraged);
+    }
+    if (generator == "nearest-terminal-steiner") {
+      return nearest_terminal_steiner_tree(demand, discouraged);
+    }
+    return shortest_path_tree(demand, discouraged);
+  }
+
+  void run_candidate_master(const std::vector<int>& order) {
+    struct Alternative {
+      const char* generator;
+      const std::vector<Route>* routes;
+      bool generated;
+    };
+    const std::vector<Alternative> alternatives = {
+        {"shortest-path-tree", &shortest_candidate_routes_,
+         shortest_candidate_generated_},
+        {"delay-demand-balanced", &balanced_candidate_routes_,
+         balanced_candidate_generated_},
+        {"nearest-terminal-steiner", &steiner_candidate_routes_,
+         steiner_candidate_generated_},
+    };
+    std::vector<Alternative> feasible_alternatives;
+    for (const Alternative& alternative : alternatives) {
+      if (alternative.generated &&
+          alternative.routes->size() == model_.demands.size()) {
+        feasible_alternatives.push_back(alternative);
+      }
+    }
+    constexpr std::size_t kExactCombinationLimit = 200000;
+    std::size_t combinations = 1;
+    for (std::size_t demand = 0; demand < model_.demands.size(); ++demand) {
+      if (combinations >
+          kExactCombinationLimit / feasible_alternatives.size()) {
+        combinations = kExactCombinationLimit + 1;
+        break;
+      }
+      combinations *= feasible_alternatives.size();
+    }
+    if (combinations <= kExactCombinationLimit) {
+      const std::vector<std::string> initial_selection = master_selection_;
+      Objective best_objective;
+      bool found = false;
+      std::vector<Route> best_routes = routes_;
+      std::vector<std::string> best_selection = master_selection_;
+      std::fill(usage_.begin(), usage_.end(), 0);
+      std::vector<std::string> selection(model_.demands.size());
+      std::function<void(int)> enumerate = [&](int demand) {
+        if (demand == static_cast<int>(model_.demands.size())) {
+          const Objective candidate = objective();
+          if (!found || better(candidate, best_objective)) {
+            found = true;
+            best_objective = candidate;
+            best_routes = routes_;
+            best_selection = selection;
+          }
+          return;
+        }
+        for (const Alternative& alternative : feasible_alternatives) {
+          const Route& candidate = (*alternative.routes)[demand];
+          routes_[demand] = candidate;
+          add_usage(candidate, model_.demands[demand].width);
+          if (capacity_legal()) {
+            selection[demand] = alternative.generator;
+            enumerate(demand + 1);
+          }
+          add_usage(candidate, -model_.demands[demand].width);
+        }
+      };
+      enumerate(0);
+      if (!found) {
+        throw std::runtime_error(
+            "restricted candidate master found no legal combination");
+      }
+      routes_ = best_routes;
+      master_selection_ = best_selection;
+      std::fill(usage_.begin(), usage_.end(), 0);
+      for (int demand = 0;
+           demand < static_cast<int>(model_.demands.size()); ++demand) {
+        add_usage(routes_[demand], model_.demands[demand].width);
+        if (master_selection_[demand] != initial_selection[demand]) {
+          ++master_switches_;
+        }
+      }
+      master_rounds_ = 1;
+      master_exact_ = true;
+      return;
+    }
+    if (!capacity_legal()) {
+      throw std::runtime_error(
+          "large candidate master requires a legal initial solution");
+    }
+    Objective global_best = objective();
+    const int maximum_rounds = 8;
+    for (int round = 0; round < maximum_rounds; ++round) {
+      bool changed = false;
+      ++master_rounds_;
+      for (int demand : order) {
+        const Route original = routes_[demand];
+        const std::string original_generator = master_selection_[demand];
+        add_usage(original, -model_.demands[demand].width);
+        Route best_route = original;
+        std::string best_generator = original_generator;
+        Objective best_objective = global_best;
+        for (const Alternative& alternative : alternatives) {
+          if (!alternative.generated ||
+              alternative.routes->size() != model_.demands.size()) {
+            continue;
+          }
+          const Route& candidate = (*alternative.routes)[demand];
+          routes_[demand] = candidate;
+          add_usage(candidate, model_.demands[demand].width);
+          if (capacity_legal()) {
+            const Objective candidate_objective = objective();
+            if (better(candidate_objective, best_objective)) {
+              best_objective = candidate_objective;
+              best_route = candidate;
+              best_generator = alternative.generator;
+            }
+          }
+          add_usage(candidate, -model_.demands[demand].width);
+        }
+        routes_[demand] = best_route;
+        add_usage(best_route, model_.demands[demand].width);
+        if (best_generator != original_generator) {
+          master_selection_[demand] = best_generator;
+          global_best = best_objective;
+          ++master_switches_;
+          changed = true;
+        }
+      }
+      if (!changed) {
+        break;
+      }
     }
   }
 
@@ -1477,10 +1657,17 @@ class Router {
   bool baseline_candidate_feasible_ = false;
   bool balanced_candidate_feasible_ = false;
   bool steiner_candidate_feasible_ = false;
+  bool shortest_candidate_generated_ = false;
+  bool balanced_candidate_generated_ = false;
+  bool steiner_candidate_generated_ = false;
   bool selected_balanced_ = false;
   std::vector<Route> shortest_candidate_routes_;
   std::vector<Route> balanced_candidate_routes_;
   std::vector<Route> steiner_candidate_routes_;
+  std::vector<std::string> master_selection_;
+  int master_rounds_ = 0;
+  int master_switches_ = 0;
+  bool master_exact_ = false;
 };
 
 void usage(const char* executable) {

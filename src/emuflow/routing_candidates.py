@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+import itertools
 from collections import defaultdict, deque
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
 from .platform import Platform
@@ -13,6 +14,7 @@ from .routing import (
     _validate_route_tree,
     build_directed_graph,
     demands_from_assignment,
+    estimate_tdm_ratio,
     normalize_route_constraints,
     route_link_delay_ns,
 )
@@ -26,6 +28,224 @@ ROUTE_CANDIDATE_GENERATORS = (
     "nearest-terminal-steiner",
     "refined-final",
 )
+ROUTE_MASTER_GENERATORS = ROUTE_CANDIDATE_GENERATORS[:-1]
+
+
+def _normalized_slack(
+    period: float,
+    slack: float,
+    normalization: Mapping[str, Any],
+) -> float:
+    if slack >= 0.0:
+        return (
+            slack
+            * period
+            / (
+                normalization["positive_slack_scale_ns"]
+                * normalization["max_clock_period_ns"]
+            )
+        )
+    return slack / (
+        normalization["negative_slack_scale_ns"] * period
+    )
+
+
+def _tree_sink_delay(
+    candidate: Mapping[str, Any],
+    edge_delay: Mapping[Tuple[str, str, str], float],
+) -> float:
+    graph = defaultdict(list)
+    for edge in candidate["tree_edges"]:
+        key = _arc_key(edge["link"], edge["from"], edge["to"])
+        graph[key[1]].append(key)
+    delay = {candidate["source"]: 0.0}
+    queue = deque([candidate["source"]])
+    while queue:
+        node = queue.popleft()
+        for edge in graph[node]:
+            delay[edge[2]] = delay[node] + edge_delay[edge]
+            queue.append(edge[2])
+    return max(delay[sink] for sink in candidate["sinks"])
+
+
+def exact_route_candidate_selection(
+    assignment: Mapping[str, Any],
+    platform: Platform,
+    pool: Mapping[str, Any],
+    timing_paths: Mapping[str, Any],
+    *,
+    max_combinations: int = 200_000,
+) -> Dict[str, Any]:
+    """Exhaustively solve the restricted candidate-tree master problem."""
+
+    validate_route_candidate_pool(assignment, platform, pool)
+    constraints = normalize_route_constraints(pool["constraints"], platform)
+    demands = demands_from_assignment(assignment, platform)
+    _adjacency, arcs, capacities = build_directed_graph(
+        platform, constraints
+    )
+    candidates_by_demand = defaultdict(dict)
+    for candidate in pool["candidates"]:
+        if candidate["generator"] in ROUTE_MASTER_GENERATORS:
+            candidates_by_demand[candidate["demand_id"]][
+                candidate["generator"]
+            ] = candidate
+    ordered_candidates = []
+    for demand in demands:
+        by_generator = candidates_by_demand[demand["id"]]
+        choices = [
+            by_generator[generator]
+            for generator in ROUTE_MASTER_GENERATORS
+            if generator in by_generator
+        ]
+        if not choices:
+            raise ValidationError(
+                f"route master has no candidate for {demand['id']}"
+            )
+        ordered_candidates.append(choices)
+    combinations = math.prod(len(choices) for choices in ordered_candidates)
+    if combinations > max_combinations:
+        raise ValidationError(
+            "route master candidate product exceeds exact-oracle limit"
+        )
+
+    edge_delay = {
+        key: route_link_delay_ns(
+            platform, key[0], key[1], key[2], constraints
+        )
+        for key in arcs
+    }
+    link_by_id = {link.id: link for link in platform.links}
+    sll_links = set(constraints["sll_links"])
+    best_objective: Optional[Tuple[float, float, float, int]] = None
+    optimal = []
+    legal_combinations = 0
+    for selected in itertools.product(*ordered_candidates):
+        usage = {key: 0 for key in capacities}
+        legal = True
+        for demand, candidate in zip(demands, selected):
+            for edge in candidate["tree_edges"]:
+                key = _arc_key(edge["link"], edge["from"], edge["to"])
+                capacity_key = arcs[key]["capacity_key"]
+                usage[capacity_key] += demand["width_bits"]
+                if usage[capacity_key] > capacities[capacity_key][
+                    "capacity_bits"
+                ]:
+                    legal = False
+                    break
+            if not legal:
+                break
+        if not legal:
+            continue
+        legal_combinations += 1
+        ratios = {}
+        for key, capacity in capacities.items():
+            link = link_by_id[capacity["link"]]
+            ratios[key] = estimate_tdm_ratio(
+                usage[key],
+                link.transport_bits_per_cycle_per_direction,
+                constraints,
+                is_sll=capacity["link"] in sll_links,
+            )
+
+        route_delay = {}
+        route_tdm_delay = {}
+        for demand, candidate in zip(demands, selected):
+            route_delay[demand["net"]] = _tree_sink_delay(
+                candidate, edge_delay
+            )
+            tdm_edge_delay = {}
+            for edge in candidate["tree_edges"]:
+                arc_key = _arc_key(
+                    edge["link"], edge["from"], edge["to"]
+                )
+                link = link_by_id[edge["link"]]
+                capacity_key = arcs[arc_key]["capacity_key"]
+                tdm_edge_delay[arc_key] = edge_delay[arc_key] + (
+                    0.0
+                    if edge["link"] in sll_links
+                    else (1000.0 / link.fabric_clock_mhz)
+                    * (ratios[capacity_key] - 1)
+                )
+            if constraints.get("tree_edge_sum_tdm", False):
+                route_tdm_delay[demand["net"]] = sum(
+                    tdm_edge_delay.values()
+                )
+            else:
+                route_tdm_delay[demand["net"]] = _tree_sink_delay(
+                    candidate, tdm_edge_delay
+                )
+
+        worst_route = float("inf")
+        worst_tdm = float("inf")
+        for path in timing_paths["paths"]:
+            route_total = path["fixed_delay_ns"] + sum(
+                route_delay[net] for net in path["cut_nets"]
+            )
+            tdm_total = path["fixed_delay_ns"] + sum(
+                route_tdm_delay[net] for net in path["cut_nets"]
+            )
+            worst_route = min(
+                worst_route,
+                _normalized_slack(
+                    path["clock_period_ns"],
+                    path["clock_period_ns"] - route_total,
+                    timing_paths["normalization"],
+                ),
+            )
+            worst_tdm = min(
+                worst_tdm,
+                _normalized_slack(
+                    path["clock_period_ns"],
+                    path["clock_period_ns"] - tdm_total,
+                    timing_paths["normalization"],
+                ),
+            )
+        max_utilization = max(
+            (
+                usage[key] / capacity["capacity_bits"]
+                for key, capacity in capacities.items()
+            ),
+            default=0.0,
+        )
+        bit_hops = sum(usage.values())
+        objective = (
+            worst_tdm,
+            worst_route,
+            -max_utilization,
+            -bit_hops,
+        )
+        record = {
+            "selection": [
+                {
+                    "demand": demand["id"],
+                    "generator": candidate["generator"],
+                }
+                for demand, candidate in zip(demands, selected)
+            ],
+            "objective": list(objective),
+            "metrics": {
+                "worst_tdm_normalized_slack": worst_tdm,
+                "worst_normalized_slack": worst_route,
+                "max_utilization": max_utilization,
+                "total_link_bit_hops": bit_hops,
+            },
+        }
+        if best_objective is None or objective > best_objective:
+            best_objective = objective
+            optimal = [record]
+        elif objective == best_objective:
+            optimal.append(record)
+    if best_objective is None:
+        raise ValidationError("route master exact oracle found no legal solution")
+    return {
+        "status": "pass",
+        "enumerated_combinations": combinations,
+        "legal_combinations": legal_combinations,
+        "objective": list(best_objective),
+        "optimal_selections": [record["selection"] for record in optimal],
+        "metrics": optimal[0]["metrics"],
+    }
 
 
 def validate_route_candidate_pool(

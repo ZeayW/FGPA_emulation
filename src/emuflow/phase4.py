@@ -9,6 +9,7 @@ from .routing import (
     validate_system_routes,
 )
 from .timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
     ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
@@ -68,7 +69,11 @@ def run_phase4(
             platform,
             routes,
         )
-    elif provider in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
+    elif provider in {
+        TLR_PROVIDER,
+        ROUTE_TDM_PROVIDER,
+        GLOBAL_CANDIDATE_PROVIDER,
+    }:
         if timing_paths_path is None:
             raise ValueError(
                 f"--provider {provider} requires --timing-paths"
@@ -143,7 +148,11 @@ def validate_phase4(
             platform,
             routes,
         )
-    if provider in {TLR_PROVIDER, ROUTE_TDM_PROVIDER}:
+    if provider in {
+        TLR_PROVIDER,
+        ROUTE_TDM_PROVIDER,
+        GLOBAL_CANDIDATE_PROVIDER,
+    }:
         if timing_paths_path is None:
             raise ValueError(
                 f"validating {TLR_PROVIDER} requires --timing-paths"
