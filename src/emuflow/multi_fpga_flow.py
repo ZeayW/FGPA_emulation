@@ -716,6 +716,8 @@ def run_multi_fpga_flow(
 
     timing_root = output_dir / "timing"
     path_database_path = timing_root / "path-database.json"
+    effective_path_database_path = path_database_path
+    cut_path_database_path = None
     net_weights_path = timing_root / "partition-net-weights.json"
     timing_report = None
     if timing_driven:
@@ -866,9 +868,35 @@ def run_multi_fpga_flow(
 
     projected_timing_paths = timing_paths
     if timing_driven and not cross_stage_iterations:
+        if timing_backend == "opensta":
+            assignment = read_json(assignment_path)
+            cut_net_ids = sorted(
+                cut["net"]
+                for cut in assignment.get("cut_nets", [])
+                if isinstance(cut, dict)
+                and isinstance(cut.get("net"), str)
+            )
+            if not cut_net_ids:
+                raise ValidationError(
+                    "timing-driven flow requires partition cut nets"
+                )
+            cut_path_database_path = timing_root / "cut-path-database.json"
+            cut_sta_report = run_opensta_path_database(
+                ir_path=ir_path,
+                output_path=cut_path_database_path,
+                clocks=clock_periods,
+                timing_model_path=timing_model,
+                architecture_timing_db_path=architecture_timing_db,
+                executable=opensta,
+                max_paths=max(sta_max_paths, len(cut_net_ids)),
+                log_path=timing_root / "opensta-cut-paths.log",
+                through_nets=cut_net_ids,
+            )
+            effective_path_database_path = cut_path_database_path
+            timing_report["cut_path_sta"] = cut_sta_report
         projected_timing_paths = timing_root / "cut-timing-paths.json"
         projection_report = project_sta_path_database(
-            path_database_path,
+            effective_path_database_path,
             assignment_path,
             projected_timing_paths,
         )
@@ -1081,7 +1109,9 @@ def run_multi_fpga_flow(
             original_ir_path=ir_path if timing_driven else None,
             assignment_path=assignment_path if timing_driven else None,
             routes_path=routes_path if timing_driven else None,
-            path_database_path=path_database_path if timing_driven else None,
+            path_database_path=(
+                effective_path_database_path if timing_driven else None
+            ),
             workers=physical_workers,
         )
         baseline_physical_seconds = time.monotonic() - baseline_physical_started
@@ -1215,7 +1245,7 @@ def run_multi_fpga_flow(
             assignment_path=assignment_path if timing_driven else None,
             routes_path=routes_path if timing_driven else None,
             path_database_path=(
-                path_database_path if timing_driven else None
+                effective_path_database_path if timing_driven else None
             ),
             workers=physical_workers,
         )
@@ -1454,6 +1484,16 @@ def run_multi_fpga_flow(
                         "path": "timing/path-database.json",
                         "sha256": _sha256(path_database_path),
                     },
+                    **(
+                        {
+                            "cut_path_database": {
+                                "path": "timing/cut-path-database.json",
+                                "sha256": _sha256(cut_path_database_path),
+                            }
+                        }
+                        if cut_path_database_path is not None
+                        else {}
+                    ),
                     "partition_net_weights": {
                         "path": "timing/partition-net-weights.json",
                         "sha256": _sha256(net_weights_path),

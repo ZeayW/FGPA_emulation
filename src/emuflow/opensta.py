@@ -1009,6 +1009,21 @@ def run_opensta_path_database(
         )
 
     checked = validate_sta_path_database(output_path, ir_path)
+    covered_through_nets = []
+    if through_net_ids:
+        database = read_json(output_path)
+        path_nets = {
+            net
+            for path in database["paths"]
+            for net in path["path_nets"]
+        }
+        missing_through_nets = sorted(set(through_net_ids) - path_nets)
+        if missing_through_nets:
+            raise EmuFlowError(
+                "OpenSTA directed path extraction did not cover requested "
+                f"nets: {missing_through_nets}"
+            )
+        covered_through_nets = sorted(set(through_net_ids) & path_nets)
     return {
         "status": "pass",
         "design": ir.value["design"]["name"],
@@ -1019,6 +1034,7 @@ def run_opensta_path_database(
         "paths": imported["paths"],
         "max_paths": max_paths,
         "through_nets": through_net_ids,
+        "covered_through_nets": covered_through_nets,
         "path_limit_reached": imported["paths"] >= max_paths,
         "unique_path_nets": imported["unique_path_nets"],
         "used_cell_types": coverage["used_cell_types"],
