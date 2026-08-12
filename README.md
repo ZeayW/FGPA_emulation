@@ -1831,8 +1831,10 @@ only after global capacity and the same lexicographic route/TDM timing
 objective are recomputed.  A separate Python oracle exhaustively evaluates
 the compact candidate product, and regression coverage includes a case whose
 global optimum mixes shortest-path and nearest-terminal Steiner trees across
-different demands.  This provider remains non-default pending large public-
-case and complete Phase 7 WNS/TNS comparison.
+different demands.  This provider remains non-default: the large-public-case
+scale gate is separate algorithm evidence, while the completed real-RTL
+Phase 7 comparison above showed a small global WNS/TNS regression rather than
+a QoR improvement.
 
 Every Phase 5 run now also emits `tdm_feedback.json`, a concrete schedule
 certificate that reconstructs occupied slot-lanes, realized wait, remaining
