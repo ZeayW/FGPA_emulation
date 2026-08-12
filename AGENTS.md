@@ -40,7 +40,12 @@ For every Phase 6 QoR claim or default-provider promotion:
      timing domains;
    - overall TNS, defined as the sum of all negative endpoint slacks across all
      implemented FPGAs and timing domains, without double counting;
-   - the absolute and percentage baseline-to-candidate change for WNS and TNS;
+   - the absolute baseline-to-candidate change for WNS and TNS, where a
+     positive slack delta is an improvement;
+   - percentage improvement computed from negative-slack deficit reduction,
+     not by dividing signed slack values.  If the baseline is already
+     non-negative (WNS) or zero (TNS), report the percentage as N/A.  Report a
+     transition across timing closure separately;
    - failing endpoint counts, critical path, runtime, unrouted nets, and DRC
      violations.
 6. Preserve the reports and source hashes in a sealed, independently
