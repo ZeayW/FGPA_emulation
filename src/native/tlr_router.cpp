@@ -1001,6 +1001,9 @@ class Router {
     Objective global_best = objective();
     const int maximum_rounds = 8;
     for (int round = 0; round < maximum_rounds; ++round) {
+      const std::vector<Route> round_routes = routes_;
+      const std::vector<long long> round_usage = usage_;
+      const std::vector<std::string> round_selection = master_selection_;
       bool changed = false;
       ++master_rounds_;
       for (int demand : order) {
@@ -1009,36 +1012,80 @@ class Router {
         add_usage(original, -model_.demands[demand].width);
         Route best_route = original;
         std::string best_generator = original_generator;
-        Objective best_objective = global_best;
+        // The exact small master above evaluates the complete objective at
+        // every leaf.  Repeating that O(number of timing paths) scan for
+        // every demand/candidate is quadratic on contest designs.  The large
+        // master instead performs a dual-price style decomposed sweep: each
+        // candidate sees the current domain loads and is ranked by its own
+        // projected TDM delay, physical delay, and bit-hop footprint.  A
+        // complete objective evaluation below certifies the whole sweep and
+        // atomically rolls it back if the lexicographic global objective did
+        // not improve.
+        bool found_local = false;
+        std::tuple<double, double, long long, int> best_local;
+        int generator_rank = 0;
         for (const Alternative& alternative : alternatives) {
           if (!alternative.generated ||
               alternative.routes->size() != model_.demands.size()) {
+            ++generator_rank;
             continue;
           }
           const Route& candidate = (*alternative.routes)[demand];
           routes_[demand] = candidate;
           add_usage(candidate, model_.demands[demand].width);
-          if (capacity_legal()) {
-            const Objective candidate_objective = objective();
-            if (better(candidate_objective, best_objective)) {
-              best_objective = candidate_objective;
+          bool legal = true;
+          std::set<int> touched_domains;
+          for (int arc : candidate.arcs) {
+            touched_domains.insert(model_.arcs[arc].capacity_domain);
+          }
+          for (int domain : touched_domains) {
+            if (usage_[domain] > capacity_for_domain(domain)) {
+              legal = false;
+              break;
+            }
+          }
+          if (legal) {
+            const auto local = std::make_tuple(
+                demand_tdm_delay(demand), candidate.max_delay_ns,
+                static_cast<long long>(candidate.arcs.size()) *
+                    model_.demands[demand].width,
+                generator_rank);
+            if (!found_local || local < best_local) {
+              found_local = true;
+              best_local = local;
               best_route = candidate;
               best_generator = alternative.generator;
             }
           }
           add_usage(candidate, -model_.demands[demand].width);
+          ++generator_rank;
+        }
+        if (!found_local) {
+          throw std::runtime_error(
+              "large candidate master found no legal candidate");
         }
         routes_[demand] = best_route;
         add_usage(best_route, model_.demands[demand].width);
         if (best_generator != original_generator) {
           master_selection_[demand] = best_generator;
-          global_best = best_objective;
-          ++master_switches_;
           changed = true;
         }
       }
       if (!changed) {
         break;
+      }
+      const Objective candidate = objective();
+      if (!capacity_legal() || !better(candidate, global_best)) {
+        routes_ = round_routes;
+        usage_ = round_usage;
+        master_selection_ = round_selection;
+        break;
+      }
+      global_best = candidate;
+      for (std::size_t demand = 0; demand < master_selection_.size(); ++demand) {
+        if (master_selection_[demand] != round_selection[demand]) {
+          ++master_switches_;
+        }
       }
     }
   }
