@@ -982,10 +982,15 @@ class Phase4Test(unittest.TestCase):
             self.assertEqual(report["validation"]["overloaded_links"], 0)
             for filename in (
                 "route_constraints.normalized.json",
+                "route_candidate_pool.json",
                 "routes.json",
                 "phase4_report.json",
             ):
                 self.assertTrue((root / "phase4" / filename).is_file())
+            self.assertEqual(
+                report["artifacts"]["candidate_pool"],
+                "route_candidate_pool.json",
+            )
 
     def test_native_router_uses_both_diamond_paths(self) -> None:
         platform = Platform.from_dict(

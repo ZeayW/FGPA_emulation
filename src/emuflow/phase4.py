@@ -34,6 +34,8 @@ def run_phase4(
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
     platform = Platform.load(platform_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    candidate_pool_path = output_dir / "route_candidate_pool.json"
     constraints = load_route_constraints(
         constraints_path,
         platform,
@@ -59,6 +61,7 @@ def run_phase4(
             constraints,
             executable=router,
             provider=provider,
+            candidate_pool_path=candidate_pool_path,
         )
         validation = validate_native_system_routes(
             assignment,
@@ -83,6 +86,7 @@ def run_phase4(
             timing_paths,
             executable=router,
             provider=provider,
+            candidate_pool_path=candidate_pool_path,
         )
         validation = validate_native_system_routes(
             assignment,
@@ -108,7 +112,8 @@ def run_phase4(
     }
     if timing_paths is not None:
         report["artifacts"]["timing_paths"] = "timing_paths.normalized.json"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if candidate_pool_path.is_file():
+        report["artifacts"]["candidate_pool"] = "route_candidate_pool.json"
     write_json(output_dir / "route_constraints.normalized.json", constraints)
     if timing_paths is not None:
         write_json(output_dir / "timing_paths.normalized.json", timing_paths)

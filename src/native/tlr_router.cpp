@@ -67,6 +67,12 @@ struct Route {
   double max_delay_ns = 0.0;
 };
 
+enum class CandidateGenerator {
+  kShortestPath,
+  kDelayDemandBalanced,
+  kNearestTerminalSteiner,
+};
+
 struct Objective {
   double worst_tdm_normalized_slack = -kInf;
   double worst_tdm_slack_ns = -kInf;
@@ -276,13 +282,21 @@ class Router {
     // bit-hops for high-fanout nets.
     const std::vector<double> initial_history = history_;
     Candidate baseline = route_candidate(order, false);
+    shortest_candidate_routes_ = baseline.routes;
     history_ = initial_history;
     Candidate balanced;
+    Candidate steiner;
     if (model_.topology_mode == 1) {
       balanced = route_candidate(order, true);
+      balanced_candidate_routes_ = balanced.routes;
+      history_ = initial_history;
+      steiner = route_candidate(
+          order, CandidateGenerator::kNearestTerminalSteiner);
+      steiner_candidate_routes_ = steiner.routes;
     }
     baseline_candidate_feasible_ = baseline.feasible;
     balanced_candidate_feasible_ = balanced.feasible;
+    steiner_candidate_feasible_ = steiner.feasible;
     if (!baseline.feasible && !balanced.feasible) {
       throw std::runtime_error("routing infeasible after capacity iterations");
     }
@@ -358,7 +372,7 @@ class Router {
     if (!output) {
       throw std::runtime_error("cannot open output: " + path);
     }
-    output << "EMUFLOW_TLR_OUTPUT_V1\n";
+    output << "EMUFLOW_TLR_OUTPUT_V2\n";
     output << std::setprecision(17);
     for (int group = 0; group < static_cast<int>(direction_lock_.size()); ++group) {
       output << "LOCK " << group << ' ' << direction_lock_[group] << '\n';
@@ -377,6 +391,16 @@ class Router {
       }
       output << '\n';
     }
+    write_candidate_routes(output, "shortest-path-tree",
+                           shortest_candidate_routes_,
+                           baseline_candidate_feasible_);
+    write_candidate_routes(output, "delay-demand-balanced",
+                           balanced_candidate_routes_,
+                           balanced_candidate_feasible_);
+    write_candidate_routes(output, "nearest-terminal-steiner",
+                           steiner_candidate_routes_,
+                           steiner_candidate_feasible_);
+    write_candidate_routes(output, "refined-final", routes_, true);
     for (int path_index = 0;
          path_index < static_cast<int>(model_.paths.size()); ++path_index) {
       const auto [delay, slack, normalized] = path_metrics(path_index);
@@ -391,6 +415,8 @@ class Router {
            << static_cast<int>(baseline_candidate_feasible_) << '\n';
     output << "METRIC balanced_candidate_feasible "
            << static_cast<int>(balanced_candidate_feasible_) << '\n';
+    output << "METRIC steiner_candidate_feasible "
+           << static_cast<int>(steiner_candidate_feasible_) << '\n';
     output << "METRIC selected_delay_demand_balanced "
            << static_cast<int>(selected_balanced_) << '\n';
     output << "METRIC worst_slack_ns " << final.worst_slack_ns << '\n';
@@ -418,15 +444,29 @@ class Router {
 
   Candidate route_candidate(const std::vector<int>& order,
                             bool delay_demand_balanced) {
+    return route_candidate(
+        order,
+        delay_demand_balanced
+            ? CandidateGenerator::kDelayDemandBalanced
+            : CandidateGenerator::kShortestPath);
+  }
+
+  Candidate route_candidate(const std::vector<int>& order,
+                            CandidateGenerator generator) {
     Candidate result;
     for (int iteration = 1; iteration <= model_.max_iterations; ++iteration) {
       std::fill(usage_.begin(), usage_.end(), 0);
       bool reachable = true;
       try {
         for (int demand : order) {
-          routes_[demand] = delay_demand_balanced
-              ? delay_demand_balanced_tree(demand, {})
-              : shortest_path_tree(demand, {});
+          if (generator == CandidateGenerator::kDelayDemandBalanced) {
+            routes_[demand] = delay_demand_balanced_tree(demand, {});
+          } else if (
+              generator == CandidateGenerator::kNearestTerminalSteiner) {
+            routes_[demand] = nearest_terminal_steiner_tree(demand, {});
+          } else {
+            routes_[demand] = shortest_path_tree(demand, {});
+          }
           add_usage(routes_[demand], model_.demands[demand].width);
         }
       } catch (const std::runtime_error&) {
@@ -453,6 +493,29 @@ class Router {
     result.usage = usage_;
     result.history = history_;
     return result;
+  }
+
+  void write_candidate_routes(
+      std::ostream& output, const std::string& generator,
+      const std::vector<Route>& routes, bool feasible) const {
+    if (!feasible || routes.size() != model_.demands.size()) {
+      return;
+    }
+    for (int demand = 0; demand < static_cast<int>(routes.size()); ++demand) {
+      output << "CANDIDATE " << demand << ' ' << generator << ' '
+             << routes[demand].max_delay_ns << ' ';
+      if (routes[demand].arcs.empty()) {
+        output << '-';
+      } else {
+        for (std::size_t index = 0; index < routes[demand].arcs.size(); ++index) {
+          if (index) {
+            output << ',';
+          }
+          output << routes[demand].arcs[index];
+        }
+      }
+      output << '\n';
+    }
   }
 
   int capacity_domain_count() const {
@@ -1089,6 +1152,125 @@ class Router {
     return route;
   }
 
+  // Takahashi-Matsuyama grows a Steiner tree by repeatedly attaching the
+  // closest unspanned terminal to any vertex already in the tree.  The
+  // directed adaptation below uses the same negotiated arc-cost model as the
+  // production router and then independently validates the arborescence.
+  Route nearest_terminal_steiner_tree(
+      int demand_index, const std::set<int>& discouraged) const {
+    const Demand& demand = model_.demands[demand_index];
+    using QueueItem = std::pair<double, int>;
+    std::vector<bool> in_tree(model_.node_count, false);
+    std::vector<double> tree_delay(model_.node_count, kInf);
+    std::set<int> tree_arcs;
+    in_tree[demand.source] = true;
+    tree_delay[demand.source] = 0.0;
+    int remaining = static_cast<int>(demand.sinks.size());
+
+    while (remaining > 0) {
+      std::vector<double> distance(model_.node_count, kInf);
+      std::vector<int> predecessor(model_.node_count, -1);
+      std::priority_queue<QueueItem, std::vector<QueueItem>,
+                          std::greater<QueueItem>> queue;
+      for (int node = 0; node < model_.node_count; ++node) {
+        if (in_tree[node]) {
+          distance[node] = 0.0;
+          queue.emplace(0.0, node);
+        }
+      }
+      while (!queue.empty()) {
+        const auto [current, node] = queue.top();
+        queue.pop();
+        if (current != distance[node]) {
+          continue;
+        }
+        for (int arc_index : adjacency_[node]) {
+          const Arc& arc = model_.arcs[arc_index];
+          if (!direction_allowed(arc_index) || in_tree[arc.to]) {
+            continue;
+          }
+          if (model_.hard_sll_capacity && arc.is_sll &&
+              usage_[arc.capacity_domain] + demand.width > arc.capacity) {
+            continue;
+          }
+          const double candidate = current +
+              routing_arc_cost(demand_index, arc_index, discouraged);
+          if (candidate + kEps < distance[arc.to] ||
+              (std::abs(candidate - distance[arc.to]) <= kEps &&
+               (predecessor[arc.to] < 0 ||
+                arc_index < predecessor[arc.to]))) {
+            distance[arc.to] = candidate;
+            predecessor[arc.to] = arc_index;
+            queue.emplace(candidate, arc.to);
+          }
+        }
+      }
+
+      int selected_sink = -1;
+      for (int sink : demand.sinks) {
+        if (in_tree[sink]) {
+          continue;
+        }
+        if (selected_sink < 0 ||
+            distance[sink] + kEps < distance[selected_sink] ||
+            (std::abs(distance[sink] - distance[selected_sink]) <= kEps &&
+             sink < selected_sink)) {
+          selected_sink = sink;
+        }
+      }
+      if (selected_sink < 0 || !std::isfinite(distance[selected_sink])) {
+        throw std::runtime_error(
+            "nearest-terminal Steiner tree has unreachable sink");
+      }
+
+      std::vector<int> addition;
+      std::set<int> seen;
+      int node = selected_sink;
+      while (!in_tree[node]) {
+        if (!seen.insert(node).second) {
+          throw std::runtime_error(
+              "nearest-terminal Steiner predecessor cycle");
+        }
+        const int arc_index = predecessor[node];
+        if (arc_index < 0) {
+          throw std::runtime_error(
+              "broken nearest-terminal Steiner predecessor");
+        }
+        addition.push_back(arc_index);
+        node = model_.arcs[arc_index].from;
+      }
+      std::reverse(addition.begin(), addition.end());
+      for (int arc_index : addition) {
+        const Arc& arc = model_.arcs[arc_index];
+        if (!in_tree[arc.from] || in_tree[arc.to]) {
+          throw std::runtime_error(
+              "nearest-terminal Steiner route is not an arborescence");
+        }
+        tree_delay[arc.to] = tree_delay[arc.from] + arc.delay_ns;
+        in_tree[arc.to] = true;
+        tree_arcs.insert(arc_index);
+      }
+      remaining = 0;
+      for (int sink : demand.sinks) {
+        if (!in_tree[sink]) {
+          ++remaining;
+        }
+      }
+    }
+
+    Route route;
+    route.arcs.assign(tree_arcs.begin(), tree_arcs.end());
+    route.max_delay_ns = 0.0;
+    for (int sink : demand.sinks) {
+      route.max_delay_ns = std::max(route.max_delay_ns, tree_delay[sink]);
+    }
+    if (model_.max_route_hops > 0 &&
+        maximum_route_hops(route, demand) > model_.max_route_hops) {
+      return hop_bounded_shortest_path_tree(demand_index, discouraged);
+    }
+    return route;
+  }
+
   void add_usage(const Route& route, int signed_width) {
     for (int arc_index : route.arcs) {
       usage_[model_.arcs[arc_index].capacity_domain] += signed_width;
@@ -1294,7 +1476,11 @@ class Router {
   int rolled_back_reroutes_ = 0;
   bool baseline_candidate_feasible_ = false;
   bool balanced_candidate_feasible_ = false;
+  bool steiner_candidate_feasible_ = false;
   bool selected_balanced_ = false;
+  std::vector<Route> shortest_candidate_routes_;
+  std::vector<Route> balanced_candidate_routes_;
+  std::vector<Route> steiner_candidate_routes_;
 };
 
 void usage(const char* executable) {

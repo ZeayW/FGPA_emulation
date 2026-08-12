@@ -475,11 +475,16 @@ Lexicographic feasibility first:
 
 ### Implemented milestone
 
-The C++ provider now constructs two independently checkable topology
-candidates: the original source-rooted shortest-path tree and a DAC
+The C++ provider now constructs three independently checkable topology
+candidates: the original source-rooted shortest-path tree, a DAC
 2025-informed delay-demand-balanced connection tree. The latter connects
 high-cost sinks incrementally through legal Steiner attachment points and
-uses distinct SLL and cable/TDM congestion costs. The provider selects the
+uses distinct SLL and cable/TDM congestion costs, and a deterministic directed
+Takahashi-Matsuyama nearest-terminal Steiner alternative.  Phase 4 exports all
+three plus the selected refined tree in the versioned
+`emuflow.route-candidate-pool/v1` contract.  A separate checker independently
+reconstructs every tree's topology, direction locks, hop bound, latency, and
+delay.  The provider selects the
 better complete solution with the ASP-DAC 2026 worst-normalized-slack
 objective before selective critical-path rip-up/reroute. A separate Python
 oracle exhaustively enumerates direction-feasible directed arborescences and
@@ -493,8 +498,10 @@ lexicographic selector. They no longer alias the same native execution mode.
 This is classified as a **paper-informed extension**, not yet a faithful DAC
 2025 reproduction: the public EmuFlow BoardDB model is more general than the
 contest topology, and paper benchmark/result reproduction is still pending.
-The remaining topology gap is candidate-tree column generation or LNS over a
-larger KMB/Mehlhorn and shallow-light candidate pool.
+The exported pool and exact-oracle coverage gate are implemented without
+changing the default selector.  The remaining topology gap is candidate-tree
+column generation or LNS over a larger KMB/Mehlhorn and shallow-light pool,
+followed by global master selection.
 
 ### Selected primary route
 

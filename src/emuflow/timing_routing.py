@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
-from .io import read_json
+from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .platform import Platform
 from .routing import (
@@ -23,6 +23,12 @@ from .routing import (
     route_link_delay_ns,
     validate_system_routes,
     _validate_route_tree,
+)
+from .routing_candidates import (
+    ROUTE_CANDIDATE_GENERATORS,
+    ROUTE_CANDIDATE_POOL_PROVIDER,
+    ROUTE_CANDIDATE_POOL_SCHEMA,
+    validate_route_candidate_pool,
 )
 
 
@@ -616,12 +622,18 @@ def _write_native_input(
 
 def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]:
     routes = {}
+    candidates: Dict[int, Dict[str, Any]] = defaultdict(dict)
     locks = {}
     timing = {}
     metrics: Dict[str, Any] = {}
     with path.open("r", encoding="utf-8") as stream:
-        if stream.readline().strip() != "EMUFLOW_TLR_OUTPUT_V1":
+        header = stream.readline().strip()
+        if header not in {
+            "EMUFLOW_TLR_OUTPUT_V1",
+            "EMUFLOW_TLR_OUTPUT_V2",
+        }:
             raise EmuFlowError("TLR router returned an invalid output header")
+        output_v2 = header == "EMUFLOW_TLR_OUTPUT_V2"
         for line in stream:
             fields = line.split()
             if not fields:
@@ -635,6 +647,24 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                         []
                         if fields[3] == "-"
                         else [int(item) for item in fields[3].split(",")]
+                    ),
+                }
+            elif fields[0] == "CANDIDATE" and len(fields) == 5:
+                demand_index = int(fields[1])
+                generator = fields[2]
+                if (
+                    generator not in ROUTE_CANDIDATE_GENERATORS
+                    or generator in candidates[demand_index]
+                ):
+                    raise EmuFlowError(
+                        "TLR router returned duplicate/unknown candidate"
+                    )
+                candidates[demand_index][generator] = {
+                    "max_delay_ns": float(fields[3]),
+                    "arcs": (
+                        []
+                        if fields[4] == "-"
+                        else [int(item) for item in fields[4].split(",")]
                     ),
                 }
             elif fields[0] == "PATH" and len(fields) == 6:
@@ -679,12 +709,23 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
         "max_utilization",
         "total_link_bit_hops",
     }
+    if output_v2:
+        expected_metrics.add("steiner_candidate_feasible")
+        if set(candidates) != set(routes):
+            raise EmuFlowError(
+                "TLR router candidate demand coverage is not exact"
+            )
+        if any("refined-final" not in value for value in candidates.values()):
+            raise EmuFlowError(
+                "TLR router did not return each selected route as a candidate"
+            )
     if set(metrics) != expected_metrics:
         raise EmuFlowError(
             "TLR router returned incomplete metric coverage"
         )
     return {
         "routes": routes,
+        "candidates": candidates,
         "direction_locks": locks,
         "timing": timing,
         "metrics": metrics,
@@ -717,6 +758,7 @@ def route_system_native(
     timing_paths: Optional[Mapping[str, Any]] = None,
     executable: Optional[str] = None,
     provider: str = NATIVE_ROUTER_PROVIDER,
+    candidate_pool_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if provider not in {
         NATIVE_ROUTER_PROVIDER,
@@ -808,6 +850,63 @@ def route_system_native(
                 "to": key[2],
             }
         )
+    candidate_pool = None
+    if native["candidates"]:
+        candidates = []
+        candidate_max_hops = 0
+        for demand_index, demand in enumerate(model["demands"]):
+            for generator in ROUTE_CANDIDATE_GENERATORS:
+                raw = native["candidates"][demand_index].get(generator)
+                if raw is None:
+                    continue
+                edge_keys = [
+                    model["arc_keys"][index] for index in raw["arcs"]
+                ]
+                candidate = {
+                    **demand,
+                    "id": f"{demand['id']}:{generator}",
+                    "demand_id": demand["id"],
+                    "generator": generator,
+                    "selected": generator == "refined-final",
+                    "tree_edges": [
+                        {"link": key[0], "from": key[1], "to": key[2]}
+                        for key in edge_keys
+                    ],
+                    "max_latency_cycles": _tree_latency_cycles(
+                        demand["source"], demand["sinks"], edge_keys, arcs
+                    ),
+                    "predicted_max_delay_ns": raw["max_delay_ns"],
+                }
+                _, _, candidate_hops = _validate_route_tree(candidate, arcs)
+                candidate_max_hops = max(candidate_max_hops, candidate_hops)
+                candidates.append(candidate)
+        candidates_by_generator = {
+            generator: sum(
+                item["generator"] == generator for item in candidates
+            )
+            for generator in ROUTE_CANDIDATE_GENERATORS
+            if any(item["generator"] == generator for item in candidates)
+        }
+        candidate_pool = {
+            "schema": ROUTE_CANDIDATE_POOL_SCHEMA,
+            "provider": ROUTE_CANDIDATE_POOL_PROVIDER,
+            "design": assignment.get("design"),
+            "platform": platform.name,
+            "constraints": dict(constraints),
+            "demands": model["demands"],
+            "direction_locks": direction_locks,
+            "candidates": candidates,
+            "metrics": {
+                "demands": len(model["demands"]),
+                "candidates": len(candidates),
+                "generators": len(candidates_by_generator),
+                "candidates_by_generator": candidates_by_generator,
+                "max_route_hops_observed": candidate_max_hops,
+            },
+        }
+        validate_route_candidate_pool(assignment, platform, candidate_pool)
+        if candidate_pool_path is not None:
+            write_json(candidate_pool_path, candidate_pool)
     timing_records = []
     if timing_paths is not None:
         for index, path in enumerate(timing_paths["paths"]):
