@@ -86,7 +86,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
         artifacts = {}
         for key in ("emuir", "assignment", "timing_path_database", "partition_net_weights"):
             path = root / f"{key}.json"
-            path.write_text(f"{key}\n", encoding="utf-8")
+            write_json(path, {"kind": key})
             artifacts[key] = {"path": path.name, "sha256": _sha256(path)}
         return {
             "status": "pass",
@@ -173,6 +173,52 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             ):
                 with self.assertRaises(ValidationError):
                     build_system_route_tdm_ab_comparison(baseline, upgrade, root / "comparison.json")
+
+    def test_normalizes_only_each_flow_root_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+            )
+            up_report = self._report(
+                upgrade,
+                GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER,
+                -0.25,
+            )
+            for flow_root, report in ((baseline, base_report), (upgrade, up_report)):
+                emuir = flow_root / "emuir.json"
+                write_json(
+                    emuir,
+                    {"source": str(flow_root / "frontend/phase1/frontend.json")},
+                )
+                report["artifacts"]["emuir"]["sha256"] = _sha256(emuir)
+                write_json(flow_root / "multi-fpga-flow-report.json", report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                result = build_system_route_tdm_ab_comparison(
+                    baseline, upgrade, root / "comparison.json"
+                )
+            self.assertEqual(result["validation"]["status"], "pass")
+            write_json(upgrade / "emuir.json", {"source": "/unrelated/input.json"})
+            up_report["artifacts"]["emuir"]["sha256"] = _sha256(
+                upgrade / "emuir.json"
+            )
+            write_json(upgrade / "multi-fpga-flow-report.json", up_report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(ValidationError, "emuir.*differs"):
+                    build_system_route_tdm_ab_comparison(
+                        baseline, upgrade, root / "second.json"
+                    )
 
 
 if __name__ == "__main__":

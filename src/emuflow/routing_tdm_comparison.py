@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterable
@@ -46,6 +47,36 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _normalized_json_sha256(path: Path, root: Path) -> str:
+    """Hash JSON semantics while normalizing only its own flow-root prefix."""
+
+    root_texts = {root.absolute().as_posix(), root.resolve().as_posix()}
+    root_texts.update(
+        text[len("/private") :] for text in tuple(root_texts)
+        if text.startswith("/private/")
+    )
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, str):
+            for root_text in sorted(root_texts, key=len, reverse=True):
+                value = value.replace(root_text, "$FLOW_ROOT")
+            return value
+        return value
+
+    try:
+        value = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return _sha256(path)
+    encoded = json.dumps(
+        normalize(value), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _checked_artifact(root: Path, report: Dict[str, Any], key: str) -> str:
@@ -240,8 +271,14 @@ def build_system_route_tdm_ab_comparison(
         if baseline_has != upgrade_has:
             raise ValidationError(f"routing/TDM A/B artifact {key!r} coverage differs")
         if baseline_has:
-            baseline_digest = _checked_artifact(baseline_root, baseline, key)
-            upgrade_digest = _checked_artifact(upgrade_root, upgrade, key)
+            _checked_artifact(baseline_root, baseline, key)
+            _checked_artifact(upgrade_root, upgrade, key)
+            baseline_path = baseline_root / baseline["artifacts"][key]["path"]
+            upgrade_path = upgrade_root / upgrade["artifacts"][key]["path"]
+            baseline_digest = _normalized_json_sha256(
+                baseline_path, baseline_root
+            )
+            upgrade_digest = _normalized_json_sha256(upgrade_path, upgrade_root)
             if baseline_digest != upgrade_digest:
                 raise ValidationError(f"routing/TDM A/B frozen artifact {key!r} differs")
             frozen[key] = baseline_digest
