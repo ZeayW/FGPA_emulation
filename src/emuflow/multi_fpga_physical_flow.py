@@ -592,24 +592,39 @@ def run_multi_fpga_physical_flow(
                         raise ValidationError(
                             "Chimew physical anchors do not cover every boundary endpoint"
                         )
-                    # The synthetic academic channel preserves a direction-
-                    # qualified lane order.  Convert its selected physical
-                    # lane to the same normalized y coordinate used to build
-                    # the Chimew bank/channel geometry.  This makes the
-                    # package-pin assignment an actual fixed I/O placement
-                    # constraint in the open physical flow.
-                    link = next(
-                        item for item in platform.links
-                        if item.id == binding["link"]
-                    )
-                    lane_limit = (
-                        link.transport_bits_per_cycle_per_direction - 1
-                    )
-                    target_y = (
-                        0.5
-                        if lane_limit == 0
-                        else float(binding["physical_lane"]) / float(lane_limit)
-                    )
+                    # Bind the selected Chimew channel's actual physical site
+                    # coordinate.  A lane number is only an electrical
+                    # identity and cannot be used as a placement coordinate.
+                    if electrical_binding.get("schema", "").endswith("/v2"):
+                        endpoint_key = (
+                            "pin_a_point"
+                            if fpga_id == binding["fpga_a"]
+                            else "pin_b_point"
+                        )
+                        point = binding.get(endpoint_key)
+                        bounds_by_fpga = {
+                            item["fpga"]: (item["y_min"], item["y_max"])
+                            for item in electrical_binding.get("fpga_y_bounds", [])
+                        }
+                        bounds = bounds_by_fpga.get(fpga_id)
+                        if not isinstance(point, dict) or bounds is None:
+                            raise ValidationError(
+                                "Chimew physical channel coordinates are missing"
+                            )
+                        low, high = bounds
+                        target_y = (float(point["y"]) - low) / (high - low)
+                    else:
+                        link = next(
+                            item for item in platform.links
+                            if item.id == binding["link"]
+                        )
+                        lane_limit = (
+                            link.transport_bits_per_cycle_per_direction - 1
+                        )
+                        target_y = (
+                            0.5 if lane_limit == 0 else
+                            float(binding["physical_lane"]) / float(lane_limit)
+                        )
                     merged = endpoint["merged_ir"]
                     packed_name = port_map.get(
                         (merged["external_port"], merged["external_port_bit"])

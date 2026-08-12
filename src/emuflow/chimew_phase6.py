@@ -38,7 +38,8 @@ CHIMEW_ELECTRICAL_MAP_SCHEMA = "emuflow.chimew-electrical-channel-map/v2"
 CHIMEW_ELECTRICAL_MAP_PROVIDER = (
     "source-qualified-boarddb-electrical-channel-map-v1"
 )
-CHIMEW_PHASE6_BINDING_SCHEMA = "emuflow.chimew-phase6-electrical-binding/v1"
+CHIMEW_PHASE6_BINDING_SCHEMA_V1 = "emuflow.chimew-phase6-electrical-binding/v1"
+CHIMEW_PHASE6_BINDING_SCHEMA = "emuflow.chimew-phase6-electrical-binding/v2"
 CHIMEW_PHASE6_BINDING_PROVIDER = "chimew-paper-plus-emuflow-electrical-slot-v1"
 CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA = "emuflow.chimew-phase6-adapter-report/v1"
 _IOSTANDARD_VOLTAGES = {
@@ -155,7 +156,7 @@ def validate_chimew_electrical_map(
         )
         if channel_id in channels or channel_id not in bank_by_channel:
             raise ValidationError("Chimew electrical channel identity is invalid")
-        bank, _ = bank_by_channel[channel_id]
+        bank, assignment_channel = bank_by_channel[channel_id]
         domain = problem["domains"][bank["domain"]]
         link_id = _string(record.get("link"), f"electrical.{channel_id}.link")
         link = link_by_id.get(link_id)
@@ -256,6 +257,17 @@ def validate_chimew_electrical_map(
             "supported_iostandards": sorted(supported),
             "bank_voltage": voltage,
             "electrical_class": "single_ended_parallel",
+            # Preserve the optimizer's physical site coordinates all the way
+            # into the sealed Phase-6 binding.  The concrete lane number is
+            # an electrical identity, not a device-placement coordinate.
+            "pin_a_point": {
+                "x": assignment_channel["pin_a"][0],
+                "y": assignment_channel["pin_a"][1],
+            },
+            "pin_b_point": {
+                "x": assignment_channel["pin_b"][0],
+                "y": assignment_channel["pin_b"][1],
+            },
         }
     if set(channels) != set(bank_by_channel):
         raise ValidationError("Chimew electrical channel coverage is incomplete")
@@ -527,6 +539,10 @@ def build_chimew_phase6_pin_plan(
         "extension_scope": (
             "EmuFlow concrete lane, bank voltage, IOSTANDARD, and package-pin legality"
         ),
+        "fpga_y_bounds": [
+            {"fpga": fpga, "y_min": bounds[0], "y_max": bounds[1]}
+            for fpga, bounds in sorted(electrical["bounds"].items())
+        ],
         "provenance": {
             **electrical["provenance"],
             "electrical_map_sha256": electrical["map_sha256"],
@@ -584,7 +600,11 @@ def validate_chimew_phase6_binding(
 ) -> Dict[str, Any]:
     """Independently bind a Chimew pin plan to its electrical certificate."""
 
-    if binding.get("schema") != CHIMEW_PHASE6_BINDING_SCHEMA:
+    binding_schema = binding.get("schema")
+    if binding_schema not in {
+        CHIMEW_PHASE6_BINDING_SCHEMA_V1,
+        CHIMEW_PHASE6_BINDING_SCHEMA,
+    }:
         raise ValidationError("Chimew Phase 6 electrical binding schema is invalid")
     if (
         binding.get("status") != "pass"
@@ -698,6 +718,20 @@ def validate_chimew_phase6_binding(
     physical_lane_uses: Dict[Tuple[str, int], set[str]] = {}
     groups = set()
     link_by_id = {link.id: link for link in platform.links}
+    binding_bounds = {}
+    if binding_schema == CHIMEW_PHASE6_BINDING_SCHEMA:
+        raw_bounds = binding.get("fpga_y_bounds")
+        if not isinstance(raw_bounds, list):
+            raise ValidationError("Chimew electrical binding FPGA bounds are missing")
+        for item in raw_bounds:
+            if not isinstance(item, dict):
+                raise ValidationError("Chimew electrical binding FPGA bounds are invalid")
+            fpga = _string(item.get("fpga"), "electrical_binding.bounds.fpga")
+            low = _number(item.get("y_min"), f"electrical_binding.bounds.{fpga}.low")
+            high = _number(item.get("y_max"), f"electrical_binding.bounds.{fpga}.high")
+            if fpga in binding_bounds or high <= low:
+                raise ValidationError("Chimew electrical binding FPGA bounds are invalid")
+            binding_bounds[fpga] = (low, high)
     for index, record in enumerate(raw_entries):
         if not isinstance(record, dict):
             raise ValidationError(f"Chimew electrical binding entry {index} is invalid")
@@ -785,6 +819,20 @@ def validate_chimew_phase6_binding(
             or abs(voltage - _IOSTANDARD_VOLTAGES[iostandard]) > 1.0e-9
         ):
             raise ValidationError("Chimew electrical binding voltage is invalid")
+        if binding_schema == CHIMEW_PHASE6_BINDING_SCHEMA:
+            for endpoint, fpga in (("a", fpga_a), ("b", fpga_b)):
+                point = record.get(f"pin_{endpoint}_point")
+                if not isinstance(point, dict) or fpga not in binding_bounds:
+                    raise ValidationError(
+                        "Chimew electrical binding physical pin point is missing"
+                    )
+                _number(point.get("x"), f"pin_{endpoint}_point.x")
+                y = _number(point.get("y"), f"pin_{endpoint}_point.y")
+                low, high = binding_bounds[fpga]
+                if y < low - 1.0e-9 or y > high + 1.0e-9:
+                    raise ValidationError(
+                        "Chimew electrical binding pin lies outside FPGA bounds"
+                    )
         covered.update(members)
     if covered != set(schedule_by_id):
         raise ValidationError("Chimew electrical binding coverage is incomplete")

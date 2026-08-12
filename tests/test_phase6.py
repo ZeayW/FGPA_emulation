@@ -9,7 +9,7 @@ from pathlib import Path
 from emuflow.equivalence import _MappedModel, simulate_partition_equivalence
 from emuflow.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_PROVIDER,
-    CHIMEW_PHASE6_BINDING_SCHEMA,
+    CHIMEW_PHASE6_BINDING_SCHEMA_V1,
 )
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
@@ -143,7 +143,7 @@ class Phase6Test(unittest.TestCase):
                 "electrical_class": "single_ended_parallel",
             })
         binding = {
-            "schema": CHIMEW_PHASE6_BINDING_SCHEMA,
+            "schema": CHIMEW_PHASE6_BINDING_SCHEMA_V1,
             "status": "pass",
             "integration_status": "phase6-pin-plan",
             "design": schedule["design"],

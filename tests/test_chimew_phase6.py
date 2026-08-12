@@ -250,6 +250,37 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         self.assertEqual(
             result["electrical_binding"]["metrics"]["package_pin_collisions"], 0
         )
+        self.assertEqual(
+            result["electrical_binding"]["fpga_y_bounds"],
+            [
+                {"fpga": "A", "y_min": 0.0, "y_max": 100.0},
+                {"fpga": "B", "y_min": 0.0, "y_max": 100.0},
+            ],
+        )
+        for entry in result["electrical_binding"]["entries"]:
+            lane = entry["physical_lane"]
+            self.assertEqual(
+                entry["pin_a_point"], {"x": 0.0, "y": float(lane * 50)}
+            )
+            self.assertEqual(
+                entry["pin_b_point"], {"x": 100.0, "y": float(lane * 50)}
+            )
+
+    def test_v2_binding_rejects_missing_physical_channel_coordinates(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        binding = copy.deepcopy(result["electrical_binding"])
+        binding["entries"][0].pop("pin_a_point")
+        with self.assertRaisesRegex(ValidationError, "physical pin point"):
+            validate_chimew_phase6_binding(
+                self.schedule, self.platform, result["pin_plan"], binding
+            )
 
     def test_complete_lookahead_certificate_is_bound_into_the_plan(self) -> None:
         bank_report = evaluate_chimew_bank_channel_assignment(
