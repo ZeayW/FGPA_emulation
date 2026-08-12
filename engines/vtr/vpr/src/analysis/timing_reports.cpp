@@ -238,8 +238,28 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                       "No routed timing path for EmuFlow endpoint '%s'",
                       queries[index].endpoint.c_str());
         }
+        double result = results[index];
+        // A same-FPGA original path is a complete setup path, rather than one
+        // segment of a boundary composition. Include the sequential capture
+        // setup arc when present. Launch clock-to-Q is already included as a
+        // PRIMITIVE_CLOCK_LAUNCH edge in the routed data traversal above.
+        if (query_class == 2) {
+            const tatum::EdgeId capture_edge =
+                timing_graph.node_clock_capture_edge(
+                    queries[index].end_node);
+            if (capture_edge) {
+                const float setup =
+                    delay_calc.setup_time(timing_graph, capture_edge).value();
+                if (!std::isfinite(setup) || setup < 0.f) {
+                    VPR_THROW(VPR_ERROR_TIMING,
+                              "Invalid setup time for EmuFlow local path '%s'",
+                              queries[index].endpoint.c_str());
+                }
+                result += setup;
+            }
+        }
         output << queries[index].endpoint << '\t' << queries[index].kind << '\t'
-               << results[index] * seconds_to_nanoseconds << '\t'
+               << result * seconds_to_nanoseconds << '\t'
                << queries[index].start_pin << '\t'
                << queries[index].end_pin << '\n';
     }

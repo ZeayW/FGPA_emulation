@@ -322,8 +322,10 @@ def import_vpr_local_path_timing(
         "status": "pass",
         "design": identity["design"],
         "fpga": identity["fpga"],
-        "provider": "vpr-tatum-original-local-path-longest-delay-v1",
-        "qualification": "source-bound-routed-endpoint-exact",
+        "provider": "vpr-tatum-original-local-setup-path-delay-v1",
+        "qualification": (
+            "source-bound-routed-endpoint-delay-with-capture-setup"
+        ),
         "source": identity["source"],
         "coverage": identity["coverage"],
         "paths": [

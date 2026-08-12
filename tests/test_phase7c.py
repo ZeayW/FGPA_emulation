@@ -516,7 +516,9 @@ class Phase7CTest(unittest.TestCase):
                 "design": "dut",
                 "fpga": "fpga0",
                 "provider": "test",
-                "qualification": "source-bound-routed-endpoint-exact",
+                "qualification": (
+                    "source-bound-routed-endpoint-delay-with-capture-setup"
+                ),
                 "source": source,
                 "coverage": {"local_paths": 1},
                 "paths": [{
@@ -536,7 +538,9 @@ class Phase7CTest(unittest.TestCase):
                 "design": "dut",
                 "fpga": "fpga1",
                 "provider": "test",
-                "qualification": "source-bound-routed-endpoint-exact",
+                "qualification": (
+                    "source-bound-routed-endpoint-delay-with-capture-setup"
+                ),
                 "source": source,
                 "coverage": {"local_paths": 0},
                 "paths": [],

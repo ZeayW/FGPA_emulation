@@ -1334,7 +1334,11 @@ meaningful result, not a malformed artifact.
 
 For the open backend, Phase 7 additionally queries every original same-FPGA
 TimingPathDB launch/capture pair in the routed VPR timing graph and publishes
-`local-path-timing/v1`. `system-timing/v2` accepts the `whole-original-design`
+`local-path-timing/v1`; its data-path delay includes routed launch clock-to-Q,
+combinational/interconnect delay, and the capture setup arc. Clock skew remains
+outside this target-period composition and is reported through the backend's
+separate endpoint-complete physical diagnostics. `system-timing/v2` accepts
+the `whole-original-design`
 scope only when the local path IDs and expanded cross-FPGA member IDs are
 disjoint and their count plus canonical set hash exactly matches the sealed
 source TimingPathDB. Without that proof it reports
