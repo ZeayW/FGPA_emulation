@@ -28,6 +28,7 @@ struct Point {
 };
 
 struct Member {
+  double timing_weight = 1.0;
   Point fanout;
   std::vector<Point> fanins;
 };
@@ -128,13 +129,15 @@ Input read_input(const std::string& path) {
       int member_index = -1;
       int fanin_count = 0;
       Member member;
-      if (!(stream >> group_index >> member_index >> member.fanout.x >>
+      if (!(stream >> group_index >> member_index >> member.timing_weight >>
+            member.fanout.x >>
             member.fanout.y >> fanin_count) ||
           group_index < 0 ||
           group_index >= static_cast<int>(input.groups.size()) ||
           member_index !=
               static_cast<int>(input.groups[group_index].members.size()) ||
-          fanin_count <= 0 || !finite_point(member.fanout)) {
+          fanin_count <= 0 || !std::isfinite(member.timing_weight) ||
+          member.timing_weight <= 0.0 || !finite_point(member.fanout)) {
         throw std::runtime_error("invalid Chimew signal member");
       }
       member.fanins.resize(fanin_count);
@@ -183,12 +186,13 @@ double raw_cost(const Group& group, const Point& endpoint_a,
   const Point& input = group.direction == 0 ? endpoint_b : endpoint_a;
   double cost = 0.0;
   for (const Member& member : group.members) {
-    cost += manhattan(member.fanout, output);
+    double member_cost = manhattan(member.fanout, output);
     double fanin_distance = 0.0;
     for (const Point& fanin : member.fanins) {
       fanin_distance += manhattan(fanin, input);
     }
-    cost += fanin_distance / static_cast<double>(member.fanins.size());
+    member_cost += fanin_distance / static_cast<double>(member.fanins.size());
+    cost += member.timing_weight * member_cost;
   }
   return cost;
 }

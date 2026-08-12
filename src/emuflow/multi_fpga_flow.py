@@ -1219,6 +1219,9 @@ def run_multi_fpga_flow(
             platform_path=platform_path,
             physical_report=baseline_physical_report,
             output_dir=lookahead_root,
+            timing_paths_path=(
+                projected_timing_paths if timing_driven else None
+            ),
             region_count=phase6_chimew_region_count,
             grouper=phase6_chimew_grouper,
             refiner=phase6_chimew_refiner,

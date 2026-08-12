@@ -2007,6 +2007,18 @@ physical Phase 7. Consequently they cannot provide final WNS/TNS and cannot
 replace the connected PicoRV32 (or another real RTL) baseline-versus-Chimew
 acceptance run.
 
+For timing-driven open compilation, the academic Chimew adapter also seals the
+projected `emuflow.sta-paths/v1` database and applies the existing bounded
+`1 + 9 * criticality^2` weight to each scheduled hop of every critical cut
+net.  The native two-stage matching remains exact and independently
+certificate-checked; only its per-signal geometric cost is weighted.  This is
+an explicit EmuFlow integration extension, not a claim about the Chimew paper.
+It aligns Phase 6 lane/package-pin choices with the final Phase 7C system
+timing objective.  Promotion still requires a frozen full-Phase7 A/B: final
+target-clock system WNS/TNS are primary, while per-FPGA WNS, crossing bits,
+pin distance, wirelength, congestion, runtime, and legality are supporting
+metrics only.
+
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report
 SHA-256 values before validation. For every candidate the checker independently

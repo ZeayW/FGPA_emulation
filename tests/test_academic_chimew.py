@@ -207,6 +207,155 @@ class AcademicChimewTest(unittest.TestCase):
                 "pass",
             )
 
+    def test_timing_driven_materialization_binds_projected_sta_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir, assignment, routes, schedule = self._upstream(root)
+            schedule_document = read_json(schedule)
+            critical_entry = schedule_document["entries"][0]
+            timing = root / "cut-timing-paths.json"
+            write_json(
+                timing,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": schedule_document["design"],
+                    "normalization": {
+                        "positive_slack_scale_ns": 1.0,
+                        "negative_slack_scale_ns": 1.0,
+                        "max_clock_period_ns": 10.0,
+                    },
+                    "paths": [
+                        {
+                            "id": "critical",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 10.0,
+                            "slack_ns": 0.0,
+                            "fixed_delay_ns": 10.0,
+                            "cut_nets": [critical_entry["net"]],
+                            "cut_signature": ["fpga0->fpga1"],
+                            "normalized_slack": 0.0,
+                            "compressed_path_ids": ["critical"],
+                        }
+                    ],
+                },
+            )
+            lookahead = materialize_academic_chimew_inputs(
+                ir_path=ir,
+                schedule_path=schedule,
+                routes_path=routes,
+                platform_path=PLATFORM,
+                physical_report=self._physical_report(
+                    root / "physical", assignment
+                ),
+                output_dir=root / "lookahead",
+                timing_paths_path=timing,
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+            )
+            self.assertEqual(
+                lookahead["timing_weighting"]["weighted_signals"], 1
+            )
+            self.assertEqual(
+                lookahead["timing_weighting"]["maximum_weight"], 10.0
+            )
+            bank_input = read_json(
+                Path(lookahead["artifacts"]["bank_channel_input"]["path"])
+            )
+            weights = {
+                member["id"]: member["timing_weight"]
+                for group in bank_input["groups"]
+                for member in group["members"]
+            }
+            self.assertEqual(weights[critical_entry["id"]], 10.0)
+            self.assertTrue(
+                all(
+                    value == 1.0
+                    for entry, value in weights.items()
+                    if entry != critical_entry["id"]
+                )
+            )
+            report = run_chimew_phase6_pipeline(
+                schedule,
+                PLATFORM,
+                Path(lookahead["artifacts"]["crossings"]["path"]),
+                Path(lookahead["artifacts"]["positions"]["path"]),
+                Path(lookahead["artifacts"]["rudy_input"]["path"]),
+                Path(lookahead["artifacts"]["bank_channel_input"]["path"]),
+                Path(lookahead["artifacts"]["electrical_map"]["path"]),
+                root / "timing-chimew",
+                source_paths={
+                    label: Path(path)
+                    for label, path in lookahead["sources"].items()
+                },
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+                rudy=self.executables["rudy"],
+                assigner=self.executables["assigner"],
+                region_count=4,
+            )
+            qualification = read_json(
+                root / "timing-chimew" / report["artifacts"]["qualification"]["path"]
+            )
+            self.assertEqual(
+                qualification["source_binding"]["digests"]["timing_paths"],
+                lookahead["timing_weighting"]["source_sha256"],
+            )
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(root / "timing-chimew")[
+                    "status"
+                ],
+                "pass",
+            )
+
+    def test_timing_weight_covers_every_hop_of_a_multihop_net(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir, assignment, routes, schedule = self._upstream(root)
+            schedule_document = read_json(schedule)
+            critical_entry = schedule_document["entries"][0]
+            duplicate = dict(critical_entry)
+            duplicate["id"] = critical_entry["id"] + "-next-hop"
+            schedule_document["entries"].append(duplicate)
+            write_json(schedule, schedule_document)
+            timing = root / "timing.json"
+            write_json(
+                timing,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": schedule_document["design"],
+                    "paths": [
+                        {
+                            "clock_period_ns": 10.0,
+                            "slack_ns": 0.0,
+                            "cut_nets": [critical_entry["net"]],
+                        }
+                    ],
+                },
+            )
+            lookahead = materialize_academic_chimew_inputs(
+                ir_path=ir,
+                schedule_path=schedule,
+                routes_path=routes,
+                platform_path=PLATFORM,
+                physical_report=self._physical_report(
+                    root / "physical", assignment
+                ),
+                output_dir=root / "lookahead",
+                timing_paths_path=timing,
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+            )
+            bank_input = read_json(
+                Path(lookahead["artifacts"]["bank_channel_input"]["path"])
+            )
+            weights = {
+                member["id"]: member["timing_weight"]
+                for group in bank_input["groups"]
+                for member in group["members"]
+            }
+            self.assertEqual(weights[critical_entry["id"]], 10.0)
+            self.assertEqual(weights[duplicate["id"]], 10.0)
+
     def test_comparison_validator_rejects_tampered_delta(self) -> None:
         digest = "a" * 64
         def physical(wirelength: int, critical: float, wns: float) -> dict:

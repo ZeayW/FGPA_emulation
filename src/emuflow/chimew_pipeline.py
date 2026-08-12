@@ -63,6 +63,7 @@ _SOURCE_LABELS = (
     "architecture",
     "package_pins",
 )
+_OPTIONAL_SOURCE_LABELS = ("timing_paths",)
 
 
 def _sha256(path: Path) -> str:
@@ -78,6 +79,7 @@ def _source_digests(
     positions: Mapping[str, Any],
     rudy_input: Mapping[str, Any],
     electrical_map: Mapping[str, Any],
+    timing_paths_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
     crossing_provenance = crossings.get("provenance")
     position_provenance = positions.get("provenance")
@@ -91,7 +93,7 @@ def _source_digests(
         rudy_provenance = {}
     if not isinstance(electrical_provenance, Mapping):
         electrical_provenance = {}
-    return {
+    result = {
         "routing": crossing_provenance.get("routing_sha256"),
         "placement": position_provenance.get("placement_sha256"),
         "netlist": rudy_provenance.get("netlist_sha256"),
@@ -100,6 +102,9 @@ def _source_digests(
             "package_pin_inventory_sha256"
         ),
     }
+    if timing_paths_sha256 is not None:
+        result["timing_paths"] = timing_paths_sha256
+    return result
 
 
 def _artifact_path(output_dir: Path, label: str, record: Any) -> Path:
@@ -173,15 +178,26 @@ def run_chimew_phase6_pipeline(
     )
     source_binding = None
     if source_paths is not None:
-        if set(source_paths) != set(_SOURCE_LABELS):
+        required_labels = set(_SOURCE_LABELS)
+        if not required_labels <= set(source_paths) or set(source_paths) - (
+            required_labels | set(_OPTIONAL_SOURCE_LABELS)
+        ):
             raise ValidationError(
                 "Chimew source bundle must provide routing, placement, netlist, "
-                "architecture, and package pins"
+                "architecture, package pins, and only recognized optional sources"
             )
         expected_digests = _source_digests(
-            crossings, positions, rudy_input, electrical_map
+            crossings,
+            positions,
+            rudy_input,
+            electrical_map,
+            (
+                _sha256(Path(source_paths["timing_paths"]))
+                if "timing_paths" in source_paths
+                else None
+            ),
         )
-        for label in _SOURCE_LABELS:
+        for label in sorted(source_paths):
             source = Path(source_paths[label])
             if not source.is_file() or _sha256(source) != expected_digests[label]:
                 raise ValidationError(
@@ -236,7 +252,7 @@ def run_chimew_phase6_pipeline(
     if source_paths is not None:
         sources_dir = output_dir / "sources"
         sources_dir.mkdir(parents=True, exist_ok=True)
-        for label in _SOURCE_LABELS:
+        for label in sorted(source_paths):
             source = Path(source_paths[label])
             destination = sources_dir / f"{label}.source"
             shutil.copy2(source, destination)
@@ -335,6 +351,8 @@ def validate_chimew_phase6_pipeline(output_dir: Path) -> Dict[str, Any]:
     expected_labels = set(_BASE_ARTIFACTS)
     if source_bound:
         expected_labels.update(f"source_{label}" for label in _SOURCE_LABELS)
+        if "source_timing_paths" in artifacts:
+            expected_labels.add("source_timing_paths")
     if not isinstance(artifacts, dict) or set(artifacts) != expected_labels:
         raise ValidationError("Chimew pipeline artifact inventory is invalid")
     paths = {
@@ -377,9 +395,17 @@ def validate_chimew_phase6_pipeline(output_dir: Path) -> Dict[str, Any]:
     source_binding = None
     if source_bound:
         expected_digests = _source_digests(
-            crossings, positions, rudy_input, electrical_map
+            crossings,
+            positions,
+            rudy_input,
+            electrical_map,
+            (
+                _sha256(paths["source_timing_paths"])
+                if "source_timing_paths" in paths
+                else None
+            ),
         )
-        for label in _SOURCE_LABELS:
+        for label in sorted(expected_digests):
             if _sha256(paths[f"source_{label}"]) != expected_digests[label]:
                 raise ValidationError(
                     f"Chimew {label} source provenance does not agree"

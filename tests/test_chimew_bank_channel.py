@@ -22,14 +22,17 @@ from emuflow.errors import EmuFlowError, ValidationError
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def member(identifier, source_y, sink_y, *, fanins=1):
-    return {
+def member(identifier, source_y, sink_y, *, fanins=1, timing_weight=None):
+    result = {
         "id": identifier,
         "fanout": {"x": 0.0, "y": source_y},
         "fanins": [
             {"x": 100.0, "y": sink_y + index} for index in range(fanins)
         ],
     }
+    if timing_weight is not None:
+        result["timing_weight"] = timing_weight
+    return result
 
 
 class ChimewBankChannelTest(unittest.TestCase):
@@ -424,6 +427,56 @@ class ChimewBankChannelTest(unittest.TestCase):
         self.assertEqual(len(result["assignments"]), 200)
         self.assertEqual(len({row["channel"] for row in result["assignments"]}), 200)
         self.assertEqual(result["metrics"]["certified_matchings"], 9)
+
+    def test_timing_weight_prioritizes_the_critical_signal(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["bank_pairs"] = [document["bank_pairs"][0]]
+        document["bank_pairs"][0]["channels"] = [
+            {
+                "id": "low",
+                "order": 0,
+                "pin_a": {"x": 0.0, "y": 0.0},
+                "pin_b": {"x": 100.0, "y": 0.0},
+            },
+            {
+                "id": "high",
+                "order": 1,
+                "pin_a": {"x": 0.0, "y": 100.0},
+                "pin_b": {"x": 100.0, "y": 100.0},
+            },
+        ]
+        document["groups"] = [
+            {
+                "id": "noncritical",
+                "domain": "AB",
+                "kind": "tdm_group",
+                "direction": "a_to_b",
+                "members": [member("n", 0.0, 0.0)],
+            },
+            {
+                "id": "critical",
+                "domain": "AB",
+                "kind": "tdm_group",
+                "direction": "a_to_b",
+                "members": [member("c", 10.0, 10.0, timing_weight=10.0)],
+            },
+        ]
+        document["metrics"] = {
+            "groups": 2,
+            "signals": 2,
+            "fanins": 2,
+            "bank_pairs": 1,
+            "channels": 2,
+        }
+        result = evaluate_chimew_bank_channel_assignment(
+            document, executable=str(self.executable)
+        )
+        assignment = {
+            record["group"]: record["channel"]
+            for record in result["assignments"]
+        }
+        self.assertEqual(assignment["critical"], "low")
+        self.assertEqual(assignment["noncritical"], "high")
 
 
 if __name__ == "__main__":

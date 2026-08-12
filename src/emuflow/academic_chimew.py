@@ -11,6 +11,7 @@ hardware BSP.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -43,6 +44,9 @@ from .platform import Platform
 ACADEMIC_CHIMEW_LOOKAHEAD_SCHEMA = "emuflow.academic-chimew-lookahead/v1"
 ACADEMIC_CHIMEW_LOOKAHEAD_PROVIDER = (
     "openparf-vtr-baseline-lookahead+virtual-electrical-map-v1"
+)
+ACADEMIC_CHIMEW_TIMING_WEIGHT_PROVIDER = (
+    "partition-projected-sta-criticality-v1"
 )
 
 
@@ -239,6 +243,68 @@ def _crossed_boundaries(value: float, anchor: float, count: int) -> list[int]:
     ]
 
 
+def _timing_weights(
+    timing_paths_path: Optional[Path], schedule: Mapping[str, Any]
+) -> Tuple[Dict[str, float], Optional[Path]]:
+    """Return a stable per-entry timing weight for the EmuFlow extension.
+
+    Chimew's published geometric assignment treats signals uniformly.  The
+    open-flow integration may additionally bind partition-projected STA paths
+    and use the same bounded power-law criticality employed by EmuFlow's
+    timing-driven partitioner.  The native kernel still performs the complete
+    matching; this adapter merely materializes the source-bound weights.
+    """
+
+    if timing_paths_path is None:
+        return {}, None
+    document = read_json(timing_paths_path)
+    if document.get("schema") != "emuflow.sta-paths/v1":
+        raise ValidationError("academic Chimew timing path schema is invalid")
+    if document.get("design") != schedule.get("design"):
+        raise ValidationError("academic Chimew timing path design differs")
+    entries_by_net: Dict[str, list[str]] = defaultdict(list)
+    for entry in schedule.get("entries", []):
+        entries_by_net[entry["net"]].append(entry["id"])
+    criticality: Dict[str, float] = {}
+    paths = document.get("paths")
+    if not isinstance(paths, list) or not paths:
+        raise ValidationError("academic Chimew timing paths are empty")
+    for index, path in enumerate(paths):
+        if not isinstance(path, Mapping):
+            raise ValidationError(
+                f"academic Chimew timing paths[{index}] is invalid"
+            )
+        period = path.get("clock_period_ns")
+        slack = path.get("slack_ns")
+        cut_nets = path.get("cut_nets")
+        if (
+            isinstance(period, bool)
+            or not isinstance(period, (int, float))
+            or not math.isfinite(float(period))
+            or not float(period) > 0.0
+            or isinstance(slack, bool)
+            or not isinstance(slack, (int, float))
+            or not math.isfinite(float(slack))
+            or not isinstance(cut_nets, list)
+        ):
+            raise ValidationError(
+                f"academic Chimew timing paths[{index}] is malformed"
+            )
+        value = max(0.0, min(1.0, 1.0 - float(slack) / float(period)))
+        for net in cut_nets:
+            if not isinstance(net, str):
+                raise ValidationError(
+                    f"academic Chimew timing paths[{index}] has an invalid cut net"
+                )
+            for entry in entries_by_net.get(net, []):
+                criticality[entry] = max(criticality.get(entry, 0.0), value)
+    weights = {
+        entry["id"]: 1.0 + 9.0 * criticality.get(entry["id"], 0.0) ** 2.0
+        for entry in schedule.get("entries", [])
+    }
+    return weights, timing_paths_path
+
+
 def materialize_academic_chimew_inputs(
     *,
     ir_path: Path,
@@ -247,6 +313,7 @@ def materialize_academic_chimew_inputs(
     platform_path: Path,
     physical_report: Mapping[str, Any],
     output_dir: Path,
+    timing_paths_path: Optional[Path] = None,
     region_count: int = 4,
     grouper: Optional[str] = None,
     refiner: Optional[str] = None,
@@ -258,6 +325,9 @@ def materialize_academic_chimew_inputs(
     ir = read_json(ir_path)
     schedule = read_json(schedule_path)
     platform = Platform.load(platform_path)
+    timing_weights, timing_source = _timing_weights(
+        timing_paths_path, schedule
+    )
     link_by_id = {link.id: link for link in platform.links}
     (
         locations,
@@ -426,6 +496,11 @@ def materialize_academic_chimew_inputs(
                 "id": entry["id"],
                 "fanout": {"x": source[0], "y": source[1]},
                 "fanins": [{"x": sink[0], "y": sink[1]}],
+                **(
+                    {"timing_weight": timing_weights[entry["id"]]}
+                    if timing_source is not None
+                    else {}
+                ),
             }
         )
 
@@ -694,7 +769,26 @@ def materialize_academic_chimew_inputs(
             "netlist": str(ir_path),
             "architecture": str(architecture_source),
             "package_pins": str(package_source),
+            **(
+                {"timing_paths": str(timing_source)}
+                if timing_source is not None
+                else {}
+            ),
         },
+        **(
+            {
+                "timing_weighting": {
+                    "provider": ACADEMIC_CHIMEW_TIMING_WEIGHT_PROVIDER,
+                    "source_sha256": _sha256(timing_source),
+                    "weighted_signals": sum(
+                        weight > 1.0 for weight in timing_weights.values()
+                    ),
+                    "maximum_weight": max(timing_weights.values()),
+                }
+            }
+            if timing_source is not None
+            else {}
+        ),
     }
     write_json(output_dir / "academic-chimew-lookahead-report.json", report)
     return report

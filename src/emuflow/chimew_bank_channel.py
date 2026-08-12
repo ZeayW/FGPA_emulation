@@ -212,6 +212,12 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
             if member_id in seen_member_ids or not isinstance(raw_fanins, list) or not raw_fanins:
                 raise ValidationError(f"invalid Chimew signal member {member_id!r}")
             seen_member_ids.add(member_id)
+            timing_weight = raw_member.get("timing_weight", 1.0)
+            timing_weight = _number(
+                timing_weight,
+                f"{group_id}.{member_id}.timing_weight",
+                positive=True,
+            )
             fanins = [
                 _point(point, f"{group_id}.{member_id}.fanins[{fanin_index}]")
                 for fanin_index, point in enumerate(raw_fanins)
@@ -219,6 +225,7 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
             members.append(
                 {
                     "id": member_id,
+                    "timing_weight": timing_weight,
                     "fanout": _point(raw_member.get("fanout"), f"{group_id}.{member_id}.fanout"),
                     "fanins": fanins,
                 }
@@ -276,8 +283,13 @@ def _raw_cost(group: Mapping[str, Any], endpoint_a: Tuple[float, float], endpoin
     output, input_point = (endpoint_a, endpoint_b) if group["direction"] == 0 else (endpoint_b, endpoint_a)
     result = 0.0
     for member in group["members"]:
-        result += _distance(member["fanout"], output)
-        result += sum(_distance(fanin, input_point) for fanin in member["fanins"]) / len(member["fanins"])
+        result += member.get("timing_weight", 1.0) * (
+            _distance(member["fanout"], output)
+            + sum(
+                _distance(fanin, input_point) for fanin in member["fanins"]
+            )
+            / len(member["fanins"])
+        )
     return result
 
 
@@ -313,7 +325,7 @@ def _serialize(problem: Mapping[str, Any], path: Path) -> None:
             fanout = member["fanout"]
             fanins = " ".join(f"{point[0]:.17g} {point[1]:.17g}" for point in member["fanins"])
             lines.append(
-                f"MEMBER {group_index} {member_index} {fanout[0]:.17g} {fanout[1]:.17g} {len(member['fanins'])} {fanins}"
+                f"MEMBER {group_index} {member_index} {member['timing_weight']:.17g} {fanout[0]:.17g} {fanout[1]:.17g} {len(member['fanins'])} {fanins}"
             )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -427,6 +439,7 @@ def _group_cost_signature(group: Mapping[str, Any]) -> Tuple[Any, ...]:
     for member in group["members"]:
         members.append(
             (
+                member.get("timing_weight", 1.0),
                 member["fanout"],
                 tuple(sorted(member["fanins"])),
             )
@@ -694,7 +707,10 @@ def evaluate_chimew_bank_channel_assignment(
         "platform": problem["platform"],
         "provider": CHIMEW_BANK_CHANNEL_PROVIDER,
         "paper_scope": "FPGA-2026-Sections-3.4.1-through-3.4.3",
-        "algorithm2_interpretation": "per-signal-fanout-distance-plus-mean-fanin-distance",
+        "algorithm2_interpretation": (
+            "per-signal-fanout-distance-plus-mean-fanin-distance; optional "
+            "source-bound timing weights are an EmuFlow integration extension"
+        ),
         "numeric_policy": "nearest-integer-cost-rank-with-explicit-scale",
         "provenance": problem["provenance"],
         "input_sha256": hashlib.sha256(canonical_input).hexdigest(),

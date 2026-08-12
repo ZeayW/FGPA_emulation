@@ -60,6 +60,7 @@ CHIMEW_BYTE_BOUND_SOURCE_LABELS = {
     "architecture",
     "package_pins",
 }
+CHIMEW_BYTE_BOUND_OPTIONAL_SOURCE_LABELS = {"timing_paths"}
 
 
 def canonical_sha256(document: Mapping[str, Any]) -> str:
@@ -94,7 +95,15 @@ def _validate_source_binding(source_binding: Mapping[str, Any]) -> Dict[str, Any
     ):
         raise ValidationError("Chimew source binding scope is invalid")
     digests = source_binding.get("digests")
-    if not isinstance(digests, dict) or set(digests) != CHIMEW_BYTE_BOUND_SOURCE_LABELS:
+    if (
+        not isinstance(digests, dict)
+        or not CHIMEW_BYTE_BOUND_SOURCE_LABELS <= set(digests)
+        or set(digests)
+        - (
+            CHIMEW_BYTE_BOUND_SOURCE_LABELS
+            | CHIMEW_BYTE_BOUND_OPTIONAL_SOURCE_LABELS
+        )
+    ):
         raise ValidationError("Chimew source binding inventory is invalid")
     for label, digest in digests.items():
         if (
