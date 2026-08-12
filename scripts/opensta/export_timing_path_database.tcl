@@ -90,8 +90,14 @@ foreach line [lrange $map_lines 1 end] {
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
 
+# Retain a bounded set of alternate launch paths per capture endpoint.  A
+# single path can hide a partition-crossing path behind a worse local path;
+# using the global limit here, however, makes OpenSTA enumerate a quadratic
+# number of candidates before applying group_count on large designs.
+set paths_per_endpoint 8
 set timing_paths [find_timing_paths -path_delay max \
-  -group_count $max_paths -endpoint_count $max_paths -sort_by_slack]
+  -group_count $max_paths -endpoint_count $paths_per_endpoint \
+  -sort_by_slack]
 set output [open $output_path w]
 puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
 set emitted 0

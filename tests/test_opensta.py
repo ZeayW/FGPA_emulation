@@ -71,7 +71,8 @@ class OpenStaProviderTest(unittest.TestCase):
             ROOT / "scripts/opensta/export_timing_path_database.tcl"
         ).read_text(encoding="utf-8")
         self.assertIn("-group_count $max_paths", script)
-        self.assertIn("-endpoint_count $max_paths", script)
+        self.assertIn("set paths_per_endpoint 8", script)
+        self.assertIn("-endpoint_count $paths_per_endpoint", script)
         self.assertNotIn("-endpoint_count 1", script)
 
     def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:
