@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -26,6 +27,7 @@ struct Hop {
   int priority = -1;
   double base_ns = 0.0;
   double beta_ns = 0.0;
+  int lane_resource = -1;
 };
 
 struct Sink {
@@ -53,6 +55,7 @@ struct Model {
   std::vector<Hop> hops;
   std::vector<Sink> sinks;
   std::vector<TimingPath> paths;
+  int lane_resource_count = 0;
 };
 
 struct Schedule {
@@ -170,6 +173,23 @@ Model read_model(const std::string& path) {
   if (model.hops.empty() || model.sinks.empty() || model.paths.empty()) {
     throw std::runtime_error("input model is empty");
   }
+  // Domain and lane identifiers are stable external IDs and may be sparse.
+  // Compact only the actually used pairs once; allocating
+  // max(domain)*max(lane)*frame_slots made large public cases consume tens of
+  // gigabytes despite having only a small number of physical lane resources.
+  std::set<std::pair<int, int>> lane_resources;
+  for (const auto& hop : model.hops) {
+    lane_resources.emplace(hop.domain, hop.lane);
+  }
+  std::map<std::pair<int, int>, int> lane_resource_index;
+  for (const auto& resource : lane_resources) {
+    lane_resource_index.emplace(
+        resource, static_cast<int>(lane_resource_index.size()));
+  }
+  for (auto& hop : model.hops) {
+    hop.lane_resource = lane_resource_index.at({hop.domain, hop.lane});
+  }
+  model.lane_resource_count = static_cast<int>(lane_resource_index.size());
   return model;
 }
 
@@ -185,13 +205,9 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
   Schedule result;
   const int hop_count = static_cast<int>(model.hops.size());
   int maximum_round = 0;
-  int maximum_domain = 0;
-  int maximum_lane = 0;
   int maximum_route = 0;
   for (const auto& hop : model.hops) {
     maximum_round = std::max(maximum_round, hop.round);
-    maximum_domain = std::max(maximum_domain, hop.domain);
-    maximum_lane = std::max(maximum_lane, hop.lane);
   }
   for (const auto& sink : model.sinks) {
     maximum_route = std::max(maximum_route, sink.route);
@@ -204,10 +220,9 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
   for (const auto& hop : model.hops) {
     if (hop.parent >= 0) children[hop.parent].push_back(hop.index);
   }
-  const int lane_stride = maximum_lane + 1;
-  const int lane_domains = (maximum_domain + 1) * lane_stride;
   std::vector<std::vector<unsigned char>> occupied(
-      lane_domains, std::vector<unsigned char>(model.frame_slots, 0));
+      model.lane_resource_count,
+      std::vector<unsigned char>(model.frame_slots, 0));
 
   for (int round = 0; round <= maximum_round; ++round) {
     int source_ready = 0;
@@ -252,7 +267,7 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       const int latest = std::min(
           ready + hop.ratio,
           model.frame_slots - model.runtime_barrier_slots - hop.latency);
-      const int lane_domain = hop.domain * lane_stride + hop.lane;
+      const int lane_domain = hop.lane_resource;
       int slot = ready;
       while (slot < latest && occupied[lane_domain][slot]) ++slot;
       if (slot >= latest) return result;

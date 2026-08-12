@@ -128,6 +128,17 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_native_slot_optimizer_compacts_sparse_lane_ids(self) -> None:
+        source = (
+            ROOT / "src" / "native" / "tdm_slot_optimizer.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("lane_resource_count", source)
+        self.assertIn("lane_resource_index", source)
+        self.assertNotIn(
+            "const int lane_domains = (maximum_domain + 1) * lane_stride",
+            source,
+        )
+
     def test_cp_sat_medium_oracle_matches_exhaustive_oracle(self) -> None:
         try:
             from ortools.sat.python import cp_model  # noqa: F401
