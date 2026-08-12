@@ -239,6 +239,7 @@ def validate_multi_fpga_physical_report(
                 "packed_contract",
                 "openparf_placement",
                 "vpr_route",
+                "runtime_sdc",
                 "boundary_timing",
             )
             if any(name not in stages for name in open_required):
@@ -248,6 +249,7 @@ def validate_multi_fpga_physical_report(
             eblif = stages["eblif"]
             pack = stages["vpr_pack_place"]
             route = stages["vpr_route"]
+            runtime_sdc = stages["runtime_sdc"]
             if eblif.get("source_instances") != lowering.get("instances"):
                 raise ValidationError(
                     f"eBLIF source coverage for {fpga_id} disagrees"
@@ -268,6 +270,37 @@ def validate_multi_fpga_physical_report(
                 raise ValidationError(
                     f"independent route check for {fpga_id} failed"
                 )
+            if route.get("sdc_file", {}).get("sha256") != runtime_sdc.get(
+                "sha256"
+            ):
+                raise ValidationError(
+                    f"VPR routing for {fpga_id} used another timing contract"
+                )
+            timing_summary = route.get("timing_summary")
+            if (
+                not isinstance(timing_summary, dict)
+                or timing_summary.get("status") != "pass"
+            ):
+                raise ValidationError(
+                    f"endpoint-complete timing summary for {fpga_id} failed"
+                )
+            route_metrics = route.get("metrics", {})
+            result_timing = result["timing"]
+            for route_metric, result_metric in (
+                ("setup_worst_slack_ns", "wns_ns"),
+                ("setup_tns_ns", "tns_ns"),
+                ("setup_failing_endpoints", "failing_endpoints"),
+                (
+                    "setup_failing_endpoint_constraints",
+                    "failing_endpoint_constraints",
+                ),
+            ):
+                if route_metrics.get(route_metric) != result_timing.get(
+                    result_metric
+                ):
+                    raise ValidationError(
+                        f"physical timing for {fpga_id} disagrees with VPR"
+                    )
             emitted_atoms += eblif["emitted_atoms"]
         elif not {"mapped_verilog", "vivado_implementation"}.issubset(stages):
             raise ValidationError(

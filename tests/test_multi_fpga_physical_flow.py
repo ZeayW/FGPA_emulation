@@ -239,19 +239,27 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
                     encoding="utf-8",
                 )
+                metrics = {
+                    "critical_path_ns": 1.0,
+                    "setup_wns_ns": 0.0,
+                    "setup_worst_slack_ns": 3.0,
+                    "setup_tns_ns": 0.0,
+                    "setup_failing_endpoint_constraints": 0,
+                    "setup_failing_endpoints": 0,
+                }
                 return {
                     "status": "pass",
                     "architecture": {"sha256": _sha256(arch)},
                     "circuit": {"sha256": _sha256(circuit)},
-                    "metrics": {
-                        "critical_path_ns": 1.0,
-                        "setup_wns_ns": 3.0,
-                        "setup_worst_slack_ns": 3.0,
-                        "setup_tns_ns": 0.0,
-                        "setup_failing_endpoint_constraints": 0,
-                        "setup_failing_endpoints": 0,
+                    "sdc_file": {
+                        "sha256": _sha256(_kwargs["sdc_file"]),
                     },
+                    "metrics": metrics,
                     "route_check": {"status": "pass"},
+                    "timing_summary": {
+                        "status": "pass",
+                        "metrics": metrics,
+                    },
                 }
 
             with (

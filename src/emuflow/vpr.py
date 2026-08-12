@@ -369,6 +369,11 @@ def validate_vpr_timing_summary(
                 raise ValidationError(f"VPR timing summary field {field!r} is invalid")
             normalized[metric] = float(value)
         log_value = log_metrics.get(metric)
+        # VPR intentionally omits the single-number Fmax console line when a
+        # design has multiple clock-domain pairs.  Its machine summary still
+        # reports the least-slack-domain Fmax, which must equal 1000 / CPD.
+        if metric == "fmax_mhz" and log_value is None:
+            log_value = 1000.0 / float(normalized["critical_path_ns"])
         if log_value is None or not math.isclose(
             float(normalized[metric]), float(log_value), rel_tol=1e-9, abs_tol=1e-9
         ):

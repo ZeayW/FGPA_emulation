@@ -137,6 +137,9 @@ class VprTest(unittest.TestCase):
             }
             report = validate_vpr_timing_summary(path, metrics)
             self.assertEqual(report["metrics"]["setup_tns_ns"], -0.5)
+            del metrics["fmax_mhz"]
+            report = validate_vpr_timing_summary(path, metrics)
+            self.assertEqual(report["metrics"]["fmax_mhz"], 125.0)
             metrics["setup_tns_ns"] = -0.25
             with self.assertRaisesRegex(ValidationError, "disagrees"):
                 validate_vpr_timing_summary(path, metrics)
