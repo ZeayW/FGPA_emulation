@@ -550,6 +550,36 @@ class Phase5Test(unittest.TestCase):
                 report["ratio_validation"]["status"], "pass"
             )
 
+    def test_baseline_phase5_prepares_large_timing_model_once(self) -> None:
+        routes, _platform = self._timing_dag_fixture()
+        platform_value = _platform_value(
+            "timing_dag", ["a", "b"], [_link("ab", "a", "b")]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(platform_value), encoding="utf-8"
+            )
+            with mock.patch(
+                "emuflow.phase5._prepare_model", wraps=_prepare_model
+            ) as prepare_model, mock.patch(
+                "emuflow.tdm_ratio._prepare_model",
+                side_effect=AssertionError("timing model rebuilt"),
+            ):
+                report = run_phase5(
+                    routes_path,
+                    platform_path,
+                    root / "phase5",
+                    simulation_frames=1,
+                    provider="deterministic-round-barrier-earliest-slot-v2",
+                )
+            self.assertEqual(prepare_model.call_count, 1)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["tdm_feedback_validation"]["status"], "pass")
+
     def test_native_ratio_capacity_product_uses_64_bit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
