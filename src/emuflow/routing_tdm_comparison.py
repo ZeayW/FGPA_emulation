@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -60,6 +61,16 @@ def _normalized_json_sha256(path: Path, root: Path) -> str:
     encoded = path.read_bytes()
     for root_text in sorted(root_texts, key=len, reverse=True):
         encoded = encoded.replace(root_text.encode("utf-8"), b"$FLOW_ROOT")
+    # OpenSTA writes the deterministic path table through a private temporary
+    # directory and records that staging filename in TimingPathDB provenance.
+    # The table contents are already embedded and independently sealed; only
+    # the random directory component is non-semantic across otherwise frozen
+    # runs.
+    encoded = re.sub(
+        rb'"/tmp/emuflow-opensta-[^"/]+/paths\.tsv"',
+        b'"$OPENSTA_PATH_TABLE"',
+        encoded,
+    )
     return hashlib.sha256(encoded).hexdigest()
 
 

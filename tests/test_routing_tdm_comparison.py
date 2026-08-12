@@ -154,6 +154,40 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_system_route_tdm_ab_comparison(tampered)
 
+    def test_normalizes_only_ephemeral_opensta_staging_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+            )
+            up_report = self._report(
+                upgrade, GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER, -0.25,
+            )
+            for flow_root, report, staging in (
+                (baseline, base_report, "emuflow-opensta-alpha"),
+                (upgrade, up_report, "emuflow-opensta-beta"),
+            ):
+                path = flow_root / "timing_path_database.json"
+                write_json(path, {
+                    "source": {"input": f"/tmp/{staging}/paths.tsv"},
+                    "paths": [{"arrival_ns": 1.25}],
+                })
+                report["artifacts"]["timing_path_database"]["sha256"] = _sha256(path)
+                write_json(flow_root / "multi-fpga-flow-report.json", report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                result = build_system_route_tdm_ab_comparison(
+                    baseline, upgrade, root / "comparison.json"
+                )
+            self.assertEqual(result["status"], "pass")
+
     def test_rejects_mixed_upstream(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
