@@ -318,6 +318,22 @@ requires 100% original cross-FPGA path coverage. A Phase 4/5-only run, mixed
 upstream artifacts, a changed flow report, incomplete TimingPathDB member
 coverage, or either arm with an unrouted net/DRC violation is rejected rather
 than reported as QoR evidence.
+
+The frozen connected-PicoRV32 acceptance run completed both physical arms on
+4 FPGAs and 67,674 instances, with zero unrouted nets, zero DRC violations,
+and zero cycle-equivalence mismatches. All 24 original cross-FPGA paths (24
+uncompressed representatives) were covered. The historical baseline produced
+target-clock global WNS/TNS of `-83.052828595 ns` / `-1268.355281124 ns`; the
+global-candidate routing plus timing-DAG TDM path produced
+`-83.055118320 ns` / `-1275.5335078091 ns`. Thus final global WNS regressed by
+`0.002289725 ns` and global TNS regressed by `7.1782266851 ns`. Runtime-clock
+global WNS changed from `546.947171405 ns` to `546.944881680 ns` and both TNS
+values were zero. The candidate's per-FPGA physical WNS diagnostic improved
+from `18.16787 ns` to `18.31778 ns`, which demonstrates why that local metric
+must not substitute for whole-design timing. The candidate remains opt-in:
+this experiment validates integration and determinism, but does not support a
+default-provider QoR promotion.
+
 If an external physical tool environment is repaired after Phase 1--6 has
 already passed, the checked resume gate seals that independently completed
 physical directory and reruns Phase 7C without repeating earlier optimization:
