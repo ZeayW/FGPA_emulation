@@ -13,8 +13,7 @@ from emuflow.routing_tdm_comparison import (
     validate_system_route_tdm_ab_comparison,
     validate_system_route_tdm_scale_comparison,
 )
-from emuflow.tdm import TDM_BASELINE_PROVIDER
-from emuflow.tdm_ratio import TDM_RATIO_PROVIDER
+from emuflow.tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
@@ -54,7 +53,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             arms = {}
             for label, route_provider, tdm_provider in (
                 ("baseline", ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER),
-                ("upgrade", GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER),
+                ("upgrade", GLOBAL_CANDIDATE_PROVIDER, TDM_ACADEMIC_SCHEDULE_PROVIDER),
             ):
                 route_root = root / f"{label}-route"
                 tdm_root = root / f"{label}-tdm"
@@ -138,7 +137,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             baseline.mkdir()
             upgrade.mkdir()
             base_report = self._report(baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0)
-            up_report = self._report(upgrade, GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER, -0.25)
+            up_report = self._report(upgrade, GLOBAL_CANDIDATE_PROVIDER, TDM_ACADEMIC_SCHEDULE_PROVIDER, -0.25)
             write_json(baseline / "multi-fpga-flow-report.json", base_report)
             write_json(upgrade / "multi-fpga-flow-report.json", up_report)
             output = root / "comparison.json"
@@ -163,7 +162,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             baseline.mkdir()
             upgrade.mkdir()
             base_report = self._report(baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0)
-            up_report = self._report(upgrade, GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER, -0.25)
+            up_report = self._report(upgrade, GLOBAL_CANDIDATE_PROVIDER, TDM_ACADEMIC_SCHEDULE_PROVIDER, -0.25)
             (upgrade / "assignment.json").write_text("other\n", encoding="utf-8")
             up_report["artifacts"]["assignment"]["sha256"] = _sha256(upgrade / "assignment.json")
             write_json(baseline / "multi-fpga-flow-report.json", base_report)

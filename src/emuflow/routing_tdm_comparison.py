@@ -15,8 +15,7 @@ from .multi_fpga_flow import (
 )
 from .phase4 import validate_phase4
 from .phase5 import validate_phase5
-from .tdm import TDM_BASELINE_PROVIDER
-from .tdm_ratio import TDM_RATIO_PROVIDER
+from .tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
@@ -142,7 +141,7 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
         "baseline_route_provider": ROUTE_TDM_PROVIDER,
         "upgrade_route_provider": GLOBAL_CANDIDATE_PROVIDER,
         "baseline_tdm_provider": TDM_BASELINE_PROVIDER,
-        "upgrade_tdm_provider": TDM_RATIO_PROVIDER,
+        "upgrade_tdm_provider": TDM_ACADEMIC_SCHEDULE_PROVIDER,
         "shared_phase6_provider": _BASELINE_PHASE6_PROVIDER,
     }:
         raise ValidationError("routing/TDM A/B provider configuration is invalid")
@@ -223,7 +222,8 @@ def build_system_route_tdm_ab_comparison(
         or upgrade["stages"]["system_route"].get("provider")
         != GLOBAL_CANDIDATE_PROVIDER
         or baseline["stages"]["tdm"].get("provider") != TDM_BASELINE_PROVIDER
-        or upgrade["stages"]["tdm"].get("provider") != TDM_RATIO_PROVIDER
+        or upgrade["stages"]["tdm"].get("provider")
+        != TDM_ACADEMIC_SCHEDULE_PROVIDER
     ):
         raise ValidationError("routing/TDM A/B arm providers are not the frozen pair")
     shared_phase6 = baseline["stages"]["split"].get("provider")
@@ -272,7 +272,7 @@ def build_system_route_tdm_ab_comparison(
             "baseline_route_provider": ROUTE_TDM_PROVIDER,
             "upgrade_route_provider": GLOBAL_CANDIDATE_PROVIDER,
             "baseline_tdm_provider": TDM_BASELINE_PROVIDER,
-            "upgrade_tdm_provider": TDM_RATIO_PROVIDER,
+            "upgrade_tdm_provider": TDM_ACADEMIC_SCHEDULE_PROVIDER,
             "shared_phase6_provider": shared_phase6,
         },
         "arms": arms,
@@ -309,7 +309,7 @@ def validate_system_route_tdm_scale_comparison(
         raise ValidationError("routing/TDM scale arms are incomplete")
     expected_providers = {
         "baseline": (ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER),
-        "upgrade": (GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER),
+        "upgrade": (GLOBAL_CANDIDATE_PROVIDER, TDM_ACADEMIC_SCHEDULE_PROVIDER),
     }
     for label, (route_provider, tdm_provider) in expected_providers.items():
         arm = arms.get(label)
@@ -370,7 +370,7 @@ def build_system_route_tdm_scale_comparison(
     arms: Dict[str, Any] = {}
     expected = {
         "baseline": (ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER),
-        "upgrade": (GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER),
+        "upgrade": (GLOBAL_CANDIDATE_PROVIDER, TDM_ACADEMIC_SCHEDULE_PROVIDER),
     }
     for label, (route_root, tdm_root) in roots.items():
         routes_path = route_root / "routes.json"
