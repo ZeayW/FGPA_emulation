@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -172,7 +174,9 @@ def _board_link_delay_database(
 
 
 def _local_path_database(
-    physical_summary: Mapping[str, Any], virtual_period: float
+    physical_summary: Mapping[str, Any],
+    virtual_period: float,
+    routes: Mapping[str, Any],
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     raw = physical_summary.get("local_path_timing")
     if raw is None:
@@ -229,6 +233,17 @@ def _local_path_database(
                 }
             )
     records.sort(key=lambda item: item["path"])
+    if source is not None:
+        encoded_routes = json.dumps(
+            routes,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        if hashlib.sha256(encoded_routes).hexdigest() != source["routes_sha256"]:
+            raise ValidationError(
+                "physical local path timing is bound to another route artifact"
+            )
     return records, source
 
 
@@ -486,7 +501,7 @@ def build_system_timing(
         discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
     local_paths, original_source = _local_path_database(
-        physical_summary, virtual_period
+        physical_summary, virtual_period, routes
     )
     system_paths = sorted(
         [*local_paths, *cross_paths], key=lambda item: item["path"]

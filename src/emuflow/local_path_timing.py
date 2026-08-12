@@ -45,10 +45,19 @@ def path_id_set_sha256(path_ids: list[str] | set[str]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _source_manifest(database: Mapping[str, Any], path: Path) -> Dict[str, Any]:
+def _source_manifest(
+    database: Mapping[str, Any],
+    path: Path,
+    original_ir_path: Path,
+    assignment_path: Path,
+    routes_path: Path,
+) -> Dict[str, Any]:
     ids = [item["id"] for item in database["paths"]]
     return {
         "path_database_sha256": _sha256(path),
+        "original_ir_sha256": _sha256(original_ir_path),
+        "assignment_sha256": _sha256(assignment_path),
+        "routes_sha256": _sha256(routes_path),
         "original_paths": len(ids),
         "original_path_ids_sha256": path_id_set_sha256(ids),
     }
@@ -66,18 +75,27 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
     source = database.get("source")
     if not isinstance(source, dict) or set(source) != {
         "path_database_sha256",
+        "original_ir_sha256",
+        "assignment_sha256",
+        "routes_sha256",
         "original_paths",
         "original_path_ids_sha256",
     }:
         raise ValidationError("local path identity source seal is invalid")
     if (
-        not isinstance(source["path_database_sha256"], str)
-        or len(source["path_database_sha256"]) != 64
+        any(
+            not isinstance(source[field], str) or len(source[field]) != 64
+            for field in (
+                "path_database_sha256",
+                "original_ir_sha256",
+                "assignment_sha256",
+                "routes_sha256",
+                "original_path_ids_sha256",
+            )
+        )
         or isinstance(source["original_paths"], bool)
         or not isinstance(source["original_paths"], int)
         or source["original_paths"] <= 0
-        or not isinstance(source["original_path_ids_sha256"], str)
-        or len(source["original_path_ids_sha256"]) != 64
     ):
         raise ValidationError("local path identity source seal is invalid")
     paths = database.get("paths")
@@ -225,7 +243,13 @@ def write_vpr_local_path_query(
         "design": assignment["design"],
         "fpga": fpga,
         "provider": "original-timing-pathdb-to-vpr-routed-endpoints-v1",
-        "source": _source_manifest(database, path_database_path),
+        "source": _source_manifest(
+            database,
+            path_database_path,
+            original_ir_path,
+            assignment_path,
+            routes_path,
+        ),
         "coverage": {"local_paths": len(records)},
         "paths": records,
     }

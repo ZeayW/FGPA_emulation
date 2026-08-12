@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -495,6 +496,16 @@ class Phase7CTest(unittest.TestCase):
         path_ids = ["local-critical", "system-critical"]
         source = {
             "path_database_sha256": "a" * 64,
+            "original_ir_sha256": "b" * 64,
+            "assignment_sha256": "c" * 64,
+            "routes_sha256": hashlib.sha256(
+                (json.dumps(
+                    self.routes,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ) + "\n").encode("utf-8")
+            ).hexdigest(),
             "original_paths": 2,
             "original_path_ids_sha256": path_id_set_sha256(path_ids),
         }
