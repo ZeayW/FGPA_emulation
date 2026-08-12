@@ -19,6 +19,10 @@ from .routing import (
     route_link_delay_ns,
 )
 from .tdm import RUNTIME_BARRIER_SLOTS
+from .tdm_compatibility import (
+    derive_tdm_compatibility,
+    validate_tdm_compatibility,
+)
 
 
 TDM_RATIO_PLAN_SCHEMA = "emuflow.tdm-ratio-plan/v1"
@@ -142,6 +146,17 @@ def _prepare_model(
                 f"duplicate route net {route['net']!r}"
             )
         route_by_net[route["net"]] = route
+        compatibility_domain = route.get(
+            "tdm_compatibility", "global-frame-cdc"
+        )
+        if (
+            not isinstance(compatibility_domain, str)
+            or not compatibility_domain
+        ):
+            raise ValidationError(
+                f"route {route['id']!r}.tdm_compatibility: "
+                "expected a non-empty string"
+            )
         route_hop_keys[route["id"]] = []
         for depth, edge in _route_edges_in_tree_order(route):
             key = _hop_key(
@@ -162,6 +177,7 @@ def _prepare_model(
                     "demand": route["id"],
                     "net": route["net"],
                     "transport_round": route.get("transport_round", 0),
+                    "compatibility_domain": compatibility_domain,
                     "link": edge["link"],
                     "from": edge["from"],
                     "to": edge["to"],
@@ -209,6 +225,11 @@ def _prepare_model(
                 ],
             }
         )
+
+    provisional_model = {
+        "hops": hops,
+        "timing_paths": [],
+    }
 
     domains = []
     for capacity_key in capacity_keys:
@@ -347,6 +368,15 @@ def _prepare_model(
             }
         )
 
+    provisional_model["timing_paths"] = timing_paths
+    compatibility = derive_tdm_compatibility(provisional_model)
+    compatibility_by_hop = {
+        record["hop"]: record["compatibility"]
+        for record in compatibility["hops"]
+    }
+    for hop in hops:
+        hop["compatibility"] = compatibility_by_hop[hop["index"]]
+
     return {
         "constraints": constraints,
         "normalization": {
@@ -360,6 +390,7 @@ def _prepare_model(
         "domains": domains,
         "hops": hops,
         "timing_paths": timing_paths,
+        "compatibility": compatibility,
     }
 
 
@@ -376,11 +407,7 @@ def _write_native_input(
     continuous_seed: Optional[Sequence[float]] = None,
 ) -> None:
     normalization = model["normalization"]
-    header = (
-        "EMUFLOW_TDM_RATIO_INPUT_V4"
-        if continuous_seed is not None
-        else "EMUFLOW_TDM_RATIO_INPUT_V2"
-    )
+    header = "EMUFLOW_TDM_RATIO_INPUT_V6"
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(header + "\n")
         stream.write(
@@ -397,6 +424,7 @@ def _write_native_input(
         )
         stream.writelines(
             f"HOP {hop['index']} {hop['domain']} {hop['direction']} "
+            f"{hop['compatibility']} "
             f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g}\n"
             for hop in model["hops"]
         )
@@ -1261,6 +1289,7 @@ def build_tdm_ratio_plan(
         "normalization": model["normalization"],
         "round_barrier_legalization": barrier_legalization,
         "domains": model["domains"],
+        "compatibility": model["compatibility"],
         "hops": hop_records,
         "timing_paths": timing_records,
         "metrics": {
@@ -1360,6 +1389,11 @@ def validate_tdm_ratio_plan(
         raise ValidationError(
             "ratio plan.domains do not match routed capacity domains"
         )
+    if plan.get("compatibility") != model["compatibility"]:
+        raise ValidationError(
+            "ratio plan compatibility does not match routed timing domains"
+        )
+    validate_tdm_compatibility(model, plan["compatibility"])
     configuration = plan.get("configuration")
     if not isinstance(configuration, dict):
         raise ValidationError("ratio plan.configuration: expected an object")
@@ -1446,12 +1480,14 @@ def validate_tdm_ratio_plan(
             group_key,
             {
                 "direction": expected["direction"],
+                "compatibility": expected["compatibility"],
                 "ratio": discrete,
                 "hops": 0,
             },
         )
         if (
             group["direction"] != expected["direction"]
+            or group["compatibility"] != expected["compatibility"]
             or group["ratio"] != discrete
         ):
             raise ValidationError(

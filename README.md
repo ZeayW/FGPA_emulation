@@ -1776,6 +1776,15 @@ price changes the chosen candidate route. This establishes a checked
 one-round Phase 4/5 feedback edge; iterative trust-region orchestration and
 large-case QoR qualification remain pending.
 
+The Phase 5 ratio plan also seals a deterministic clock/protocol compatibility
+artifact. The normal pausible-clock transport uses `global-frame-cdc`: all
+observed STA clock identities remain visible as evidence, while lanes may be
+shared because the global barrier defines the CDC boundary. Routes that set a
+different non-empty `tdm_compatibility` class are isolated by both the native
+ratio legalizer and independent Python checker. Therefore this mechanism does
+not manufacture a lane per RTL clock, but it does prevent incompatible
+source-synchronous or protocol-specific traffic from being grouped silently.
+
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The default provider builds standalone OpenSTA from
 `engines/openroad/src/sta`, renders the versioned open FPGA timing model, and

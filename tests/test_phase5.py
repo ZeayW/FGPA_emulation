@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
+from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase5 import run_phase5
 from emuflow.platform import Platform
@@ -122,6 +122,79 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_clock_protocol_compatibility_separates_lane_groups(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "compatibility",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [("n0", "a", ["b"]), ("n1", "a", ["b"])],
+            frame_slots=8,
+        )
+        for route, domain in zip(
+            sorted(routes["routes"], key=lambda item: item["net"]),
+            ("source-synchronous", "global-frame-cdc"),
+        ):
+            route["tdm_compatibility"] = domain
+        routes["timing"] = {
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "paths": [
+                {
+                    "path": f"p{index}",
+                    "clock_domain": clock,
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": [f"n{index}"],
+                    "cut_transitions": [
+                        {"net": f"n{index}", "from": "a", "to": "b"}
+                    ],
+                }
+                for index, clock in enumerate(("clk0", "clk1"))
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=8,
+        )
+        self.assertEqual(
+            validate_tdm_ratio_plan(routes, platform, plan)["status"],
+            "pass",
+        )
+        self.assertEqual(len(plan["compatibility"]["classes"]), 2)
+        self.assertEqual(len({hop["lane"] for hop in plan["hops"]}), 2)
+
+        tampered = copy.deepcopy(plan)
+        tampered["compatibility"]["hops"][0]["compatibility"] += 2
+        with self.assertRaisesRegex(ValidationError, "compatibility"):
+            validate_tdm_ratio_plan(routes, platform, tampered)
+
+        one_lane = Platform.from_dict(
+            _platform_value(
+                "compatibility",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=1)],
+            )
+        )
+        with self.assertRaisesRegex(
+            EmuFlowError, "groups cannot fit domain lane budget"
+        ):
+            build_tdm_ratio_plan(
+                routes,
+                one_lane,
+                executable=str(tdm_ratio_optimizer()),
+                max_ratio=8,
+            )
+
     def _timing_dag_fixture(self):
         platform = Platform.from_dict(
             _platform_value(

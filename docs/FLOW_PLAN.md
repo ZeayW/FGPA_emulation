@@ -421,6 +421,9 @@ Implemented model:
 
 - selectable continuous ratio providers: the established path-Lagrangian/KKT
   solver and an equation-level ASP-DAC 2026 timing-DAG solver;
+- a checked clock/protocol compatibility artifact: the default global-frame
+  CDC class may multiplex different STA clocks, while explicit transport
+  domains cannot share a physical lane;
 - time-expanded links with fixed legal ratio/lane groups;
 - C++ timing-path-guided concrete-slot local search;
 - exhaustive multi-round small-instance oracle for optimality comparison;

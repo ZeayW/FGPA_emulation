@@ -31,6 +31,7 @@ struct Domain {
 struct Hop {
   int domain = -1;
   int direction = -1;
+  int compatibility = -1;
   double base_delay_ns = 0.0;
   double beta_ns = 0.0;
 };
@@ -82,9 +83,10 @@ Input read_input(const std::string& path) {
   std::string line;
   std::getline(stream, line);
   const bool input_v4 = line == "EMUFLOW_TDM_RATIO_INPUT_V4";
+  const bool input_v6 = line == "EMUFLOW_TDM_RATIO_INPUT_V6";
   const bool input_v5 = line == "EMUFLOW_TDM_RATIO_INPUT_V5";
   const bool input_v3 = input_v5 || line == "EMUFLOW_TDM_RATIO_INPUT_V3";
-  if (!input_v4 && !input_v5 && !input_v3 &&
+  if (!input_v6 && !input_v4 && !input_v5 && !input_v3 &&
       line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
     throw std::runtime_error("invalid input header");
   }
@@ -127,8 +129,13 @@ Input read_input(const std::string& path) {
     } else if (kind == "HOP") {
       int index = -1;
       Hop hop;
-      record >> index >> hop.domain >> hop.direction >>
-          hop.base_delay_ns >> hop.beta_ns;
+      record >> index >> hop.domain >> hop.direction;
+      if (input_v6) {
+        record >> hop.compatibility;
+      } else {
+        hop.compatibility = 0;
+      }
+      record >> hop.base_delay_ns >> hop.beta_ns;
       if (index != static_cast<int>(input.hops.size())) {
         throw std::runtime_error("HOP indices must be contiguous");
       }
@@ -144,7 +151,7 @@ Input read_input(const std::string& path) {
         throw std::runtime_error("PATH indices must be contiguous");
       }
       input.paths.push_back(std::move(timing_path));
-    } else if (kind == "SEED" && (input_v4 || input_v5)) {
+    } else if (kind == "SEED" && (input_v6 || input_v4 || input_v5)) {
       int index = -1;
       double ratio = 0.0;
       record >> index >> ratio;
@@ -186,7 +193,8 @@ Input read_input(const std::string& path) {
   for (const Hop& hop : input.hops) {
     if (hop.domain < 0 ||
         hop.domain >= static_cast<int>(input.domains.size()) ||
-        hop.direction < 0 || hop.beta_ns <= 0.0 ||
+        hop.direction < 0 || hop.compatibility < 0 ||
+        hop.beta_ns <= 0.0 ||
         hop.base_delay_ns < 0.0) {
       throw std::runtime_error("invalid hop");
     }
@@ -205,7 +213,8 @@ Input read_input(const std::string& path) {
       }
     }
   }
-  if ((input_v4 || input_v5) &&
+  if ((input_v6 || input_v4 || input_v5) &&
+      !input.seed_ratios.empty() &&
       input.seed_ratios.size() != input.hops.size()) {
     throw std::runtime_error("seeded input requires one SEED per hop");
   }
@@ -715,10 +724,11 @@ class Optimizer {
   }
 
   bool exact_displacement_dp(
-      const std::map<int, std::vector<int>>& ordered_by_direction,
+      const std::map<std::pair<int, int>, std::vector<int>>&
+          ordered_by_direction,
       const std::vector<int>& allowed, double bound, int lane_budget) {
     std::vector<int> ordered;
-    std::vector<int> direction;
+    std::vector<std::pair<int, int>> direction;
     for (const auto& [direction_id, group] : ordered_by_direction) {
       for (int hop : group) {
         ordered.push_back(hop);
@@ -887,9 +897,9 @@ class Optimizer {
     }
     for (int domain = 0; domain < static_cast<int>(input_.domains.size());
          ++domain) {
-      std::map<int, std::vector<int>> ordered_by_direction;
+      std::map<std::pair<int, int>, std::vector<int>> ordered_by_direction;
       for (int hop : domain_hops_[domain]) {
-        ordered_by_direction[input_.hops[hop].direction].push_back(hop);
+        ordered_by_direction[{input_.hops[hop].direction, input_.hops[hop].compatibility}].push_back(hop);
       }
       int total_hops = 0;
       for (auto& [direction, ordered] : ordered_by_direction) {
@@ -956,7 +966,7 @@ class Optimizer {
 
   bool build_minimax_groups(int domain, double target, bool assign) {
     const std::vector<int>& allowed = allowed_ratios_;
-    std::map<int, std::vector<std::pair<int, int>>> by_direction;
+    std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> by_direction;
     for (int hop : domain_hops_[domain]) {
       int maximum = input_.max_ratio;
       for (int path_index : hop_paths_[hop]) {
@@ -1001,11 +1011,11 @@ class Optimizer {
         }
         maximum = std::min(maximum, path_maximum);
       }
-      by_direction[input_.hops[hop].direction].emplace_back(maximum, hop);
+      by_direction[{input_.hops[hop].direction, input_.hops[hop].compatibility}].emplace_back(maximum, hop);
     }
 
     struct Group {
-      int direction = 0;
+      std::pair<int, int> direction{0, 0};
       std::vector<std::pair<int, int>> items;
       int ratio = 0;
     };
@@ -1279,14 +1289,14 @@ class Optimizer {
   }
 
   bool assign_uniform_minimax_domain(int domain) {
-    std::map<int, std::vector<int>> by_direction;
+    std::map<std::pair<int, int>, std::vector<int>> by_direction;
     for (int hop : domain_hops_[domain]) {
-      by_direction[input_.hops[hop].direction].push_back(hop);
+      by_direction[{input_.hops[hop].direction, input_.hops[hop].compatibility}].push_back(hop);
     }
     if (by_direction.empty() || by_direction.size() > 2) {
       return by_direction.empty();
     }
-    std::vector<std::pair<int, std::vector<int>>> groups(
+    std::vector<std::pair<std::pair<int, int>, std::vector<int>>> groups(
         by_direction.begin(), by_direction.end());
     const int budget = input_.domains[domain].lanes;
     std::vector<int> lane_budget(groups.size(), budget);
@@ -1363,11 +1373,11 @@ class Optimizer {
   void post_refine() {
     std::vector<double> metrics(input_.paths.size());
     std::set<std::pair<double, int>> ordered_metrics;
-    using DomainDirection = std::pair<int, int>;
+    using DomainDirection = std::tuple<int, int, int>;
     using RatioHop = std::pair<int, int>;
     std::map<DomainDirection, std::set<RatioHop>> ratio_hops;
     for (int hop = 0; hop < static_cast<int>(input_.hops.size()); ++hop) {
-      ratio_hops[{input_.hops[hop].domain, input_.hops[hop].direction}]
+      ratio_hops[{input_.hops[hop].domain, input_.hops[hop].direction, input_.hops[hop].compatibility}]
           .emplace(discrete_[hop], hop);
     }
     for (int path = 0; path < static_cast<int>(input_.paths.size()); ++path) {
@@ -1442,7 +1452,7 @@ class Optimizer {
                    input_.convergence &&
                lexicographically_improves(candidate_metrics, metrics))) {
             auto& ordered = ratio_hops[
-                {input_.hops[hop].domain, input_.hops[hop].direction}];
+                {input_.hops[hop].domain, input_.hops[hop].direction, input_.hops[hop].compatibility}];
             ordered.erase({previous_ratio, hop});
             ordered.emplace(candidate_ratio, hop);
             discrete_[hop] = candidate_ratio;
@@ -1458,7 +1468,7 @@ class Optimizer {
       }
       for (int lhs : critical_hops) {
         auto& ordered = ratio_hops[
-            {input_.hops[lhs].domain, input_.hops[lhs].direction}];
+            {input_.hops[lhs].domain, input_.hops[lhs].direction, input_.hops[lhs].compatibility}];
         const auto candidate_end = ordered.lower_bound({discrete_[lhs], -1});
         for (auto candidate = ordered.begin(); candidate != candidate_end;
              ++candidate) {

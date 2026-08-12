@@ -600,6 +600,14 @@ exact total-displacement dynamic program. Interval-cost precomputation reduces
 the exact segmentation to `O(lanes * signals^2)` and raises the exact domain
 limit to 2,048 signals. Still larger domains retain the deterministic
 minimum-wire construction to bound runtime.
+Lane groups are additionally separated by a checked transport-compatibility
+domain. The default `global-frame-cdc` class records every contributing STA
+clock domain but permits sharing because values are committed only at the
+global frame barrier. A route may explicitly request a different non-empty
+class, for example a source-synchronous protocol; the native legalizer and
+independent checker then forbid sharing a physical lane across those classes.
+This is a protocol/CDC constraint, not the incorrect assumption that every
+logical clock name inherently needs a dedicated transport lane.
 Independent exhaustive Python oracles verify the exact displacement objective
 on small domains and the realized timing optimum of compact single-round
 lane/slot schedules.
@@ -638,7 +646,8 @@ TODAES/ASP-DAC 2026 reproduction.
    - use path-level timing and per-direction capacity constraints.
 2. **Discrete ratio legalization**
    - reproduce binary-search/DP discretization and displacement objective;
-   - support legal ratio sets, clock groups, direction groups, and channel
+   - support legal ratio sets, protocol/CDC compatibility groups, direction
+     groups, and channel
      capacity;
    - reproduce swap/post-refinement on critical paths.
 3. **Exact schedule oracle**

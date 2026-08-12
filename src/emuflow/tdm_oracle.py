@@ -153,12 +153,18 @@ def exact_timing_ratio_assignment(
             (
                 hop["domain"],
                 hop["direction"],
+                hop.get("compatibility", 0),
                 ratios[hop["index"]],
             )
             for hop in hops
         )
         lanes_used = Counter()
-        for (domain, _direction, ratio), count in groups.items():
+        for (
+            domain,
+            _direction,
+            _compatibility,
+            ratio,
+        ), count in groups.items():
             lanes_used[domain] += math.ceil(count / ratio)
         if any(
             lanes_used[domain] > lanes
