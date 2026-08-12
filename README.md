@@ -294,6 +294,22 @@ generation. These options propagate through direct, minimum-frame, and
 cross-stage Phase 3--5 execution, so a complete Phase 7 WNS/TNS experiment
 cannot silently fall back to the historical routing provider.
 
+After both physical arms finish, the in-tree comparison gate independently
+rehashes and validates both complete flows, requires identical EmuIR,
+assignment, TimingPathDB, and partition weights, checks the frozen provider
+pair, and reconstructs aggregate Phase 7 WNS/TNS and closure deltas:
+
+```bash
+emuflow multi-fpga compare-routing-tdm \
+  --baseline build/routing-tdm-baseline \
+  --upgrade build/routing-tdm-upgrade \
+  --output build/routing-tdm-comparison.json
+```
+
+The report is labelled `complete-phase7-source-bound-ab`; a Phase 4/5-only
+run, mixed upstream artifacts, a changed flow report, or either arm with an
+unrouted net/DRC violation is rejected rather than reported as QoR evidence.
+
 For the source-complete academic physical flow, Phase 6 now defaults to
 `--phase6-provider auto`. When `--physical --physical-backend open` has at
 least one scheduled inter-FPGA signal, `auto` runs a frozen historical Phase 6

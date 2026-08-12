@@ -122,6 +122,7 @@ from .pin_planning import (
 )
 from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
+from .routing_tdm_comparison import build_system_route_tdm_ab_comparison
 from .runtime_sync import (
     run_runtime_sync_materialization,
     validate_runtime_sync_provider,
@@ -902,6 +903,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "and per-FPGA split generation"
         ),
     )
+    multi_fpga_compare = multi_fpga_subparsers.add_parser(
+        "compare-routing-tdm",
+        help=(
+            "revalidate and compare frozen baseline/upgrade complete "
+            "Phase-7 routing/TDM flows"
+        ),
+    )
+    multi_fpga_compare.add_argument("--baseline", type=Path, required=True)
+    multi_fpga_compare.add_argument("--upgrade", type=Path, required=True)
+    multi_fpga_compare.add_argument("--output", type=Path, required=True)
     multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
     multi_fpga_compile.add_argument("--top")
     multi_fpga_compile.add_argument("--clock", action="append", default=[])
@@ -3198,6 +3209,14 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "compare-routing-tdm":
+            report = build_system_route_tdm_ab_comparison(
+                args.baseline,
+                args.upgrade,
+                args.output,
+            )
+            _print_json(report["validation"])
+            return 0
         if args.multi_fpga_command == "board-validate":
             _print_json(validate_vivado_board_flow_bundle(args.board))
             return 0
