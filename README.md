@@ -271,7 +271,7 @@ contract and is a planned semantic extension, not a partitioner tuning flag.
 | Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB, retains bounded alternate endpoint paths, and can query explicitly selected cut nets; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
-| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. It also exports a checked `route-candidate-pool/v1` containing these trees, a Takahashi-Matsuyama nearest-terminal Steiner alternative, and the selected refined tree for each demand. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
+| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path, DAC 2025-informed delay-demand-balanced, directed metric-closure, nearest-terminal Steiner, shallow-light, and adaptive-hop multicast trees, then applies checked batch-conflict timing-path rerouting. It exports the complete checked pool and selected refined tree for each demand. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
 | TDM | Selectable in-tree C++17 path-Lagrangian or ASP-DAC 2026 timing-DAG continuous optimizer, TODAES 2020 displacement DP, timing-path-guided slot local search, and independent checkers/oracles | The timing-DAG provider implements arrival propagation (Eq. 8), KKT ratio/domain-dual updates (Eqs. 13/19), delay-cost multiplier flow (Eqs. 16/17), path-dual normalization (Eq. 15), and residual scaling (Eq. 20). Both continuous providers share the same checked discrete legalization and concrete scheduling contracts |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming missing reference-clock/reset package bindings |
@@ -1733,13 +1733,16 @@ longer a runtime provider.
 
 Every Phase 4 run also writes `route_candidate_pool.json`.  This provider-
 neutral artifact preserves the source-built shortest-path,
-delay-demand-balanced, Takahashi-Matsuyama nearest-terminal Steiner, and
-selected refined tree for each demand.  Its independent checker reconstructs
+delay-demand-balanced, Takahashi-Matsuyama nearest-terminal Steiner, directed
+metric-closure, shallow-light, adaptive-hop, and selected refined tree for
+each demand. The directed metric-closure provider expands a deterministic
+Prim tree over terminal shortest-path distances back into an original-graph
+source arborescence. Shallow-light uses a criticality-dependent delay-stretch
+gate, while adaptive-hop derives a strict bound from the direction-feasible
+minimum-hop lower bound. Its independent checker reconstructs
 direction locks, tree reachability and acyclicity, hop bounds, latency, and
-physical delay.  The additional Steiner candidate is not yet part of the
-default selector, so this milestone does not change the selected route or QoR;
-it establishes the checked input boundary for the planned global candidate-
-tree master selection.
+physical delay. Legacy/default providers preserve their earlier selection;
+the opt-in global provider exposes all columns to its restricted master.
 
 The opt-in Phase 4 provider `timing-aware-global-candidate-v1` consumes that
 boundary in the native kernel.  For compact pools it exhaustively solves the

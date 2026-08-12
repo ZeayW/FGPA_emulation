@@ -73,6 +73,9 @@ enum class CandidateGenerator {
   kShortestPath,
   kDelayDemandBalanced,
   kNearestTerminalSteiner,
+  kDirectedMetricClosure,
+  kShallowLight,
+  kAdaptiveHop,
 };
 
 struct Objective {
@@ -316,6 +319,9 @@ class Router {
     Candidate baseline;
     Candidate balanced;
     Candidate steiner;
+    Candidate metric_closure;
+    Candidate shallow_light;
+    Candidate adaptive_hop;
     std::future<Candidate> baseline_future;
     std::future<Candidate> balanced_future;
     if (model_.topology_mode == 2 && model_.candidate_workers > 1) {
@@ -366,12 +372,32 @@ class Router {
     }
     balanced_candidate_routes_ = balanced.routes;
     steiner_candidate_routes_ = steiner.routes;
+    if (model_.topology_mode == 2) {
+      history_ = initial_history;
+      metric_closure = route_candidate(
+          order, CandidateGenerator::kDirectedMetricClosure);
+      metric_closure_candidate_routes_ = metric_closure.routes;
+      history_ = initial_history;
+      shallow_light = route_candidate(
+          order, CandidateGenerator::kShallowLight);
+      shallow_light_candidate_routes_ = shallow_light.routes;
+      history_ = initial_history;
+      adaptive_hop = route_candidate(
+          order, CandidateGenerator::kAdaptiveHop);
+      adaptive_hop_candidate_routes_ = adaptive_hop.routes;
+    }
     baseline_candidate_feasible_ = baseline.feasible;
     balanced_candidate_feasible_ = balanced.feasible;
     steiner_candidate_feasible_ = steiner.feasible;
+    metric_closure_candidate_feasible_ = metric_closure.feasible;
+    shallow_light_candidate_feasible_ = shallow_light.feasible;
+    adaptive_hop_candidate_feasible_ = adaptive_hop.feasible;
     shortest_candidate_generated_ = baseline.generated;
     balanced_candidate_generated_ = balanced.generated;
     steiner_candidate_generated_ = steiner.generated;
+    metric_closure_candidate_generated_ = metric_closure.generated;
+    shallow_light_candidate_generated_ = shallow_light.generated;
+    adaptive_hop_candidate_generated_ = adaptive_hop.generated;
     if (!baseline.feasible && !balanced.feasible &&
         model_.topology_mode != 2) {
       throw std::runtime_error("routing infeasible after capacity iterations");
@@ -500,6 +526,15 @@ class Router {
     write_candidate_routes(output, "nearest-terminal-steiner",
                            steiner_candidate_routes_,
                            steiner_candidate_generated_);
+    write_candidate_routes(output, "directed-metric-closure",
+                           metric_closure_candidate_routes_,
+                           metric_closure_candidate_generated_);
+    write_candidate_routes(output, "shallow-light-tree",
+                           shallow_light_candidate_routes_,
+                           shallow_light_candidate_generated_);
+    write_candidate_routes(output, "adaptive-hop-tree",
+                           adaptive_hop_candidate_routes_,
+                           adaptive_hop_candidate_generated_);
     write_candidate_routes(output, "refined-final", routes_, true);
     for (int demand = 0;
          demand < static_cast<int>(master_selection_.size()); ++demand) {
@@ -522,6 +557,12 @@ class Router {
            << static_cast<int>(balanced_candidate_feasible_) << '\n';
     output << "METRIC steiner_candidate_feasible "
            << static_cast<int>(steiner_candidate_feasible_) << '\n';
+    output << "METRIC metric_closure_candidate_feasible "
+           << static_cast<int>(metric_closure_candidate_feasible_) << '\n';
+    output << "METRIC shallow_light_candidate_feasible "
+           << static_cast<int>(shallow_light_candidate_feasible_) << '\n';
+    output << "METRIC adaptive_hop_candidate_feasible "
+           << static_cast<int>(adaptive_hop_candidate_feasible_) << '\n';
     output << "METRIC master_rounds " << master_rounds_ << '\n';
     output << "METRIC master_switches " << master_switches_ << '\n';
     output << "METRIC master_exact "
@@ -624,7 +665,9 @@ class Router {
             paths_by_demand[demand].begin(), paths_by_demand[demand].end());
         const std::vector<const std::vector<Route>*> alternatives = {
             &shortest_candidate_routes_, &balanced_candidate_routes_,
-            &steiner_candidate_routes_, &routes_};
+            &steiner_candidate_routes_, &metric_closure_candidate_routes_,
+            &shallow_light_candidate_routes_,
+            &adaptive_hop_candidate_routes_, &routes_};
         for (const auto* routes : alternatives) {
           if (routes->size() != model_.demands.size()) {
             continue;
@@ -780,6 +823,13 @@ class Router {
           } else if (
               generator == CandidateGenerator::kNearestTerminalSteiner) {
             routes_[demand] = nearest_terminal_steiner_tree(demand, {});
+          } else if (
+              generator == CandidateGenerator::kDirectedMetricClosure) {
+            routes_[demand] = directed_metric_closure_tree(demand, {});
+          } else if (generator == CandidateGenerator::kShallowLight) {
+            routes_[demand] = shallow_light_tree(demand, {});
+          } else if (generator == CandidateGenerator::kAdaptiveHop) {
+            routes_[demand] = adaptive_hop_tree(demand, {});
           } else {
             routes_[demand] = shortest_path_tree(demand, {});
           }
@@ -846,6 +896,15 @@ class Router {
     if (generator == "nearest-terminal-steiner") {
       return nearest_terminal_steiner_tree(demand, discouraged);
     }
+    if (generator == "directed-metric-closure") {
+      return directed_metric_closure_tree(demand, discouraged);
+    }
+    if (generator == "shallow-light-tree") {
+      return shallow_light_tree(demand, discouraged);
+    }
+    if (generator == "adaptive-hop-tree") {
+      return adaptive_hop_tree(demand, discouraged);
+    }
     return shortest_path_tree(demand, discouraged);
   }
 
@@ -862,6 +921,12 @@ class Router {
          balanced_candidate_generated_},
         {"nearest-terminal-steiner", &steiner_candidate_routes_,
          steiner_candidate_generated_},
+        {"directed-metric-closure", &metric_closure_candidate_routes_,
+         metric_closure_candidate_generated_},
+        {"shallow-light-tree", &shallow_light_candidate_routes_,
+         shallow_light_candidate_generated_},
+        {"adaptive-hop-tree", &adaptive_hop_candidate_routes_,
+         adaptive_hop_candidate_generated_},
     };
     std::vector<Alternative> feasible_alternatives;
     for (const Alternative& alternative : alternatives) {
@@ -1453,6 +1518,205 @@ class Router {
     return result;
   }
 
+  Route shortest_path_tree_with_limit(
+      int demand_index, const std::set<int>& discouraged,
+      int hop_limit) const {
+    Router worker(*this);
+    worker.model_.max_route_hops = hop_limit;
+    return worker.hop_bounded_shortest_path_tree(
+        demand_index, discouraged);
+  }
+
+  int minimum_hop_lower_bound(int demand_index) const {
+    const Demand& demand = model_.demands[demand_index];
+    std::vector<int> depth(model_.node_count, -1);
+    std::queue<int> queue;
+    depth[demand.source] = 0;
+    queue.push(demand.source);
+    while (!queue.empty()) {
+      const int node = queue.front();
+      queue.pop();
+      for (int arc_index : adjacency_[node]) {
+        if (!direction_allowed(arc_index)) {
+          continue;
+        }
+        const int sink = model_.arcs[arc_index].to;
+        if (depth[sink] < 0) {
+          depth[sink] = depth[node] + 1;
+          queue.push(sink);
+        }
+      }
+    }
+    int result = 0;
+    for (int sink : demand.sinks) {
+      if (depth[sink] < 0) {
+        throw std::runtime_error("adaptive-hop sink is unreachable");
+      }
+      result = std::max(result, depth[sink]);
+    }
+    return result;
+  }
+
+  Route adaptive_hop_tree(
+      int demand_index, const std::set<int>& discouraged) const {
+    const int lower = minimum_hop_lower_bound(demand_index);
+    const double criticality = demand_criticality_[demand_index];
+    const int allowance = std::max(
+        0, static_cast<int>(std::floor((1.0 - criticality) * 2.0 + kEps)));
+    int limit = lower + allowance;
+    if (model_.max_route_hops > 0) {
+      limit = std::min(limit, model_.max_route_hops);
+    }
+    return shortest_path_tree_with_limit(
+        demand_index, discouraged, limit);
+  }
+
+  Route shallow_light_tree(
+      int demand_index, const std::set<int>& discouraged) const {
+    const Route shortest = shortest_path_tree(demand_index, discouraged);
+    const Route steiner = nearest_terminal_steiner_tree(
+        demand_index, discouraged);
+    const double criticality = demand_criticality_[demand_index];
+    const double stretch = 1.0 + 0.5 * (1.0 - criticality);
+    if (steiner.max_delay_ns <= shortest.max_delay_ns * stretch + kEps &&
+        (steiner.arcs.size() < shortest.arcs.size() ||
+         (steiner.arcs.size() == shortest.arcs.size() &&
+          steiner.max_delay_ns + kEps < shortest.max_delay_ns))) {
+      return steiner;
+    }
+    return shortest;
+  }
+
+  Route directed_metric_closure_tree(
+      int demand_index, const std::set<int>& discouraged) const {
+    const Demand& demand = model_.demands[demand_index];
+    std::vector<int> terminals = {demand.source};
+    terminals.insert(terminals.end(), demand.sinks.begin(), demand.sinks.end());
+    std::sort(terminals.begin() + 1, terminals.end());
+    const int count = static_cast<int>(terminals.size());
+    std::vector<std::vector<double>> distance(
+        count, std::vector<double>(model_.node_count, kInf));
+    std::vector<std::vector<int>> predecessor(
+        count, std::vector<int>(model_.node_count, -1));
+    using QueueItem = std::pair<double, int>;
+    for (int terminal = 0; terminal < count; ++terminal) {
+      std::priority_queue<QueueItem, std::vector<QueueItem>,
+                          std::greater<QueueItem>> queue;
+      distance[terminal][terminals[terminal]] = 0.0;
+      queue.emplace(0.0, terminals[terminal]);
+      while (!queue.empty()) {
+        const auto [current, node] = queue.top();
+        queue.pop();
+        if (current != distance[terminal][node]) {
+          continue;
+        }
+        for (int arc_index : adjacency_[node]) {
+          if (!direction_allowed(arc_index)) {
+            continue;
+          }
+          const Arc& arc = model_.arcs[arc_index];
+          const double candidate = current +
+              routing_arc_cost(demand_index, arc_index, discouraged);
+          if (candidate + kEps < distance[terminal][arc.to] ||
+              (std::abs(candidate - distance[terminal][arc.to]) <= kEps &&
+               (predecessor[terminal][arc.to] < 0 ||
+                arc_index < predecessor[terminal][arc.to]))) {
+            distance[terminal][arc.to] = candidate;
+            predecessor[terminal][arc.to] = arc_index;
+            queue.emplace(candidate, arc.to);
+          }
+        }
+      }
+    }
+    std::vector<bool> in_closure(count, false);
+    in_closure[0] = true;
+    std::set<int> expanded;
+    for (int step = 1; step < count; ++step) {
+      int best_from = -1;
+      int best_to = -1;
+      double best = kInf;
+      for (int from = 0; from < count; ++from) {
+        if (!in_closure[from]) {
+          continue;
+        }
+        for (int to = 1; to < count; ++to) {
+          const double candidate = distance[from][terminals[to]];
+          if (in_closure[to] || !std::isfinite(candidate)) {
+            continue;
+          }
+          if (candidate + kEps < best ||
+              (std::abs(candidate - best) <= kEps &&
+               std::pair<int, int>{from, to} <
+                   std::pair<int, int>{best_from, best_to})) {
+            best = candidate;
+            best_from = from;
+            best_to = to;
+          }
+        }
+      }
+      if (best_to < 0) {
+        throw std::runtime_error("directed metric closure is disconnected");
+      }
+      for (int node = terminals[best_to]; node != terminals[best_from];) {
+        const int arc_index = predecessor[best_from][node];
+        if (arc_index < 0) {
+          throw std::runtime_error("broken metric-closure predecessor");
+        }
+        expanded.insert(arc_index);
+        node = model_.arcs[arc_index].from;
+      }
+      in_closure[best_to] = true;
+    }
+    std::vector<std::vector<int>> graph(model_.node_count);
+    for (int arc_index : expanded) {
+      graph[model_.arcs[arc_index].from].push_back(arc_index);
+    }
+    for (auto& outgoing : graph) {
+      std::sort(outgoing.begin(), outgoing.end());
+    }
+    std::vector<int> parent(model_.node_count, -1);
+    std::vector<double> delay(model_.node_count, kInf);
+    delay[demand.source] = 0.0;
+    std::queue<int> queue;
+    queue.push(demand.source);
+    while (!queue.empty()) {
+      const int node = queue.front();
+      queue.pop();
+      for (int arc_index : graph[node]) {
+        const Arc& arc = model_.arcs[arc_index];
+        if (parent[arc.to] >= 0 || arc.to == demand.source) {
+          continue;
+        }
+        parent[arc.to] = arc_index;
+        delay[arc.to] = delay[node] + arc.delay_ns;
+        queue.push(arc.to);
+      }
+    }
+    std::set<int> tree;
+    Route result;
+    for (int sink : demand.sinks) {
+      if (!std::isfinite(delay[sink])) {
+        throw std::runtime_error(
+            "expanded metric closure does not span a sink");
+      }
+      result.max_delay_ns = std::max(result.max_delay_ns, delay[sink]);
+      for (int node = sink; node != demand.source;) {
+        const int arc_index = parent[node];
+        if (arc_index < 0) {
+          throw std::runtime_error("broken metric-closure arborescence");
+        }
+        tree.insert(arc_index);
+        node = model_.arcs[arc_index].from;
+      }
+    }
+    result.arcs.assign(tree.begin(), tree.end());
+    if (model_.max_route_hops > 0 &&
+        maximum_route_hops(result, demand) > model_.max_route_hops) {
+      return hop_bounded_shortest_path_tree(demand_index, discouraged);
+    }
+    return result;
+  }
+
   Route delay_demand_balanced_tree(
       int demand_index, const std::set<int>& discouraged) const {
     const Demand& demand = model_.demands[demand_index];
@@ -1942,13 +2206,22 @@ class Router {
   bool baseline_candidate_feasible_ = false;
   bool balanced_candidate_feasible_ = false;
   bool steiner_candidate_feasible_ = false;
+  bool metric_closure_candidate_feasible_ = false;
+  bool shallow_light_candidate_feasible_ = false;
+  bool adaptive_hop_candidate_feasible_ = false;
   bool shortest_candidate_generated_ = false;
   bool balanced_candidate_generated_ = false;
   bool steiner_candidate_generated_ = false;
+  bool metric_closure_candidate_generated_ = false;
+  bool shallow_light_candidate_generated_ = false;
+  bool adaptive_hop_candidate_generated_ = false;
   bool selected_balanced_ = false;
   std::vector<Route> shortest_candidate_routes_;
   std::vector<Route> balanced_candidate_routes_;
   std::vector<Route> steiner_candidate_routes_;
+  std::vector<Route> metric_closure_candidate_routes_;
+  std::vector<Route> shallow_light_candidate_routes_;
+  std::vector<Route> adaptive_hop_candidate_routes_;
   std::vector<std::string> master_selection_;
   int master_rounds_ = 0;
   int master_switches_ = 0;

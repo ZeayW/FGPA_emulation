@@ -720,6 +720,9 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                     "master_rounds",
                     "master_switches",
                     "master_exact",
+                    "metric_closure_candidate_feasible",
+                    "shallow_light_candidate_feasible",
+                    "adaptive_hop_candidate_feasible",
                     "candidate_workers",
                     "parallel_candidate_tasks",
                     "reroute_conflict_batches",
@@ -753,6 +756,9 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
         expected_metrics.update(
             {
                 "steiner_candidate_feasible",
+                "metric_closure_candidate_feasible",
+                "shallow_light_candidate_feasible",
+                "adaptive_hop_candidate_feasible",
                 "master_rounds",
                 "master_switches",
                 "master_exact",

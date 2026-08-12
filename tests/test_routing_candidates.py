@@ -159,6 +159,100 @@ class RouteCandidatePoolTest(unittest.TestCase):
                     assignment, platform, broken_tree
                 )
 
+    def test_adaptive_hop_column_is_not_an_alias(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "adaptive_column",
+                ["a", "b", "c", "d", "e", "f"],
+                [
+                    _link("ab", "a", "b", latency=1),
+                    _link("ac", "a", "c", latency=3),
+                    _link("ad", "a", "d", latency=1),
+                    _link("af", "a", "f", latency=3),
+                    _link("bc", "b", "c", latency=2),
+                    _link("cd", "c", "d", latency=2),
+                    _link("ce", "c", "e", latency=3),
+                    _link("cf", "c", "f", latency=1),
+                    _link("de", "d", "e", latency=1),
+                    _link("ef", "e", "f", latency=3),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform, [("multicast", "b", ["c", "d", "e"])]
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "p",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 50.0,
+                            "slack_ns": 30.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["multicast"],
+                        }
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 16,
+                "reroute_rounds": 0,
+                "link_delay_ns": {
+                    link.id: float(link.latency_cycles)
+                    for link in platform.links
+                },
+            },
+            platform,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "pool.json"
+            route_system_native(
+                assignment,
+                platform,
+                constraints,
+                timing,
+                executable=str(tlr_router()),
+                provider=GLOBAL_CANDIDATE_PROVIDER,
+                candidate_pool_path=path,
+            )
+            import json
+
+            pool = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(pool["metrics"]["candidates_by_generator"]),
+                {
+                    "shortest-path-tree",
+                    "delay-demand-balanced",
+                    "nearest-terminal-steiner",
+                    "directed-metric-closure",
+                    "shallow-light-tree",
+                    "adaptive-hop-tree",
+                    "refined-final",
+                },
+            )
+            by_generator = {
+                candidate["generator"]: {
+                    edge["link"] for edge in candidate["tree_edges"]
+                }
+                for candidate in pool["candidates"]
+            }
+            self.assertEqual(
+                by_generator["adaptive-hop-tree"],
+                {"ab", "ad", "bc", "ce"},
+            )
+            self.assertNotEqual(
+                by_generator["adaptive-hop-tree"],
+                by_generator["nearest-terminal-steiner"],
+            )
+
     def test_global_candidate_provider_matches_exact_restricted_master(
         self,
     ) -> None:

@@ -475,13 +475,15 @@ Lexicographic feasibility first:
 
 ### Implemented milestone
 
-The C++ provider now constructs three independently checkable topology
+The C++ provider now constructs six independently checkable topology
 candidates: the original source-rooted shortest-path tree, a DAC
 2025-informed delay-demand-balanced connection tree. The latter connects
 high-cost sinks incrementally through legal Steiner attachment points and
 uses distinct SLL and cable/TDM congestion costs, and a deterministic directed
-Takahashi-Matsuyama nearest-terminal Steiner alternative.  Phase 4 exports all
-three plus the selected refined tree in the versioned
+Takahashi-Matsuyama nearest-terminal Steiner alternative, a directed
+metric-closure Prim expansion, a criticality-gated shallow-light tree, and an
+adaptive-hop tree derived from a direction-feasible hop lower bound. Phase 4
+exports all six plus the selected refined tree in the versioned
 `emuflow.route-candidate-pool/v1` contract.  A separate checker independently
 reconstructs every tree's topology, direction locks, hop bound, latency, and
 delay.  The provider selects the
@@ -502,11 +504,11 @@ The exported pool and exact-oracle coverage gate are implemented without
 changing the default selector.  The opt-in
 `timing-aware-global-candidate-v1` provider now solves the restricted master
 exactly when the candidate product has at most 200,000 combinations and uses
-deterministic coordinate LNS above that boundary.  Its Python oracle
+deterministic batch-conflict LNS above that boundary. Its Python oracle
 independently enumerates compact products and reconstructs capacity, route
 delay, quantized TDM delay, normalized slack, utilization, and bit-hops.
-The remaining topology gap is candidate-tree column generation over a larger
-KMB/Mehlhorn and shallow-light pool. Batch-conflict LNS is implemented: a
+The planned directed metric-closure, shallow-light, and adaptive-hop columns
+are now in the checked global-master pool. Batch-conflict LNS is implemented: a
 deterministic coloring groups only path moves whose union candidate capacity
 domains and affected STA paths are disjoint, native workers generate proposals
 from a shared immutable snapshot, and stable serial commit rechecks the global

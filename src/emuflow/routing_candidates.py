@@ -26,6 +26,9 @@ ROUTE_CANDIDATE_GENERATORS = (
     "shortest-path-tree",
     "delay-demand-balanced",
     "nearest-terminal-steiner",
+    "directed-metric-closure",
+    "shallow-light-tree",
+    "adaptive-hop-tree",
     "refined-final",
 )
 ROUTE_MASTER_GENERATORS = ROUTE_CANDIDATE_GENERATORS[:-1]
