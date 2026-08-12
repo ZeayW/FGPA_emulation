@@ -161,6 +161,27 @@ class AcademicChimewTest(unittest.TestCase):
                 lookahead["metrics"]["placement_endpoint_fallbacks"], 0
             )
             artifacts = lookahead["artifacts"]
+            bank_input = read_json(Path(artifacts["bank_channel_input"]["path"]))
+            electrical_map = read_json(Path(artifacts["electrical_map"]["path"]))
+            directions = {group["direction"] for group in bank_input["groups"]}
+            self.assertEqual(directions, {"a_to_b", "b_to_a"})
+            self.assertEqual(len(bank_input["domains"]), len(directions))
+            self.assertNotIn(
+                "either",
+                {channel["direction"] for channel in electrical_map["channels"]},
+            )
+            self.assertEqual(len(bank_input["domains"]), 2)
+            domain_ids = {domain["id"] for domain in bank_input["domains"]}
+            self.assertEqual(
+                domain_ids,
+                {"link_0_1:a_to_b", "link_0_1:b_to_a"},
+            )
+            lane_directions = {
+                (channel["physical_lane"], channel["direction"])
+                for channel in electrical_map["channels"]
+            }
+            self.assertIn((0, "a_to_b"), lane_directions)
+            self.assertIn((0, "b_to_a"), lane_directions)
             report = run_chimew_phase6_pipeline(
                 schedule,
                 PLATFORM,

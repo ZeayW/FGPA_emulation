@@ -404,8 +404,7 @@ def materialize_academic_chimew_inputs(
         item["schedule_entry"]: item["group"] for item in refined["entries"]
     }
 
-    grouped: Dict[Tuple[str, int], list[Dict[str, Any]]] = defaultdict(list)
-    directions: Dict[Tuple[str, int], str] = {}
+    grouped: Dict[Tuple[str, str, int], list[Dict[str, Any]]] = defaultdict(list)
     for entry in schedule["entries"]:
         link = link_by_id[entry["link"]]
         endpoint_a, endpoint_b = link.endpoints
@@ -414,10 +413,12 @@ def materialize_academic_chimew_inputs(
             if (entry["from"], entry["to"]) == (endpoint_a, endpoint_b)
             else "b_to_a"
         )
-        key = (entry["link"], group_by_entry[entry["id"]])
-        existing = directions.setdefault(key, direction)
-        if existing != direction:
-            raise ValidationError("academic Chimew group mixes link directions")
+        # Full-duplex/per-direction BoardDB links expose an independent lane
+        # budget in each direction.  Keep those budgets in distinct Chimew
+        # assignment domains: the paper-facing bank/channel optimizer does not
+        # otherwise know an electrical channel's direction and would make the
+        # two directions incorrectly compete for one lane pool.
+        key = (entry["link"], direction, group_by_entry[entry["id"]])
         source = entry_points[entry["id"]]["source"]
         sink = entry_points[entry["id"]]["sink"]
         grouped[key].append(
@@ -440,71 +441,93 @@ def materialize_academic_chimew_inputs(
                 "academic Chimew default currently requires full-duplex, "
                 f"per-direction BoardDB links; {link_id!r} is incompatible"
             )
-        domains.append({"id": link_id, "fpga_a": endpoint_a, "fpga_b": endpoint_b})
-        raw_channels = []
         lane_count = link.transport_bits_per_cycle_per_direction
         a_y_min, a_y_max = fpga_y_bounds[endpoint_a]
         b_y_min, b_y_max = fpga_y_bounds[endpoint_b]
-        for lane in range(lane_count):
-            channel_id = f"academic-{link_id}-channel-{lane:04d}"
-            fraction = (
-                0.5
-                if lane_count == 1
-                else float(lane) / float(lane_count - 1)
-            )
-            raw_channels.append(
-                {
-                    "id": channel_id,
-                    "order": lane,
-                    "pin_a": {
-                        "x": fpga_order[endpoint_a] * coordinate_scale,
-                        "y": a_y_min + fraction * (a_y_max - a_y_min),
-                    },
-                    "pin_b": {
-                        "x": fpga_order[endpoint_b] * coordinate_scale,
-                        "y": b_y_min + fraction * (b_y_max - b_y_min),
-                    },
-                }
-            )
-            pin_a = f"ACADEMIC_{endpoint_a}_{link_id}_P{lane}"
-            pin_b = f"ACADEMIC_{endpoint_b}_{link_id}_P{lane}"
-            package_records.extend(
-                [{"fpga": endpoint_a, "pin": pin_a}, {"fpga": endpoint_b, "pin": pin_b}]
-            )
-            channels.append(
-                {
-                    "chimew_channel": channel_id,
-                    "link": link_id,
-                    "physical_lane": lane,
-                    "direction": "either",
-                    "bank_a": f"academic-{endpoint_a}-{link_id}-bank",
-                    "bank_b": f"academic-{endpoint_b}-{link_id}-bank",
-                    "package_pin_a": pin_a,
-                    "package_pin_b": pin_b,
-                    "iostandard": "LVCMOS18",
-                    "supported_iostandards": ["LVCMOS18"],
-                    "bank_voltage": 1.8,
-                    "electrical_class": "single_ended_parallel",
-                    "reserved": False,
-                }
-            )
-        bank_pairs.append(
-            {
-                "id": f"academic-{link_id}-bank-pair",
-                "domain": link_id,
-                "bank_a": {
-                    "id": f"academic-{endpoint_a}-{link_id}-bank",
-                    "x": fpga_order[endpoint_a] * coordinate_scale,
-                    "y": (a_y_min + a_y_max) / 2.0,
-                },
-                "bank_b": {
-                    "id": f"academic-{endpoint_b}-{link_id}-bank",
-                    "x": fpga_order[endpoint_b] * coordinate_scale,
-                    "y": (b_y_min + b_y_max) / 2.0,
-                },
-                "channels": raw_channels,
-            }
+        active_directions = sorted(
+            {key[1] for key in grouped if key[0] == link_id}
         )
+        for direction in active_directions:
+            domain_id = f"{link_id}:{direction}"
+            bank_a_id = f"academic-{endpoint_a}-{domain_id}-bank"
+            bank_b_id = f"academic-{endpoint_b}-{domain_id}-bank"
+            domains.append(
+                {"id": domain_id, "fpga_a": endpoint_a, "fpga_b": endpoint_b}
+            )
+            raw_channels = []
+            for lane in range(lane_count):
+                channel_id = (
+                    f"academic-{link_id}-{direction}-channel-{lane:04d}"
+                )
+                fraction = (
+                    0.5
+                    if lane_count == 1
+                    else float(lane) / float(lane_count - 1)
+                )
+                raw_channels.append(
+                    {
+                        "id": channel_id,
+                        "order": lane,
+                        "pin_a": {
+                            "x": fpga_order[endpoint_a] * coordinate_scale,
+                            "y": a_y_min + fraction * (a_y_max - a_y_min),
+                        },
+                        "pin_b": {
+                            "x": fpga_order[endpoint_b] * coordinate_scale,
+                            "y": b_y_min + fraction * (b_y_max - b_y_min),
+                        },
+                    }
+                )
+                # A full-duplex physical lane has distinct transmit/receive
+                # package pins.  Direction-qualified synthetic identities keep
+                # the academic model honest while allowing the BoardDB's
+                # per-direction lane capacity to be used concurrently.
+                pin_a = (
+                    f"ACADEMIC_{endpoint_a}_{link_id}_{direction}_P{lane}"
+                )
+                pin_b = (
+                    f"ACADEMIC_{endpoint_b}_{link_id}_{direction}_P{lane}"
+                )
+                package_records.extend(
+                    [
+                        {"fpga": endpoint_a, "pin": pin_a},
+                        {"fpga": endpoint_b, "pin": pin_b},
+                    ]
+                )
+                channels.append(
+                    {
+                        "chimew_channel": channel_id,
+                        "link": link_id,
+                        "physical_lane": lane,
+                        "direction": direction,
+                        "bank_a": bank_a_id,
+                        "bank_b": bank_b_id,
+                        "package_pin_a": pin_a,
+                        "package_pin_b": pin_b,
+                        "iostandard": "LVCMOS18",
+                        "supported_iostandards": ["LVCMOS18"],
+                        "bank_voltage": 1.8,
+                        "electrical_class": "single_ended_parallel",
+                        "reserved": False,
+                    }
+                )
+            bank_pairs.append(
+                {
+                    "id": f"academic-{domain_id}-bank-pair",
+                    "domain": domain_id,
+                    "bank_a": {
+                        "id": bank_a_id,
+                        "x": fpga_order[endpoint_a] * coordinate_scale,
+                        "y": (a_y_min + a_y_max) / 2.0,
+                    },
+                    "bank_b": {
+                        "id": bank_b_id,
+                        "x": fpga_order[endpoint_b] * coordinate_scale,
+                        "y": (b_y_min + b_y_max) / 2.0,
+                    },
+                    "channels": raw_channels,
+                }
+            )
 
     package_source = output_dir / "sources" / "package-pins.json"
     write_json(
@@ -519,13 +542,13 @@ def materialize_academic_chimew_inputs(
 
     group_records = [
         {
-            "id": f"academic-{link_id}-group-{group_id}",
-            "domain": link_id,
+            "id": f"academic-{link_id}-{direction}-group-{group_id}",
+            "domain": f"{link_id}:{direction}",
             "kind": "tdm_group",
-            "direction": directions[(link_id, group_id)],
+            "direction": direction,
             "members": members,
         }
-        for (link_id, group_id), members in sorted(grouped.items())
+        for (link_id, direction, group_id), members in sorted(grouped.items())
     ]
     bank_input = {
         "schema": CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
