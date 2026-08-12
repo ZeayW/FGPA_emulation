@@ -20,7 +20,7 @@ from .tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
-SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v1"
+SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v2"
 SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v1"
 _FROZEN_ARTIFACTS = (
     "emuir",
@@ -37,6 +37,17 @@ _PHYSICAL_METRICS = (
     "failing_endpoint_constraints",
     "unrouted_nets",
     "drc_violations",
+)
+_GLOBAL_TIMING_METRICS = (
+    "target_global_wns_ns",
+    "target_global_tns_ns",
+    "target_negative_paths",
+    "runtime_global_wns_ns",
+    "runtime_global_tns_ns",
+    "runtime_negative_paths",
+    "original_cross_fpga_paths",
+    "compressed_representative_paths",
+    "original_path_coverage",
 )
 _BASELINE_PHASE6_PROVIDER = "deterministic-cut-shadow-split-v1"
 
@@ -145,11 +156,85 @@ def _tdm_metrics(stage: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _global_timing_metrics(report: Dict[str, Any]) -> Dict[str, Any]:
+    timing = report.get("runtime", {}).get("system_timing")
+    if not isinstance(timing, dict) or timing.get("status") not in {
+        "pass", "fail"
+    }:
+        raise ValidationError("routing/TDM A/B global system timing is missing")
+    paths = timing.get("paths")
+    summary = timing.get("summary")
+    if not isinstance(paths, list) or not paths or not isinstance(summary, dict):
+        raise ValidationError("routing/TDM A/B global timing coverage is missing")
+    ids = [path.get("path") for path in paths if isinstance(path, dict)]
+    if len(ids) != len(paths) or len(set(ids)) != len(paths):
+        raise ValidationError("routing/TDM A/B global timing path IDs are invalid")
+    target = [path.get("target_clock_slack_bound_ns") for path in paths]
+    runtime = [path.get("runtime_clock_slack_bound_ns") for path in paths]
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        for value in (*target, *runtime)
+    ):
+        raise ValidationError("routing/TDM A/B global path slack is invalid")
+    original = summary.get("original_cross_fpga_paths")
+    representatives = summary.get("compressed_representative_paths")
+    coverage = summary.get("original_path_coverage")
+    if (
+        isinstance(original, bool)
+        or not isinstance(original, int)
+        or original != len(paths)
+        or isinstance(representatives, bool)
+        or not isinstance(representatives, int)
+        or representatives <= 0
+        or representatives > original
+        or not isinstance(coverage, (int, float))
+        or float(coverage) != 1.0
+    ):
+        raise ValidationError("routing/TDM A/B global timing coverage is incomplete")
+    result = {
+        "target_global_wns_ns": min(target),
+        "target_global_tns_ns": sum(min(0.0, value) for value in target),
+        "target_negative_paths": sum(value < 0.0 for value in target),
+        "runtime_global_wns_ns": min(runtime),
+        "runtime_global_tns_ns": sum(min(0.0, value) for value in runtime),
+        "runtime_negative_paths": sum(value < 0.0 for value in runtime),
+        "original_cross_fpga_paths": original,
+        "compressed_representative_paths": representatives,
+        "original_path_coverage": float(coverage),
+    }
+    for clock, prefix in (("target_clock", "target"), ("runtime_clock", "runtime")):
+        clock_report = timing.get(clock)
+        if (
+            not isinstance(clock_report, dict)
+            or not math.isclose(
+                float(clock_report.get("worst_slack_bound_ns", math.nan)),
+                result[f"{prefix}_global_wns_ns"],
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            or not math.isclose(
+                float(clock_report.get("tns_bound_ns", math.nan)),
+                result[f"{prefix}_global_tns_ns"],
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            or clock_report.get("negative_slack_paths")
+            != result[f"{prefix}_negative_paths"]
+        ):
+            raise ValidationError(
+                f"routing/TDM A/B {clock} global metrics disagree"
+            )
+    return result
+
+
 def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
     if (
         report.get("schema") != SYSTEM_ROUTE_TDM_AB_SCHEMA
         or report.get("status") != "pass"
-        or report.get("qualification") != "complete-phase7-source-bound-ab"
+        or report.get("qualification")
+        != "complete-phase7-global-timing-source-bound-ab"
     ):
         raise ValidationError("routing/TDM A/B comparison identity is invalid")
     frozen = report.get("frozen_upstream")
@@ -181,6 +266,21 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
         if not isinstance(physical, dict) or set(physical) != set(_PHYSICAL_METRICS):
             raise ValidationError(f"routing/TDM A/B {label} physical metrics are incomplete")
         _finite_metrics(physical, _PHYSICAL_METRICS, f"{label} physical")
+        global_timing = arm.get("global_timing")
+        if (
+            not isinstance(global_timing, dict)
+            or set(global_timing) != set(_GLOBAL_TIMING_METRICS)
+        ):
+            raise ValidationError(
+                f"routing/TDM A/B {label} global timing is incomplete"
+            )
+        _finite_metrics(
+            global_timing, _GLOBAL_TIMING_METRICS, f"{label} global timing"
+        )
+        if global_timing["original_path_coverage"] != 1.0:
+            raise ValidationError(
+                f"routing/TDM A/B {label} global path coverage is incomplete"
+            )
         if physical["unrouted_nets"] != 0 or physical["drc_violations"] != 0:
             raise ValidationError(f"routing/TDM A/B {label} physical arm did not close")
         source = arm.get("flow_report")
@@ -201,10 +301,34 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
     delta = report.get("physical_delta_upgrade_minus_baseline")
     if delta != expected:
         raise ValidationError("routing/TDM A/B physical delta disagrees")
+    expected_global = {
+        field: arms["upgrade"]["global_timing"][field]
+        - arms["baseline"]["global_timing"][field]
+        for field in _GLOBAL_TIMING_METRICS
+        if field not in {
+            "original_cross_fpga_paths",
+            "compressed_representative_paths",
+            "original_path_coverage",
+        }
+    }
+    if report.get("global_timing_delta_upgrade_minus_baseline") != expected_global:
+        raise ValidationError("routing/TDM A/B global timing delta disagrees")
     return {
         "status": "pass",
-        "wns_improvement_ns": expected["worst_wns_ns"],
-        "tns_improvement_ns": expected["total_tns_ns"],
+        "target_global_wns_improvement_ns": expected_global[
+            "target_global_wns_ns"
+        ],
+        "target_global_tns_improvement_ns": expected_global[
+            "target_global_tns_ns"
+        ],
+        "runtime_global_wns_improvement_ns": expected_global[
+            "runtime_global_wns_ns"
+        ],
+        "runtime_global_tns_improvement_ns": expected_global[
+            "runtime_global_tns_ns"
+        ],
+        "per_fpga_physical_wns_change_ns": expected["worst_wns_ns"],
+        "per_fpga_physical_tns_change_ns": expected["total_tns_ns"],
         "critical_path_change_ns": expected["worst_critical_path_ns"],
         "wirelength_change": expected["total_wirelength"],
         "failing_endpoint_change": expected["failing_endpoints"],
@@ -290,13 +414,14 @@ def build_system_route_tdm_ab_comparison(
             "route": _route_metrics(report["stages"]["system_route"]),
             "tdm": _tdm_metrics(report["stages"]["tdm"]),
             "physical": physical,
+            "global_timing": _global_timing_metrics(report),
         }
     baseline_physical = arms["baseline"]["physical"]
     upgrade_physical = arms["upgrade"]["physical"]
     result = {
         "schema": SYSTEM_ROUTE_TDM_AB_SCHEMA,
         "status": "pass",
-        "qualification": "complete-phase7-source-bound-ab",
+        "qualification": "complete-phase7-global-timing-source-bound-ab",
         "design": baseline["stages"]["frontend"]["design"],
         "platform": baseline["stages"]["frontend"]["platform"],
         "frozen_upstream": frozen,
@@ -312,6 +437,16 @@ def build_system_route_tdm_ab_comparison(
             field: upgrade_physical[field] - baseline_physical[field]
             for field in _PHYSICAL_METRICS
             if field not in {"unrouted_nets", "drc_violations"}
+        },
+        "global_timing_delta_upgrade_minus_baseline": {
+            field: arms["upgrade"]["global_timing"][field]
+            - arms["baseline"]["global_timing"][field]
+            for field in _GLOBAL_TIMING_METRICS
+            if field not in {
+                "original_cross_fpga_paths",
+                "compressed_representative_paths",
+                "original_path_coverage",
+            }
         },
     }
     result["validation"] = validate_system_route_tdm_ab_comparison(result)

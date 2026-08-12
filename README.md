@@ -217,13 +217,14 @@ Both original-target-clock and virtual-runtime-clock system slack are
 reported.
 
 Local Phase 7 physical timing and Phase 7C answer different questions. The
-former reports each implemented FPGA's endpoint-complete WNS/TNS under the
-physical DUT/fabric constraints; for a multi-FPGA result, overall WNS is the
-minimum per-FPGA WNS and overall TNS is the sum of the per-FPGA TNS values.
-Those are the primary final QoR metrics for comparing Phase 6 providers.
-Phase 7C separately composes routed logic, TDM, and board-link delays into the
-pausible-clock system contract. A valid end-to-end comparison reports both;
-neither may be substituted for the other.
+former reports each implemented FPGA's endpoint-complete physical WNS/TNS
+under local DUT/fabric constraints. Its minimum WNS and summed TNS are
+per-FPGA physical aggregates, not the default whole-design timing result.
+Phase 7C composes routed logic, TDM, and board-link delays into every original
+cross-FPGA TimingPathDB member in the pausible-clock system contract; its
+global WNS/TNS are the primary final QoR metrics. A valid end-to-end comparison
+also reports the labelled per-FPGA diagnostics, but never substitutes them for
+global timing.
 
 | Route | Current completion boundary |
 | --- | --- |
@@ -297,7 +298,13 @@ cannot silently fall back to the historical routing provider.
 After both physical arms finish, the in-tree comparison gate independently
 rehashes and validates both complete flows, requires identical EmuIR,
 assignment, TimingPathDB, and partition weights, checks the frozen provider
-pair, and reconstructs aggregate Phase 7 WNS/TNS and closure deltas:
+pair, and reconstructs cross-FPGA global Phase 7 WNS/TNS and closure deltas.
+The default WNS/TNS terminology always means this whole-design composition:
+routed intra-FPGA logic and boundary stages plus the concrete Phase 5 slot
+wait and board-link delay on every original cross-FPGA TimingPathDB path.
+Optimizer-compressed representatives are expanded before global TNS is
+summed. Per-FPGA backend WNS/TNS remains separately labelled physical
+diagnostic data and is not the default global result:
 
 ```bash
 emuflow multi-fpga compare-routing-tdm \
@@ -306,9 +313,11 @@ emuflow multi-fpga compare-routing-tdm \
   --output build/routing-tdm-comparison.json
 ```
 
-The report is labelled `complete-phase7-source-bound-ab`; a Phase 4/5-only
-run, mixed upstream artifacts, a changed flow report, or either arm with an
-unrouted net/DRC violation is rejected rather than reported as QoR evidence.
+The report is labelled `complete-phase7-global-timing-source-bound-ab` and
+requires 100% original cross-FPGA path coverage. A Phase 4/5-only run, mixed
+upstream artifacts, a changed flow report, incomplete TimingPathDB member
+coverage, or either arm with an unrouted net/DRC violation is rejected rather
+than reported as QoR evidence.
 If an external physical tool environment is repaired after Phase 1--6 has
 already passed, the checked resume gate seals that independently completed
 physical directory and reruns Phase 7C without repeating earlier optimization:
@@ -366,9 +375,10 @@ identical architecture, constraints, seed, and backend settings. Both arms
 must retain zero unrouted nets, zero DRC violations, complete cell accounting,
 and independently valid timing reports.
 
-The required comparison contains per-FPGA WNS/TNS, overall WNS (the minimum
-per-FPGA/domain slack), overall TNS (the sum of negative endpoint slacks without
-double counting), failing endpoints, critical path, runtime, and absolute
+The required comparison contains labelled per-FPGA physical WNS/TNS, global
+WNS (the minimum composed original-path slack), global TNS (the sum of negative
+composed original-path slack without compression or double counting), failing
+paths/endpoints, coverage, critical path, runtime, and absolute
 baseline-to-candidate deltas. Percentage improvement is negative-slack deficit
 reduction: for a negative baseline, compare the reduction in `-WNS` or `-TNS`;
 if the baseline already closes, the percentage is `N/A` and a closure

@@ -88,6 +88,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             path = root / f"{key}.json"
             write_json(path, {"kind": key})
             artifacts[key] = {"path": path.name, "sha256": _sha256(path)}
+        global_slack = -2.0 + value
         return {
             "status": "pass",
             "stages": {
@@ -127,6 +128,35 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             },
             "artifacts": artifacts,
             "physical": _physical(value),
+            "runtime": {
+                "system_timing": {
+                    "schema": "emuflow.system-timing/v1",
+                    "status": "pass",
+                    "summary": {
+                        "original_cross_fpga_paths": 2,
+                        "compressed_representative_paths": 1,
+                        "original_path_coverage": 1.0,
+                    },
+                    "target_clock": {
+                        "worst_slack_bound_ns": global_slack,
+                        "tns_bound_ns": 2.0 * global_slack,
+                        "negative_slack_paths": 2,
+                    },
+                    "runtime_clock": {
+                        "worst_slack_bound_ns": 10.0 + value,
+                        "tns_bound_ns": 0.0,
+                        "negative_slack_paths": 0,
+                    },
+                    "paths": [
+                        {
+                            "path": member,
+                            "target_clock_slack_bound_ns": global_slack,
+                            "runtime_clock_slack_bound_ns": 10.0 + value,
+                        }
+                        for member in ("member-a", "member-b")
+                    ],
+                }
+            },
         }
 
     def test_builds_source_bound_complete_phase7_comparison(self):
@@ -146,8 +176,14 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                 return_value={"status": "pass"},
             ):
                 result = build_system_route_tdm_ab_comparison(baseline, upgrade, output)
-            self.assertEqual(result["validation"]["wns_improvement_ns"], 0.75)
-            self.assertEqual(result["validation"]["tns_improvement_ns"], 1.5)
+            self.assertEqual(
+                result["validation"]["target_global_wns_improvement_ns"],
+                0.75,
+            )
+            self.assertEqual(
+                result["validation"]["target_global_tns_improvement_ns"],
+                1.5,
+            )
             self.assertTrue(output.is_file())
             tampered = copy.deepcopy(result)
             tampered["physical_delta_upgrade_minus_baseline"]["worst_wns_ns"] = 99

@@ -230,7 +230,6 @@ def build_system_timing(
     for record in records:
         transitions = record["cut_transitions"]
         partitions, discontinuities = _logic_partition_sequence(transitions)
-        discontinuous_paths += discontinuities > 0
         unknown = sorted(set(partitions) - set(delays))
         if unknown:
             raise ValidationError(
@@ -265,14 +264,12 @@ def build_system_timing(
                 endpoint_delays[endpoint_id] for endpoint_id in endpoint_ids
             )
             interface_model = "routed-endpoint-exact"
+        member_ids = record.get(
+            "compressed_path_ids", [record["path"]]
+        )
         logic_model = "per-partition-maximum-upper-bound"
-        selected_member = None
-        logic_exact = False
-        physical_delay = local_delay + interface_delay
+        member_physical = None
         if logic_segments is not None and endpoint_delays is not None:
-            member_ids = record.get(
-                "compressed_path_ids", [record["path"]]
-            )
             member_segments = logic_segments.get(record["path"], {})
             candidates = []
             for member in member_ids:
@@ -333,22 +330,21 @@ def build_system_timing(
                     )
                 )
             if candidates and len(candidates) == len(member_ids):
-                (
-                    physical_delay,
-                    selected_member,
-                    local_delay,
-                    interface_delay,
-                    cone_bound_segments,
-                ) = max(candidates)
-                interface_model = "routed-endpoint-exact-unreplaced-stages"
-                measured_logic_paths += 1
-                if cone_bound_segments:
-                    logic_model = "routed-staging-chain-cone-upper-bound"
-                    cone_bound_logic_paths += 1
-                else:
-                    logic_model = "routed-staging-chain-exact"
-                    logic_exact = True
-                    exact_logic_paths += 1
+                member_physical = {
+                    member: {
+                        "physical_delay": composite,
+                        "local_delay": segment_delay,
+                        "interface_delay": unreplaced_interface,
+                        "cone_bound_segments": cone_bound_segments,
+                    }
+                    for (
+                        composite,
+                        member,
+                        segment_delay,
+                        unreplaced_interface,
+                        cone_bound_segments,
+                    ) in candidates
+                }
         transport_delay = record["transport_delay_ns"]
         transport_model = "phase5-boarddb-model"
         if board_link_delays is not None:
@@ -360,11 +356,38 @@ def build_system_timing(
                     + hop["tdm_wait_slots"] * hop["tdm_slot_ns"]
                 )
             transport_model = "board-link-timing-db"
-        total_delay = physical_delay + transport_delay
         target_period = record["clock_period_ns"]
-        system_paths.append(
-            {
-                "path": record["path"],
+        for member in member_ids:
+            member_local_delay = local_delay
+            member_interface_delay = interface_delay
+            member_physical_delay = local_delay + interface_delay
+            member_logic_model = logic_model
+            member_interface_model = interface_model
+            logic_exact = False
+            cone_bound = False
+            if member_physical is not None:
+                measurement = member_physical[member]
+                member_local_delay = measurement["local_delay"]
+                member_interface_delay = measurement["interface_delay"]
+                member_physical_delay = measurement["physical_delay"]
+                cone_bound = measurement["cone_bound_segments"] > 0
+                member_interface_model = (
+                    "routed-endpoint-exact-unreplaced-stages"
+                )
+                measured_logic_paths += 1
+                if cone_bound:
+                    member_logic_model = (
+                        "routed-staging-chain-cone-upper-bound"
+                    )
+                    cone_bound_logic_paths += 1
+                else:
+                    member_logic_model = "routed-staging-chain-exact"
+                    logic_exact = True
+                    exact_logic_paths += 1
+            total_delay = member_physical_delay + transport_delay
+            system_paths.append({
+                "path": member,
+                "representative_path": record["path"],
                 "clock_domain": record["clock_domain"],
                 "target_period_ns": target_period,
                 "virtual_period_ns": virtual_period,
@@ -374,12 +397,14 @@ def build_system_timing(
                 "preplacement_fixed_delay_ns": record[
                     "preplacement_fixed_delay_ns"
                 ],
-                "physical_logic_delay_bound_ns": local_delay,
-                "physical_interface_delay_bound_ns": interface_delay,
-                "physical_interface_model": interface_model,
-                "physical_logic_model": logic_model,
-                "physical_logic_member_path": selected_member,
-                "physical_routed_stage_delay_bound_ns": physical_delay,
+                "physical_logic_delay_bound_ns": member_local_delay,
+                "physical_interface_delay_bound_ns": member_interface_delay,
+                "physical_interface_model": member_interface_model,
+                "physical_logic_model": member_logic_model,
+                "physical_logic_member_path": (
+                    member if member_physical is not None else None
+                ),
+                "physical_routed_stage_delay_bound_ns": member_physical_delay,
                 "scheduled_link_tdm_delay_ns": transport_delay,
                 "scheduled_link_tdm_model_delay_ns": record[
                     "transport_delay_ns"
@@ -390,11 +415,9 @@ def build_system_timing(
                 "runtime_clock_slack_bound_ns": virtual_period - total_delay,
                 "partition_chain_exact": discontinuities == 0,
                 "physical_logic_segments_exact": logic_exact,
-                "physical_logic_segments_cone_bound": (
-                    logic_model == "routed-staging-chain-cone-upper-bound"
-                ),
-            }
-        )
+                "physical_logic_segments_cone_bound": cone_bound,
+            })
+        discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
     target_worst = min(
         system_paths,
@@ -408,6 +431,14 @@ def build_system_timing(
         path["system_delay_bound_ns"] for path in system_paths
     )
     runtime_wns = runtime_worst["runtime_clock_slack_bound_ns"]
+    target_tns = sum(
+        min(0.0, path["target_clock_slack_bound_ns"])
+        for path in system_paths
+    )
+    runtime_tns = sum(
+        min(0.0, path["runtime_clock_slack_bound_ns"])
+        for path in system_paths
+    )
     return {
         "schema": SYSTEM_TIMING_SCHEMA,
         "status": "pass" if runtime_wns >= 0.0 else "fail",
@@ -479,6 +510,7 @@ def build_system_timing(
                 path["target_clock_slack_bound_ns"] < 0.0
                 for path in system_paths
             ),
+            "tns_bound_ns": target_tns,
         },
         "runtime_clock": {
             "closure_gate": True,
@@ -490,11 +522,15 @@ def build_system_timing(
                 path["runtime_clock_slack_bound_ns"] < 0.0
                 for path in system_paths
             ),
+            "tns_bound_ns": runtime_tns,
             "minimum_safe_period_bound_ns": maximum_delay,
             "maximum_safe_frequency_bound_mhz": 1000.0 / maximum_delay,
         },
         "summary": {
             "timing_paths": len(system_paths),
+            "original_cross_fpga_paths": len(system_paths),
+            "compressed_representative_paths": len(records),
+            "original_path_coverage": 1.0,
             "maximum_system_delay_bound_ns": maximum_delay,
         },
         "paths": system_paths,

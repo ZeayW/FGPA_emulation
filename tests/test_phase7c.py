@@ -325,6 +325,14 @@ class Phase7CTest(unittest.TestCase):
         self.assertGreater(
             qor["timing"]["runtime_clock"]["worst_slack_bound_ns"], 0.0
         )
+        self.assertLess(qor["timing"]["target_clock"]["tns_bound_ns"], 0.0)
+        self.assertEqual(qor["timing"]["runtime_clock"]["tns_bound_ns"], 0.0)
+        self.assertEqual(
+            qor["timing"]["summary"]["original_cross_fpga_paths"], 1
+        )
+        self.assertEqual(
+            qor["timing"]["summary"]["compressed_representative_paths"], 1
+        )
         self.assertEqual(
             qor["timing"]["qualification"],
             "conservative-partition-physical-maxima-plus-concrete-link-tdm",
@@ -443,6 +451,41 @@ class Phase7CTest(unittest.TestCase):
                 "physical_interface_delay_bound_ns"
             ],
             1.0,
+        )
+
+    def test_global_tns_expands_compressed_original_path_members(self):
+        routes = copy.deepcopy(self.routes)
+        routes["timing"]["paths"][0]["compressed_path_ids"] = [
+            "member-a", "member-b", "member-c"
+        ]
+        report = copy.deepcopy(self.reports["phase5"])
+        report["timing_validation"] = reconstruct_tdm_schedule_timing(
+            routes, self.platform, self.schedule
+        )
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            report,
+            self.reports["phase6"],
+            self._physical_summary(),
+            self.platform,
+            routes=routes,
+            schedule=self.schedule,
+        )
+        timing = qor["timing"]
+        self.assertEqual(
+            [path["path"] for path in timing["paths"]],
+            ["member-a", "member-b", "member-c"],
+        )
+        self.assertEqual(
+            timing["summary"]["compressed_representative_paths"], 1
+        )
+        self.assertEqual(timing["summary"]["original_cross_fpga_paths"], 3)
+        self.assertAlmostEqual(
+            timing["target_clock"]["tns_bound_ns"],
+            3.0 * timing["target_clock"]["worst_slack_bound_ns"],
         )
 
     def test_qor_uses_versioned_board_link_delay_bound(self):
