@@ -122,22 +122,24 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     if {[llength $through_pins] == 0} {
       error "through net '$mapped_name' has no timing pins"
     }
-    # Query one connected pin at a time as both a start and an end constraint.
-    # OpenSTA 2.6 crashes in its -through collection path for both net and pin
-    # objects.  A path containing the net starts at its driver-side pin or ends
-    # through one of its sink-side pins, so the union provides the same net
-    # coverage without using the faulty command path.
+    # Query only driver pins as timing startpoints.  OpenSTA 2.6 crashes in its
+    # -through collection path and when internal sink pins are used as -from or
+    # -to constraints.  Partition cut nets originate at a unique timing-model
+    # driver; paths launched from that driver necessarily contain the net.
+    set driver_count 0
     foreach through_pin $through_pins {
+      if {[get_property $through_pin direction] ne "output"} {
+        continue
+      }
+      incr driver_count
       foreach path_end [find_timing_paths -path_delay max \
           -from [list $through_pin] -group_count 1 -endpoint_count 1 \
           -sort_by_slack] {
         lappend timing_paths $path_end
       }
-      foreach path_end [find_timing_paths -path_delay max \
-          -to [list $through_pin] -group_count 1 -endpoint_count 1 \
-          -sort_by_slack] {
-        lappend timing_paths $path_end
-      }
+    }
+    if {$driver_count == 0} {
+      error "through net '$mapped_name' has no driver pin"
     }
   }
 } else {
