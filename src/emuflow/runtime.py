@@ -9,7 +9,7 @@ from .tdm import RUNTIME_BARRIER_SLOTS, TDM_SCHEDULE_SCHEMA
 
 VIRTUAL_RUNTIME_SCHEMA = "emuflow.virtual-runtime/v1"
 PHYSICAL_SUMMARY_SCHEMA = "emuflow.phase7b-physical-summary/v1"
-QOR_REPORT_SCHEMA = "emuflow.qor-report/v3"
+QOR_REPORT_SCHEMA = "emuflow.qor-report/v4"
 
 
 def virtual_runtime_controller_to_systemverilog() -> str:
@@ -670,21 +670,29 @@ def aggregate_qor(
             physical_summary,
             platform,
         )
-    closed = (
+    physical_closed = (
         physical["status"] == "pass"
         and runtime_timing.get("status") == "pass"
     )
+    whole_design_timing_complete = (
+        physical_summary is None
+        or runtime_timing.get("timing_scope") == "whole-original-design"
+    )
+    closed = physical_closed and whole_design_timing_complete
     return {
         "schema": QOR_REPORT_SCHEMA,
         "status": (
             "pass"
             if closed
+            else "incomplete"
+            if physical_closed and not whole_design_timing_complete
             else "pending"
             if physical["status"] == "pending"
             else "fail"
         ),
         "design": runtime["design"],
         "platform": platform.name,
+        "whole_design_timing_complete": whole_design_timing_complete,
         "partition": {
             "instances": partition["instances"],
             "used_fpgas": partition["used_fpgas"],

@@ -95,6 +95,8 @@ def run_phase7c(
         "status": (
             "pass"
             if qor["status"] == "pass"
+            else "incomplete"
+            if qor["status"] == "incomplete"
             else "generated"
             if qor["status"] == "pending"
             else "fail"

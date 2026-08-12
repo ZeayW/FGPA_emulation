@@ -234,6 +234,11 @@ class VprTest(unittest.TestCase):
                 "endpoint\tkind\tstart_pin\tend_pin\n", encoding="utf-8"
             )
             logic_output = root / "route" / "logic-timing.tsv"
+            local_query = root / "local-query.tsv"
+            local_query.write_text(
+                "endpoint\tkind\tstart_pin\tend_pin\n", encoding="utf-8"
+            )
+            local_output = root / "route" / "local-timing.tsv"
 
             def fake_run(arguments, **kwargs):
                 self.assertEqual(
@@ -252,6 +257,14 @@ class VprTest(unittest.TestCase):
                     kwargs["env"]["EMUFLOW_VPR_LOGIC_OUTPUT"],
                     str(logic_output.resolve()),
                 )
+                self.assertEqual(
+                    kwargs["env"]["EMUFLOW_VPR_LOCAL_PATH_QUERY"],
+                    str(local_query.resolve()),
+                )
+                self.assertEqual(
+                    kwargs["env"]["EMUFLOW_VPR_LOCAL_PATH_OUTPUT"],
+                    str(local_output.resolve()),
+                )
                 route_index = arguments.index("--route_file") + 1
                 Path(arguments[route_index]).write_text(
                     "route", encoding="utf-8"
@@ -261,6 +274,10 @@ class VprTest(unittest.TestCase):
                     encoding="utf-8",
                 )
                 logic_output.write_text(
+                    "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
+                    encoding="utf-8",
+                )
+                local_output.write_text(
                     "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
                     encoding="utf-8",
                 )
@@ -315,6 +332,8 @@ class VprTest(unittest.TestCase):
                     boundary_output=boundary_output,
                     logic_query=logic_query,
                     logic_output=logic_output,
+                    local_path_query=local_query,
+                    local_path_output=local_output,
                 )
 
         self.assertEqual(report["status"], "pass")
@@ -327,6 +346,7 @@ class VprTest(unittest.TestCase):
         self.assertFalse(report["configuration"]["retain_rr_graph"])
         self.assertIn("boundary_timing", report)
         self.assertIn("logic_segment_timing", report)
+        self.assertIn("local_path_timing", report)
 
 
 if __name__ == "__main__":

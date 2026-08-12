@@ -593,11 +593,14 @@ current pausible-clock timing contract. Phase 6 emits a versioned
 `boundary-identity/v1` database that binds every scheduled hop's TX/RX endpoint
 to its external port bit, merged physical net, DUT source, or transport shadow
 register. A physical backend can return `boundary-timing/v1` measurements under
-those stable endpoint IDs. The versioned `system-timing/v1` artifact then
+those stable endpoint IDs. The versioned `system-timing/v2` artifact then
 reconstructs every timing-aware route from the concrete lane/slot schedule and
 combines per-hop routed endpoint delay, board-link/TDM delay, and the post-route
-DUT logic bound. It reports original-target-clock and virtual-runtime-clock
-slack separately.
+DUT logic bound. It also consumes routed endpoint-exact measurements for every
+same-FPGA original TimingPathDB path.  The local and expanded cross-FPGA path
+ID sets must be disjoint and their canonical union must exactly match the
+sealed source database before the result is called whole-design/global. It
+reports original-target-clock and virtual-runtime-clock slack separately.
 
 Board-link delay is supplied through `board-link-timing/v1`, with one record
 per legal directed BoardDB arc. The contract preserves the functional
@@ -654,7 +657,7 @@ physical RAMB clock launch object while recovering the exact logical output
 bit from EmuIR net identity. Phase 7C uses the resulting
 `logic-segment-timing/v1` measurements and replaces the matching TX interface
 terms instead of adding a whole partition's critical-path maximum. Exact and
-fallback path counts are part of `system-timing/v1`. When a coarse
+fallback path counts are part of `system-timing/v2`. When a coarse
 provider-neutral hard-macro arc has no corresponding vendor timing arc, the
 Vivado provider constrains the worst physical path through the preserved
 cut-net driver and records a distinct cut-net-cone upper bound rather than

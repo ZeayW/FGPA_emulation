@@ -20,7 +20,7 @@ from .tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
-SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v2"
+SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v3"
 SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v1"
 _FROZEN_ARTIFACTS = (
     "emuir",
@@ -45,6 +45,8 @@ _GLOBAL_TIMING_METRICS = (
     "runtime_global_wns_ns",
     "runtime_global_tns_ns",
     "runtime_negative_paths",
+    "original_paths",
+    "original_local_paths",
     "original_cross_fpga_paths",
     "compressed_representative_paths",
     "original_path_coverage",
@@ -162,6 +164,11 @@ def _global_timing_metrics(report: Dict[str, Any]) -> Dict[str, Any]:
         "pass", "fail"
     }:
         raise ValidationError("routing/TDM A/B global system timing is missing")
+    if timing.get("timing_scope") != "whole-original-design":
+        raise ValidationError(
+            "routing/TDM A/B requires whole-design timing; a per-FPGA or "
+            "cross-FPGA-only subset is not global timing"
+        )
     paths = timing.get("paths")
     summary = timing.get("summary")
     if not isinstance(paths, list) or not paths or not isinstance(summary, dict):
@@ -178,13 +185,22 @@ def _global_timing_metrics(report: Dict[str, Any]) -> Dict[str, Any]:
         for value in (*target, *runtime)
     ):
         raise ValidationError("routing/TDM A/B global path slack is invalid")
-    original = summary.get("original_cross_fpga_paths")
+    original = summary.get("original_paths")
+    local = summary.get("original_local_paths")
+    crossing = summary.get("original_cross_fpga_paths")
     representatives = summary.get("compressed_representative_paths")
     coverage = summary.get("original_path_coverage")
     if (
         isinstance(original, bool)
         or not isinstance(original, int)
         or original != len(paths)
+        or isinstance(local, bool)
+        or not isinstance(local, int)
+        or local < 0
+        or isinstance(crossing, bool)
+        or not isinstance(crossing, int)
+        or crossing <= 0
+        or local + crossing != original
         or isinstance(representatives, bool)
         or not isinstance(representatives, int)
         or representatives <= 0
@@ -200,7 +216,9 @@ def _global_timing_metrics(report: Dict[str, Any]) -> Dict[str, Any]:
         "runtime_global_wns_ns": min(runtime),
         "runtime_global_tns_ns": sum(min(0.0, value) for value in runtime),
         "runtime_negative_paths": sum(value < 0.0 for value in runtime),
-        "original_cross_fpga_paths": original,
+        "original_paths": original,
+        "original_local_paths": local,
+        "original_cross_fpga_paths": crossing,
         "compressed_representative_paths": representatives,
         "original_path_coverage": float(coverage),
     }
@@ -234,7 +252,7 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
         report.get("schema") != SYSTEM_ROUTE_TDM_AB_SCHEMA
         or report.get("status") != "pass"
         or report.get("qualification")
-        != "complete-phase7-global-timing-source-bound-ab"
+        != "complete-phase7-whole-design-timing-source-bound-ab"
     ):
         raise ValidationError("routing/TDM A/B comparison identity is invalid")
     frozen = report.get("frozen_upstream")
@@ -306,6 +324,8 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
         - arms["baseline"]["global_timing"][field]
         for field in _GLOBAL_TIMING_METRICS
         if field not in {
+            "original_paths",
+            "original_local_paths",
             "original_cross_fpga_paths",
             "compressed_representative_paths",
             "original_path_coverage",
@@ -421,7 +441,9 @@ def build_system_route_tdm_ab_comparison(
     result = {
         "schema": SYSTEM_ROUTE_TDM_AB_SCHEMA,
         "status": "pass",
-        "qualification": "complete-phase7-global-timing-source-bound-ab",
+        "qualification": (
+            "complete-phase7-whole-design-timing-source-bound-ab"
+        ),
         "design": baseline["stages"]["frontend"]["design"],
         "platform": baseline["stages"]["frontend"]["platform"],
         "frozen_upstream": frozen,
@@ -443,6 +465,8 @@ def build_system_route_tdm_ab_comparison(
             - arms["baseline"]["global_timing"][field]
             for field in _GLOBAL_TIMING_METRICS
             if field not in {
+                "original_paths",
+                "original_local_paths",
                 "original_cross_fpga_paths",
                 "compressed_representative_paths",
                 "original_path_coverage",

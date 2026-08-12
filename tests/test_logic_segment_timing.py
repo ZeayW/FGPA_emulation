@@ -4,15 +4,77 @@ from pathlib import Path
 
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
+from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
     _vivado_object,
     _vpr_atom_pin,
     import_vivado_logic_segment_timing,
     import_vpr_logic_segment_timing,
 )
+from emuflow.local_path_timing import (
+    import_vpr_local_path_timing,
+    path_id_set_sha256,
+    validate_local_path_timing,
+)
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_local_path_import_is_source_bound_and_coverage_exact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity_path = root / "local-identity.json"
+            source_ids = ["local-a", "cross-b"]
+            record = {
+                "id": "local-a",
+                "kind": "local",
+                "fpga": "fpga0",
+                "clock_domain": "clk",
+                "clock_period_ns": 10.0,
+                "start_pin": "i0.Q[0]",
+                "end_pin": "i1.D[0]",
+            }
+            write_json(
+                identity_path,
+                {
+                    "schema": "emuflow.local-path-identity/v1",
+                    "status": "pass",
+                    "design": "dut",
+                    "fpga": "fpga0",
+                    "provider": "test",
+                    "source": {
+                        "path_database_sha256": "a" * 64,
+                        "original_paths": 2,
+                        "original_path_ids_sha256": path_id_set_sha256(
+                            source_ids
+                        ),
+                    },
+                    "coverage": {"local_paths": 1},
+                    "paths": [record],
+                },
+            )
+            raw = root / "local.tsv"
+            raw.write_text(
+                "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"
+                "local-a\tlocal\t3.25\ti0.Q[0]\ti1.D[0]\n",
+                encoding="utf-8",
+            )
+            output = root / "local.json"
+            report = import_vpr_local_path_timing(
+                raw, identity_path, output
+            )
+            self.assertEqual(report["local_paths"], 1)
+            self.assertEqual(report["maximum_delay_ns"], 3.25)
+            database = read_json(output)
+            self.assertEqual(
+                validate_local_path_timing(database)["status"], "pass"
+            )
+            raw.write_text(
+                "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValidationError):
+                import_vpr_local_path_timing(raw, identity_path, output)
+
     def test_vivado_pin_mapping_covers_logic_ff_and_memory_endpoints(self):
         ir = EmuIR(
             {

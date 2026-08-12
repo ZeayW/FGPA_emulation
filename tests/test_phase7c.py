@@ -8,6 +8,7 @@ from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import ValidationError
 from emuflow.phase7c import run_phase7c
 from emuflow.platform import Platform
+from emuflow.local_path_timing import path_id_set_sha256
 from emuflow.runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
     aggregate_qor,
@@ -318,7 +319,8 @@ class Phase7CTest(unittest.TestCase):
             routes=self.routes,
             schedule=self.schedule,
         )
-        self.assertEqual(qor["status"], "pass")
+        self.assertEqual(qor["status"], "incomplete")
+        self.assertFalse(qor["whole_design_timing_complete"])
         self.assertLess(
             qor["timing"]["target_clock"]["worst_slack_bound_ns"], 0.0
         )
@@ -487,6 +489,86 @@ class Phase7CTest(unittest.TestCase):
             timing["target_clock"]["tns_bound_ns"],
             3.0 * timing["target_clock"]["worst_slack_bound_ns"],
         )
+
+    def test_whole_design_timing_combines_local_and_crossing_paths(self):
+        physical = self._physical_summary()
+        path_ids = ["local-critical", "system-critical"]
+        source = {
+            "path_database_sha256": "a" * 64,
+            "original_paths": 2,
+            "original_path_ids_sha256": path_id_set_sha256(path_ids),
+        }
+        physical["local_path_timing"] = {
+            "fpga0": {
+                "schema": "emuflow.local-path-timing/v1",
+                "status": "pass",
+                "design": "dut",
+                "fpga": "fpga0",
+                "provider": "test",
+                "qualification": "source-bound-routed-endpoint-exact",
+                "source": source,
+                "coverage": {"local_paths": 1},
+                "paths": [{
+                    "id": "local-critical",
+                    "kind": "local",
+                    "fpga": "fpga0",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 20.0,
+                    "start_pin": "i0.Q[0]",
+                    "end_pin": "i1.D[0]",
+                    "delay_ns": 4.0,
+                }],
+            },
+            "fpga1": {
+                "schema": "emuflow.local-path-timing/v1",
+                "status": "pass",
+                "design": "dut",
+                "fpga": "fpga1",
+                "provider": "test",
+                "qualification": "source-bound-routed-endpoint-exact",
+                "source": source,
+                "coverage": {"local_paths": 0},
+                "paths": [],
+            },
+        }
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            self.reports["phase5"],
+            self.reports["phase6"],
+            physical,
+            self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
+        )
+        self.assertEqual(qor["status"], "pass")
+        self.assertTrue(qor["whole_design_timing_complete"])
+        timing = qor["timing"]
+        self.assertEqual(timing["timing_scope"], "whole-original-design")
+        self.assertEqual(timing["summary"]["original_paths"], 2)
+        self.assertEqual(timing["summary"]["original_local_paths"], 1)
+        self.assertEqual(timing["summary"]["original_cross_fpga_paths"], 1)
+        self.assertEqual(
+            {item["path_scope"] for item in timing["paths"]},
+            {"same-fpga-local", "cross-fpga"},
+        )
+
+        broken = copy.deepcopy(physical)
+        broken["local_path_timing"]["fpga0"]["paths"][0]["id"] = "other"
+        with self.assertRaisesRegex(ValidationError, "exactly cover"):
+            aggregate_qor(
+                runtime,
+                self.reports["phase3"],
+                self.reports["phase4"],
+                self.reports["phase5"],
+                self.reports["phase6"],
+                broken,
+                self.platform,
+                routes=self.routes,
+                schedule=self.schedule,
+            )
 
     def test_qor_uses_versioned_board_link_delay_bound(self):
         physical = self._physical_summary()
@@ -821,7 +903,7 @@ class Phase7CTest(unittest.TestCase):
                 routes_path=paths["routes"],
                 board_link_timing_path=paths["link_timing"],
             )
-            self.assertEqual(closed["status"], "pass")
+            self.assertEqual(closed["status"], "incomplete")
             self.assertIn("system_timing", closed)
             self.assertEqual(
                 closed["system_timing"]["paths"][0][

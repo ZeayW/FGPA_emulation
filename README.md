@@ -298,13 +298,13 @@ cannot silently fall back to the historical routing provider.
 After both physical arms finish, the in-tree comparison gate independently
 rehashes and validates both complete flows, requires identical EmuIR,
 assignment, TimingPathDB, and partition weights, checks the frozen provider
-pair, and reconstructs cross-FPGA global Phase 7 WNS/TNS and closure deltas.
-The default WNS/TNS terminology always means this whole-design composition:
-routed intra-FPGA logic and boundary stages plus the concrete Phase 5 slot
-wait and board-link delay on every original cross-FPGA TimingPathDB path.
+pair, and reconstructs whole-design Phase 7 WNS/TNS and closure deltas.  The
+default WNS/TNS terminology means the exact union of every original
+TimingPathDB path: routed same-FPGA paths plus routed intra-FPGA/boundary
+stages and concrete Phase 5 slot wait/board-link delay for cross-FPGA paths.
 Optimizer-compressed representatives are expanded before global TNS is
-summed. Per-FPGA backend WNS/TNS remains separately labelled physical
-diagnostic data and is not the default global result:
+summed. Per-FPGA backend WNS/TNS and cross-FPGA-only WNS/TNS remain separately
+labelled diagnostic/subset data and are not the default global result:
 
 ```bash
 emuflow multi-fpga compare-routing-tdm \
@@ -313,26 +313,29 @@ emuflow multi-fpga compare-routing-tdm \
   --output build/routing-tdm-comparison.json
 ```
 
-The report is labelled `complete-phase7-global-timing-source-bound-ab` and
-requires 100% original cross-FPGA path coverage. A Phase 4/5-only run, mixed
+The report is labelled
+`complete-phase7-whole-design-timing-source-bound-ab` and requires exact,
+disjoint coverage of 100% of original local and cross-FPGA paths. A Phase
+4/5-only run, mixed
 upstream artifacts, a changed flow report, incomplete TimingPathDB member
 coverage, or either arm with an unrouted net/DRC violation is rejected rather
 than reported as QoR evidence.
 
-The frozen connected-PicoRV32 acceptance run completed both physical arms on
+An earlier frozen connected-PicoRV32 acceptance run completed both physical arms on
 4 FPGAs and 67,674 instances, with zero unrouted nets, zero DRC violations,
-and zero cycle-equivalence mismatches. All 24 original cross-FPGA paths (24
-uncompressed representatives) were covered. The historical baseline produced
-target-clock global WNS/TNS of `-83.052828595 ns` / `-1268.355281124 ns`; the
-global-candidate routing plus timing-DAG TDM path produced
-`-83.055118320 ns` / `-1275.5335078091 ns`. Thus final global WNS regressed by
-`0.002289725 ns` and global TNS regressed by `7.1782266851 ns`. Runtime-clock
-global WNS changed from `546.947171405 ns` to `546.944881680 ns` and both TNS
-values were zero. The candidate's per-FPGA physical WNS diagnostic improved
+and zero cycle-equivalence mismatches. It covered 24 selected cross-FPGA paths
+but did not include the same-FPGA TimingPathDB population. Its historical
+baseline cross-FPGA-subset WNS/TNS was `-83.052828595 ns` /
+`-1268.355281124 ns`; the global-candidate routing plus timing-DAG TDM path produced
+`-83.055118320 ns` / `-1275.5335078091 ns`. Thus subset WNS regressed by
+`0.002289725 ns` and subset TNS regressed by `7.1782266851 ns`.
+Runtime-clock subset WNS changed from `546.947171405 ns` to
+`546.944881680 ns`, and both subset TNS values were zero. The candidate's
+per-FPGA physical WNS diagnostic improved
 from `18.16787 ns` to `18.31778 ns`, which demonstrates why that local metric
-must not substitute for whole-design timing. The candidate remains opt-in:
-this experiment validates integration and determinism, but does not support a
-default-provider QoR promotion.
+must not substitute for whole-design timing. These historical subset numbers
+are retained as integration evidence but are explicitly superseded as final
+QoR; they cannot support a default-provider promotion.
 
 If an external physical tool environment is repaired after Phase 1--6 has
 already passed, the checked resume gate seals that independently completed
@@ -1307,7 +1310,7 @@ its virtual DUT frequency is the fabric frequency divided by the selected
 frame length. Original-clock path slack and emulation runtime frequency are
 reported separately. Before physical implementation, timing is explicitly
 qualified as a pre-placement estimate. With `--physical`, Phase 7C replaces
-that estimate with `system-timing/v1`: concrete link/TDM delay is combined per
+that estimate with `system-timing/v2`: concrete link/TDM delay is combined per
 path with the chosen backend's post-route DUT and interface delays. Phase 6
 records every scheduled TX/RX endpoint in `boundary-identity/v1`. Vivado
 queries those routed interfaces through Tcl, while the open backend evaluates
@@ -1328,6 +1331,14 @@ result, and closed combined virtual runtime-clock timing. Local
 original-target-clock WNS/TNS remains a reported physical QoR metric rather
 than the pausible-clock execution gate; `timing_met=false` is therefore a
 meaningful result, not a malformed artifact.
+
+For the open backend, Phase 7 additionally queries every original same-FPGA
+TimingPathDB launch/capture pair in the routed VPR timing graph and publishes
+`local-path-timing/v1`. `system-timing/v2` accepts the `whole-original-design`
+scope only when the local path IDs and expanded cross-FPGA member IDs are
+disjoint and their count plus canonical set hash exactly matches the sealed
+source TimingPathDB. Without that proof it reports
+`cross-fpga-path-subset`, and the final A/B validator rejects a global claim.
 
 ### Source-backed Arm MPS4 BoardDB
 

@@ -130,10 +130,13 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             "physical": _physical(value),
             "runtime": {
                 "system_timing": {
-                    "schema": "emuflow.system-timing/v1",
+                    "schema": "emuflow.system-timing/v2",
                     "status": "pass",
+                    "timing_scope": "whole-original-design",
                     "summary": {
-                        "original_cross_fpga_paths": 2,
+                        "original_paths": 2,
+                        "original_local_paths": 1,
+                        "original_cross_fpga_paths": 1,
                         "compressed_representative_paths": 1,
                         "original_path_coverage": 1.0,
                     },
@@ -189,6 +192,36 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             tampered["physical_delta_upgrade_minus_baseline"]["worst_wns_ns"] = 99
             with self.assertRaises(ValidationError):
                 validate_system_route_tdm_ab_comparison(tampered)
+
+    def test_rejects_cross_fpga_subset_mislabeled_as_global(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+            )
+            up_report = self._report(
+                upgrade, GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER, -0.25,
+            )
+            base_report["runtime"]["system_timing"]["timing_scope"] = (
+                "cross-fpga-path-subset"
+            )
+            write_json(baseline / "multi-fpga-flow-report.json", base_report)
+            write_json(upgrade / "multi-fpga-flow-report.json", up_report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "cross-FPGA-only subset"
+                ):
+                    build_system_route_tdm_ab_comparison(
+                        baseline, upgrade, root / "comparison.json"
+                    )
 
     def test_normalizes_only_ephemeral_opensta_staging_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:

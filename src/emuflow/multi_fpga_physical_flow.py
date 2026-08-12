@@ -20,6 +20,11 @@ from .logic_segment_timing import (
     write_vivado_logic_segment_query,
     write_vpr_logic_segment_query,
 )
+from .local_path_timing import (
+    import_vpr_local_path_timing,
+    validate_local_path_timing,
+    write_vpr_local_path_query,
+)
 from .lowering import run_placement_ir_lowering
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
@@ -568,6 +573,10 @@ def run_multi_fpga_physical_flow(
             logic_identity_path = None
             logic_query_path = None
             logic_raw_path = None
+            local_query_report = None
+            local_identity_path = None
+            local_query_path = None
+            local_raw_path = None
             if all(path is not None for path in logic_context):
                 logic_identity_path = fpga_root / "logic-segment-identity.json"
                 logic_query_path = fpga_root / "vpr-logic-segment-query.tsv"
@@ -587,6 +596,21 @@ def run_multi_fpga_physical_flow(
                 logic_raw_path = (
                     fpga_root / "vpr-route" / "logic-segment-timing.tsv"
                 )
+                local_identity_path = fpga_root / "local-path-identity.json"
+                local_query_path = fpga_root / "vpr-local-path-query.tsv"
+                local_query_report = write_vpr_local_path_query(
+                    original_ir_path,
+                    assignment_path,
+                    path_database_path,
+                    routes_path,
+                    merged_ir,
+                    fpga_id,
+                    local_query_path,
+                    local_identity_path,
+                )
+                local_raw_path = (
+                    fpga_root / "vpr-route" / "local-path-timing.tsv"
+                )
             route_report = run_vpr_route_packed(
                 architecture_path,
                 circuit,
@@ -601,6 +625,8 @@ def run_multi_fpga_physical_flow(
                 boundary_output=boundary_raw_path,
                 logic_query=logic_query_path,
                 logic_output=logic_raw_path,
+                local_path_query=local_query_path,
+                local_path_output=local_raw_path,
                 sdc_file=runtime_sdc,
             )
             boundary_timing_path = fpga_root / "boundary-timing.json"
@@ -626,6 +652,23 @@ def run_multi_fpga_physical_flow(
                     "status": "pass",
                     "query": logic_query_report,
                     "import": logic_import_report,
+                }
+            local_timing_stage = None
+            if (
+                local_query_report is not None
+                and local_identity_path is not None
+                and local_raw_path is not None
+            ):
+                local_timing_path = fpga_root / "local-path-timing.json"
+                local_import_report = import_vpr_local_path_timing(
+                    local_raw_path,
+                    local_identity_path,
+                    local_timing_path,
+                )
+                local_timing_stage = {
+                    "status": "pass",
+                    "query": local_query_report,
+                    "import": local_import_report,
                 }
             physical_delays = _physical_clock_delays(
                 route_report, eblif_report
@@ -706,6 +749,11 @@ def run_multi_fpga_physical_flow(
                     **(
                         {"logic_segment_timing": logic_timing_stage}
                         if logic_timing_stage is not None
+                        else {}
+                    ),
+                    **(
+                        {"local_path_timing": local_timing_stage}
+                        if local_timing_stage is not None
                         else {}
                     ),
                 }
@@ -896,6 +944,19 @@ def run_multi_fpga_physical_flow(
         }
         for database in physical_summary["logic_segment_timing"].values():
             validate_logic_segment_timing(database)
+        if backend == "open":
+            physical_summary["local_path_timing"] = {
+                item["fpga"]: read_json(
+                    Path(
+                        item["stages"]["local_path_timing"]["import"][
+                            "output"
+                        ]
+                    )
+                )
+                for item in records
+            }
+            for database in physical_summary["local_path_timing"].values():
+                validate_local_path_timing(database)
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )

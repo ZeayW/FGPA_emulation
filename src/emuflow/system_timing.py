@@ -9,11 +9,15 @@ from .board_link_timing import validate_board_link_timing
 from .boundary_timing import validate_boundary_timing_database
 from .errors import ValidationError
 from .logic_segment_timing import validate_logic_segment_timing
+from .local_path_timing import (
+    path_id_set_sha256,
+    validate_local_path_timing,
+)
 from .platform import Platform
 from .tdm import reconstruct_tdm_schedule_timing_paths
 
 
-SYSTEM_TIMING_SCHEMA = "emuflow.system-timing/v1"
+SYSTEM_TIMING_SCHEMA = "emuflow.system-timing/v2"
 
 
 def _finite_number(value: Any, context: str) -> float:
@@ -167,6 +171,67 @@ def _board_link_delay_database(
     }
 
 
+def _local_path_database(
+    physical_summary: Mapping[str, Any], virtual_period: float
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    raw = physical_summary.get("local_path_timing")
+    if raw is None:
+        return [], None
+    if not isinstance(raw, dict) or not raw:
+        raise ValidationError("physical local path timing map is invalid")
+    records: List[Dict[str, Any]] = []
+    source = None
+    ids = set()
+    for fpga, database in sorted(raw.items()):
+        validation = validate_local_path_timing(database)
+        if validation["fpga"] != fpga:
+            raise ValidationError("physical local path FPGA identity disagrees")
+        if source is None:
+            source = dict(database["source"])
+        elif database["source"] != source:
+            raise ValidationError("physical local path source seals disagree")
+        for item in database["paths"]:
+            path_id = item["id"]
+            if path_id in ids:
+                raise ValidationError(
+                    f"duplicate physical local timing path {path_id!r}"
+                )
+            ids.add(path_id)
+            delay = float(item["delay_ns"])
+            period = float(item["clock_period_ns"])
+            records.append(
+                {
+                    "path": path_id,
+                    "representative_path": path_id,
+                    "path_scope": "same-fpga-local",
+                    "clock_domain": item["clock_domain"],
+                    "target_period_ns": period,
+                    "virtual_period_ns": virtual_period,
+                    "logical_fpga_sequence": [fpga],
+                    "logical_cut_transitions": [],
+                    "routed_hops": [],
+                    "preplacement_fixed_delay_ns": None,
+                    "physical_logic_delay_bound_ns": delay,
+                    "physical_interface_delay_bound_ns": 0.0,
+                    "physical_interface_model": "not-applicable-local-path",
+                    "physical_logic_model": "routed-original-endpoint-exact",
+                    "physical_logic_member_path": path_id,
+                    "physical_routed_stage_delay_bound_ns": delay,
+                    "scheduled_link_tdm_delay_ns": 0.0,
+                    "scheduled_link_tdm_model_delay_ns": 0.0,
+                    "scheduled_link_tdm_model": "not-applicable-local-path",
+                    "system_delay_bound_ns": delay,
+                    "target_clock_slack_bound_ns": period - delay,
+                    "runtime_clock_slack_bound_ns": virtual_period - delay,
+                    "partition_chain_exact": True,
+                    "physical_logic_segments_exact": True,
+                    "physical_logic_segments_cone_bound": False,
+                }
+            )
+    records.sort(key=lambda item: item["path"])
+    return records, source
+
+
 def build_system_timing(
     runtime: Mapping[str, Any],
     routes: Mapping[str, Any],
@@ -222,7 +287,7 @@ def build_system_timing(
         runtime["virtual_dut_clock"]["nominal_period_ns"],
         "runtime virtual period",
     )
-    system_paths = []
+    cross_paths = []
     discontinuous_paths = 0
     exact_logic_paths = 0
     cone_bound_logic_paths = 0
@@ -385,9 +450,10 @@ def build_system_timing(
                     logic_exact = True
                     exact_logic_paths += 1
             total_delay = member_physical_delay + transport_delay
-            system_paths.append({
+            cross_paths.append({
                 "path": member,
                 "representative_path": record["path"],
+                "path_scope": "cross-fpga",
                 "clock_domain": record["clock_domain"],
                 "target_period_ns": target_period,
                 "virtual_period_ns": virtual_period,
@@ -419,6 +485,33 @@ def build_system_timing(
             })
         discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
+    local_paths, original_source = _local_path_database(
+        physical_summary, virtual_period
+    )
+    system_paths = sorted(
+        [*local_paths, *cross_paths], key=lambda item: item["path"]
+    )
+    system_ids = [path["path"] for path in system_paths]
+    if len(system_ids) != len(set(system_ids)):
+        raise ValidationError(
+            "same-FPGA and cross-FPGA timing path populations overlap"
+        )
+    if original_source is not None:
+        if (
+            len(system_ids) != original_source["original_paths"]
+            or path_id_set_sha256(system_ids)
+            != original_source["original_path_ids_sha256"]
+        ):
+            raise ValidationError(
+                "whole-design timing does not exactly cover the original "
+                "TimingPathDB path population"
+            )
+        timing_scope = "whole-original-design"
+        coverage = 1.0
+    else:
+        timing_scope = "cross-fpga-path-subset"
+        coverage = None
+
     target_worst = min(
         system_paths,
         key=lambda path: (path["target_clock_slack_bound_ns"], path["path"]),
@@ -446,10 +539,10 @@ def build_system_timing(
         "platform": platform.name,
         "qualification": (
             "staging-aware-physical-plus-concrete-link-tdm"
-            if exact_logic_paths == len(system_paths)
+            if exact_logic_paths == len(cross_paths)
             else (
                 "staging-aware-routed-physical-bounds-plus-concrete-link-tdm"
-                if measured_logic_paths == len(system_paths)
+                if measured_logic_paths == len(cross_paths)
                 else (
                     "hybrid-staging-aware-and-partition-maxima-plus-concrete-"
                     "link-tdm"
@@ -466,24 +559,25 @@ def build_system_timing(
                 )
             )
         ),
+        "timing_scope": timing_scope,
         "path_exactness": {
             "scheduled_link_tdm": True,
             "physical_boundary_endpoints": endpoint_delays is not None,
             "physical_logic_segments": (
-                exact_logic_paths == len(system_paths)
+                exact_logic_paths == len(cross_paths)
             ),
             "physical_logic_segment_bounds": (
-                measured_logic_paths == len(system_paths)
+                measured_logic_paths == len(cross_paths)
             ),
             "physical_logic_segments_endpoint_exact": (
-                exact_logic_paths == len(system_paths)
+                exact_logic_paths == len(cross_paths)
             ),
             "physical_model": (
                 "routed-staging-chain-exact"
-                if exact_logic_paths == len(system_paths)
+                if exact_logic_paths == len(cross_paths)
                 else (
                     "routed-staging-chain-upper-bounds"
-                    if measured_logic_paths == len(system_paths)
+                    if measured_logic_paths == len(cross_paths)
                     else (
                         "hybrid-routed-staging-chain-and-partition-maxima"
                         if measured_logic_paths > 0
@@ -493,7 +587,8 @@ def build_system_timing(
             ),
             "endpoint_exact_logic_paths": exact_logic_paths,
             "cone_bound_logic_paths": cone_bound_logic_paths,
-            "fallback_logic_paths": len(system_paths) - measured_logic_paths,
+            "fallback_logic_paths": len(cross_paths) - measured_logic_paths,
+            "local_original_paths_endpoint_exact": len(local_paths),
             "discontinuous_compressed_paths": discontinuous_paths,
         },
         "physical_source": {
@@ -528,9 +623,20 @@ def build_system_timing(
         },
         "summary": {
             "timing_paths": len(system_paths),
-            "original_cross_fpga_paths": len(system_paths),
+            "original_paths": (
+                original_source["original_paths"]
+                if original_source is not None
+                else None
+            ),
+            "original_local_paths": len(local_paths),
+            "original_cross_fpga_paths": len(cross_paths),
             "compressed_representative_paths": len(records),
-            "original_path_coverage": 1.0,
+            "original_path_coverage": coverage,
+            "original_path_ids_sha256": (
+                original_source["original_path_ids_sha256"]
+                if original_source is not None
+                else None
+            ),
             "maximum_system_delay_bound_ns": maximum_delay,
         },
         "paths": system_paths,

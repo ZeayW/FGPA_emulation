@@ -40,9 +40,13 @@ These requirements apply to all work in this repository.
 ## Default timing-QoR terminology is system-global
 
 - Unless a report explicitly qualifies the scope, `WNS` and `TNS` mean the
-  cross-FPGA, whole-original-design timing result after Phase 7.  This result
-  must compose routed intra-FPGA logic and boundary delay with the concrete
-  Phase 5 slot wait and board-link delay on every original TimingPathDB path.
+  whole-original-design timing result after Phase 7, including both paths
+  whose endpoints remain on one FPGA and paths that cross one or more FPGAs.
+  For cross-FPGA paths, the result must compose routed intra-FPGA logic and
+  boundary delay with the concrete Phase 5 slot wait and board-link delay.
+  For same-FPGA paths, it must use the corresponding post-route local path
+  delay.  Together these two disjoint sets must cover every original
+  TimingPathDB path exactly once.
 - `global WNS` is the minimum composed slack over all original design paths.
   `global TNS` is the sum of every negative composed path slack, counted once
   per original TimingPathDB path.  A timing-equivalent representative used by
@@ -52,6 +56,11 @@ These requirements apply to all work in this repository.
   from per-FPGA endpoint reports, must be labelled `per-FPGA physical WNS/TNS`.
   It is a physical diagnostic and must never be presented as the default or
   final global design timing result.
+- WNS/TNS formed only from cross-FPGA paths must be labelled
+  `cross-FPGA-path-subset WNS/TNS`.  Crossing the board does not by itself make
+  that subset a whole-design result.  It must never be labelled `global` unless
+  the same-FPGA path population is also included and exact set coverage of the
+  complete original TimingPathDB is independently verified.
 - Every final global timing claim must report original-path coverage,
   compressed-representative coverage, physical-delay exactness/bound status,
   target-clock and virtual-runtime-clock WNS/TNS, and negative-path counts.

@@ -45,7 +45,7 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                                    const char* query_environment,
                                    const char* output_environment,
                                    const char* report_name,
-                                   bool logic_segments) {
+                                   int query_class) {
     const char* query_env = std::getenv(query_environment);
     const char* output_env = std::getenv(output_environment);
     if (query_env == nullptr && output_env == nullptr) {
@@ -85,14 +85,15 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
             continue;
         }
         auto fields = split_tabs(line);
-        const bool kind_valid = logic_segments
-                                    ? (fields.size() == 4
-                                       && (fields[1] == "launch"
-                                           || fields[1] == "transition"
-                                           || fields[1] == "capture"))
-                                    : (fields.size() == 4
-                                       && (fields[1] == "tx"
-                                           || fields[1] == "rx"));
+        const bool kind_valid =
+            fields.size() == 4
+            && ((query_class == 0
+                 && (fields[1] == "tx" || fields[1] == "rx"))
+                || (query_class == 1
+                    && (fields[1] == "launch"
+                        || fields[1] == "transition"
+                        || fields[1] == "capture"))
+                || (query_class == 2 && fields[1] == "local"));
         if (!kind_valid || fields[0].empty()
             || fields[2].empty() || fields[3].empty()) {
             VPR_THROW(VPR_ERROR_TIMING,
@@ -382,12 +383,17 @@ void generate_setup_timing_stats(const std::string& prefix,
                                   "EMUFLOW_VPR_BOUNDARY_QUERY",
                                   "EMUFLOW_VPR_BOUNDARY_OUTPUT",
                                   "boundary",
-                                  false);
+                                  0);
     write_emuflow_endpoint_timing(delay_calc,
                                   "EMUFLOW_VPR_LOGIC_QUERY",
                                   "EMUFLOW_VPR_LOGIC_OUTPUT",
                                   "logic segment",
-                                  true);
+                                  1);
+    write_emuflow_endpoint_timing(delay_calc,
+                                  "EMUFLOW_VPR_LOCAL_PATH_QUERY",
+                                  "EMUFLOW_VPR_LOCAL_PATH_OUTPUT",
+                                  "original local path",
+                                  2);
 
     if (analysis_opts.timing_report_skew) {
         timing_reporter.report_skew_setup(prefix + "report_skew.setup.rpt", *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);
