@@ -61,8 +61,9 @@ module picorv32_x32_ring_top (
                 ring_state[(core + 1) % 32],
                 ring_state[core % 32]
             };
-            wire [31:0] coupled_irq =
-                irq[core*32 +: 32] ^ {24'b0, ring_irq};
+            wire [31:0] coupled_irq = irq[core*32 +: 32];
+            wire coupled_mem_ready =
+                mem_ready[core] ^ ^ring_irq;
 
             picorv32 cpu (
                 .clk(clk),
@@ -70,7 +71,7 @@ module picorv32_x32_ring_top (
                 .trap(trap[core]),
                 .mem_valid(mem_valid[core]),
                 .mem_instr(mem_instr[core]),
-                .mem_ready(mem_ready[core]),
+                .mem_ready(coupled_mem_ready),
                 .mem_addr(mem_addr[core*32 +: 32]),
                 .mem_wdata(mem_wdata[core*32 +: 32]),
                 .mem_wstrb(mem_wstrb[core*4 +: 4]),
