@@ -37,6 +37,7 @@ def run_phase4(
     tdm_feedback_routes_path: Optional[Path] = None,
     tdm_feedback_schedule_path: Optional[Path] = None,
     tdm_feedback_ratio_plan_path: Optional[Path] = None,
+    candidate_workers: int = 1,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
     platform = Platform.load(platform_path)
@@ -107,6 +108,7 @@ def run_phase4(
             provider=provider,
             candidate_pool_path=candidate_pool_path,
             tdm_feedback=tdm_feedback,
+            candidate_workers=candidate_workers,
         )
         validation = validate_native_system_routes(
             assignment,
@@ -137,6 +139,7 @@ def run_phase4(
             provider=provider,
             candidate_pool_path=candidate_pool_path,
             tdm_feedback=tdm_feedback,
+            candidate_workers=candidate_workers,
         )
         validation = validate_native_system_routes(
             assignment,

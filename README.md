@@ -1744,7 +1744,14 @@ tree master selection.
 The opt-in Phase 4 provider `timing-aware-global-candidate-v1` consumes that
 boundary in the native kernel.  For compact pools it exhaustively solves the
 restricted master over one tree per demand; larger candidate products use a
-deterministic coordinate large-neighborhood search.  Every move is accepted
+deterministic batch-conflict large-neighborhood search. Candidate generation
+and non-conflicting refinement proposals can run concurrently with
+`--candidate-workers`; conflict batches require both disjoint capacity-domain
+footprints and disjoint affected STA paths. Every proposal is committed in
+stable path order and globally rechecked, so workers 1, 2, and N produce the
+same public routes and candidate-pool bytes. An independent Python
+reconstruction checks the conflict coloring and reported maximum batch width.
+Every move is accepted
 only after global capacity and the same lexicographic route/TDM timing
 objective are recomputed.  A separate Python oracle exhaustively evaluates
 the compact candidate product, and regression coverage includes a case whose

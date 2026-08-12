@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <fstream>
+#include <future>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -103,6 +104,7 @@ struct Input {
   // Zero means unconstrained.  Positive values bound every source-to-sink
   // route-tree path by its number of board links.
   int max_route_hops = 0;
+  int candidate_workers = 1;
   std::vector<Arc> arcs;
   std::vector<Demand> demands;
   std::vector<TimingPath> paths;
@@ -131,12 +133,13 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
-  const bool input_v8 = magic == "EMUFLOW_TLR_INPUT_V8";
+  const bool input_v9 = magic == "EMUFLOW_TLR_INPUT_V9";
+  const bool input_v8 = magic == "EMUFLOW_TLR_INPUT_V8" || input_v9;
   const bool input_v7 = magic == "EMUFLOW_TLR_INPUT_V7" || input_v8;
   const bool input_v6 = magic == "EMUFLOW_TLR_INPUT_V6";
   const bool input_v5 = magic == "EMUFLOW_TLR_INPUT_V5";
   const bool input_v4 = magic == "EMUFLOW_TLR_INPUT_V4";
-  if (!input_v8 && !input_v7 && !input_v6 && !input_v5 && !input_v4 &&
+  if (!input_v9 && !input_v8 && !input_v7 && !input_v6 && !input_v5 && !input_v4 &&
       magic != "EMUFLOW_TLR_INPUT_V3") {
     throw std::runtime_error("unsupported input header: " + magic);
   }
@@ -184,6 +187,13 @@ Input read_input(const std::string& path) {
         if (model.max_route_hops < 0) {
           throw std::runtime_error(
               "maximum route hops must be zero or positive");
+        }
+      }
+      if (input_v9) {
+        stream >> model.candidate_workers;
+        if (model.candidate_workers <= 0) {
+          throw std::runtime_error(
+              "candidate workers must be a positive integer");
         }
       }
     } else if (kind == "ARC") {
@@ -303,19 +313,59 @@ class Router {
     // strong for delay while the connection router usually needs fewer
     // bit-hops for high-fanout nets.
     const std::vector<double> initial_history = history_;
-    Candidate baseline = route_candidate(order, false);
-    shortest_candidate_routes_ = baseline.routes;
-    history_ = initial_history;
+    Candidate baseline;
     Candidate balanced;
     Candidate steiner;
-    if (model_.topology_mode >= 1) {
+    std::future<Candidate> baseline_future;
+    std::future<Candidate> balanced_future;
+    if (model_.topology_mode == 2 && model_.candidate_workers > 1) {
+      baseline_future = std::async(
+          std::launch::async,
+          [this]() {
+            Router worker(model_);
+            worker.lock_shared_directions();
+            return worker.route_candidate(
+                worker.timing_aware_order(),
+                CandidateGenerator::kShortestPath);
+          });
+      ++parallel_candidate_tasks_;
+      if (model_.candidate_workers > 2) {
+        balanced_future = std::async(
+            std::launch::async,
+            [this]() {
+              Router worker(model_);
+              worker.lock_shared_directions();
+              return worker.route_candidate(
+                  worker.timing_aware_order(),
+                  CandidateGenerator::kDelayDemandBalanced);
+            });
+        ++parallel_candidate_tasks_;
+      }
+      if (model_.candidate_workers == 2) {
+        balanced = route_candidate(order, true);
+        history_ = initial_history;
+      }
+      steiner = route_candidate(
+          order, CandidateGenerator::kNearestTerminalSteiner);
+      history_ = initial_history;
+      baseline = baseline_future.get();
+      if (model_.candidate_workers > 2) {
+        balanced = balanced_future.get();
+      }
+    } else {
+      baseline = route_candidate(order, false);
+    }
+    shortest_candidate_routes_ = baseline.routes;
+    history_ = initial_history;
+    if (model_.topology_mode >= 1 &&
+        !(model_.topology_mode == 2 && model_.candidate_workers > 1)) {
       balanced = route_candidate(order, true);
-      balanced_candidate_routes_ = balanced.routes;
       history_ = initial_history;
       steiner = route_candidate(
           order, CandidateGenerator::kNearestTerminalSteiner);
-      steiner_candidate_routes_ = steiner.routes;
     }
+    balanced_candidate_routes_ = balanced.routes;
+    steiner_candidate_routes_ = steiner.routes;
     baseline_candidate_feasible_ = baseline.feasible;
     balanced_candidate_feasible_ = balanced.feasible;
     steiner_candidate_feasible_ = steiner.feasible;
@@ -364,6 +414,10 @@ class Router {
       run_candidate_master(order);
     }
 
+    if (model_.topology_mode == 2) {
+      run_batched_refinement();
+      return;
+    }
     Objective best = objective();
     for (int round = 0; round < model_.reroute_rounds; ++round) {
       const int critical_path =
@@ -472,6 +526,15 @@ class Router {
     output << "METRIC master_switches " << master_switches_ << '\n';
     output << "METRIC master_exact "
            << static_cast<int>(master_exact_) << '\n';
+    output << "METRIC candidate_workers " << model_.candidate_workers << '\n';
+    output << "METRIC parallel_candidate_tasks "
+           << parallel_candidate_tasks_ << '\n';
+    output << "METRIC reroute_conflict_batches "
+           << reroute_conflict_batches_ << '\n';
+    output << "METRIC maximum_parallel_batch "
+           << maximum_parallel_batch_ << '\n';
+    output << "METRIC parallel_reroute_tasks "
+           << parallel_reroute_tasks_ << '\n';
     output << "METRIC selected_delay_demand_balanced "
            << static_cast<int>(selected_balanced_) << '\n';
     output << "METRIC worst_slack_ns " << final.worst_slack_ns << '\n';
@@ -497,6 +560,203 @@ class Router {
     std::vector<double> history;
     Objective objective;
   };
+
+  struct RerouteWork {
+    int path = -1;
+    std::vector<int> demands;
+    std::set<int> capacity_domains;
+    std::set<int> timing_paths;
+  };
+
+  struct RerouteProposal {
+    int path = -1;
+    bool generated = false;
+    std::vector<std::pair<int, Route>> replacements;
+  };
+
+  static bool intersects(const std::set<int>& left,
+                         const std::set<int>& right) {
+    auto first = left.begin();
+    auto second = right.begin();
+    while (first != left.end() && second != right.end()) {
+      if (*first == *second) {
+        return true;
+      }
+      if (*first < *second) {
+        ++first;
+      } else {
+        ++second;
+      }
+    }
+    return false;
+  }
+
+  std::vector<std::vector<RerouteWork>> build_reroute_batches() const {
+    std::vector<std::set<int>> paths_by_demand(model_.demands.size());
+    for (int path = 0; path < static_cast<int>(model_.paths.size()); ++path) {
+      for (int demand : model_.paths[path].demands) {
+        paths_by_demand[demand].insert(path);
+      }
+    }
+    std::vector<int> order(model_.paths.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [this](int left, int right) {
+      const double left_slack = normalized_slack(
+          model_.paths[left], model_.paths[left].baseline_slack_ns);
+      const double right_slack = normalized_slack(
+          model_.paths[right], model_.paths[right].baseline_slack_ns);
+      if (std::abs(left_slack - right_slack) > kEps) {
+        return left_slack < right_slack;
+      }
+      return left < right;
+    });
+    std::vector<RerouteWork> work;
+    for (int path : order) {
+      RerouteWork item;
+      item.path = path;
+      item.demands = model_.paths[path].demands;
+      std::sort(item.demands.begin(), item.demands.end());
+      item.demands.erase(
+          std::unique(item.demands.begin(), item.demands.end()),
+          item.demands.end());
+      for (int demand : item.demands) {
+        item.timing_paths.insert(
+            paths_by_demand[demand].begin(), paths_by_demand[demand].end());
+        const std::vector<const std::vector<Route>*> alternatives = {
+            &shortest_candidate_routes_, &balanced_candidate_routes_,
+            &steiner_candidate_routes_, &routes_};
+        for (const auto* routes : alternatives) {
+          if (routes->size() != model_.demands.size()) {
+            continue;
+          }
+          for (int arc : (*routes)[demand].arcs) {
+            item.capacity_domains.insert(
+                model_.arcs[arc].capacity_domain);
+          }
+        }
+      }
+      if (!item.demands.empty()) {
+        work.push_back(std::move(item));
+      }
+    }
+    std::vector<std::vector<RerouteWork>> batches;
+    for (const RerouteWork& item : work) {
+      bool placed = false;
+      for (auto& batch : batches) {
+        bool conflict = false;
+        for (const RerouteWork& other : batch) {
+          if (intersects(item.capacity_domains, other.capacity_domains) ||
+              intersects(item.timing_paths, other.timing_paths)) {
+            conflict = true;
+            break;
+          }
+        }
+        if (!conflict) {
+          batch.push_back(item);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        batches.push_back({item});
+      }
+    }
+    return batches;
+  }
+
+  RerouteProposal propose_reroute(int path) const {
+    Router worker(*this);
+    RerouteProposal proposal;
+    proposal.path = path;
+    std::vector<int> affected = worker.model_.paths[path].demands;
+    std::sort(affected.begin(), affected.end());
+    affected.erase(
+        std::unique(affected.begin(), affected.end()), affected.end());
+    std::set<int> discouraged;
+    for (int demand : affected) {
+      for (int arc : worker.routes_[demand].arcs) {
+        discouraged.insert(arc);
+      }
+      worker.add_usage(
+          worker.routes_[demand], -worker.model_.demands[demand].width);
+    }
+    try {
+      for (int demand : affected) {
+        worker.routes_[demand] = worker.route_for_generator(
+            demand, worker.master_selection_[demand], discouraged);
+        worker.add_usage(
+            worker.routes_[demand], worker.model_.demands[demand].width);
+        proposal.replacements.push_back(
+            {demand, worker.routes_[demand]});
+      }
+      proposal.generated = worker.capacity_legal();
+    } catch (const std::runtime_error&) {
+      proposal.generated = false;
+    }
+    return proposal;
+  }
+
+  void run_batched_refinement() {
+    const auto batches = build_reroute_batches();
+    reroute_conflict_batches_ = static_cast<int>(batches.size());
+    for (const auto& batch : batches) {
+      maximum_parallel_batch_ = std::max(
+          maximum_parallel_batch_, static_cast<int>(batch.size()));
+    }
+    Objective best = objective();
+    const int batch_limit = std::min(
+        model_.reroute_rounds, static_cast<int>(batches.size()));
+    for (int batch_index = 0; batch_index < batch_limit; ++batch_index) {
+      const auto& batch = batches[batch_index];
+      std::vector<RerouteProposal> proposals;
+      for (std::size_t first = 0; first < batch.size();
+           first += model_.candidate_workers) {
+        const std::size_t last = std::min(
+            batch.size(), first + model_.candidate_workers);
+        std::vector<std::future<RerouteProposal>> futures;
+        for (std::size_t index = first; index < last; ++index) {
+          if (model_.candidate_workers == 1) {
+            proposals.push_back(propose_reroute(batch[index].path));
+          } else {
+            futures.push_back(std::async(
+                std::launch::async, [this, path = batch[index].path]() {
+                  return propose_reroute(path);
+                }));
+            ++parallel_reroute_tasks_;
+          }
+        }
+        for (auto& future : futures) {
+          proposals.push_back(future.get());
+        }
+      }
+      std::sort(
+          proposals.begin(), proposals.end(),
+          [](const RerouteProposal& left, const RerouteProposal& right) {
+            return left.path < right.path;
+          });
+      for (const RerouteProposal& proposal : proposals) {
+        const std::vector<Route> route_backup = routes_;
+        const std::vector<long long> usage_backup = usage_;
+        if (proposal.generated) {
+          for (const auto& [demand, route] : proposal.replacements) {
+            add_usage(routes_[demand], -model_.demands[demand].width);
+            routes_[demand] = route;
+            add_usage(routes_[demand], model_.demands[demand].width);
+          }
+        }
+        const Objective candidate =
+            proposal.generated ? objective() : Objective{};
+        if (proposal.generated && capacity_legal() && better(candidate, best)) {
+          best = candidate;
+          ++accepted_reroutes_;
+        } else {
+          routes_ = route_backup;
+          usage_ = usage_backup;
+          ++rolled_back_reroutes_;
+        }
+      }
+    }
+  }
 
   Candidate route_candidate(const std::vector<int>& order,
                             bool delay_demand_balanced) {
@@ -1693,6 +1953,10 @@ class Router {
   int master_rounds_ = 0;
   int master_switches_ = 0;
   bool master_exact_ = false;
+  int parallel_candidate_tasks_ = 0;
+  int reroute_conflict_batches_ = 0;
+  int maximum_parallel_batch_ = 0;
+  int parallel_reroute_tasks_ = 0;
 };
 
 void usage(const char* executable) {

@@ -1827,6 +1827,12 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument("--frame-slots", type=int)
     phase4.add_argument("--max-iterations", type=int)
     phase4.add_argument(
+        "--candidate-workers",
+        type=int,
+        default=1,
+        help="parallel global-candidate generators (default: 1)",
+    )
+    phase4.add_argument(
         "--tdm-feedback",
         type=Path,
         help=(
@@ -3504,6 +3510,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             tdm_feedback_ratio_plan_path=(
                 args.tdm_feedback_ratio_plan
             ),
+            candidate_workers=args.candidate_workers,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

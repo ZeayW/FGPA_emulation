@@ -31,6 +31,7 @@ from .routing_candidates import (
     ROUTE_CANDIDATE_POOL_SCHEMA,
     validate_route_candidate_pool,
 )
+from .routing_batches import build_route_refinement_batches
 
 
 STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"
@@ -572,11 +573,12 @@ def _write_native_input(
     constraints: Mapping[str, Any],
     provider: str,
     feedback_prices: Optional[Mapping[str, float]] = None,
+    candidate_workers: int = 1,
 ) -> None:
     normalization = model["normalization"]
     with path.open("w", encoding="utf-8") as stream:
         stream.write(
-            "EMUFLOW_TLR_INPUT_V8\n"
+            "EMUFLOW_TLR_INPUT_V9\n"
             if provider == GLOBAL_CANDIDATE_PROVIDER
             else "EMUFLOW_TLR_INPUT_V7\n"
         )
@@ -603,7 +605,8 @@ def _write_native_input(
             f"{int(constraints.get('tree_edge_sum_tdm', False))} "
             f"{constraints.get('tdm_min_ratio', 1)} "
             f"{int(constraints.get('hard_sll_capacity', False))} "
-            f"{constraints.get('max_route_hops') or 0}\n"
+            f"{constraints.get('max_route_hops') or 0} "
+            f"{candidate_workers}\n"
         )
         for arc in model["arcs"]:
             stream.write(
@@ -717,6 +720,11 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                     "master_rounds",
                     "master_switches",
                     "master_exact",
+                    "candidate_workers",
+                    "parallel_candidate_tasks",
+                    "reroute_conflict_batches",
+                    "maximum_parallel_batch",
+                    "parallel_reroute_tasks",
                 }:
                     value = int(value)
                 metrics[fields[1]] = value
@@ -748,6 +756,11 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                 "master_rounds",
                 "master_switches",
                 "master_exact",
+                "candidate_workers",
+                "parallel_candidate_tasks",
+                "reroute_conflict_batches",
+                "maximum_parallel_batch",
+                "parallel_reroute_tasks",
             }
         )
         if set(candidates) != set(routes):
@@ -804,6 +817,7 @@ def route_system_native(
     provider: str = NATIVE_ROUTER_PROVIDER,
     candidate_pool_path: Optional[Path] = None,
     tdm_feedback: Optional[Mapping[str, Any]] = None,
+    candidate_workers: int = 1,
 ) -> Dict[str, Any]:
     if provider not in {
         NATIVE_ROUTER_PROVIDER,
@@ -819,6 +833,17 @@ def route_system_native(
         )
     if provider != NATIVE_ROUTER_PROVIDER and timing_paths is None:
         raise ValueError(f"{provider} requires normalized timing paths")
+    if (
+        isinstance(candidate_workers, bool)
+        or not isinstance(candidate_workers, int)
+        or candidate_workers <= 0
+    ):
+        raise ValueError("candidate_workers must be a positive integer")
+    if candidate_workers != 1 and provider != GLOBAL_CANDIDATE_PROVIDER:
+        raise ValueError(
+            "parallel candidate generation requires the global candidate "
+            "provider"
+        )
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
     )
@@ -871,6 +896,7 @@ def route_system_native(
             constraints,
             provider,
             feedback_prices,
+            candidate_workers,
         )
         completed = subprocess.run(
             [resolved, str(native_input), str(native_output)],
@@ -1093,15 +1119,37 @@ def route_system_native(
         ),
     }
     if provider == GLOBAL_CANDIDATE_PROVIDER:
+        batch_certificate = build_route_refinement_batches(
+            assignment, platform, candidate_pool, timing_paths
+        )
+        if (
+            batch_certificate["batch_count"]
+            != native["metrics"]["reroute_conflict_batches"]
+            or batch_certificate["maximum_parallel_batch"]
+            != native["metrics"]["maximum_parallel_batch"]
+        ):
+            raise EmuFlowError(
+                "TLR router conflict batches do not match independent "
+                "reconstruction"
+            )
         result["metrics"].update(
             {
                 "master_rounds": native["metrics"]["master_rounds"],
                 "master_switches": native["metrics"]["master_switches"],
                 "master_exact": bool(native["metrics"]["master_exact"]),
+                "reroute_conflict_batches": native["metrics"][
+                    "reroute_conflict_batches"
+                ],
+                "maximum_parallel_batch": native["metrics"][
+                    "maximum_parallel_batch"
+                ],
             }
         )
         result["joint_optimization"]["method"] = (
-            "checked-candidate-pool+deterministic-global-coordinate-lns-v1"
+            "checked-candidate-pool+deterministic-batch-conflict-lns-v2"
+        )
+        result["joint_optimization"]["refinement_batches"] = (
+            batch_certificate
         )
         if tdm_feedback is not None:
             result["joint_optimization"]["tdm_feedback"] = {
@@ -1425,7 +1473,7 @@ def validate_native_system_routes(
     }:
         joint = routes.get("joint_optimization")
         expected_method = (
-            "checked-candidate-pool+deterministic-global-coordinate-lns-v1"
+            "checked-candidate-pool+deterministic-batch-conflict-lns-v2"
             if routes.get("provider") == GLOBAL_CANDIDATE_PROVIDER
             else (
                 "dac25-informed-delay-demand-balanced+"

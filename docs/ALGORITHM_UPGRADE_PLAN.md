@@ -506,7 +506,13 @@ deterministic coordinate LNS above that boundary.  Its Python oracle
 independently enumerates compact products and reconstructs capacity, route
 delay, quantized TDM delay, normalized slack, utilization, and bit-hops.
 The remaining topology gap is candidate-tree column generation over a larger
-KMB/Mehlhorn and shallow-light pool, plus batch-conflict LNS. Concrete Phase
+KMB/Mehlhorn and shallow-light pool. Batch-conflict LNS is implemented: a
+deterministic coloring groups only path moves whose union candidate capacity
+domains and affected STA paths are disjoint, native workers generate proposals
+from a shared immutable snapshot, and stable serial commit rechecks the global
+objective and capacity. A separate Python reconstruction checks the batches,
+while workers=1/2/N regressions require byte-identical public artifacts.
+Concrete Phase
 5 feedback is now implemented as `emuflow.tdm-feedback/v1`: an independent
 reconstruction binds the exact prior routes and schedule to per-domain
 occupancy, wait, capacity, affected timing paths, and deterministic routing

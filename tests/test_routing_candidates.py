@@ -193,6 +193,95 @@ class RouteCandidatePoolTest(unittest.TestCase):
                 "pass",
             )
 
+    def test_parallel_candidate_and_reroute_batches_are_byte_stable(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "parallel_batches",
+                ["a", "b", "c", "d", "e", "f"],
+                [
+                    _link("ab", "a", "b", lanes=4),
+                    _link("ac", "a", "c", lanes=4),
+                    _link("bc", "b", "c", lanes=4),
+                    _link("de", "d", "e", lanes=4),
+                    _link("df", "d", "f", lanes=4),
+                    _link("ef", "e", "f", lanes=4),
+                ],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [("left", "a", ["c"]), ("right", "d", ["f"])],
+        )
+        timing = compress_sta_paths(
+            normalize_sta_paths(
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "route_test",
+                    "paths": [
+                        {
+                            "id": "left_path",
+                            "clock_domain": "clk0",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 10.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["left"],
+                        },
+                        {
+                            "id": "right_path",
+                            "clock_domain": "clk1",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 11.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["right"],
+                        },
+                    ],
+                },
+                demands_from_assignment(assignment, platform),
+            )
+        )
+        constraints = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 8,
+                "reroute_rounds": 4,
+                "link_delay_ns": {
+                    link.id: 1.0 for link in platform.links
+                },
+            },
+            platform,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pools = []
+            routes = []
+            for workers in (1, 2, 8):
+                pool = root / f"pool-{workers}.json"
+                pools.append(pool)
+                routes.append(
+                    route_system_native(
+                        assignment,
+                        platform,
+                        constraints,
+                        timing,
+                        executable=str(tlr_router()),
+                        provider=GLOBAL_CANDIDATE_PROVIDER,
+                        candidate_pool_path=pool,
+                        candidate_workers=workers,
+                    )
+                )
+            self.assertEqual(routes[0], routes[1])
+            self.assertEqual(routes[0], routes[2])
+            self.assertEqual(pools[0].read_bytes(), pools[1].read_bytes())
+            self.assertEqual(pools[0].read_bytes(), pools[2].read_bytes())
+            batching = routes[0]["joint_optimization"][
+                "refinement_batches"
+            ]
+            self.assertEqual(batching["batch_count"], 1)
+            self.assertEqual(batching["maximum_parallel_batch"], 2)
+            self.assertEqual(batching["batches"], [[0, 1]])
+
     def test_global_master_mixes_generators_across_demands(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
