@@ -1862,6 +1862,11 @@ occur and stores occupied `(resource, slot)` cells in a deterministic sparse
 table whose memory is proportional to scheduled hops.  Sparse external lane
 IDs and long frames therefore cannot create a `max-ID x frame` or
 `resource-count x frame` allocation during repeated LNS schedule rebuilds.
+Standalone Phase 5 validation rebuilds the canonical academic timing model
+once and shares it across ratio, native-slot-certificate, and final timing
+checks; the route-streaming reconstruction remains the baseline-only scale
+path.  This prevents two independently valid path representations from being
+mixed inside one academic certificate comparison.
 
 The Phase 5 ratio plan also seals a deterministic clock/protocol compatibility
 artifact. The normal pausible-clock transport uses `global-frame-cdc`: all

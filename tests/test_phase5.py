@@ -11,7 +11,7 @@ from unittest import mock
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
-from emuflow.phase5 import run_phase5
+from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import (
@@ -568,6 +568,17 @@ class Phase5Test(unittest.TestCase):
             self.assertEqual(
                 report["ratio_validation"]["status"], "pass"
             )
+            with mock.patch(
+                "emuflow.phase5._prepare_model", wraps=_prepare_model
+            ) as validate_prepare_model:
+                validation = validate_phase5(
+                    routes_path,
+                    platform_path,
+                    root / "phase5" / "schedule.json",
+                    root / "phase5" / "ratio_plan.json",
+                )
+            self.assertEqual(validate_prepare_model.call_count, 1)
+            self.assertEqual(validation["status"], "pass")
 
     def test_baseline_phase5_prepares_large_timing_model_once(self) -> None:
         routes, _platform = self._timing_dag_fixture()
