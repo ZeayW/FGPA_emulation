@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <set>
@@ -271,7 +272,12 @@ Input read_input(const std::string& path) {
 class Router {
  public:
   explicit Router(Input model)
-      : model_(std::move(model)),
+      : Router(std::make_shared<const Input>(std::move(model))) {}
+
+ private:
+  explicit Router(std::shared_ptr<const Input> model)
+      : owned_model_(std::move(model)),
+        model_(*owned_model_),
         adjacency_(model_.node_count),
         usage_(capacity_domain_count(), 0),
         history_(capacity_domain_count(), 0.0),
@@ -303,6 +309,8 @@ class Router {
           maximum <= minimum + kEps ? 1.0 : (maximum - slack) / (maximum - minimum);
     }
   }
+
+ public:
 
   void run() {
     lock_shared_directions();
@@ -342,7 +350,7 @@ class Router {
           const CandidateGenerator generator = generators[index];
           futures.push_back(std::async(
               std::launch::async, [this, generator]() {
-                Router worker(model_);
+                Router worker(owned_model_);
                 worker.lock_shared_directions();
                 return Generated{
                     generator,
@@ -1643,8 +1651,9 @@ class Router {
   Route shortest_path_tree_with_limit(
       int demand_index, const std::set<int>& discouraged,
       int hop_limit) const {
-    Router worker(*this);
-    worker.model_.max_route_hops = hop_limit;
+    Input limited_model = model_;
+    limited_model.max_route_hops = hop_limit;
+    Router worker(std::move(limited_model));
     return worker.hop_bounded_shortest_path_tree(
         demand_index, discouraged);
   }
@@ -2315,7 +2324,8 @@ class Router {
     return candidate.bit_hops < best.bit_hops;
   }
 
-  Input model_;
+  std::shared_ptr<const Input> owned_model_;
+  const Input& model_;
   std::vector<std::vector<int>> adjacency_;
   std::vector<long long> usage_;
   std::vector<double> history_;
