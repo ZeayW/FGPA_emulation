@@ -345,9 +345,9 @@ def _seeded_cluster_placements(
                 f"fixed I/O target {name!r} is not an I/O cluster"
             )
     if fixed_io_targets:
-        # Chimew supplies a normalized package-bank coordinate.  Keep every
-        # non-target I/O at VPR's legal seed, then reassign only the selected
-        # transport ports to the closest currently occupied legal I/O slots.
+        # Chimew supplies a normalized package-bank coordinate.  Reassign the
+        # selected transport ports to the closest legal VPR seed I/O slots,
+        # then place unrelated I/O into the remaining seed slots.
         # Reusing the seed's complete slot set guarantees legality and avoids
         # any architecture-specific edge/pin assumptions.
         io_blocks = [

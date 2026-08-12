@@ -4,7 +4,7 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
-from emuflow.vtr_eblif import emit_vtr_eblif
+from emuflow.vtr_eblif import emit_vtr_eblif, validate_vtr_eblif_report
 
 
 def _endpoint(instance, port, bit=0):
@@ -24,6 +24,37 @@ def _instance(name, cell_type, parameters=None, constants=None):
 
 
 class VtrEblifTest(unittest.TestCase):
+    def test_top_port_aliases_may_share_a_packed_io_block(self) -> None:
+        report = {
+            "schema": "emuflow.vtr-eblif-report/v1",
+            "status": "pass",
+            "source_instances": 0,
+            "source_inventory": {},
+            "memory_atom_expansion": 0,
+            "ff_control_luts": 0,
+            "emitted_atoms": 0,
+            "source_sha256": "a" * 64,
+            "output_sha256": "b" * 64,
+            "top_ports": [
+                {
+                    "port": "alias_a",
+                    "bit": 0,
+                    "direction": "input",
+                    "net": "shared_net",
+                    "packed_block": "shared_net",
+                },
+                {
+                    "port": "alias_b",
+                    "bit": 0,
+                    "direction": "input",
+                    "net": "shared_net",
+                    "packed_block": "shared_net",
+                },
+            ],
+        }
+
+        self.assertEqual(validate_vtr_eblif_report(report)["top_ports"], 2)
+
     def test_lowering_preserves_logic_and_expands_word_memory(self) -> None:
         instances = [
             _instance("lut", "LUT2", {"INIT": "1000"}),

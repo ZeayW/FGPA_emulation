@@ -353,12 +353,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 "platform": "academic_vtr_2fpga_p2p",
                 "fpgas": [],
                 "runtime_controller_rtl": "runtime.sv",
-                "position_hints": "position_hints.json",
+                "electrical_binding": "electrical_binding.json",
             }
             write_json(split / "manifest.json", manifest)
-            write_json(split / "position_hints.json", {"entries": []})
+            write_json(split / "electrical_binding.json", {"bindings": []})
             write_json(root / "schedule.json", {})
-            with self.assertRaisesRegex(ValidationError, "both position hints"):
+            with self.assertRaisesRegex(ValidationError, "position hints"):
                 run_multi_fpga_physical_flow(
                     split,
                     PLATFORM,

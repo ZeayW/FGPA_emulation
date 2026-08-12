@@ -301,7 +301,6 @@ def validate_vtr_eblif_report(report: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(top_ports, list):
         raise ValidationError("VTR eBLIF top-port map is invalid")
     identities = set()
-    packed_blocks = set()
     for record in top_ports:
         if not isinstance(record, Mapping):
             raise ValidationError("VTR eBLIF top-port record is invalid")
@@ -315,11 +314,9 @@ def validate_vtr_eblif_report(report: Mapping[str, Any]) -> Dict[str, Any]:
             or record.get("direction") not in {"input", "output"}
             or not isinstance(record.get("net"), str)
             or not isinstance(record.get("packed_block"), str)
-            or record["packed_block"] in packed_blocks
         ):
             raise ValidationError("VTR eBLIF top-port map is inconsistent")
         identities.add(identity)
-        packed_blocks.add(record["packed_block"])
     return {
         "status": "pass",
         "source_instances": instances,

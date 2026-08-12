@@ -377,9 +377,9 @@ def run_multi_fpga_physical_flow(
         position_hints = read_json(split_root / manifest["position_hints"])
     if "electrical_binding" in manifest:
         electrical_binding = read_json(split_root / manifest["electrical_binding"])
-    if (position_hints is None) != (electrical_binding is None):
+    if electrical_binding is not None and position_hints is None:
         raise ValidationError(
-            "physical Chimew anchors require both position hints and electrical binding"
+            "physical Chimew anchors require position hints with electrical binding"
         )
     runtime = build_virtual_runtime(schedule, platform)
     backend_descriptor = physical_backend_descriptor(backend)
