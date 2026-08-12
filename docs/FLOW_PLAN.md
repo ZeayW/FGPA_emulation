@@ -634,6 +634,16 @@ atom pins and evaluates their longest routed delays in the Tatum timing graph.
 Both therefore supply endpoint-exact interface delay through
 `boundary-timing/v1`.
 
+Those stable endpoints also feed a checked optional optimization loop.
+`physical-route-feedback/v1` reconstructs every scheduled TX/RX boundary
+measurement, aggregates delay onto the exact directed capacity domain, and
+combines it with the concrete Phase 5 occupancy/wait price. A repeated global-
+candidate Phase 4 run must provide the original routes, schedule, runtime,
+physical summary, and feedback artifact; all are revalidated before the C++
+router receives a price. This allows post-route lane/interface delay to
+influence the next route/TDM iteration while retaining complete Phase 7
+WNS/TNS as the non-decomposed QoR gate.
+
 For DUT logic, both physical providers expand the original STA members behind
 each compressed cross-FPGA path. A complete member is represented by routed
 `launch -> TX`, zero or more `RX -> next TX`, and `final RX -> capture`

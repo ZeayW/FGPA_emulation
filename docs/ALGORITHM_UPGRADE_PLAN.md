@@ -522,6 +522,16 @@ prices. Phase 4 requires those source artifacts and reruns the checker before
 passing prices to the native candidate generator; source, domain, or path
 tampering fails before routing. This is a checked single feedback edge, not
 yet the final iterative trust-region controller.
+Phase 7 can close a second checked edge. The
+`emuflow.physical-route-feedback/v1` artifact requires complete endpoint-keyed
+TX/RX `boundary-timing/v1` coverage and binds it to the exact routes, concrete
+schedule, runtime, and physical-summary hashes. It aggregates routed boundary
+delay per capacity domain, normalizes the result by the BoardDB fabric slot,
+and adds that price to the reconstructed schedule price. Phase 4 accepts the
+combined price only after independently revalidating every source artifact;
+changed physical delay or cross-run mixing is rejected. This is routed-
+interface feedback, not a claim that final per-FPGA WNS/TNS decomposes
+losslessly into an arc cost. Full Phase 7 A/B remains the acceptance metric.
 
 ### Selected primary route
 

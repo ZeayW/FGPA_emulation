@@ -1856,6 +1856,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="optional source ratio plan used by the feedback schedule",
     )
     phase4.add_argument(
+        "--physical-feedback",
+        type=Path,
+        help="checked Phase 7 boundary-domain feedback to add to TDM prices",
+    )
+    phase4.add_argument(
+        "--physical-feedback-runtime",
+        type=Path,
+        help="source runtime used to independently validate physical feedback",
+    )
+    phase4.add_argument(
+        "--physical-feedback-summary",
+        type=Path,
+        help="source Phase 7 physical summary with boundary timing",
+    )
+    phase4.add_argument(
+        "--physical-feedback-weight", type=float, default=1.0
+    )
+    phase4.add_argument(
         "--provider",
         choices=[
             NATIVE_ROUTER_PROVIDER,
@@ -3510,6 +3528,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             tdm_feedback_ratio_plan_path=(
                 args.tdm_feedback_ratio_plan
             ),
+            physical_feedback_path=args.physical_feedback,
+            physical_feedback_runtime_path=(
+                args.physical_feedback_runtime
+            ),
+            physical_feedback_summary_path=(
+                args.physical_feedback_summary
+            ),
+            physical_feedback_weight=args.physical_feedback_weight,
             candidate_workers=args.candidate_workers,
         )
         _print_json(report)

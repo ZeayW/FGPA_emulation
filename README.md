@@ -1785,6 +1785,14 @@ ratio legalizer and independent Python checker. Therefore this mechanism does
 not manufacture a lane per RTL clock, but it does prevent incompatible
 source-synchronous or protocol-specific traffic from being grouped silently.
 
+After a physically routed Phase 7 run, endpoint-exact TX/RX measurements can
+be projected back with `physical-route-feedback/v1`. The artifact is hash-
+bound to the routes, concrete schedule, runtime, and physical summary, and its
+capacity-domain prices are accepted by the global Phase 4 provider only after
+all source artifacts are independently replayed. This feedback supplements
+the concrete TDM occupancy/wait price; it never replaces the required complete
+Phase 7 WNS/TNS comparison.
+
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The default provider builds standalone OpenSTA from
 `engines/openroad/src/sta`, renders the versioned open FPGA timing model, and

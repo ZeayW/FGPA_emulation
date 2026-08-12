@@ -18,6 +18,10 @@ from .timing_routing import (
     validate_native_system_routes,
 )
 from .tdm_feedback import validate_tdm_feedback
+from .physical_route_feedback import (
+    combine_tdm_and_physical_feedback,
+    validate_physical_route_feedback,
+)
 
 
 PHASE4_REPORT_SCHEMA = "emuflow.phase4-report/v1"
@@ -37,6 +41,10 @@ def run_phase4(
     tdm_feedback_routes_path: Optional[Path] = None,
     tdm_feedback_schedule_path: Optional[Path] = None,
     tdm_feedback_ratio_plan_path: Optional[Path] = None,
+    physical_feedback_path: Optional[Path] = None,
+    physical_feedback_runtime_path: Optional[Path] = None,
+    physical_feedback_summary_path: Optional[Path] = None,
+    physical_feedback_weight: float = 1.0,
     candidate_workers: int = 1,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
@@ -94,6 +102,42 @@ def run_phase4(
             tdm_feedback,
             feedback_ratio_plan,
         )
+        physical_feedback_validation = None
+        if physical_feedback_path is not None:
+            if (
+                physical_feedback_runtime_path is None
+                or physical_feedback_summary_path is None
+            ):
+                raise ValueError(
+                    "--physical-feedback requires runtime and physical "
+                    "summary source artifacts"
+                )
+            physical_feedback = read_json(physical_feedback_path)
+            feedback_runtime = read_json(physical_feedback_runtime_path)
+            feedback_summary = read_json(physical_feedback_summary_path)
+            physical_feedback_validation = validate_physical_route_feedback(
+                feedback_runtime,
+                feedback_routes,
+                platform,
+                feedback_schedule,
+                feedback_summary,
+                physical_feedback,
+                feedback_ratio_plan,
+            )
+            tdm_feedback = combine_tdm_and_physical_feedback(
+                tdm_feedback,
+                physical_feedback,
+                physical_weight=physical_feedback_weight,
+            )
+    elif any(
+        path is not None
+        for path in (
+            physical_feedback_path,
+            physical_feedback_runtime_path,
+            physical_feedback_summary_path,
+        )
+    ):
+        raise ValueError("physical feedback requires --tdm-feedback")
     if provider == NATIVE_ROUTER_PROVIDER:
         if timing_paths_path is not None:
             raise ValueError(
@@ -171,10 +215,24 @@ def run_phase4(
         report["tdm_feedback"] = routes["joint_optimization"][
             "tdm_feedback"
         ]
+        if physical_feedback_path is not None:
+            report["tdm_feedback"]["source_physical_summary_sha256"] = (
+                physical_feedback["source_physical_summary_sha256"]
+            )
+            report["tdm_feedback"]["physical_weight"] = float(
+                physical_feedback_weight
+            )
         report["tdm_feedback"]["validation"] = tdm_feedback_validation
         report["artifacts"]["tdm_feedback"] = (
             "tdm_feedback.normalized.json"
         )
+        if physical_feedback_path is not None:
+            report["tdm_feedback"]["physical_validation"] = (
+                physical_feedback_validation
+            )
+            report["artifacts"]["physical_feedback"] = (
+                "physical_feedback.normalized.json"
+            )
     write_json(output_dir / "route_constraints.normalized.json", constraints)
     if timing_paths is not None:
         write_json(output_dir / "timing_paths.normalized.json", timing_paths)
@@ -182,6 +240,11 @@ def run_phase4(
         write_json(
             output_dir / "tdm_feedback.normalized.json", tdm_feedback
         )
+        if physical_feedback_path is not None:
+            write_json(
+                output_dir / "physical_feedback.normalized.json",
+                read_json(physical_feedback_path),
+            )
     write_json(output_dir / "routes.json", routes)
     write_json(output_dir / "phase4_report.json", report)
     return report
