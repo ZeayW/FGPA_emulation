@@ -235,6 +235,22 @@ class AcademicChimewTest(unittest.TestCase):
 
         baseline_physical = physical(100, 10.0, 1.0)
         chimew_physical = physical(90, 9.0, 2.0)
+        def runtime(wns: float, tns: float, failing: int) -> dict:
+            clock = {
+                "worst_slack_bound_ns": wns,
+                "total_negative_slack_bound_ns": tns,
+                "negative_slack_paths": failing,
+            }
+            return {
+                "system_timing": {
+                    "status": "pass" if wns >= 0.0 else "fail",
+                    "target_clock": dict(clock),
+                    "runtime_clock": dict(clock),
+                }
+            }
+
+        baseline_runtime = runtime(-2.0, -3.0, 2)
+        chimew_runtime = runtime(-1.0, -1.5, 1)
         report = {
             "schema": PHASE6_AB_COMPARISON_SCHEMA,
             "status": "pass",
@@ -248,8 +264,14 @@ class AcademicChimewTest(unittest.TestCase):
                 "schedule_sha256": digest,
                 "platform_sha256": digest,
             },
-            "baseline": {"physical": baseline_physical},
-            "chimew": {"physical": chimew_physical},
+            "baseline": {
+                "physical": baseline_physical,
+                "runtime": baseline_runtime,
+            },
+            "chimew": {
+                "physical": chimew_physical,
+                "runtime": chimew_runtime,
+            },
             "baseline_physical": {
                 "total_wirelength": 100,
                 "worst_critical_path_ns": 10.0,
@@ -277,6 +299,30 @@ class AcademicChimewTest(unittest.TestCase):
                 "total_tns_ns": 0.0,
                 "failing_endpoints": 0,
                 "failing_endpoint_constraints": 0,
+            },
+            "baseline_system_timing": {
+                "target_clock_worst_slack_bound_ns": -2.0,
+                "target_clock_total_negative_slack_bound_ns": -3.0,
+                "target_clock_negative_slack_paths": 2,
+                "runtime_clock_worst_slack_bound_ns": -2.0,
+                "runtime_clock_total_negative_slack_bound_ns": -3.0,
+                "runtime_clock_negative_slack_paths": 2,
+            },
+            "chimew_system_timing": {
+                "target_clock_worst_slack_bound_ns": -1.0,
+                "target_clock_total_negative_slack_bound_ns": -1.5,
+                "target_clock_negative_slack_paths": 1,
+                "runtime_clock_worst_slack_bound_ns": -1.0,
+                "runtime_clock_total_negative_slack_bound_ns": -1.5,
+                "runtime_clock_negative_slack_paths": 1,
+            },
+            "system_timing_delta": {
+                "target_clock_worst_slack_bound_ns": 1.0,
+                "target_clock_total_negative_slack_bound_ns": 1.5,
+                "target_clock_negative_slack_paths": -1,
+                "runtime_clock_worst_slack_bound_ns": 1.0,
+                "runtime_clock_total_negative_slack_bound_ns": 1.5,
+                "runtime_clock_negative_slack_paths": -1,
             },
             "pin_plan_metrics": {"signals": 2},
         }

@@ -55,7 +55,7 @@ MULTI_FPGA_FLOW_PROVIDER = (
 )
 MULTI_FPGA_MAPPING_PROFILES = ("vtr-hard-blocks", "generic-soft")
 MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
-PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v1"
+PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
 
@@ -100,6 +100,38 @@ def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _phase6_system_timing_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
+    timing = value.get("system_timing")
+    if not isinstance(timing, dict) or timing.get("status") not in {
+        "pass",
+        "fail",
+    }:
+        raise ValidationError("Phase 6 A/B arm lacks Phase 7C system timing")
+    metrics: Dict[str, Any] = {}
+    for clock in ("target_clock", "runtime_clock"):
+        record = timing.get(clock)
+        if not isinstance(record, dict):
+            raise ValidationError(
+                f"Phase 6 A/B {clock} system timing is missing"
+            )
+        for field in (
+            "worst_slack_bound_ns",
+            "total_negative_slack_bound_ns",
+            "negative_slack_paths",
+        ):
+            metric = record.get(field)
+            if (
+                isinstance(metric, bool)
+                or not isinstance(metric, (int, float))
+                or not math.isfinite(float(metric))
+            ):
+                raise ValidationError(
+                    f"Phase 6 A/B {clock}.{field} is invalid"
+                )
+            metrics[f"{clock}_{field}"] = metric
+    return metrics
+
+
 def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
     if (
         report.get("schema") != PHASE6_AB_COMPARISON_SCHEMA
@@ -134,6 +166,9 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(physical_report, dict):
             raise ValidationError(f"Phase 6 A/B {label} physical report is missing")
         validate_multi_fpga_physical_report(physical_report)
+        runtime_report = arm.get("runtime")
+        if not isinstance(runtime_report, dict):
+            raise ValidationError(f"Phase 6 A/B {label} runtime report is missing")
     baseline = report.get("baseline_physical")
     chimew = report.get("chimew_physical")
     delta = report.get("physical_delta")
@@ -188,6 +223,30 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
     }
     if delta != expected_delta:
         raise ValidationError("Phase 6 A/B physical deltas disagree")
+    baseline_system = report.get("baseline_system_timing")
+    chimew_system = report.get("chimew_system_timing")
+    system_delta = report.get("system_timing_delta")
+    if not all(
+        isinstance(value, dict)
+        for value in (baseline_system, chimew_system, system_delta)
+    ):
+        raise ValidationError("Phase 6 A/B system timing metrics are incomplete")
+    expected_baseline_system = _phase6_system_timing_metrics(
+        baseline_arm["runtime"]
+    )
+    expected_chimew_system = _phase6_system_timing_metrics(
+        chimew_arm["runtime"]
+    )
+    if baseline_system != expected_baseline_system:
+        raise ValidationError("Phase 6 A/B baseline system timing was not reconstructed")
+    if chimew_system != expected_chimew_system:
+        raise ValidationError("Phase 6 A/B Chimew system timing was not reconstructed")
+    expected_system_delta = {
+        key: expected_chimew_system[key] - expected_baseline_system[key]
+        for key in expected_baseline_system
+    }
+    if system_delta != expected_system_delta:
+        raise ValidationError("Phase 6 A/B system timing deltas disagree")
     pin_metrics = report.get("pin_plan_metrics")
     if not isinstance(pin_metrics, dict) or pin_metrics.get("signals") is None:
         raise ValidationError("Phase 6 A/B Chimew pin metrics are missing")
@@ -198,6 +257,18 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         "wns_delta_ns": expected_delta["worst_wns_ns"],
         "tns_delta_ns": expected_delta["total_tns_ns"],
         "failing_endpoint_delta": expected_delta["failing_endpoints"],
+        "target_clock_wns_delta_ns": expected_system_delta[
+            "target_clock_worst_slack_bound_ns"
+        ],
+        "target_clock_tns_delta_ns": expected_system_delta[
+            "target_clock_total_negative_slack_bound_ns"
+        ],
+        "runtime_clock_wns_delta_ns": expected_system_delta[
+            "runtime_clock_worst_slack_bound_ns"
+        ],
+        "runtime_clock_tns_delta_ns": expected_system_delta[
+            "runtime_clock_total_negative_slack_bound_ns"
+        ],
     }
 
 
@@ -1071,6 +1142,7 @@ def run_multi_fpga_flow(
         )
     )
     baseline_physical_report = None
+    baseline_runtime_report = None
     phase6_comparison = None
     effective_physical_architecture = physical_architecture
     if use_academic_chimew:
@@ -1115,6 +1187,20 @@ def run_multi_fpga_flow(
             workers=physical_workers,
         )
         baseline_physical_seconds = time.monotonic() - baseline_physical_started
+        baseline_runtime_report = run_phase7c(
+            schedule_path,
+            platform_path,
+            phase3_root / "phase3_report.json",
+            phase4_root / "phase4_report.json",
+            phase5_root / "phase5_report.json",
+            baseline_split / "phase6_report.json",
+            baseline_root / "runtime",
+            physical_summary_path=(
+                baseline_root / "physical/physical-summary.json"
+            ),
+            routes_path=routes_path,
+            board_link_timing_path=copied_link_timing_path,
+        )
         if effective_physical_architecture is None:
             fetched_architecture = (
                 baseline_root / "physical/architecture/vtr-flagship.xml"
@@ -1198,6 +1284,7 @@ def run_multi_fpga_flow(
             "baseline": {
                 "phase6": baseline_phase6_report,
                 "physical": baseline_physical_report,
+                "runtime": baseline_runtime_report,
                 "phase6_runtime_seconds": baseline_phase6_seconds,
                 "physical_runtime_seconds": baseline_physical_seconds,
             },
@@ -1305,13 +1392,6 @@ def run_multi_fpga_flow(
                     "chimew_physical_runtime_seconds": physical_seconds,
                 }
             )
-            phase6_comparison["validation"] = (
-                validate_phase6_ab_comparison(phase6_comparison)
-            )
-            write_json(
-                output_dir / "phase6-comparison/comparison-report.json",
-                phase6_comparison,
-            )
 
     runtime_root = output_dir / "runtime"
     runtime_report = run_phase7c(
@@ -1333,6 +1413,27 @@ def run_multi_fpga_flow(
     if physical and runtime_report.get("status") != "pass":
         raise ValidationError(
             "full physical flow did not close unified Phase 7C system timing"
+        )
+    if phase6_comparison is not None:
+        if baseline_runtime_report is None:
+            raise ValidationError("Phase 6 A/B baseline runtime is missing")
+        phase6_comparison["chimew"]["runtime"] = runtime_report
+        baseline_system = _phase6_system_timing_metrics(
+            baseline_runtime_report
+        )
+        chimew_system = _phase6_system_timing_metrics(runtime_report)
+        phase6_comparison["baseline_system_timing"] = baseline_system
+        phase6_comparison["chimew_system_timing"] = chimew_system
+        phase6_comparison["system_timing_delta"] = {
+            key: chimew_system[key] - baseline_system[key]
+            for key in baseline_system
+        }
+        phase6_comparison["validation"] = validate_phase6_ab_comparison(
+            phase6_comparison
+        )
+        write_json(
+            output_dir / "phase6-comparison/comparison-report.json",
+            phase6_comparison,
         )
 
     report = {

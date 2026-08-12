@@ -404,6 +404,14 @@ def build_system_timing(
         system_paths,
         key=lambda path: (path["runtime_clock_slack_bound_ns"], path["path"]),
     )
+    target_tns = sum(
+        min(0.0, path["target_clock_slack_bound_ns"])
+        for path in system_paths
+    )
+    runtime_tns = sum(
+        min(0.0, path["runtime_clock_slack_bound_ns"])
+        for path in system_paths
+    )
     maximum_delay = max(
         path["system_delay_bound_ns"] for path in system_paths
     )
@@ -479,6 +487,7 @@ def build_system_timing(
                 path["target_clock_slack_bound_ns"] < 0.0
                 for path in system_paths
             ),
+            "total_negative_slack_bound_ns": target_tns,
         },
         "runtime_clock": {
             "closure_gate": True,
@@ -490,6 +499,7 @@ def build_system_timing(
                 path["runtime_clock_slack_bound_ns"] < 0.0
                 for path in system_paths
             ),
+            "total_negative_slack_bound_ns": runtime_tns,
             "minimum_safe_period_bound_ns": maximum_delay,
             "maximum_safe_frequency_bound_mhz": 1000.0 / maximum_delay,
         },

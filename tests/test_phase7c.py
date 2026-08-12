@@ -325,6 +325,26 @@ class Phase7CTest(unittest.TestCase):
         self.assertGreater(
             qor["timing"]["runtime_clock"]["worst_slack_bound_ns"], 0.0
         )
+        target_slacks = [
+            min(0.0, path["target_clock_slack_bound_ns"])
+            for path in qor["timing"]["paths"]
+        ]
+        runtime_slacks = [
+            min(0.0, path["runtime_clock_slack_bound_ns"])
+            for path in qor["timing"]["paths"]
+        ]
+        self.assertEqual(
+            qor["timing"]["target_clock"][
+                "total_negative_slack_bound_ns"
+            ],
+            sum(target_slacks),
+        )
+        self.assertEqual(
+            qor["timing"]["runtime_clock"][
+                "total_negative_slack_bound_ns"
+            ],
+            sum(runtime_slacks),
+        )
         self.assertEqual(
             qor["timing"]["qualification"],
             "conservative-partition-physical-maxima-plus-concrete-link-tdm",
