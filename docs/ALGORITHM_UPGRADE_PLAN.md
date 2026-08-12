@@ -630,12 +630,20 @@ normalized slack, followed by completion slot and analytical slack. This
 guard prevents an improvement in the ratio surrogate from silently degrading
 the realized schedule.
 
-The concrete lane/slot realization remains the ratio-aware deterministic list
-scheduler with independent collision, precedence, round-barrier, and value
-simulation checks. Therefore the ratio/legalization upgrade is implemented,
-while multi-round time-expanded CP-SAT scheduling and scalable schedule LNS
-are still open; the stage is not yet described as a complete faithful
-TODAES/ASP-DAC 2026 reproduction.
+The concrete lane/slot realization starts from the ratio-aware deterministic
+list scheduler and is improved by a source-built C++ deterministic LNS. For a
+delayed hop on the worst path, the bounded neighborhood contains that hop and
+up to three immediately preceding blockers on its physical lane; all relative
+orders (at most `4!`) are evaluated through the complete multi-round schedule
+builder. An optional OR-Tools CP-SAT oracle (`pip install 'emuflow[cp-sat]'`)
+models medium fixed-ratio/lane instances on the time-expanded graph and proves
+the lexicographic worst-slack/completion/wait optimum using one deterministic
+solver worker. Its integer time/score certificate is independently rebuilt
+from the public artifacts. The dependency-free exhaustive oracle remains the
+small-case reference. Collision, precedence, round-barrier, value simulation,
+and timing reconstruction remain independent acceptance gates. Large public
+case and complete Phase 7 WNS/TNS qualification are still required before
+making the upgraded route/TDM providers default.
 
 ### Selected primary route
 
@@ -658,7 +666,8 @@ TODAES/ASP-DAC 2026 reproduction.
 4. **Scalable schedule construction**
    - decompose by capacity domain and timing component;
    - use list scheduling only for initialization;
-   - apply large-neighborhood repair guided by the CP-SAT model;
+   - apply bounded, deterministic large-neighborhood repair with the same
+     time-expanded legality and objective;
    - allow controlled frame-length search.
 5. **Timing reconstruction**
    - compute realized wait from concrete slots for every global STA path;

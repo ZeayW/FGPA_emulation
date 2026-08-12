@@ -861,10 +861,18 @@ def validate_tdm_schedule(
         )
     if schedule.get("provider") == TDM_ACADEMIC_SCHEDULE_PROVIDER:
         optimization = schedule.get("slot_optimization")
+        optimization_provider = (
+            optimization.get("provider")
+            if isinstance(optimization, dict)
+            else None
+        )
         if (
             not isinstance(optimization, dict)
-            or optimization.get("provider")
-            != "timing-path-guided-local-search-v1"
+            or optimization_provider
+            not in {
+                "timing-path-guided-local-search-v1",
+                "timing-path-guided-lns-v2",
+            }
         ):
             raise ValidationError(
                 "native TDM slot optimization metadata is invalid"
@@ -894,11 +902,24 @@ def validate_tdm_schedule(
             "total_wait_slots",
             "baseline_worst_normalized_slack",
         }
+        if optimization_provider == "timing-path-guided-lns-v2":
+            expected_metric_keys.update(
+                {"lns_neighborhoods", "lns_evaluated_orders"}
+            )
         if set(metrics) != expected_metric_keys:
             raise ValidationError(
                 "native TDM slot optimization metric coverage is invalid"
             )
-        for key in ("iterations", "accepted_moves", "evaluated_moves"):
+        count_keys = [
+            "iterations",
+            "accepted_moves",
+            "evaluated_moves",
+        ]
+        if optimization_provider == "timing-path-guided-lns-v2":
+            count_keys.extend(
+                ["lns_neighborhoods", "lns_evaluated_orders"]
+            )
+        for key in count_keys:
             value = metrics[key]
             if (
                 isinstance(value, bool)

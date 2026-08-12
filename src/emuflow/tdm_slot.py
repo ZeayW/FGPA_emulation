@@ -14,7 +14,7 @@ from .native_tools import resolve_native_executable
 from .platform import Platform
 
 
-TDM_SLOT_OPTIMIZER_PROVIDER = "timing-path-guided-local-search-v1"
+TDM_SLOT_OPTIMIZER_PROVIDER = "timing-path-guided-lns-v2"
 HopKey = Tuple[str, str, str, str]
 
 
@@ -142,6 +142,8 @@ def _parse_native_output(
         "iterations",
         "accepted_moves",
         "evaluated_moves",
+        "lns_neighborhoods",
+        "lns_evaluated_orders",
         "completion_slot",
         "total_wait_slots",
     }
@@ -185,6 +187,8 @@ def _parse_native_output(
         "iterations",
         "accepted_moves",
         "evaluated_moves",
+        "lns_neighborhoods",
+        "lns_evaluated_orders",
         "worst_normalized_slack",
         "completion_slot",
         "total_wait_slots",

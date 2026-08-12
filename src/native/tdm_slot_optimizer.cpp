@@ -320,6 +320,8 @@ struct OptimizationResult {
   int iterations = 0;
   int accepted_moves = 0;
   int evaluated_moves = 0;
+  int lns_neighborhoods = 0;
+  int lns_evaluated_orders = 0;
 };
 
 OptimizationResult optimize(const Model& model) {
@@ -358,19 +360,76 @@ OptimizationResult optimize(const Model& model) {
       if (nearest >= 0) candidates.insert(std::minmax(critical, nearest));
     }
     Schedule best = result.schedule;
-    std::pair<int, int> best_move{-1, -1};
+    std::vector<int> best_priority;
     for (const auto& move : candidates) {
       std::swap(priority[move.first], priority[move.second]);
       Schedule candidate = build_schedule(model, priority);
       ++result.evaluated_moves;
-      std::swap(priority[move.first], priority[move.second]);
       if (candidate.feasible && better(candidate, best)) {
         best = std::move(candidate);
-        best_move = move;
+        best_priority = priority;
       }
+      std::swap(priority[move.first], priority[move.second]);
     }
-    if (best_move.first < 0) break;
-    std::swap(priority[best_move.first], priority[best_move.second]);
+    // Deterministic LNS: for every delayed hop on the current worst path,
+    // exactly re-optimize the relative order of that hop and up to three
+    // preceding blockers on the same physical lane. The rest of the schedule
+    // remains fixed, so the neighborhood is bounded by 4! orders even on
+    // million-hop inputs.
+    for (int critical : worst.hops) {
+      if (result.schedule.slots[critical] <= result.schedule.ready[critical]) {
+        continue;
+      }
+      const auto& critical_hop = model.hops[critical];
+      std::vector<std::pair<int, int>> blockers;
+      for (const auto& other : model.hops) {
+        if (other.index == critical || other.round != critical_hop.round ||
+            other.domain != critical_hop.domain ||
+            other.lane != critical_hop.lane ||
+            result.schedule.slots[other.index] >=
+                result.schedule.slots[critical]) {
+          continue;
+        }
+        blockers.emplace_back(result.schedule.slots[other.index], other.index);
+      }
+      std::sort(blockers.begin(), blockers.end());
+      std::vector<int> neighborhood{critical};
+      const int first = std::max(0, static_cast<int>(blockers.size()) - 3);
+      for (int index = first; index < static_cast<int>(blockers.size());
+           ++index) {
+        neighborhood.push_back(blockers[index].second);
+      }
+      if (neighborhood.size() < 2) continue;
+      std::sort(neighborhood.begin(), neighborhood.end());
+      std::vector<int> ranks;
+      for (int hop : neighborhood) ranks.push_back(priority[hop]);
+      std::sort(ranks.begin(), ranks.end());
+      std::vector<int> permutation = neighborhood;
+      ++result.lns_neighborhoods;
+      do {
+        bool unchanged = true;
+        for (int index = 0; index < static_cast<int>(permutation.size());
+             ++index) {
+          if (priority[permutation[index]] != ranks[index]) unchanged = false;
+        }
+        if (unchanged) continue;
+        std::vector<int> candidate_priority = priority;
+        for (int index = 0; index < static_cast<int>(permutation.size());
+             ++index) {
+          candidate_priority[permutation[index]] = ranks[index];
+        }
+        Schedule candidate = build_schedule(model, candidate_priority);
+        ++result.evaluated_moves;
+        ++result.lns_evaluated_orders;
+        if (candidate.feasible && better(candidate, best)) {
+          best = std::move(candidate);
+          best_priority = std::move(candidate_priority);
+        }
+      } while (std::next_permutation(
+          permutation.begin(), permutation.end()));
+    }
+    if (best_priority.empty()) break;
+    priority = std::move(best_priority);
     result.schedule = std::move(best);
     ++result.accepted_moves;
   }
@@ -389,6 +448,9 @@ void write_result(const std::string& path, const OptimizationResult& result) {
   output << "METRIC iterations " << result.iterations << '\n';
   output << "METRIC accepted_moves " << result.accepted_moves << '\n';
   output << "METRIC evaluated_moves " << result.evaluated_moves << '\n';
+  output << "METRIC lns_neighborhoods " << result.lns_neighborhoods << '\n';
+  output << "METRIC lns_evaluated_orders "
+         << result.lns_evaluated_orders << '\n';
   output << std::setprecision(17);
   output << "METRIC worst_normalized_slack "
          << result.schedule.worst_normalized_slack << '\n';
@@ -400,7 +462,7 @@ void write_result(const std::string& path, const OptimizationResult& result) {
 
 void print_help() {
   std::cout << "Usage: emuflow_tdm_slot_optimizer INPUT OUTPUT\n"
-            << "Timing-path-guided local search for a fixed TDM ratio/lane "
+            << "Timing-path-guided deterministic LNS for a fixed TDM ratio/lane "
                "plan.\n";
 }
 

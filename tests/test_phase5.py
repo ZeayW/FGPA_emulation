@@ -27,6 +27,10 @@ from emuflow.tdm_ratio import (
     validate_tdm_ratio_plan,
 )
 from emuflow.tdm_slot import refine_tdm_schedule_native
+from emuflow.tdm_cp_sat import (
+    solve_cp_sat_slot_schedule,
+    validate_cp_sat_slot_schedule,
+)
 from emuflow.tdm_timing_dag import (
     _build_dag,
     build_timing_dag_ratio_plan,
@@ -122,6 +126,99 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_cp_sat_medium_oracle_matches_exhaustive_oracle(self) -> None:
+        try:
+            from ortools.sat.python import cp_model  # noqa: F401
+        except ImportError:
+            self.skipTest("optional OR-Tools CP-SAT dependency is absent")
+        platform = Platform.from_dict(
+            _platform_value(
+                "cp_sat",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=2, latency=1),
+                    _link("bc", "b", "c", lanes=2, latency=1),
+                ],
+            )
+        )
+        routes = _routes(
+            platform,
+            [
+                ("ab0", "a", ["b"]),
+                ("ab1", "a", ["b"]),
+                ("bc0", "b", ["c"]),
+                ("bc1", "b", ["c"]),
+            ],
+            frame_slots=10,
+        )
+        routes["timing"] = {
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 40.0,
+            },
+            "paths": [
+                {
+                    "path": "p0",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 40.0,
+                    "fixed_delay_ns": 2.0,
+                    "cut_nets": ["ab1", "bc0"],
+                    "cut_transitions": [
+                        {"net": "ab1", "from": "a", "to": "b"},
+                        {"net": "bc0", "from": "b", "to": "c"},
+                    ],
+                },
+                {
+                    "path": "p1",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 40.0,
+                    "fixed_delay_ns": 5.0,
+                    "cut_nets": ["ab0", "bc1"],
+                    "cut_transitions": [
+                        {"net": "ab0", "from": "a", "to": "b"},
+                        {"net": "bc1", "from": "b", "to": "c"},
+                    ],
+                },
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=4,
+            ratio_quantum=2,
+        )
+        exhaustive = exact_multi_round_slot_schedule(
+            routes, platform, plan, max_hops=6
+        )
+        cp_sat = solve_cp_sat_slot_schedule(
+            routes, platform, plan, max_hops=32
+        )
+        self.assertEqual(
+            validate_cp_sat_slot_schedule(
+                routes, platform, plan, cp_sat
+            )["status"],
+            "pass",
+        )
+        self.assertAlmostEqual(
+            cp_sat["worst_normalized_slack"],
+            exhaustive["worst_normalized_slack"],
+        )
+        self.assertEqual(
+            cp_sat["completion_slot"], exhaustive["completion_slot"]
+        )
+        self.assertEqual(
+            cp_sat["total_wait_slots"], exhaustive["total_wait_slots"]
+        )
+        tampered = copy.deepcopy(cp_sat)
+        first = min(tampered["slot_by_hop"])
+        tampered["slot_by_hop"][first] += 1
+        with self.assertRaises(ValidationError):
+            validate_cp_sat_slot_schedule(
+                routes, platform, plan, tampered
+            )
+
     def test_clock_protocol_compatibility_separates_lane_groups(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

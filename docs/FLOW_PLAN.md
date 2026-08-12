@@ -425,7 +425,9 @@ Implemented model:
   CDC class may multiplex different STA clocks, while explicit transport
   domains cannot share a physical lane;
 - time-expanded links with fixed legal ratio/lane groups;
-- C++ timing-path-guided concrete-slot local search;
+- C++ timing-path-guided deterministic concrete-slot LNS;
+- optional OR-Tools CP-SAT medium-case oracle with independent certificate
+  reconstruction;
 - exhaustive multi-round small-instance oracle for optimality comparison;
 - static schedule ROM generation;
 - TX/RX, shadow-register, barrier, and virtual-clock-enable RTL;
@@ -439,14 +441,16 @@ Acceptance:
 - partitioned and unpartitioned designs are cycle-equivalent.
 
 The initial dependency-free list schedule is refined by an in-tree C++ engine.
-It moves hops that block the current worst timing path and accepts a move only
-when independently reconstructed worst normalized slack, completion, or total
-wait improves lexicographically. The exact oracle covers fixed ratio/lane
+It exhaustively reorders bounded neighborhoods containing a delayed worst-path
+hop and up to three preceding lane blockers, accepting an order only when
+independently reconstructed worst normalized slack, completion, or total wait
+improves lexicographically. The exact exhaustive oracle covers fixed ratio/lane
 assignments across multiple transport rounds, including multicast-tree
 precedence, link latency, ratio windows, lane collision, global round barriers,
 and the reserved runtime-barrier slot. It is deliberately limited to small
-instances and is a correctness/QoR reference, not the scalable production
-solver.
+instances. The optional time-expanded CP-SAT oracle extends optimality checks
+to medium cases; it is also a correctness/QoR reference, not the scalable
+production solver.
 
 The ratio legalizer's round split is explicitly a capacity-only estimate; it
 does not claim to include multicast-tree precedence. Concrete scheduling
