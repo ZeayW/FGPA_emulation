@@ -1,9 +1,9 @@
 // Scalable connected open-RTL stress harness for the pinned PicoRV32 core.
 //
-// The registered ring makes every core communicate with its successor.  This
-// prevents a multi-FPGA partition from placing whole, independent cores while
-// producing no functional cut nets, which would make Phase 6 pin planning a
-// vacuous benchmark.
+// The registered ring and eight-neighbour IRQ coupling make every core
+// communicate with a local window of peers.  This prevents a multi-FPGA
+// partition from placing whole, independent cores while producing only one or
+// two boundary signals, which would make Phase 6 pin planning nearly vacuous.
 module picorv32_x32_ring_top (
     input wire clk,
     input wire resetn,
@@ -51,8 +51,18 @@ module picorv32_x32_ring_top (
     genvar core;
     generate
         for (core = 0; core < 32; core = core + 1) begin : cores
+            wire [7:0] ring_irq = {
+                ring_state[(core + 7) % 32],
+                ring_state[(core + 6) % 32],
+                ring_state[(core + 5) % 32],
+                ring_state[(core + 4) % 32],
+                ring_state[(core + 3) % 32],
+                ring_state[(core + 2) % 32],
+                ring_state[(core + 1) % 32],
+                ring_state[core % 32]
+            };
             wire [31:0] coupled_irq =
-                irq[core*32 +: 32] ^ {31'b0, ring_state[core]};
+                irq[core*32 +: 32] ^ {24'b0, ring_irq};
 
             picorv32 cpu (
                 .clk(clk),
