@@ -322,41 +322,60 @@ class Router {
     Candidate metric_closure;
     Candidate shallow_light;
     Candidate adaptive_hop;
-    std::future<Candidate> baseline_future;
-    std::future<Candidate> balanced_future;
     if (model_.topology_mode == 2 && model_.candidate_workers > 1) {
-      baseline_future = std::async(
-          std::launch::async,
-          [this]() {
-            Router worker(model_);
-            worker.lock_shared_directions();
-            return worker.route_candidate(
-                worker.timing_aware_order(),
-                CandidateGenerator::kShortestPath);
-          });
-      ++parallel_candidate_tasks_;
-      if (model_.candidate_workers > 2) {
-        balanced_future = std::async(
-            std::launch::async,
-            [this]() {
-              Router worker(model_);
-              worker.lock_shared_directions();
-              return worker.route_candidate(
-                  worker.timing_aware_order(),
-                  CandidateGenerator::kDelayDemandBalanced);
-            });
-        ++parallel_candidate_tasks_;
+      using Generated = std::pair<CandidateGenerator, Candidate>;
+      const std::vector<CandidateGenerator> generators = {
+          CandidateGenerator::kShortestPath,
+          CandidateGenerator::kDelayDemandBalanced,
+          CandidateGenerator::kNearestTerminalSteiner,
+          CandidateGenerator::kDirectedMetricClosure,
+          CandidateGenerator::kShallowLight,
+          CandidateGenerator::kAdaptiveHop,
+      };
+      std::vector<Generated> generated;
+      for (std::size_t first = 0; first < generators.size();
+           first += model_.candidate_workers) {
+        const std::size_t last = std::min(
+            generators.size(), first + model_.candidate_workers);
+        std::vector<std::future<Generated>> futures;
+        for (std::size_t index = first; index < last; ++index) {
+          const CandidateGenerator generator = generators[index];
+          futures.push_back(std::async(
+              std::launch::async, [this, generator]() {
+                Router worker(model_);
+                worker.lock_shared_directions();
+                return Generated{
+                    generator,
+                    worker.route_candidate(
+                        worker.timing_aware_order(), generator)};
+              }));
+          ++parallel_candidate_tasks_;
+        }
+        for (auto& future : futures) {
+          generated.push_back(future.get());
+        }
       }
-      if (model_.candidate_workers == 2) {
-        balanced = route_candidate(order, true);
-        history_ = initial_history;
-      }
-      steiner = route_candidate(
-          order, CandidateGenerator::kNearestTerminalSteiner);
-      history_ = initial_history;
-      baseline = baseline_future.get();
-      if (model_.candidate_workers > 2) {
-        balanced = balanced_future.get();
+      for (Generated& result : generated) {
+        switch (result.first) {
+          case CandidateGenerator::kShortestPath:
+            baseline = std::move(result.second);
+            break;
+          case CandidateGenerator::kDelayDemandBalanced:
+            balanced = std::move(result.second);
+            break;
+          case CandidateGenerator::kNearestTerminalSteiner:
+            steiner = std::move(result.second);
+            break;
+          case CandidateGenerator::kDirectedMetricClosure:
+            metric_closure = std::move(result.second);
+            break;
+          case CandidateGenerator::kShallowLight:
+            shallow_light = std::move(result.second);
+            break;
+          case CandidateGenerator::kAdaptiveHop:
+            adaptive_hop = std::move(result.second);
+            break;
+        }
       }
     } else {
       baseline = route_candidate(order, false);
@@ -372,18 +391,21 @@ class Router {
     }
     balanced_candidate_routes_ = balanced.routes;
     steiner_candidate_routes_ = steiner.routes;
-    if (model_.topology_mode == 2) {
+    metric_closure_candidate_routes_ = metric_closure.routes;
+    shallow_light_candidate_routes_ = shallow_light.routes;
+    adaptive_hop_candidate_routes_ = adaptive_hop.routes;
+    if (model_.topology_mode == 2 && model_.candidate_workers == 1) {
       history_ = initial_history;
       metric_closure = route_candidate(
           order, CandidateGenerator::kDirectedMetricClosure);
-      metric_closure_candidate_routes_ = metric_closure.routes;
       history_ = initial_history;
       shallow_light = route_candidate(
           order, CandidateGenerator::kShallowLight);
-      shallow_light_candidate_routes_ = shallow_light.routes;
       history_ = initial_history;
       adaptive_hop = route_candidate(
           order, CandidateGenerator::kAdaptiveHop);
+      metric_closure_candidate_routes_ = metric_closure.routes;
+      shallow_light_candidate_routes_ = shallow_light.routes;
       adaptive_hop_candidate_routes_ = adaptive_hop.routes;
     }
     baseline_candidate_feasible_ = baseline.feasible;
