@@ -2,6 +2,27 @@
 
 These requirements apply to all work in this repository.
 
+## README synchronization is mandatory
+
+- Before every push, review all commits being pushed for README impact without
+  waiting for a user reminder.  Treat this review as a required pre-push gate.
+- Any user-visible change to behavior, defaults, CLI options, schemas,
+  providers, algorithms, validation requirements, benchmark availability,
+  completion status, artifact locations, limitations, or recommended commands
+  must update `README.md` in the same push.  Do not push the implementation
+  first and leave documentation for a later milestone.
+- README status and QoR statements must describe only evidence that actually
+  exists.  Mark incomplete validation as pending or blocked; never infer final
+  Phase 7 results from an intermediate artifact.
+- If the review concludes that a push has no README impact, state
+  `README reviewed: no user-visible change` in the handoff or push summary.
+  This exception is for genuinely internal or mechanically equivalent changes,
+  not a reason to omit documentation for a new capability or changed contract.
+- After every push, verify that the remote branch contains both the intended
+  implementation commits and the required README update.  If concurrent work
+  advanced the branch, rebase safely and repeat the verification; never force
+  push over unrelated work.
+
 ## End-to-end acceptance is mandatory
 
 - A Phase 6 algorithm, provider, optimization, or default-selection change is
