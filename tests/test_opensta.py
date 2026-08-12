@@ -66,14 +66,14 @@ class OpenStaProviderTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "expected CLOCK"):
             parse_clock_definitions(["clk"])
 
-    def test_path_export_keeps_alternate_endpoint_paths(self) -> None:
+    def test_path_export_supports_directed_cut_net_queries(self) -> None:
         script = (
             ROOT / "scripts/opensta/export_timing_path_database.tcl"
         ).read_text(encoding="utf-8")
         self.assertIn("-group_count $max_paths", script)
-        self.assertIn("set paths_per_endpoint 8", script)
-        self.assertIn("-endpoint_count $paths_per_endpoint", script)
-        self.assertNotIn("-endpoint_count 1", script)
+        self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
+        self.assertIn("-through $through_net", script)
+        self.assertIn("-endpoint_count 1", script)
 
     def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:
         source = {
@@ -292,6 +292,7 @@ print("fake OpenSTA pass")
                 executable=str(executable),
                 max_paths=8,
                 log_path=log_path,
+                through_nets=[self.ir.value["nets"][0]["id"]],
             )
             checked = validate_sta_path_database(output_path, ir_path)
             artifact = json.loads(output_path.read_text(encoding="utf-8"))
@@ -302,6 +303,9 @@ print("fake OpenSTA pass")
         )
         self.assertEqual(report["paths"], 1)
         self.assertEqual(report["max_paths"], 8)
+        self.assertEqual(
+            report["through_nets"], [self.ir.value["nets"][0]["id"]]
+        )
         self.assertFalse(report["path_limit_reached"])
         self.assertEqual(checked["status"], "pass")
         self.assertEqual(artifact["source"]["provider"], OPENSTA_PROVIDER)

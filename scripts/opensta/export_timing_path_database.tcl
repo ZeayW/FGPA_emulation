@@ -8,6 +8,8 @@
 #   EMUFLOW_STA_CLOCKS
 #   EMUFLOW_STA_OUTPUT
 #   EMUFLOW_STA_MAX_PATHS
+# Optional environment variable:
+#   EMUFLOW_STA_THROUGH_NETS
 
 proc emuflow_required_env {name} {
   global env
@@ -90,14 +92,39 @@ foreach line [lrange $map_lines 1 end] {
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
 
-# Retain a bounded set of alternate launch paths per capture endpoint.  A
-# single path can hide a partition-crossing path behind a worse local path;
-# using the global limit here, however, makes OpenSTA enumerate a quadratic
-# number of candidates before applying group_count on large designs.
-set paths_per_endpoint 8
-set timing_paths [find_timing_paths -path_delay max \
-  -group_count $max_paths -endpoint_count $paths_per_endpoint \
-  -sort_by_slack]
+set timing_paths [list]
+if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
+    $env(EMUFLOW_STA_THROUGH_NETS) ne ""} {
+  set through_path [file normalize $env(EMUFLOW_STA_THROUGH_NETS)]
+  set through_input [open $through_path r]
+  set through_lines [split [read $through_input] "\n"]
+  close $through_input
+  if {[lindex $through_lines 0] ne "mapped_net_hex\temuir_net_hex"} {
+    error "invalid OpenSTA through-net map header"
+  }
+  foreach line [lrange $through_lines 1 end] {
+    if {$line eq ""} {
+      continue
+    }
+    set fields [split $line "\t"]
+    if {[llength $fields] != 2} {
+      error "malformed OpenSTA through-net map row"
+    }
+    set mapped_name [emuflow_hex_decode [lindex $fields 0]]
+    set through_net [get_nets -quiet [list $mapped_name]]
+    if {[llength $through_net] != 1} {
+      error "through net '$mapped_name' is absent or ambiguous"
+    }
+    foreach path_end [find_timing_paths -path_delay max \
+        -through $through_net -group_count 1 -endpoint_count 1 \
+        -sort_by_slack] {
+      lappend timing_paths $path_end
+    }
+  }
+} else {
+  set timing_paths [find_timing_paths -path_delay max \
+    -group_count $max_paths -endpoint_count 1 -sort_by_slack]
+}
 set output [open $output_path w]
 puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
 set emitted 0

@@ -885,10 +885,25 @@ def run_opensta_path_database(
     executable: Optional[str] = None,
     max_paths: int = 200000,
     log_path: Optional[Path] = None,
+    through_nets: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
     ir = EmuIR.load(ir_path)
+    through_net_ids = list(through_nets or [])
+    if (
+        any(not isinstance(net, str) or not net for net in through_net_ids)
+        or len(through_net_ids) != len(set(through_net_ids))
+    ):
+        raise ValidationError("OpenSTA through_nets must be unique net IDs")
+    net_index = {
+        net["id"]: index for index, net in enumerate(ir.value["nets"])
+    }
+    unknown_through_nets = sorted(set(through_net_ids) - set(net_index))
+    if unknown_through_nets:
+        raise ValidationError(
+            f"OpenSTA through_nets are absent from EmuIR: {unknown_through_nets}"
+        )
     instance_cell_types: Optional[Dict[str, str]] = None
     if architecture_timing_db_path is not None:
         model, instance_cell_types = build_vtr_opensta_timing_model(
@@ -910,6 +925,7 @@ def run_opensta_path_database(
         net_map_path = root / "net-map.tsv"
         clock_path = root / "clocks.tsv"
         raw_path = root / "paths.tsv"
+        through_path = root / "through-nets.tsv"
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
         # Those constructs do not affect static timing connectivity.
@@ -925,6 +941,14 @@ def run_opensta_path_database(
             render_opensta_liberty(model), encoding="utf-8"
         )
         write_emuir_net_map(ir_path, net_map_path)
+        if through_net_ids:
+            with through_path.open("w", encoding="utf-8") as stream:
+                stream.write("mapped_net_hex\temuir_net_hex\n")
+                for net in through_net_ids:
+                    mapped = f"__emuflow_net_{net_index[net]}"
+                    stream.write(
+                        f"{mapped.encode().hex()}\t{net.encode().hex()}\n"
+                    )
         with clock_path.open("w", encoding="utf-8") as stream:
             stream.write("clock_hex\tperiod_ns\n")
             for name, period in clock_map.items():
@@ -940,6 +964,9 @@ def run_opensta_path_database(
                 "EMUFLOW_STA_CLOCKS": str(clock_path),
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
                 "EMUFLOW_STA_MAX_PATHS": str(max_paths),
+                "EMUFLOW_STA_THROUGH_NETS": (
+                    str(through_path) if through_net_ids else ""
+                ),
             }
         )
         completed = subprocess.run(
@@ -991,6 +1018,7 @@ def run_opensta_path_database(
         "clocks": clock_map,
         "paths": imported["paths"],
         "max_paths": max_paths,
+        "through_nets": through_net_ids,
         "path_limit_reached": imported["paths"] >= max_paths,
         "unique_path_nets": imported["unique_path_nets"],
         "used_cell_types": coverage["used_cell_types"],
