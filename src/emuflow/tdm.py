@@ -1220,6 +1220,7 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
         route_paths[net] = {
             sink: paths_by_node[sink][1] for sink in route["sinks"]
         }
+    route_net_names = set(route_by_net)
 
     entries = {}
     for entry in schedule["entries"]:
@@ -1238,11 +1239,21 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
     records = []
     for index, timing_path in enumerate(timing["paths"]):
         cut_nets = timing_path.get("cut_nets")
-        if not isinstance(cut_nets, list) or not cut_nets:
+        if (
+            not isinstance(cut_nets, list)
+            or not cut_nets
+            or not all(isinstance(net, str) for net in cut_nets)
+        ):
             raise ValidationError(
                 f"routes.timing.paths[{index}].cut_nets: invalid"
             )
+        unknown = sorted(set(cut_nets) - route_net_names)
+        if unknown:
+            raise ValidationError(
+                f"routes.timing.paths[{index}]: unknown cut nets {unknown}"
+            )
         transitions = timing_path.get("cut_transitions")
+        explicit_transitions = transitions is not None
         if transitions is None:
             transitions = [
                 {
@@ -1252,7 +1263,38 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                 }
                 for net in cut_nets
             ]
-        delay_ns = float(timing_path["fixed_delay_ns"])
+        elif (
+            not isinstance(transitions, list)
+            or len(transitions) != len(cut_nets)
+        ):
+            raise ValidationError(
+                f"routes.timing.paths[{index}].cut_transitions: invalid"
+            )
+        if any(
+            transitions[position - 1].get("to")
+            != transitions[position].get("from")
+            for position in range(1, len(transitions))
+            if isinstance(transitions[position - 1], dict)
+            and isinstance(transitions[position], dict)
+        ) and explicit_transitions:
+            raise ValidationError(
+                f"routes.timing.paths[{index}].cut_transitions: "
+                "discontinuous member partition chain"
+            )
+        period = timing_path.get("clock_period_ns")
+        fixed = timing_path.get("fixed_delay_ns")
+        if (
+            isinstance(period, bool)
+            or not isinstance(period, (int, float))
+            or float(period) <= 0.0
+            or isinstance(fixed, bool)
+            or not isinstance(fixed, (int, float))
+            or float(fixed) < 0.0
+        ):
+            raise ValidationError(
+                f"routes.timing.paths[{index}]: invalid timing values"
+            )
+        delay_ns = float(fixed)
         transport_delay_ns = 0.0
         scheduled_hops = []
         seen_hops = set()
@@ -1260,6 +1302,7 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
             route = route_by_net.get(net)
             if (
                 route is None
+                or not isinstance(transition, dict)
                 or transition.get("net") != net
                 or transition.get("from") != route["source"]
                 or transition.get("to") not in route["sinks"]
@@ -1318,7 +1361,7 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                         "link_tdm_delay_ns": hop_delay,
                     }
                 )
-        period = float(timing_path["clock_period_ns"])
+        period = float(period)
         slack = period - delay_ns
         records.append(
             {
@@ -1326,7 +1369,7 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                 "clock_domain": timing_path["clock_domain"],
                 "clock_period_ns": period,
                 "preplacement_fixed_delay_ns": float(
-                    timing_path["fixed_delay_ns"]
+                    fixed
                 ),
                 "transport_delay_ns": transport_delay_ns,
                 "delay_ns": delay_ns,
