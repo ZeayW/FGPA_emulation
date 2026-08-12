@@ -72,7 +72,8 @@ class OpenStaProviderTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("-group_count $max_paths", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
-        self.assertIn("-through $through_net", script)
+        self.assertIn("get_pins -quiet -of_objects $through_net", script)
+        self.assertIn("-through $through_pins", script)
         self.assertIn("-endpoint_count 1", script)
 
     def test_vtr_timing_db_builds_scalarized_opensta_model(self) -> None:

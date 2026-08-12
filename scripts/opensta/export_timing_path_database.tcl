@@ -115,8 +115,15 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     if {[llength $through_net] != 1} {
       error "through net '$mapped_name' is absent or ambiguous"
     }
+    # OpenSTA 2.6 accepts pins and nets for -through, but its Tcl net
+    # collection path can dereference invalid state.  Resolve the net to its
+    # connected pins first; this is semantically equivalent for a timing path.
+    set through_pins [get_pins -quiet -of_objects $through_net]
+    if {[llength $through_pins] == 0} {
+      error "through net '$mapped_name' has no timing pins"
+    }
     foreach path_end [find_timing_paths -path_delay max \
-        -through $through_net -group_count 1 -endpoint_count 1 \
+        -through $through_pins -group_count 1 -endpoint_count 1 \
         -sort_by_slack] {
       lappend timing_paths $path_end
     }
