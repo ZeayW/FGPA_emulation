@@ -1136,7 +1136,12 @@ def route_system_native(
         ):
             raise EmuFlowError(
                 "TLR router conflict batches do not match independent "
-                "reconstruction"
+                "reconstruction: native="
+                f"({native['metrics']['reroute_conflict_batches']}, "
+                f"{native['metrics']['maximum_parallel_batch']}), "
+                "independent="
+                f"({batch_certificate['batch_count']}, "
+                f"{batch_certificate['maximum_parallel_batch']})"
             )
         result["metrics"].update(
             {

@@ -689,7 +689,7 @@ class Router {
             &shortest_candidate_routes_, &balanced_candidate_routes_,
             &steiner_candidate_routes_, &metric_closure_candidate_routes_,
             &shallow_light_candidate_routes_,
-            &adaptive_hop_candidate_routes_, &routes_};
+            &adaptive_hop_candidate_routes_};
         for (const auto* routes : alternatives) {
           if (routes->size() != model_.demands.size()) {
             continue;
@@ -705,25 +705,51 @@ class Router {
       }
     }
     std::vector<std::vector<RerouteWork>> batches;
-    for (const RerouteWork& item : work) {
-      bool placed = false;
-      for (auto& batch : batches) {
-        bool conflict = false;
-        for (const RerouteWork& other : batch) {
-          if (intersects(item.capacity_domains, other.capacity_domains) ||
-              intersects(item.timing_paths, other.timing_paths)) {
-            conflict = true;
+    if (work.size() <= 4096) {
+      for (const RerouteWork& item : work) {
+        bool placed = false;
+        for (auto& batch : batches) {
+          bool conflict = false;
+          for (const RerouteWork& other : batch) {
+            if (intersects(item.capacity_domains, other.capacity_domains) ||
+                intersects(item.timing_paths, other.timing_paths)) {
+              conflict = true;
+              break;
+            }
+          }
+          if (!conflict) {
+            batch.push_back(item);
+            placed = true;
             break;
           }
         }
-        if (!conflict) {
-          batch.push_back(item);
-          placed = true;
-          break;
+        if (!placed) {
+          batches.push_back({item});
         }
       }
-      if (!placed) {
-        batches.push_back({item});
+      return batches;
+    }
+    std::vector<int> last_capacity_batch(capacity_domain_count(), -1);
+    std::vector<int> last_timing_batch(model_.paths.size(), -1);
+    for (const RerouteWork& item : work) {
+      int batch_index = 0;
+      for (int domain : item.capacity_domains) {
+        batch_index = std::max(
+            batch_index, last_capacity_batch[domain] + 1);
+      }
+      for (int path : item.timing_paths) {
+        batch_index = std::max(
+            batch_index, last_timing_batch[path] + 1);
+      }
+      if (batch_index >= static_cast<int>(batches.size())) {
+        batches.resize(batch_index + 1);
+      }
+      batches[batch_index].push_back(item);
+      for (int domain : item.capacity_domains) {
+        last_capacity_batch[domain] = batch_index;
+      }
+      for (int path : item.timing_paths) {
+        last_timing_batch[path] = batch_index;
       }
     }
     return batches;
@@ -799,26 +825,53 @@ class Router {
           [](const RerouteProposal& left, const RerouteProposal& right) {
             return left.path < right.path;
           });
+      if (model_.paths.size() <= 4096) {
+        for (const RerouteProposal& proposal : proposals) {
+          const std::vector<Route> route_backup = routes_;
+          const std::vector<long long> usage_backup = usage_;
+          if (proposal.generated) {
+            for (const auto& [demand, route] : proposal.replacements) {
+              add_usage(routes_[demand], -model_.demands[demand].width);
+              routes_[demand] = route;
+              add_usage(routes_[demand], model_.demands[demand].width);
+            }
+          }
+          const Objective candidate =
+              proposal.generated ? objective() : Objective{};
+          if (proposal.generated && capacity_legal() &&
+              better(candidate, best)) {
+            best = candidate;
+            ++accepted_reroutes_;
+          } else {
+            routes_ = route_backup;
+            usage_ = usage_backup;
+            ++rolled_back_reroutes_;
+          }
+        }
+        continue;
+      }
+      const std::vector<Route> route_backup = routes_;
+      const std::vector<long long> usage_backup = usage_;
+      int generated_proposals = 0;
       for (const RerouteProposal& proposal : proposals) {
-        const std::vector<Route> route_backup = routes_;
-        const std::vector<long long> usage_backup = usage_;
         if (proposal.generated) {
+          ++generated_proposals;
           for (const auto& [demand, route] : proposal.replacements) {
             add_usage(routes_[demand], -model_.demands[demand].width);
             routes_[demand] = route;
             add_usage(routes_[demand], model_.demands[demand].width);
           }
         }
-        const Objective candidate =
-            proposal.generated ? objective() : Objective{};
-        if (proposal.generated && capacity_legal() && better(candidate, best)) {
-          best = candidate;
-          ++accepted_reroutes_;
-        } else {
-          routes_ = route_backup;
-          usage_ = usage_backup;
-          ++rolled_back_reroutes_;
-        }
+      }
+      const Objective candidate =
+          generated_proposals ? objective() : Objective{};
+      if (generated_proposals && capacity_legal() && better(candidate, best)) {
+        best = candidate;
+        accepted_reroutes_ += generated_proposals;
+      } else {
+        routes_ = route_backup;
+        usage_ = usage_backup;
+        rolled_back_reroutes_ += static_cast<int>(proposals.size());
       }
     }
   }

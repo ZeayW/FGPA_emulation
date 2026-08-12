@@ -27,7 +27,6 @@ def build_route_refinement_batches(
     for candidate in candidate_pool["candidates"]:
         if candidate["generator"] not in {
             *ROUTE_MASTER_GENERATORS,
-            "refined-final",
         }:
             continue
         index = demand_index[candidate["demand_id"]]
@@ -69,21 +68,66 @@ def build_route_refinement_batches(
                 ),
             }
         )
-    records.sort(key=lambda item: (item["normalized_slack"], item["path_index"]))
+    native_slack = {
+        path["id"]: (
+            path["slack_ns"]
+            * path["clock_period_ns"]
+            / (
+                timing_paths["normalization"]["positive_slack_scale_ns"]
+                * timing_paths["normalization"]["max_clock_period_ns"]
+            )
+            if path["slack_ns"] >= 0.0
+            else path["slack_ns"]
+            / (
+                timing_paths["normalization"]["negative_slack_scale_ns"]
+                * path["clock_period_ns"]
+            )
+        )
+        for path in timing_paths["paths"]
+    }
+    records.sort(
+        key=lambda item: (native_slack[item["path"]], item["path_index"])
+    )
     batches: List[List[Dict[str, Any]]] = []
+    if len(records) <= 4096:
+        for record in records:
+            domains = set(record["capacity_domains"])
+            affected = set(record["affected_paths"])
+            for batch in batches:
+                if all(
+                    domains.isdisjoint(other["capacity_domains"])
+                    and affected.isdisjoint(other["affected_paths"])
+                    for other in batch
+                ):
+                    batch.append(record)
+                    break
+            else:
+                batches.append([record])
+        return {
+            "batches": [
+                [record["path_index"] for record in batch]
+                for batch in batches
+            ],
+            "batch_count": len(batches),
+            "maximum_parallel_batch": max(map(len, batches), default=0),
+        }
+    last_domain_batch: Dict[str, int] = {}
+    last_path_batch: Dict[int, int] = {}
     for record in records:
-        domains = set(record["capacity_domains"])
-        affected = set(record["affected_paths"])
-        for batch in batches:
-            if all(
-                domains.isdisjoint(other["capacity_domains"])
-                and affected.isdisjoint(other["affected_paths"])
-                for other in batch
-            ):
-                batch.append(record)
-                break
-        else:
-            batches.append([record])
+        batch_index = max(
+            [last_domain_batch.get(domain, -1) + 1
+             for domain in record["capacity_domains"]]
+            + [last_path_batch.get(path, -1) + 1
+               for path in record["affected_paths"]]
+            + [0]
+        )
+        while len(batches) <= batch_index:
+            batches.append([])
+        batches[batch_index].append(record)
+        for domain in record["capacity_domains"]:
+            last_domain_batch[domain] = batch_index
+        for path in record["affected_paths"]:
+            last_path_batch[path] = batch_index
     return {
         "batches": [
             [record["path_index"] for record in batch] for batch in batches

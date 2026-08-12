@@ -10,6 +10,7 @@ from emuflow.routing_candidates import (
     exact_route_candidate_selection,
     validate_route_candidate_pool,
 )
+from emuflow.routing_batches import build_route_refinement_batches
 from emuflow.routing_oracle import exact_route_tree_selection
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -375,6 +376,66 @@ class RouteCandidatePoolTest(unittest.TestCase):
             self.assertEqual(batching["batch_count"], 1)
             self.assertEqual(batching["maximum_parallel_batch"], 2)
             self.assertEqual(batching["batches"], [[0, 1]])
+
+    def test_large_conflict_batch_certificate_uses_linear_resource_cursor(
+        self,
+    ) -> None:
+        path_count = 10_000
+        platform = Platform.from_dict(
+            _platform_value(
+                "large_batches",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=path_count)],
+            )
+        )
+        assignment = _assignment(
+            platform,
+            [(f"n{index}", "a", ["b"]) for index in range(path_count)],
+        )
+        demands = demands_from_assignment(assignment, platform)
+        candidate_pool = {
+            "constraints": normalize_route_constraints(
+                {
+                    "schema": "emuflow.system-route-constraints/v1",
+                    "frame_slots": 8,
+                },
+                platform,
+            ),
+            "candidates": [
+                {
+                    "generator": "shortest-path-tree",
+                    "demand_id": demand["id"],
+                    "tree_edges": [
+                        {"link": "ab", "from": "a", "to": "b"}
+                    ],
+                }
+                for demand in demands
+            ],
+        }
+        timing_paths = {
+            "normalization": {
+                "positive_slack_scale_ns": 1.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 1.0,
+            },
+            "paths": [
+                {
+                    "id": f"p{index}",
+                    "clock_period_ns": 1.0,
+                    "slack_ns": 1.0,
+                    "normalized_slack": 1.0,
+                    "cut_nets": [f"n{index}"],
+                }
+                for index in range(path_count)
+            ],
+        }
+        certificate = build_route_refinement_batches(
+            assignment, platform, candidate_pool, timing_paths
+        )
+        self.assertEqual(certificate["batch_count"], path_count)
+        self.assertEqual(certificate["maximum_parallel_batch"], 1)
+        self.assertEqual(certificate["batches"][0], [0])
+        self.assertEqual(certificate["batches"][-1], [path_count - 1])
 
     def test_global_master_mixes_generators_across_demands(self) -> None:
         platform = Platform.from_dict(
