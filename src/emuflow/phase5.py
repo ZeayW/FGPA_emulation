@@ -23,6 +23,7 @@ from .tdm_ratio import (
 )
 from .tdm_slot import refine_tdm_schedule_native
 from .tdm_timing_dag import build_timing_dag_ratio_plan
+from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
 
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
@@ -66,6 +67,7 @@ def run_phase5(
     validation = None
     timing_validation = None
     candidate_selection = None
+    prepared_ratio_model = None
     if provider == TDM_BASELINE_PROVIDER:
         if (
             ratio_optimizer is not None
@@ -245,6 +247,21 @@ def run_phase5(
         frames=simulation_frames,
     )
     manifest = build_transport_manifest(routes, schedule, platform)
+    feedback = build_tdm_feedback(
+        routes,
+        platform,
+        schedule,
+        ratio_plan,
+        prepared_ratio_model=prepared_ratio_model,
+    )
+    feedback_validation = validate_tdm_feedback(
+        routes,
+        platform,
+        schedule,
+        feedback,
+        ratio_plan,
+        prepared_ratio_model=prepared_ratio_model,
+    )
     report: Dict[str, Any] = {
         "schema": PHASE5_REPORT_SCHEMA,
         "phase": 5,
@@ -272,12 +289,14 @@ def run_phase5(
             else {}
         ),
         "simulation": simulation,
+        "tdm_feedback_validation": feedback_validation,
         "artifacts": {
             "schedule": "schedule.json",
             "schedule_tsv": "schedule.tsv",
             "transport_manifest": "transport_manifest.json",
             "rtl_testbench": "transport_schedule_tb.sv",
             "report": "phase5_report.json",
+            "tdm_feedback": "tdm_feedback.json",
         },
     }
     if ratio_plan is not None:
@@ -290,6 +309,7 @@ def run_phase5(
         schedule_to_tsv(schedule), encoding="utf-8"
     )
     write_json(output_dir / "transport_manifest.json", manifest)
+    write_json(output_dir / "tdm_feedback.json", feedback)
     (output_dir / "transport_schedule_tb.sv").write_text(
         schedule_to_systemverilog_testbench(
             routes,

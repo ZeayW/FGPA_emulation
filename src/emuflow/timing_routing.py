@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 import subprocess
 import tempfile
 from collections import defaultdict, deque
@@ -570,6 +571,7 @@ def _write_native_input(
     model: Mapping[str, Any],
     constraints: Mapping[str, Any],
     provider: str,
+    feedback_prices: Optional[Mapping[str, float]] = None,
 ) -> None:
     normalization = model["normalization"]
     with path.open("w", encoding="utf-8") as stream:
@@ -620,6 +622,11 @@ def _write_native_input(
                 f"{demand['width']} {demand['normalized_slack']:.17g} "
                 f"{demand['predicted_delay_ns']:.17g}\n"
             )
+        if feedback_prices is not None:
+            for index, capacity_key in enumerate(model["capacity_keys"]):
+                stream.write(
+                    f"PRICE {index} {feedback_prices[capacity_key]:.17g}\n"
+                )
         for timing_path in model["paths"]:
             demands = ",".join(str(item) for item in timing_path["demands"])
             stream.write(
@@ -796,6 +803,7 @@ def route_system_native(
     executable: Optional[str] = None,
     provider: str = NATIVE_ROUTER_PROVIDER,
     candidate_pool_path: Optional[Path] = None,
+    tdm_feedback: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if provider not in {
         NATIVE_ROUTER_PROVIDER,
@@ -814,13 +822,55 @@ def route_system_native(
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
     )
+    feedback_prices = None
+    if tdm_feedback is not None:
+        if provider != GLOBAL_CANDIDATE_PROVIDER:
+            raise ValueError(
+                "TDM feedback requires the global candidate provider"
+            )
+        from .tdm_feedback import (
+            TDM_FEEDBACK_PROVIDER,
+            TDM_FEEDBACK_SCHEMA,
+        )
+
+        if (
+            tdm_feedback.get("schema") != TDM_FEEDBACK_SCHEMA
+            or tdm_feedback.get("provider") != TDM_FEEDBACK_PROVIDER
+            or tdm_feedback.get("design") != assignment.get("design")
+            or tdm_feedback.get("platform") != platform.name
+            or tdm_feedback.get("frame_slots") != constraints["frame_slots"]
+        ):
+            raise ValidationError(
+                "TDM feedback identity does not match routing input"
+            )
+        feedback_prices = {}
+        for domain in tdm_feedback.get("domains", []):
+            if (
+                not isinstance(domain, dict)
+                or domain.get("key") in feedback_prices
+                or isinstance(domain.get("routing_price"), bool)
+                or not isinstance(domain.get("routing_price"), (int, float))
+                or not math.isfinite(float(domain["routing_price"]))
+                or float(domain["routing_price"]) < 0.0
+            ):
+                raise ValidationError("TDM feedback domain price is invalid")
+            feedback_prices[domain["key"]] = float(domain["routing_price"])
+        if set(feedback_prices) != set(model["capacity_keys"]):
+            raise ValidationError(
+                "TDM feedback capacity-domain coverage is not exact"
+            )
     resolved = resolve_native_executable("emuflow_tlr_router", executable)
     with tempfile.TemporaryDirectory(prefix="emuflow-tlr-") as temporary:
         root = Path(temporary)
         native_input = root / "router.in"
         native_output = root / "router.out"
         _write_native_input(
-            native_input, len(nodes), model, constraints, provider
+            native_input,
+            len(nodes),
+            model,
+            constraints,
+            provider,
+            feedback_prices,
         )
         completed = subprocess.run(
             [resolved, str(native_input), str(native_output)],
@@ -1053,6 +1103,20 @@ def route_system_native(
         result["joint_optimization"]["method"] = (
             "checked-candidate-pool+deterministic-global-coordinate-lns-v1"
         )
+        if tdm_feedback is not None:
+            result["joint_optimization"]["tdm_feedback"] = {
+                "schema": tdm_feedback["schema"],
+                "provider": tdm_feedback["provider"],
+                "source_routes_sha256": tdm_feedback[
+                    "source_routes_sha256"
+                ],
+                "source_schedule_sha256": tdm_feedback[
+                    "source_schedule_sha256"
+                ],
+                "maximum_domain_price": tdm_feedback["metrics"][
+                    "maximum_domain_price"
+                ],
+            }
         result["joint_optimization"]["candidate_generation"][
             "master_selection"
         ] = [

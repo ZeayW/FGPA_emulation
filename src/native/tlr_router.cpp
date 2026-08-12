@@ -106,6 +106,7 @@ struct Input {
   std::vector<Arc> arcs;
   std::vector<Demand> demands;
   std::vector<TimingPath> paths;
+  std::vector<double> feedback_price;
 };
 
 std::vector<int> parse_int_list(const std::string& value) {
@@ -208,6 +209,15 @@ Input read_input(const std::string& path) {
         throw std::runtime_error("DEMAND indices must be contiguous");
       }
       model.demands.push_back(std::move(demand));
+    } else if (kind == "PRICE") {
+      int index = -1;
+      double price = 0.0;
+      stream >> index >> price;
+      if (!input_v8 || index != static_cast<int>(model.feedback_price.size()) ||
+          !std::isfinite(price) || price < 0.0) {
+        throw std::runtime_error("invalid feedback price");
+      }
+      model.feedback_price.push_back(price);
     } else if (kind == "PATH") {
       int index = -1;
       TimingPath timing_path;
@@ -231,6 +241,16 @@ Input read_input(const std::string& path) {
       model.topology_mode > 2 || model.arcs.empty() ||
       model.demands.empty()) {
     throw std::runtime_error("input must contain nodes, arcs, and demands");
+  }
+  int capacity_domains = 0;
+  for (const Arc& arc : model.arcs) {
+    capacity_domains = std::max(capacity_domains, arc.capacity_domain + 1);
+  }
+  if (!model.feedback_price.empty() &&
+      model.feedback_price.size() !=
+          static_cast<std::size_t>(capacity_domains)) {
+    throw std::runtime_error(
+        "feedback prices must cover every capacity domain exactly");
   }
   return model;
 }
@@ -998,6 +1018,11 @@ class Router {
     double edge_cost = timing_weight * arc.delay_ns +
         model_.lambda_load * load_pressure +
         model_.lambda_history * history_[arc.capacity_domain];
+    if (arc.capacity_domain <
+        static_cast<int>(model_.feedback_price.size())) {
+      edge_cost += model_.lambda_history *
+          model_.feedback_price[arc.capacity_domain];
+    }
     if (!arc.is_sll) {
       const int projected_ratio =
           estimated_tdm_ratio(arc.capacity_domain, demand.width);

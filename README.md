@@ -1752,6 +1752,20 @@ global optimum mixes shortest-path and nearest-terminal Steiner trees across
 different demands.  This provider remains non-default pending large public-
 case and complete Phase 7 WNS/TNS comparison.
 
+Every Phase 5 run now also emits `tdm_feedback.json`, a concrete schedule
+certificate that reconstructs occupied slot-lanes, realized wait, remaining
+capacity, affected STA paths, and a deterministic routing price for every
+directed capacity domain. A subsequent global-candidate Phase 4 run may
+consume it with `--tdm-feedback`, but must also supply the exact prior
+`--tdm-feedback-routes` and `--tdm-feedback-schedule` (and the prior ratio
+plan for an academic schedule). Phase 4 independently rebuilds the complete
+feedback artifact before invoking C++; self-declared or cross-run feedback is
+therefore rejected. The native generator uses the checked prices in its arc
+cost, and a behavioral regression demonstrates that a higher realized domain
+price changes the chosen candidate route. This establishes a checked
+one-round Phase 4/5 feedback edge; iterative trust-region orchestration and
+large-case QoR qualification remain pending.
+
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The default provider builds standalone OpenSTA from
 `engines/openroad/src/sta`, renders the versioned open FPGA timing model, and

@@ -506,8 +506,14 @@ deterministic coordinate LNS above that boundary.  Its Python oracle
 independently enumerates compact products and reconstructs capacity, route
 delay, quantized TDM delay, normalized slack, utilization, and bit-hops.
 The remaining topology gap is candidate-tree column generation over a larger
-KMB/Mehlhorn and shallow-light pool, plus batch-conflict LNS and concrete
-Phase 5 feedback.
+KMB/Mehlhorn and shallow-light pool, plus batch-conflict LNS. Concrete Phase
+5 feedback is now implemented as `emuflow.tdm-feedback/v1`: an independent
+reconstruction binds the exact prior routes and schedule to per-domain
+occupancy, wait, capacity, affected timing paths, and deterministic routing
+prices. Phase 4 requires those source artifacts and reruns the checker before
+passing prices to the native candidate generator; source, domain, or path
+tampering fails before routing. This is a checked single feedback edge, not
+yet the final iterative trust-region controller.
 
 ### Selected primary route
 

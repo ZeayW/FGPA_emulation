@@ -1827,6 +1827,29 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument("--frame-slots", type=int)
     phase4.add_argument("--max-iterations", type=int)
     phase4.add_argument(
+        "--tdm-feedback",
+        type=Path,
+        help=(
+            "checked Phase 5 tdm-feedback/v1 used only by the global "
+            "candidate provider"
+        ),
+    )
+    phase4.add_argument(
+        "--tdm-feedback-routes",
+        type=Path,
+        help="source routes used to independently reconstruct feedback",
+    )
+    phase4.add_argument(
+        "--tdm-feedback-schedule",
+        type=Path,
+        help="source schedule used to independently reconstruct feedback",
+    )
+    phase4.add_argument(
+        "--tdm-feedback-ratio-plan",
+        type=Path,
+        help="optional source ratio plan used by the feedback schedule",
+    )
+    phase4.add_argument(
         "--provider",
         choices=[
             NATIVE_ROUTER_PROVIDER,
@@ -3475,6 +3498,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             provider=args.provider,
             timing_paths_path=args.timing_paths,
             router=args.router,
+            tdm_feedback_path=args.tdm_feedback,
+            tdm_feedback_routes_path=args.tdm_feedback_routes,
+            tdm_feedback_schedule_path=args.tdm_feedback_schedule,
+            tdm_feedback_ratio_plan_path=(
+                args.tdm_feedback_ratio_plan
+            ),
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

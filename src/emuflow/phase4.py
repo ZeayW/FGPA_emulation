@@ -17,6 +17,7 @@ from .timing_routing import (
     route_system_native,
     validate_native_system_routes,
 )
+from .tdm_feedback import validate_tdm_feedback
 
 
 PHASE4_REPORT_SCHEMA = "emuflow.phase4-report/v1"
@@ -32,6 +33,10 @@ def run_phase4(
     provider: Optional[str] = None,
     timing_paths_path: Optional[Path] = None,
     router: Optional[str] = None,
+    tdm_feedback_path: Optional[Path] = None,
+    tdm_feedback_routes_path: Optional[Path] = None,
+    tdm_feedback_schedule_path: Optional[Path] = None,
+    tdm_feedback_ratio_plan_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
     platform = Platform.load(platform_path)
@@ -50,6 +55,44 @@ def run_phase4(
             else NATIVE_ROUTER_PROVIDER
         )
     timing_paths = None
+    feedback_source_paths = (
+        tdm_feedback_routes_path,
+        tdm_feedback_schedule_path,
+        tdm_feedback_ratio_plan_path,
+    )
+    if tdm_feedback_path is None and any(
+        path is not None for path in feedback_source_paths
+    ):
+        raise ValueError(
+            "TDM feedback source artifacts require --tdm-feedback"
+        )
+    tdm_feedback = None
+    tdm_feedback_validation = None
+    if tdm_feedback_path is not None:
+        if (
+            tdm_feedback_routes_path is None
+            or tdm_feedback_schedule_path is None
+        ):
+            raise ValueError(
+                "--tdm-feedback requires --tdm-feedback-routes and "
+                "--tdm-feedback-schedule so Phase 4 can independently "
+                "reconstruct the concrete prices"
+            )
+        tdm_feedback = read_json(tdm_feedback_path)
+        feedback_routes = read_json(tdm_feedback_routes_path)
+        feedback_schedule = read_json(tdm_feedback_schedule_path)
+        feedback_ratio_plan = (
+            read_json(tdm_feedback_ratio_plan_path)
+            if tdm_feedback_ratio_plan_path is not None
+            else None
+        )
+        tdm_feedback_validation = validate_tdm_feedback(
+            feedback_routes,
+            platform,
+            feedback_schedule,
+            tdm_feedback,
+            feedback_ratio_plan,
+        )
     if provider == NATIVE_ROUTER_PROVIDER:
         if timing_paths_path is not None:
             raise ValueError(
@@ -63,6 +106,7 @@ def run_phase4(
             executable=router,
             provider=provider,
             candidate_pool_path=candidate_pool_path,
+            tdm_feedback=tdm_feedback,
         )
         validation = validate_native_system_routes(
             assignment,
@@ -92,6 +136,7 @@ def run_phase4(
             executable=router,
             provider=provider,
             candidate_pool_path=candidate_pool_path,
+            tdm_feedback=tdm_feedback,
         )
         validation = validate_native_system_routes(
             assignment,
@@ -119,9 +164,21 @@ def run_phase4(
         report["artifacts"]["timing_paths"] = "timing_paths.normalized.json"
     if candidate_pool_path.is_file():
         report["artifacts"]["candidate_pool"] = "route_candidate_pool.json"
+    if tdm_feedback is not None:
+        report["tdm_feedback"] = routes["joint_optimization"][
+            "tdm_feedback"
+        ]
+        report["tdm_feedback"]["validation"] = tdm_feedback_validation
+        report["artifacts"]["tdm_feedback"] = (
+            "tdm_feedback.normalized.json"
+        )
     write_json(output_dir / "route_constraints.normalized.json", constraints)
     if timing_paths is not None:
         write_json(output_dir / "timing_paths.normalized.json", timing_paths)
+    if tdm_feedback is not None:
+        write_json(
+            output_dir / "tdm_feedback.normalized.json", tdm_feedback
+        )
     write_json(output_dir / "routes.json", routes)
     write_json(output_dir / "phase4_report.json", report)
     return report
