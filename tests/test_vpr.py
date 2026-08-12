@@ -140,6 +140,62 @@ class VprTest(unittest.TestCase):
             del metrics["fmax_mhz"]
             report = validate_vpr_timing_summary(path, metrics)
             self.assertEqual(report["metrics"]["fmax_mhz"], 125.0)
+            path.write_text(
+                json.dumps(
+                    {
+                        "cpd": 0.906,
+                        "fmax": 1103.75,
+                        "swns": 0.0,
+                        "worst_slack": 3.094,
+                        "stns": 0.0,
+                        "sfec": 0,
+                        "failing_endpoints": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rounded_report = validate_vpr_timing_summary(
+                path,
+                {
+                    "critical_path_ns": 0.906,
+                    "setup_wns_ns": 0.0,
+                    "setup_worst_slack_ns": 3.094,
+                    "setup_tns_ns": 0.0,
+                    "setup_failing_endpoint_constraints": 0,
+                    "setup_failing_endpoints": 0,
+                },
+            )
+            self.assertEqual(rounded_report["metrics"]["fmax_mhz"], 1103.75)
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("1103.75", "1103.74"),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "disagrees"):
+                validate_vpr_timing_summary(
+                    path,
+                    {
+                        "critical_path_ns": 0.906,
+                        "setup_wns_ns": 0.0,
+                        "setup_worst_slack_ns": 3.094,
+                        "setup_tns_ns": 0.0,
+                        "setup_failing_endpoint_constraints": 0,
+                        "setup_failing_endpoints": 0,
+                    },
+                )
+            path.write_text(
+                json.dumps(
+                    {
+                        "cpd": 8.0,
+                        "fmax": 125.0,
+                        "swns": -0.25,
+                        "worst_slack": -0.25,
+                        "stns": -0.5,
+                        "sfec": 3,
+                        "failing_endpoints": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
             metrics["setup_tns_ns"] = -0.25
             with self.assertRaisesRegex(ValidationError, "disagrees"):
                 validate_vpr_timing_summary(path, metrics)

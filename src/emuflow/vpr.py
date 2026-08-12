@@ -372,10 +372,20 @@ def validate_vpr_timing_summary(
         # VPR intentionally omits the single-number Fmax console line when a
         # design has multiple clock-domain pairs.  Its machine summary still
         # reports the least-slack-domain Fmax, which must equal 1000 / CPD.
-        if metric == "fmax_mhz" and log_value is None:
+        derived_fmax = metric == "fmax_mhz" and log_value is None
+        if derived_fmax:
             log_value = 1000.0 / float(normalized["critical_path_ns"])
+        # VPR's machine summary prints Fmax to two decimal places while CPD is
+        # independently serialized at a different precision.  When the
+        # single-number console Fmax is intentionally absent for a
+        # multi-clock design, bind the two through the maximum rounding error
+        # of the machine field instead of requiring impossible bit equality.
+        abs_tolerance = 0.005 if derived_fmax else 1e-9
         if log_value is None or not math.isclose(
-            float(normalized[metric]), float(log_value), rel_tol=1e-9, abs_tol=1e-9
+            float(normalized[metric]),
+            float(log_value),
+            rel_tol=1e-9,
+            abs_tol=abs_tolerance,
         ):
             raise ValidationError(
                 f"VPR timing summary field {field!r} disagrees with the console log"
