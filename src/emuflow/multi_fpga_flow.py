@@ -59,6 +59,138 @@ PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v1"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
 
+def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
+    """Return a regular, non-symlink file contained by a flow root."""
+
+    root = root.resolve()
+    path = path if path.is_absolute() else root / path
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError(f"multi-FPGA checkpoint {label} is missing")
+    resolved = path.resolve()
+    if resolved.parent != root and root not in resolved.parents:
+        raise ValidationError(f"multi-FPGA checkpoint {label} escapes its flow")
+    return resolved
+
+
+def finalize_multi_fpga_physical_checkpoint(
+    flow_root: Path,
+    physical_root: Path,
+    *,
+    runtime_directory: str = "runtime-final",
+) -> Dict[str, Any]:
+    """Finish Phase 7C and seal a flow after an independently resumed Phase 7.
+
+    Physical backends are intentionally restartable because their external tool
+    environments can fail after Phase 1--6 have completed.  This entry point
+    consumes only checked artifacts already below ``flow_root``; it does not
+    rerun or silently alter any earlier optimization stage.
+    """
+
+    root = flow_root.resolve()
+    if not root.is_dir():
+        raise ValidationError("multi-FPGA checkpoint flow root is missing")
+    if (
+        not runtime_directory
+        or Path(runtime_directory).is_absolute()
+        or len(Path(runtime_directory).parts) != 1
+        or runtime_directory in {".", ".."}
+    ):
+        raise ValidationError("multi-FPGA checkpoint runtime directory is unsafe")
+    physical_root = (
+        physical_root if physical_root.is_absolute() else root / physical_root
+    )
+    physical_report_path = _checked_flow_member(
+        root,
+        physical_root / "multi-fpga-physical-flow-report.json",
+        "physical flow report",
+    )
+    physical_summary_path = _checked_flow_member(
+        root,
+        physical_root / "physical-summary.json",
+        "physical summary",
+    )
+    members = {
+        "frontend": "frontend/phase1/phase1_report.json",
+        "platform": "frontend/phase1/platform.normalized.json",
+        "emuir": "frontend/phase1/design.emuir.json",
+        "partition": "partition/phase3_report.json",
+        "assignment": "partition/assignment.json",
+        "system_route": "system-route/phase4_report.json",
+        "routes": "system-route/routes.json",
+        "tdm": "tdm/phase5_report.json",
+        "schedule": "tdm/schedule.json",
+        "split": "split/phase6_report.json",
+        "split_manifest": "split/manifest.json",
+    }
+    paths = {
+        key: _checked_flow_member(root, Path(value), key)
+        for key, value in members.items()
+    }
+    stages = {
+        name: read_json(paths[name])
+        for name in ("frontend", "partition", "system_route", "tdm", "split")
+    }
+    physical_report = read_json(physical_report_path)
+    validate_multi_fpga_physical_report(physical_report)
+
+    runtime_root = root / runtime_directory
+    if runtime_root.is_symlink():
+        raise ValidationError("multi-FPGA checkpoint runtime directory is a symlink")
+    runtime_report = run_phase7c(
+        paths["schedule"],
+        paths["platform"],
+        paths["partition"],
+        paths["system_route"],
+        paths["tdm"],
+        paths["split"],
+        runtime_root,
+        physical_summary_path=physical_summary_path,
+        routes_path=paths["routes"],
+    )
+    if runtime_report.get("status") != "pass":
+        raise ValidationError("resumed physical flow did not close Phase 7C timing")
+
+    def artifact(path: Path) -> Dict[str, str]:
+        checked = _checked_flow_member(root, path, path.name)
+        return {
+            "path": checked.relative_to(root).as_posix(),
+            "sha256": _sha256(checked),
+        }
+
+    report: Dict[str, Any] = {
+        "schema": MULTI_FPGA_FLOW_SCHEMA,
+        "status": "pass",
+        "provider": MULTI_FPGA_FLOW_PROVIDER,
+        "architecture_policy": "provider-neutral",
+        "runtime": runtime_report,
+        "physical": physical_report,
+        "stages": stages,
+        "artifacts": {
+            "emuir": artifact(paths["emuir"]),
+            "assignment": artifact(paths["assignment"]),
+            "routes": artifact(paths["routes"]),
+            "schedule": artifact(paths["schedule"]),
+            "split_manifest": artifact(paths["split_manifest"]),
+            "runtime_contract": artifact(runtime_root / "runtime_contract.json"),
+            "qor_report": artifact(runtime_root / "qor_report.json"),
+            "physical_flow_report": artifact(physical_report_path),
+            "physical_summary": artifact(physical_summary_path),
+        },
+    }
+    optional = {
+        "timing_path_database": root / "timing/path-database.json",
+        "partition_net_weights": root / "timing/partition-net-weights.json",
+        "cut_path_database": root / "timing/cut-path-database.json",
+        "cut_timing_paths": root / "timing/cut-timing-paths.json",
+    }
+    for name, path in optional.items():
+        if path.is_file() and not path.is_symlink():
+            report["artifacts"][name] = artifact(path)
+    report["summary"] = validate_multi_fpga_flow_report(report)
+    write_json(root / "multi-fpga-flow-report.json", report)
+    return report
+
+
 def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     records = value["fpgas"]
     return {

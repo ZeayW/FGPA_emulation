@@ -9,7 +9,9 @@ from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.routing_tdm_comparison import (
     build_system_route_tdm_ab_comparison,
+    build_system_route_tdm_scale_comparison,
     validate_system_route_tdm_ab_comparison,
+    validate_system_route_tdm_scale_comparison,
 )
 from emuflow.tdm import TDM_BASELINE_PROVIDER
 from emuflow.tdm_ratio import TDM_RATIO_PROVIDER
@@ -41,6 +43,46 @@ def _physical(value: float):
 
 
 class RoutingTdmComparisonTest(unittest.TestCase):
+    def test_builds_independently_replayed_scale_comparison(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = {}
+            for name in ("assignment", "platform", "timing"):
+                path = root / f"{name}.json"
+                write_json(path, {"name": name})
+                sources[name] = path
+            arms = {}
+            for label, route_provider, tdm_provider in (
+                ("baseline", ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER),
+                ("upgrade", GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER),
+            ):
+                route_root = root / f"{label}-route"
+                tdm_root = root / f"{label}-tdm"
+                route_root.mkdir()
+                tdm_root.mkdir()
+                write_json(route_root / "routes.json", {"provider": route_provider})
+                write_json(tdm_root / "schedule.json", {"provider": tdm_provider})
+                arms[label] = (route_root, tdm_root)
+            with (
+                patch(
+                    "emuflow.routing_tdm_comparison.validate_phase4",
+                    return_value={"status": "pass", "routed_sinks": 17},
+                ),
+                patch(
+                    "emuflow.routing_tdm_comparison.validate_phase5",
+                    return_value={"status": "pass", "scheduled_bit_hops": 23},
+                ),
+            ):
+                report = build_system_route_tdm_scale_comparison(
+                    sources["assignment"], sources["platform"], sources["timing"],
+                    *arms["baseline"], *arms["upgrade"], root / "scale.json",
+                )
+            self.assertEqual(report["validation"]["baseline_routed_sinks"], 17)
+            broken = copy.deepcopy(report)
+            broken["arms"]["upgrade"]["tdm_provider"] = "wrong"
+            with self.assertRaises(ValidationError):
+                validate_system_route_tdm_scale_comparison(broken)
+
     def _report(self, root: Path, route: str, tdm: str, value: float):
         artifacts = {}
         for key in ("emuir", "assignment", "timing_path_database", "partition_net_weights"):

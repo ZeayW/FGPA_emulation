@@ -81,7 +81,10 @@ from .fpga_interchange import (
 from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
-from .multi_fpga_flow import run_multi_fpga_flow
+from .multi_fpga_flow import (
+    finalize_multi_fpga_physical_checkpoint,
+    run_multi_fpga_flow,
+)
 from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
 from .multi_fpga_physical_flow import run_multi_fpga_physical_flow
 from .opensta import (
@@ -122,7 +125,10 @@ from .pin_planning import (
 )
 from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
-from .routing_tdm_comparison import build_system_route_tdm_ab_comparison
+from .routing_tdm_comparison import (
+    build_system_route_tdm_ab_comparison,
+    build_system_route_tdm_scale_comparison,
+)
 from .runtime_sync import (
     run_runtime_sync_materialization,
     validate_runtime_sync_provider,
@@ -913,6 +919,29 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compare.add_argument("--baseline", type=Path, required=True)
     multi_fpga_compare.add_argument("--upgrade", type=Path, required=True)
     multi_fpga_compare.add_argument("--output", type=Path, required=True)
+    multi_fpga_scale_compare = multi_fpga_subparsers.add_parser(
+        "compare-routing-tdm-scale",
+        help="independently replay and compare frozen large Phase 4/5 arms",
+    )
+    for name in (
+        "assignment", "platform", "timing-paths", "baseline-route",
+        "baseline-tdm", "upgrade-route", "upgrade-tdm", "output",
+    ):
+        multi_fpga_scale_compare.add_argument(
+            f"--{name}", type=Path, required=True
+        )
+    multi_fpga_finalize = multi_fpga_subparsers.add_parser(
+        "finalize-physical",
+        help=(
+            "finish Phase 7C and seal a complete flow from a checked "
+            "independently resumed physical checkpoint"
+        ),
+    )
+    multi_fpga_finalize.add_argument("--flow", type=Path, required=True)
+    multi_fpga_finalize.add_argument("--physical", type=Path, required=True)
+    multi_fpga_finalize.add_argument(
+        "--runtime-directory", default="runtime-final"
+    )
     multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
     multi_fpga_compile.add_argument("--top")
     multi_fpga_compile.add_argument("--clock", action="append", default=[])
@@ -3209,6 +3238,27 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "compare-routing-tdm-scale":
+            report = build_system_route_tdm_scale_comparison(
+                args.assignment,
+                args.platform,
+                args.timing_paths,
+                args.baseline_route,
+                args.baseline_tdm,
+                args.upgrade_route,
+                args.upgrade_tdm,
+                args.output,
+            )
+            _print_json(report["validation"])
+            return 0
+        if args.multi_fpga_command == "finalize-physical":
+            report = finalize_multi_fpga_physical_checkpoint(
+                args.flow,
+                args.physical,
+                runtime_directory=args.runtime_directory,
+            )
+            _print_json(report["summary"])
+            return 0
         if args.multi_fpga_command == "compare-routing-tdm":
             report = build_system_route_tdm_ab_comparison(
                 args.baseline,

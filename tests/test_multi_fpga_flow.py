@@ -11,6 +11,7 @@ from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
+    finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
     validate_multi_fpga_flow_report,
 )
@@ -31,6 +32,70 @@ PLATFORM = (
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "multi"
+            report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=root,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                router=str(tlr_router()),
+                frame_slots=32,
+                equivalence_cycles=2,
+            )
+            physical_root = root / "physical-resumed"
+            physical_root.mkdir()
+            physical_report = {
+                "status": "pass",
+                "design": report["stages"]["frontend"]["design"],
+                "platform": report["stages"]["frontend"]["platform"],
+            }
+            write_json(
+                physical_root / "multi-fpga-physical-flow-report.json",
+                physical_report,
+            )
+            write_json(
+                physical_root / "physical-summary.json",
+                {"status": "pass"},
+            )
+
+            def fake_phase7c(*args, **kwargs):
+                runtime = args[6]
+                runtime.mkdir(parents=True)
+                write_json(runtime / "runtime_contract.json", {})
+                write_json(runtime / "qor_report.json", {})
+                return {"status": "pass"}
+
+            with (
+                patch(
+                    "emuflow.multi_fpga_flow.validate_multi_fpga_physical_report",
+                    return_value={"status": "pass"},
+                ),
+                patch(
+                    "emuflow.multi_fpga_flow.validate_multi_fpga_flow_report",
+                    return_value={"status": "pass"},
+                ),
+                patch(
+                    "emuflow.multi_fpga_flow.run_phase7c",
+                    side_effect=fake_phase7c,
+                ),
+            ):
+                finalized = finalize_multi_fpga_physical_checkpoint(
+                    root, physical_root
+                )
+            self.assertEqual(finalized["summary"]["status"], "pass")
+            self.assertEqual(
+                finalized["artifacts"]["physical_flow_report"]["path"],
+                "physical-resumed/multi-fpga-physical-flow-report.json",
+            )
+            with self.assertRaisesRegex(ValidationError, "runtime directory"):
+                finalize_multi_fpga_physical_checkpoint(
+                    root, physical_root, runtime_directory="../escape"
+                )
+
     def test_complete_flow_selects_parallel_global_route_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -13,12 +13,15 @@ from .multi_fpga_flow import (
     _phase6_physical_metrics,
     validate_multi_fpga_flow_report,
 )
+from .phase4 import validate_phase4
+from .phase5 import validate_phase5
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
 SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v1"
+SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v1"
 _FROZEN_ARTIFACTS = (
     "emuir",
     "assignment",
@@ -282,3 +285,138 @@ def build_system_route_tdm_ab_comparison(
     result["validation"] = validate_system_route_tdm_ab_comparison(result)
     write_json(output_path, result)
     return result
+
+
+def validate_system_route_tdm_scale_comparison(
+    report: Dict[str, Any],
+) -> Dict[str, Any]:
+    if (
+        report.get("schema") != SYSTEM_ROUTE_TDM_SCALE_SCHEMA
+        or report.get("status") != "pass"
+        or report.get("qualification") != "independent-phase4-phase5-scale-ab"
+    ):
+        raise ValidationError("routing/TDM scale comparison identity is invalid")
+    sources = report.get("frozen_upstream")
+    if not isinstance(sources, dict) or set(sources) != {
+        "assignment", "platform", "timing_paths"
+    }:
+        raise ValidationError("routing/TDM scale frozen upstream is incomplete")
+    for digest in sources.values():
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise ValidationError("routing/TDM scale source digest is invalid")
+    arms = report.get("arms")
+    if not isinstance(arms, dict) or set(arms) != {"baseline", "upgrade"}:
+        raise ValidationError("routing/TDM scale arms are incomplete")
+    expected_providers = {
+        "baseline": (ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER),
+        "upgrade": (GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER),
+    }
+    for label, (route_provider, tdm_provider) in expected_providers.items():
+        arm = arms.get(label)
+        if (
+            not isinstance(arm, dict)
+            or arm.get("route_provider") != route_provider
+            or arm.get("tdm_provider") != tdm_provider
+            or arm.get("route_validation", {}).get("status") != "pass"
+            or arm.get("tdm_validation", {}).get("status") != "pass"
+        ):
+            raise ValidationError(f"routing/TDM scale {label} arm is invalid")
+        seals = arm.get("artifacts")
+        if not isinstance(seals, dict) or set(seals) != {"routes", "schedule"}:
+            raise ValidationError(f"routing/TDM scale {label} seals are invalid")
+        if any(not isinstance(value, str) or len(value) != 64 for value in seals.values()):
+            raise ValidationError(f"routing/TDM scale {label} digest is invalid")
+    return {
+        "status": "pass",
+        "baseline_routed_sinks": arms["baseline"]["route_validation"].get(
+            "routed_sinks"
+        ),
+        "upgrade_routed_sinks": arms["upgrade"]["route_validation"].get(
+            "routed_sinks"
+        ),
+        "baseline_scheduled_bit_hops": arms["baseline"]["tdm_validation"].get(
+            "scheduled_bit_hops"
+        ),
+        "upgrade_scheduled_bit_hops": arms["upgrade"]["tdm_validation"].get(
+            "scheduled_bit_hops"
+        ),
+    }
+
+
+def build_system_route_tdm_scale_comparison(
+    assignment_path: Path,
+    platform_path: Path,
+    timing_paths_path: Path,
+    baseline_route_root: Path,
+    baseline_tdm_root: Path,
+    upgrade_route_root: Path,
+    upgrade_tdm_root: Path,
+    output_path: Path,
+) -> Dict[str, Any]:
+    """Independently replay and seal Phase 4/5 on a frozen large instance."""
+
+    source_paths = {
+        "assignment": assignment_path.resolve(),
+        "platform": platform_path.resolve(),
+        "timing_paths": timing_paths_path.resolve(),
+    }
+    for label, path in source_paths.items():
+        if path.is_symlink() or not path.is_file():
+            raise ValidationError(f"routing/TDM scale {label} input is missing")
+    roots = {
+        "baseline": (baseline_route_root.resolve(), baseline_tdm_root.resolve()),
+        "upgrade": (upgrade_route_root.resolve(), upgrade_tdm_root.resolve()),
+    }
+    arms: Dict[str, Any] = {}
+    expected = {
+        "baseline": (ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER),
+        "upgrade": (GLOBAL_CANDIDATE_PROVIDER, TDM_RATIO_PROVIDER),
+    }
+    for label, (route_root, tdm_root) in roots.items():
+        routes_path = route_root / "routes.json"
+        schedule_path = tdm_root / "schedule.json"
+        ratio_path = tdm_root / "ratio_plan.json"
+        for artifact_label, path in (("routes", routes_path), ("schedule", schedule_path)):
+            if path.is_symlink() or not path.is_file():
+                raise ValidationError(
+                    f"routing/TDM scale {label} {artifact_label} is missing"
+                )
+        routes = read_json(routes_path)
+        schedule = read_json(schedule_path)
+        route_provider, tdm_provider = expected[label]
+        if routes.get("provider") != route_provider or schedule.get("provider") != tdm_provider:
+            raise ValidationError(f"routing/TDM scale {label} provider differs")
+        route_validation = validate_phase4(
+            source_paths["assignment"],
+            source_paths["platform"],
+            routes_path,
+            source_paths["timing_paths"],
+        )
+        tdm_validation = validate_phase5(
+            routes_path,
+            source_paths["platform"],
+            schedule_path,
+            ratio_path if ratio_path.is_file() and not ratio_path.is_symlink() else None,
+        )
+        arms[label] = {
+            "route_provider": route_provider,
+            "tdm_provider": tdm_provider,
+            "route_validation": route_validation,
+            "tdm_validation": tdm_validation,
+            "artifacts": {
+                "routes": _sha256(routes_path),
+                "schedule": _sha256(schedule_path),
+            },
+        }
+    report = {
+        "schema": SYSTEM_ROUTE_TDM_SCALE_SCHEMA,
+        "status": "pass",
+        "qualification": "independent-phase4-phase5-scale-ab",
+        "frozen_upstream": {
+            label: _sha256(path) for label, path in source_paths.items()
+        },
+        "arms": arms,
+    }
+    report["validation"] = validate_system_route_tdm_scale_comparison(report)
+    write_json(output_path, report)
+    return report

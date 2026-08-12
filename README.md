@@ -309,6 +309,29 @@ emuflow multi-fpga compare-routing-tdm \
 The report is labelled `complete-phase7-source-bound-ab`; a Phase 4/5-only
 run, mixed upstream artifacts, a changed flow report, or either arm with an
 unrouted net/DRC violation is rejected rather than reported as QoR evidence.
+If an external physical tool environment is repaired after Phase 1--6 has
+already passed, the checked resume gate seals that independently completed
+physical directory and reruns Phase 7C without repeating earlier optimization:
+
+```bash
+emuflow multi-fpga finalize-physical \
+  --flow build/routing-tdm-upgrade \
+  --physical build/routing-tdm-upgrade/physical-resumed
+```
+
+For public instances too large for a complete physical run, the scale gate
+independently reconstructs both Phase 4 route legality/timing and Phase 5
+ratio/slot legality against one byte-identical assignment, platform, and
+TimingPathDB. It reports algorithmic scale evidence, never Phase 7 QoR:
+
+```bash
+emuflow multi-fpga compare-routing-tdm-scale \
+  --assignment imported/assignment.json --platform imported/platform.json \
+  --timing-paths imported/timing-paths.json \
+  --baseline-route baseline-route --baseline-tdm baseline-tdm \
+  --upgrade-route upgrade-route --upgrade-tdm upgrade-tdm \
+  --output routing-tdm-scale-comparison.json
+```
 
 For the source-complete academic physical flow, Phase 6 now defaults to
 `--phase6-provider auto`. When `--physical --physical-backend open` has at
