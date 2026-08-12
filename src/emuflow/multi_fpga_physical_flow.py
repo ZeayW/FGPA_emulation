@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -370,6 +371,16 @@ def run_multi_fpga_physical_flow(
         raise ValidationError("multi-FPGA physical input split manifest is invalid")
     platform = Platform.load(platform_path)
     schedule = read_json(schedule_path)
+    position_hints = None
+    electrical_binding = None
+    if "position_hints" in manifest:
+        position_hints = read_json(split_root / manifest["position_hints"])
+    if "electrical_binding" in manifest:
+        electrical_binding = read_json(split_root / manifest["electrical_binding"])
+    if (position_hints is None) != (electrical_binding is None):
+        raise ValidationError(
+            "physical Chimew anchors require both position hints and electrical binding"
+        )
     runtime = build_virtual_runtime(schedule, platform)
     backend_descriptor = physical_backend_descriptor(backend)
     validate_physical_backend_descriptor(backend_descriptor)
@@ -544,16 +555,87 @@ def run_multi_fpga_physical_flow(
                 circuit_path=circuit,
                 executable=packed_importer,
             )
+            boundary_identity_path = Path(
+                lowering_report["boundary_identity"]["output"]
+            )
+            fixed_io_targets = None
+            if position_hints is not None and electrical_binding is not None:
+                hint_by_entry = {
+                    item["schedule_entry"]: item
+                    for item in position_hints.get("entries", [])
+                }
+                binding_by_entry = {}
+                for binding in electrical_binding.get("entries", []):
+                    for entry_id in binding.get("schedule_entries", []):
+                        if entry_id in binding_by_entry:
+                            raise ValidationError(
+                                "Chimew electrical binding duplicates a schedule entry"
+                            )
+                        binding_by_entry[entry_id] = binding
+                packed = read_json(packed_contract)
+                packed_io_names = {
+                    cluster["name"]
+                    for cluster in packed["clusters"]
+                    if cluster["block_type"] == "io"
+                }
+                fixed_io_targets = {}
+                port_map = {
+                    (item["port"], item["bit"]): item["packed_block"]
+                    for item in eblif_report.get("top_ports", [])
+                }
+                boundary_endpoints = read_json(boundary_identity_path)["endpoints"]
+                for endpoint in boundary_endpoints:
+                    entry_id = endpoint["schedule_entry"]
+                    hint = hint_by_entry.get(entry_id)
+                    binding = binding_by_entry.get(entry_id)
+                    if hint is None or binding is None:
+                        raise ValidationError(
+                            "Chimew physical anchors do not cover every boundary endpoint"
+                        )
+                    # The synthetic academic channel preserves a direction-
+                    # qualified lane order.  Convert its selected physical
+                    # lane to the same normalized y coordinate used to build
+                    # the Chimew bank/channel geometry.  This makes the
+                    # package-pin assignment an actual fixed I/O placement
+                    # constraint in the open physical flow.
+                    link = next(
+                        item for item in platform.links
+                        if item.id == binding["link"]
+                    )
+                    lane_limit = (
+                        link.transport_bits_per_cycle_per_direction - 1
+                    )
+                    target_y = (
+                        0.5
+                        if lane_limit == 0
+                        else float(binding["physical_lane"]) / float(lane_limit)
+                    )
+                    merged = endpoint["merged_ir"]
+                    packed_name = port_map.get(
+                        (merged["external_port"], merged["external_port_bit"])
+                    )
+                    if packed_name not in packed_io_names:
+                        raise ValidationError(
+                            f"Chimew boundary {endpoint['id']!r} has no packed I/O cluster"
+                        )
+                    previous = fixed_io_targets.setdefault(packed_name, target_y)
+                    if not math.isclose(previous, target_y, abs_tol=1.0e-12):
+                        raise ValidationError(
+                            "Chimew packed I/O cluster has conflicting anchors"
+                        )
+                expected_endpoints = len(boundary_endpoints)
+                if len(fixed_io_targets) != expected_endpoints:
+                    raise ValidationError(
+                        "Chimew fixed I/O anchor coverage is not one-to-one"
+                    )
             placement_report = run_packed_openparf_placement(
                 packed_contract,
                 architecture_db,
                 fpga_root / "openparf-placement",
                 seed_placement_path=baseline_placement,
+                fixed_io_targets=fixed_io_targets,
                 openparf_install=openparf_install,
                 openparf_python=openparf_python,
-            )
-            boundary_identity_path = Path(
-                lowering_report["boundary_identity"]["output"]
             )
             boundary_query_path = fpga_root / "vpr-boundary-query.tsv"
             boundary_query_report = write_vpr_boundary_timing_query(

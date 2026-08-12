@@ -267,6 +267,7 @@ def _seeded_cluster_placements(
     packed: Mapping[str, Any],
     cluster_names: Mapping[str, str],
     fixed_types: List[str],
+    fixed_io_targets: Optional[Mapping[str, float]] = None,
 ) -> str:
     """Translate a legal VPR placement into movable OpenPARF seed positions."""
     by_block_number: Dict[int, Mapping[str, Any]] = {}
@@ -328,6 +329,79 @@ def _seeded_cluster_placements(
         )
 
     fixed = set(fixed_types)
+    fixed_io_targets = dict(fixed_io_targets or {})
+    cluster_by_name = {
+        cluster["name"]: cluster for cluster in packed["clusters"]
+    }
+    unknown_targets = sorted(set(fixed_io_targets) - set(cluster_by_name))
+    if unknown_targets:
+        raise ValidationError(
+            "fixed I/O targets reference unknown packed clusters: "
+            + ", ".join(unknown_targets[:10])
+        )
+    for name in fixed_io_targets:
+        if cluster_by_name[name]["block_type"] != "io":
+            raise ValidationError(
+                f"fixed I/O target {name!r} is not an I/O cluster"
+            )
+    if fixed_io_targets:
+        # Chimew supplies a normalized package-bank coordinate.  Keep every
+        # non-target I/O at VPR's legal seed, then reassign only the selected
+        # transport ports to the closest currently occupied legal I/O slots.
+        # Reusing the seed's complete slot set guarantees legality and avoids
+        # any architecture-specific edge/pin assumptions.
+        io_blocks = [
+            (number, cluster)
+            for number, cluster in sorted(by_block_number.items())
+            if cluster["block_type"] == "io"
+        ]
+        io_slots = sorted(locations[number] for number, _ in io_blocks)
+        if len(io_slots) != len(set(io_slots)):
+            raise ValidationError("VPR seed contains colliding I/O slots")
+        height_scale = max(1, max(slot[1] for slot in io_slots))
+
+        def target_key(item: Tuple[int, Mapping[str, Any]]) -> Tuple[float, str]:
+            _number, cluster = item
+            target = fixed_io_targets.get(cluster["name"])
+            return (
+                float(target) if target is not None else 2.0,
+                cluster["name"],
+            )
+
+        targeted_names = set(fixed_io_targets)
+        # Allow the selected transport pads to trade positions with unrelated
+        # top-level I/O.  Holding thousands of incidental DUT ports fixed can
+        # otherwise make the desired package-bank coordinate unreachable.
+        available = set(io_slots)
+        assigned: Dict[int, Tuple[int, int, int]] = {}
+        for number, cluster in sorted(io_blocks, key=target_key):
+            target = fixed_io_targets.get(cluster["name"])
+            if target is None:
+                continue
+            desired_y = float(target) * height_scale
+            chosen = min(
+                available,
+                key=lambda slot: (
+                    abs(slot[1] - desired_y),
+                    slot[1],
+                    slot[0],
+                    slot[2],
+                ),
+            )
+            assigned[number] = chosen
+            available.remove(chosen)
+        for number, cluster in io_blocks:
+            if cluster["name"] not in targeted_names:
+                assigned[number] = min(
+                    available,
+                    key=lambda slot: (
+                        abs(slot[1] - locations[number][1]),
+                        abs(slot[0] - locations[number][0]),
+                        slot[2],
+                    ),
+                )
+                available.remove(assigned[number])
+        locations.update(assigned)
     lines = []
     for block_number, cluster in sorted(by_block_number.items()):
         x, y, z = locations[block_number]
@@ -424,6 +498,7 @@ def export_packed_bookshelf(
     output_dir: Path,
     *,
     seed_placement_path: Optional[Path] = None,
+    fixed_io_targets: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     packed = read_json(packed_path)
     packed_summary = validate_packed_netlist_contract(packed)
@@ -464,7 +539,10 @@ def export_packed_bookshelf(
             packed,
             cluster_names,
             fixed_types,
+            fixed_io_targets,
         )
+    elif fixed_io_targets:
+        raise ValidationError("fixed I/O targets require a VPR seed placement")
     output_dir.mkdir(parents=True, exist_ok=True)
     files = {
         "design.nodes": _render_nodes(packed, cluster_names),
@@ -530,6 +608,7 @@ def export_packed_bookshelf(
             if seed_placement_path is not None
             else None
         ),
+        "fixed_io_targets": len(fixed_io_targets or {}),
         "files": sorted(
             [*files, "openparf.json", "name_map.json"]
         ),
@@ -681,6 +760,7 @@ def run_packed_openparf_placement(
     output_dir: Path,
     *,
     seed_placement_path: Optional[Path] = None,
+    fixed_io_targets: Optional[Mapping[str, float]] = None,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -690,6 +770,7 @@ def run_packed_openparf_placement(
         architecture_path,
         bookshelf_dir,
         seed_placement_path=seed_placement_path,
+        fixed_io_targets=fixed_io_targets,
     )
     all_clusters_fixed = set(manifest["fixed_multi_instance_types"]) == set(
         manifest["block_types"]

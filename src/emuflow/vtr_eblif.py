@@ -297,11 +297,35 @@ def validate_vtr_eblif_report(report: Mapping[str, Any]) -> Dict[str, Any]:
         value = report.get(field)
         if not isinstance(value, str) or len(value) != 64:
             raise ValidationError(f"VTR eBLIF {field} is invalid")
+    top_ports = report.get("top_ports", [])
+    if not isinstance(top_ports, list):
+        raise ValidationError("VTR eBLIF top-port map is invalid")
+    identities = set()
+    packed_blocks = set()
+    for record in top_ports:
+        if not isinstance(record, Mapping):
+            raise ValidationError("VTR eBLIF top-port record is invalid")
+        identity = (record.get("port"), record.get("bit"))
+        if (
+            not isinstance(identity[0], str)
+            or isinstance(identity[1], bool)
+            or not isinstance(identity[1], int)
+            or identity[1] < 0
+            or identity in identities
+            or record.get("direction") not in {"input", "output"}
+            or not isinstance(record.get("net"), str)
+            or not isinstance(record.get("packed_block"), str)
+            or record["packed_block"] in packed_blocks
+        ):
+            raise ValidationError("VTR eBLIF top-port map is inconsistent")
+        identities.add(identity)
+        packed_blocks.add(record["packed_block"])
     return {
         "status": "pass",
         "source_instances": instances,
         "emitted_atoms": expected_atoms,
         "memory_atom_expansion": report.get("memory_atom_expansion", 0),
+        "top_ports": len(top_ports),
     }
 
 
@@ -333,6 +357,7 @@ def emit_vtr_eblif(
     model = f"emuflow_partition_{top_digest}"
     inputs = []
     outputs = []
+    top_ports = []
     for port in ir.value["ports"]:
         target = inputs if port["direction"] == "input" else outputs
         if port["direction"] not in {"input", "output"}:
@@ -343,6 +368,24 @@ def emit_vtr_eblif(
             net = pins.top.get((port["id"], bit))
             if net is not None:
                 target.append(net)
+                top_ports.append(
+                    {
+                        "port": port["id"],
+                        "bit": bit,
+                        "direction": port["direction"],
+                        "net": net,
+                        # VPR names an output pad block "out:<net>" and an
+                        # input pad block with the atom net itself.  Preserve
+                        # that exact packed-block identity so a later physical
+                        # stage can bind Phase-6 package anchors to the packed
+                        # I/O cluster without guessing from netlist order.
+                        "packed_block": (
+                            f"out:{net}"
+                            if port["direction"] == "output"
+                            else net
+                        ),
+                    }
+                )
     lines = [f".model {model}"]
     lines.append(".inputs" + (" " + " ".join(sorted(set(inputs))) if inputs else ""))
     lines.append(".outputs" + (" " + " ".join(sorted(set(outputs))) if outputs else ""))
@@ -389,6 +432,9 @@ def emit_vtr_eblif(
             for clock in ir.value["clocks"]
             if (clock["source_port"], 0) in pins.top
         },
+        "top_ports": sorted(
+            top_ports, key=lambda item: (item["port"], item["bit"])
+        ),
         "ff_control_luts": ff_control_luts,
         "memory_atom_expansion": memory_atom_expansion,
         "emitted_atoms": base_atoms + ff_control_luts,

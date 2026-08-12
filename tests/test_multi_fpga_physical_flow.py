@@ -342,6 +342,30 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     workers=0,
                 )
 
+    def test_rejects_partial_chimew_physical_anchor_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            split = root / "split"
+            split.mkdir()
+            manifest = {
+                "schema": "emuflow.split-manifest/v1",
+                "design": "design",
+                "platform": "academic_vtr_2fpga_p2p",
+                "fpgas": [],
+                "runtime_controller_rtl": "runtime.sv",
+                "position_hints": "position_hints.json",
+            }
+            write_json(split / "manifest.json", manifest)
+            write_json(split / "position_hints.json", {"entries": []})
+            write_json(root / "schedule.json", {})
+            with self.assertRaisesRegex(ValidationError, "both position hints"):
+                run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

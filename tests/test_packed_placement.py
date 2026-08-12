@@ -184,6 +184,78 @@ class PackedPlacementTest(unittest.TestCase):
         )
         self.assertEqual(initial.count(" FIXED\n"), 2)
 
+    def test_chimew_targets_reassign_only_selected_fixed_io_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packed_path, architecture_path = self._inputs(root)
+            packed = read_json(packed_path)
+            architecture = ArchitectureDB.load(architecture_path)
+            clb_site = next(
+                site for site in architecture.value["sites"]
+                if site["type"] == "clb"
+            )
+            io_sites = [
+                site for site in architecture.value["sites"]
+                if site["type"] == "io"
+            ]
+            by_instance = {
+                cluster["instance"]: cluster
+                for cluster in packed["clusters"]
+            }
+            seed = root / "seed.place"
+            seed.write_text(
+                "\n".join(
+                    [
+                        "Netlist_File: fixture.net Netlist_ID: fixture",
+                        "Array size: 12 x 12 logic blocks",
+                        "",
+                        f"{by_instance['clb[0]']['name']} "
+                        f"{clb_site['x']} {clb_site['y']} 0 0 #0",
+                        f"{by_instance['io[1]']['name']} "
+                        f"{io_sites[0]['x']} {io_sites[0]['y']} 0 0 #1",
+                        f"{by_instance['io[2]']['name']} "
+                        f"{io_sites[-1]['x']} {io_sites[-1]['y']} 0 0 #2",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "bookshelf"
+            manifest = export_packed_bookshelf(
+                packed_path,
+                architecture_path,
+                output,
+                seed_placement_path=seed,
+                fixed_io_targets={
+                    by_instance["io[1]"]["name"]: 1.0,
+                    by_instance["io[2]"]["name"]: 0.0,
+                },
+            )
+            name_map = read_json(output / "name_map.json")
+            safe = {
+                entry["name"]: entry["openparf"]
+                for entry in name_map["clusters"]
+            }
+            placed = {
+                fields[0]: tuple(int(value) for value in fields[1:4])
+                for fields in (
+                    line.split()
+                    for line in (output / "design.pl").read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                )
+            }
+
+        self.assertEqual(manifest["fixed_io_targets"], 2)
+        self.assertEqual(
+            placed[safe[by_instance["io[1]"]["name"]]],
+            (io_sites[-1]["x"], io_sites[-1]["y"], 0),
+        )
+        self.assertEqual(
+            placed[safe[by_instance["io[2]"]["name"]]],
+            (io_sites[0]["x"], io_sites[0]["y"], 0),
+        )
+
     def test_legal_cluster_placement_emits_vpr_place(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
