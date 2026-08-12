@@ -768,6 +768,7 @@ def run_vivado_partition_backend(
         },
         "timing": {
             "wns_ns": _number(metrics, "wns_ns"),
+            "timing_met": _number(metrics, "wns_ns") >= 0,
             "critical_path_ns": _number(metrics, "critical_path_ns"),
             "dut_wns_ns": _number(metrics, "dut_wns_ns"),
             "fabric_wns_ns": _number(metrics, "fabric_wns_ns"),

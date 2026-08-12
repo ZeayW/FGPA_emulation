@@ -440,6 +440,9 @@ def validate_physical_summary(
     worst_dut_slack = None
     worst_fabric_slack = None
     worst_cross_slack = None
+    total_tns = 0.0
+    total_failing_endpoints = 0
+    total_failing_endpoint_constraints = 0
     for fpga_id in sorted(by_id):
         item = by_id[fpga_id]
         for field in (
@@ -522,6 +525,35 @@ def validate_physical_summary(
             raise ValidationError(
                 f"physical summary {fpga_id}.timing must be an object"
             )
+        timing_met = timing.get("timing_met")
+        if timing_met is not None and timing_met is not (float(slack) >= 0):
+            raise ValidationError(
+                f"physical summary {fpga_id}.timing.timing_met disagrees"
+            )
+        if "tns_ns" in timing:
+            tns = timing.get("tns_ns")
+            failing_endpoints = timing.get("failing_endpoints")
+            failing_constraints = timing.get("failing_endpoint_constraints")
+            if (
+                isinstance(tns, bool)
+                or not isinstance(tns, (int, float))
+                or not math.isfinite(float(tns))
+                or float(tns) > 0
+            ):
+                raise ValidationError(
+                    f"physical summary {fpga_id}.timing.tns_ns is invalid"
+                )
+            for field, value in (
+                ("failing_endpoints", failing_endpoints),
+                ("failing_endpoint_constraints", failing_constraints),
+            ):
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValidationError(
+                        f"physical summary {fpga_id}.timing.{field} is invalid"
+                    )
+            total_tns += float(tns)
+            total_failing_endpoints += failing_endpoints
+            total_failing_endpoint_constraints += failing_constraints
         timing_values = {}
         for field in (
             "dut_wns_ns",
@@ -532,11 +564,11 @@ def validate_physical_summary(
             if (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
-                or value < 0
+                or not math.isfinite(float(value))
             ):
                 raise ValidationError(
                     f"physical summary {fpga_id}.timing.{field} "
-                    "must be non-negative"
+                    "must be finite"
                 )
             timing_values[field] = float(value)
         total_cells += item["routed_cells"]
@@ -583,6 +615,10 @@ def validate_physical_summary(
         "worst_dut_wns_ns": worst_dut_slack,
         "worst_fabric_wns_ns": worst_fabric_slack,
         "worst_fabric_to_dut_wns_ns": worst_cross_slack,
+        "total_tns_ns": total_tns,
+        "failing_endpoints": total_failing_endpoints,
+        "failing_endpoint_constraints": total_failing_endpoint_constraints,
+        "timing_met": worst_slack >= 0,
     }
 
 

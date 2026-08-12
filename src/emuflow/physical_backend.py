@@ -9,6 +9,7 @@ result.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Mapping
 
 from .errors import ValidationError
@@ -176,10 +177,46 @@ def validate_physical_partition_result(
             raise ValidationError(
                 f"physical result {fpga}.{field} must be numeric"
             )
-        if value < 0:
+        if not math.isfinite(float(value)):
             raise ValidationError(
-                f"physical result {fpga}.{field} did not meet timing"
+                f"physical result {fpga}.{field} must be finite"
             )
+    endpoint_timing = {
+        "tns_ns": timing.get("tns_ns"),
+        "failing_endpoints": timing.get("failing_endpoints"),
+        "failing_endpoint_constraints": timing.get(
+            "failing_endpoint_constraints"
+        ),
+    }
+    if backend == "open" or any(value is not None for value in endpoint_timing.values()):
+        tns = endpoint_timing["tns_ns"]
+        failing_endpoints = endpoint_timing["failing_endpoints"]
+        failing_constraints = endpoint_timing["failing_endpoint_constraints"]
+        if (
+            isinstance(tns, bool)
+            or not isinstance(tns, (int, float))
+            or not math.isfinite(float(tns))
+            or float(tns) > 0
+        ):
+            raise ValidationError(f"physical result {fpga}.tns_ns is invalid")
+        for name, value in (
+            ("failing_endpoints", failing_endpoints),
+            ("failing_endpoint_constraints", failing_constraints),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValidationError(f"physical result {fpga}.{name} is invalid")
+        if failing_endpoints > failing_constraints:
+            raise ValidationError(
+                f"physical result {fpga} failing endpoint counts disagree"
+            )
+        if (float(tns) < 0) != (failing_constraints > 0):
+            raise ValidationError(
+                f"physical result {fpga} TNS and failing endpoint count disagree"
+            )
+    timing_met = timing.get("timing_met")
+    expected_timing_met = float(timing["wns_ns"]) >= 0
+    if timing_met is not expected_timing_met:
+        raise ValidationError(f"physical result {fpga}.timing_met disagrees")
     artifacts = result.get("artifacts")
     if not isinstance(artifacts, dict) or not artifacts:
         raise ValidationError(
@@ -193,6 +230,14 @@ def validate_physical_partition_result(
         "routed_cells": expected_routed,
         "physical_cells": physical_cells,
         "wns_ns": float(timing["wns_ns"]),
+        **(
+            {
+                "tns_ns": float(timing["tns_ns"]),
+                "failing_endpoints": timing["failing_endpoints"],
+            }
+            if "tns_ns" in timing
+            else {}
+        ),
     }
 
 
@@ -220,6 +265,18 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
             "fabric_to_dut_wns_ns": timing[
                 "fabric_to_dut_wns_ns"
             ],
+            "timing_met": timing["timing_met"],
+            **(
+                {
+                    "tns_ns": timing["tns_ns"],
+                    "failing_endpoints": timing["failing_endpoints"],
+                    "failing_endpoint_constraints": timing[
+                        "failing_endpoint_constraints"
+                    ],
+                }
+                if "tns_ns" in timing
+                else {}
+            ),
         },
         "clocks": clocks,
         **(

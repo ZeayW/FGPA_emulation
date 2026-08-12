@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import os
 import re
 import subprocess
@@ -243,7 +245,22 @@ _FLOAT_PATTERNS = {
         r"Final critical path delay \(least slack\):\s+([0-9.eE+-]+)\s+ns"
     ),
     "fmax_mhz": re.compile(r"Fmax:\s+([0-9.eE+-]+)\s+MHz"),
+    "setup_wns_ns": re.compile(
+        r"Final setup Worst Negative Slack \(sWNS\):\s+([0-9.eE+-]+)\s+ns"
+    ),
+    "setup_worst_slack_ns": re.compile(
+        r"Final setup Worst Slack:\s+([0-9.eE+-]+)\s+ns"
+    ),
+    "setup_tns_ns": re.compile(
+        r"Final setup Total Negative Slack \(sTNS\):\s+([0-9.eE+-]+)\s+ns"
+    ),
 }
+_FAILING_ENDPOINT_PATTERN = re.compile(
+    r"Final setup Failing Endpoint Constraints \(sFEC\):\s+(\d+)"
+)
+_FAILING_LOGICAL_ENDPOINT_PATTERN = re.compile(
+    r"Final setup Failing Endpoints:\s+(\d+)"
+)
 _CLOCK_DOMAIN_CPD = re.compile(
     r"^\s+(\S+)\s+to\s+(\S+)\s+CPD:\s+([0-9.eE+-]+)\s+ns",
     re.MULTILINE,
@@ -284,6 +301,18 @@ def validate_vpr_outputs(
         matches = pattern.findall(log_text)
         if matches:
             metrics[name] = float(matches[-1])
+    failing_endpoint_matches = _FAILING_ENDPOINT_PATTERN.findall(log_text)
+    if failing_endpoint_matches:
+        metrics["setup_failing_endpoint_constraints"] = int(
+            failing_endpoint_matches[-1]
+        )
+    failing_logical_endpoint_matches = _FAILING_LOGICAL_ENDPOINT_PATTERN.findall(
+        log_text
+    )
+    if failing_logical_endpoint_matches:
+        metrics["setup_failing_endpoints"] = int(
+            failing_logical_endpoint_matches[-1]
+        )
     clock_domain_cpd = {
         f"{launch}->{capture}": float(delay)
         for launch, capture, delay in _CLOCK_DOMAIN_CPD.findall(log_text)
@@ -301,6 +330,63 @@ def validate_vpr_outputs(
         "stages": list(stages or ("pack", "place", "route", "analysis")),
         "metrics": metrics,
         "artifacts": artifact_report,
+    }
+
+
+def validate_vpr_timing_summary(
+    summary_path: Path,
+    log_metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Independently bind VPR's endpoint-complete timing summary to its log."""
+    if not summary_path.is_file() or summary_path.stat().st_size == 0:
+        raise ValidationError(f"VPR timing summary is missing: {summary_path}")
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValidationError("VPR timing summary is not valid JSON") from error
+    expected = {
+        "critical_path_ns": "cpd",
+        "fmax_mhz": "fmax",
+        "setup_wns_ns": "swns",
+        "setup_worst_slack_ns": "worst_slack",
+        "setup_tns_ns": "stns",
+        "setup_failing_endpoint_constraints": "sfec",
+        "setup_failing_endpoints": "failing_endpoints",
+    }
+    normalized: Dict[str, Any] = {}
+    for metric, field in expected.items():
+        value = summary.get(field)
+        if metric == "setup_failing_endpoint_constraints":
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValidationError(f"VPR timing summary field {field!r} is invalid")
+            normalized[metric] = value
+        else:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValidationError(f"VPR timing summary field {field!r} is invalid")
+            normalized[metric] = float(value)
+        log_value = log_metrics.get(metric)
+        if log_value is None or not math.isclose(
+            float(normalized[metric]), float(log_value), rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise ValidationError(
+                f"VPR timing summary field {field!r} disagrees with the console log"
+            )
+    if normalized["setup_wns_ns"] > 0 or normalized["setup_tns_ns"] > 0:
+        raise ValidationError("VPR negative-slack metrics must be non-positive")
+    if (normalized["setup_tns_ns"] < 0) != (
+        normalized["setup_failing_endpoint_constraints"] > 0
+    ):
+        raise ValidationError("VPR TNS and failing-endpoint count disagree")
+    return {
+        "status": "pass",
+        "path": str(summary_path),
+        "bytes": summary_path.stat().st_size,
+        "sha256": _sha256(summary_path),
+        "metrics": normalized,
     }
 
 
@@ -496,6 +582,7 @@ def run_vpr_route_packed(
     logic_query: Optional[Path] = None,
     logic_output: Optional[Path] = None,
     retain_rr_graph: bool = False,
+    sdc_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Route an existing VPR packing and OpenPARF cluster placement."""
 
@@ -506,6 +593,8 @@ def run_vpr_route_packed(
         "packed_contract": packed_contract.resolve(),
         "placement": placement.resolve(),
     }
+    if sdc_file is not None:
+        inputs["sdc_file"] = sdc_file.resolve()
     for name, path in inputs.items():
         if not path.is_file():
             raise EmuFlowError(f"VPR {name} does not exist: {path}")
@@ -546,6 +635,7 @@ def run_vpr_route_packed(
     output_dir.mkdir(parents=True, exist_ok=True)
     route = output_dir / f"{inputs['circuit'].stem}.route"
     rr_graph = output_dir / "rr_graph.xml"
+    timing_summary = output_dir / "timing-summary.json"
     command = resolve_native_executable("vpr", executable)
     arguments = [
         command,
@@ -565,7 +655,11 @@ def run_vpr_route_packed(
         str(rr_graph),
         "--route_chan_width",
         str(route_channel_width),
+        "--write_timing_summary",
+        str(timing_summary),
     ]
+    if sdc_file is not None:
+        arguments.extend(("--sdc_file", str(inputs["sdc_file"])))
     environment = os.environ.copy()
     if boundary_query_path is not None and boundary_output_path is not None:
         environment["EMUFLOW_VPR_BOUNDARY_QUERY"] = str(boundary_query_path)
@@ -596,6 +690,10 @@ def run_vpr_route_packed(
         route=route,
         stages=("route", "analysis"),
     )
+    timing_validation = validate_vpr_timing_summary(
+        timing_summary, report["metrics"]
+    )
+    report["metrics"].update(timing_validation["metrics"])
     route_check = validate_vpr_route_artifacts(
         route,
         rr_graph,
@@ -652,6 +750,7 @@ def run_vpr_route_packed(
     report["command"] = arguments
     report["log"] = str(log_path)
     report["route_check"] = route_check
+    report["timing_summary"] = timing_validation
     if boundary_artifact is not None:
         report["boundary_timing"] = boundary_artifact
     if logic_artifact is not None:

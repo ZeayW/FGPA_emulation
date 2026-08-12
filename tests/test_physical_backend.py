@@ -33,6 +33,10 @@ class PhysicalBackendContractTest(unittest.TestCase):
             "clocks": {"fabric_period_ns": 4.0, "dut_period_ns": 100.0},
             "timing": {
                 "wns_ns": 0.5,
+                "tns_ns": 0.0,
+                "failing_endpoints": 0,
+                "failing_endpoint_constraints": 0,
+                "timing_met": True,
                 "dut_wns_ns": 90.0,
                 "fabric_wns_ns": 0.5,
                 "fabric_to_dut_wns_ns": 2.0,
@@ -71,7 +75,7 @@ class PhysicalBackendContractTest(unittest.TestCase):
         self.assertEqual(summary["physical_cells"], 109)
         self.assertEqual(summary["timing"]["fabric_wns_ns"], 0.5)
 
-    def test_common_result_rejects_provider_identity_and_timing_failure(self):
+    def test_common_result_rejects_provider_identity_and_accepts_timing_failure(self):
         result = self._result()
         result["identity"]["backend"] = "vivado"
         with self.assertRaisesRegex(ValidationError, "identity"):
@@ -85,15 +89,19 @@ class PhysicalBackendContractTest(unittest.TestCase):
             )
         result = copy.deepcopy(self._result())
         result["timing"]["wns_ns"] = -0.01
-        with self.assertRaisesRegex(ValidationError, "did not meet timing"):
-            validate_physical_partition_result(
-                result,
-                backend="open",
-                fpga="fpga0",
-                part="academic-part",
-                original_cells=100,
-                transport_cells=5,
-            )
+        result["timing"]["tns_ns"] = -0.02
+        result["timing"]["failing_endpoints"] = 1
+        result["timing"]["failing_endpoint_constraints"] = 1
+        result["timing"]["timing_met"] = False
+        validation = validate_physical_partition_result(
+            result,
+            backend="open",
+            fpga="fpga0",
+            part="academic-part",
+            original_cells=100,
+            transport_cells=5,
+        )
+        self.assertEqual(validation["tns_ns"], -0.02)
 
 
 if __name__ == "__main__":

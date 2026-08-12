@@ -73,6 +73,22 @@ def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
             float(record["physical_result"]["timing"]["wns_ns"])
             for record in records
         ),
+        "total_tns_ns": sum(
+            float(record["physical_result"]["timing"]["tns_ns"])
+            for record in records
+        ),
+        "failing_endpoints": sum(
+            int(record["physical_result"]["timing"]["failing_endpoints"])
+            for record in records
+        ),
+        "failing_endpoint_constraints": sum(
+            int(
+                record["physical_result"]["timing"][
+                    "failing_endpoint_constraints"
+                ]
+            )
+            for record in records
+        ),
         "unrouted_nets": sum(
             int(record["physical_result"]["closure"]["unrouted_nets"])
             for record in records
@@ -125,6 +141,9 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         "total_wirelength",
         "worst_critical_path_ns",
         "worst_wns_ns",
+        "total_tns_ns",
+        "failing_endpoints",
+        "failing_endpoint_constraints",
         "unrouted_nets",
         "drc_violations",
     }
@@ -158,6 +177,14 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
             - baseline["worst_critical_path_ns"]
         ),
         "worst_wns_ns": chimew["worst_wns_ns"] - baseline["worst_wns_ns"],
+        "total_tns_ns": chimew["total_tns_ns"] - baseline["total_tns_ns"],
+        "failing_endpoints": (
+            chimew["failing_endpoints"] - baseline["failing_endpoints"]
+        ),
+        "failing_endpoint_constraints": (
+            chimew["failing_endpoint_constraints"]
+            - baseline["failing_endpoint_constraints"]
+        ),
     }
     if delta != expected_delta:
         raise ValidationError("Phase 6 A/B physical deltas disagree")
@@ -169,6 +196,8 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         "wirelength_delta": expected_delta["total_wirelength"],
         "critical_path_delta_ns": expected_delta["worst_critical_path_ns"],
         "wns_delta_ns": expected_delta["worst_wns_ns"],
+        "tns_delta_ns": expected_delta["total_tns_ns"],
+        "failing_endpoint_delta": expected_delta["failing_endpoints"],
     }
 
 
@@ -1226,6 +1255,20 @@ def run_multi_fpga_flow(
                         "worst_wns_ns": (
                             chimew_metrics["worst_wns_ns"]
                             - baseline_metrics["worst_wns_ns"]
+                        ),
+                        "total_tns_ns": (
+                            chimew_metrics["total_tns_ns"]
+                            - baseline_metrics["total_tns_ns"]
+                        ),
+                        "failing_endpoints": (
+                            chimew_metrics["failing_endpoints"]
+                            - baseline_metrics["failing_endpoints"]
+                        ),
+                        "failing_endpoint_constraints": (
+                            chimew_metrics["failing_endpoint_constraints"]
+                            - baseline_metrics[
+                                "failing_endpoint_constraints"
+                            ]
                         ),
                     },
                     "pin_plan_metrics": pin_metrics,

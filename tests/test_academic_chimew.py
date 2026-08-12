@@ -197,7 +197,12 @@ class AcademicChimewTest(unittest.TestCase):
                             "vpr_route": {"metrics": {"wirelength": wirelength}}
                         },
                         "physical_result": {
-                            "timing": {"wns_ns": wns},
+                            "timing": {
+                                "wns_ns": wns,
+                                "tns_ns": 0.0,
+                                "failing_endpoints": 0,
+                                "failing_endpoint_constraints": 0,
+                            },
                             "closure": {
                                 "unrouted_nets": 0,
                                 "drc_violations": 0,
@@ -228,6 +233,9 @@ class AcademicChimewTest(unittest.TestCase):
                 "total_wirelength": 100,
                 "worst_critical_path_ns": 10.0,
                 "worst_wns_ns": 1.0,
+                "total_tns_ns": 0.0,
+                "failing_endpoints": 0,
+                "failing_endpoint_constraints": 0,
                 "unrouted_nets": 0,
                 "drc_violations": 0,
             },
@@ -235,6 +243,9 @@ class AcademicChimewTest(unittest.TestCase):
                 "total_wirelength": 90,
                 "worst_critical_path_ns": 9.0,
                 "worst_wns_ns": 2.0,
+                "total_tns_ns": 0.0,
+                "failing_endpoints": 0,
+                "failing_endpoint_constraints": 0,
                 "unrouted_nets": 0,
                 "drc_violations": 0,
             },
@@ -242,6 +253,9 @@ class AcademicChimewTest(unittest.TestCase):
                 "total_wirelength": -10,
                 "worst_critical_path_ns": -1.0,
                 "worst_wns_ns": 1.0,
+                "total_tns_ns": 0.0,
+                "failing_endpoints": 0,
+                "failing_endpoint_constraints": 0,
             },
             "pin_plan_metrics": {"signals": 2},
         }

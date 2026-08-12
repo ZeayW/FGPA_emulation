@@ -66,6 +66,63 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_vpr_runtime_sdc(
+    path: Path,
+    eblif_report: Mapping[str, Any],
+    *,
+    fabric_period_ns: float,
+    dut_period_ns: float,
+    cross_period_ns: float,
+) -> Dict[str, Any]:
+    """Write VPR constraints matching the provider-neutral runtime contract."""
+    clock_nets = eblif_report.get("clock_nets")
+    if not isinstance(clock_nets, dict) or not clock_nets:
+        raise ValidationError("VTR eBLIF report has no physical clock nets")
+    fabric_net = clock_nets.get("fabric_clk")
+    if not isinstance(fabric_net, str) or not fabric_net:
+        raise ValidationError("VTR eBLIF report has no fabric clock net")
+    dut_nets = sorted(
+        {
+            net
+            for clock_id, net in clock_nets.items()
+            if clock_id != "fabric_clk" and isinstance(net, str) and net
+        }
+    )
+    if not dut_nets:
+        raise ValidationError("VTR eBLIF report has no DUT clock net")
+    lines = [
+        "# EmuFlow endpoint-complete Phase 7 timing contract.",
+        f"create_clock -name emuflow_fabric_clk -period {fabric_period_ns:.9f} [get_ports {{{fabric_net}}}]",
+    ]
+    dut_clocks = []
+    for index, net in enumerate(dut_nets):
+        clock_name = f"emuflow_dut_clk_{index}"
+        dut_clocks.append(clock_name)
+        lines.append(
+            f"create_clock -name {clock_name} -period {dut_period_ns:.9f} [get_ports {{{net}}}]"
+        )
+        lines.extend(
+            (
+                f"set_max_delay {cross_period_ns:.9f} -from [get_clocks {{emuflow_fabric_clk}}] -to [get_clocks {{{clock_name}}}]",
+                f"set_max_delay {cross_period_ns:.9f} -from [get_clocks {{{clock_name}}}] -to [get_clocks {{emuflow_fabric_clk}}]",
+            )
+        )
+    path.write_text("\n".join((*lines, "")), encoding="utf-8")
+    return {
+        "status": "pass",
+        "provider": "emuflow-vpr-runtime-sdc-v1",
+        "path": str(path),
+        "sha256": _sha256(path),
+        "fabric_clock": "emuflow_fabric_clk",
+        "dut_clocks": dut_clocks,
+        "periods_ns": {
+            "fabric": fabric_period_ns,
+            "dut": dut_period_ns,
+            "cross": cross_period_ns,
+        },
+    }
+
+
 def _physical_clock_delays(
     route_report: Mapping[str, Any],
     eblif_report: Mapping[str, Any],
@@ -408,6 +465,14 @@ def run_multi_fpga_physical_flow(
             eblif_report = emit_vtr_eblif(
                 merged_ir, circuit, fpga_root / "vtr-eblif-report.json"
             )
+            runtime_sdc = fpga_root / "runtime.sdc"
+            runtime_sdc_report = _write_vpr_runtime_sdc(
+                runtime_sdc,
+                eblif_report,
+                fabric_period_ns=fabric_period,
+                dut_period_ns=dut_period,
+                cross_period_ns=cross_period,
+            )
             pack_report = run_vpr_pack_place(
                 architecture_path,
                 circuit,
@@ -501,6 +566,7 @@ def run_multi_fpga_physical_flow(
                 boundary_output=boundary_raw_path,
                 logic_query=logic_query_path,
                 logic_output=logic_raw_path,
+                sdc_file=runtime_sdc,
             )
             boundary_timing_path = fpga_root / "boundary-timing.json"
             boundary_import_report = import_vpr_boundary_timing(
@@ -536,12 +602,9 @@ def run_multi_fpga_physical_flow(
                     cross_period - physical_delays["cross"]
                 ),
             }
-            if min(timing.values()) < 0:
-                raise ValidationError(
-                    f"academic physical timing did not close for {fpga_id}: "
-                    f"critical_path={physical_delays['overall']:.6f} ns, "
-                    f"fabric_period={fabric_period:.6f} ns"
-                )
+            endpoint_metrics = route_report["metrics"]
+            endpoint_wns = float(endpoint_metrics["setup_worst_slack_ns"])
+            endpoint_tns = float(endpoint_metrics["setup_tns_ns"])
             physical_result = {
                 "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
                 "status": "pass",
@@ -564,7 +627,17 @@ def run_multi_fpga_physical_flow(
                     "dut_period_ns": dut_period,
                 },
                 "timing": {
-                    "wns_ns": min(timing.values()),
+                    "wns_ns": endpoint_wns,
+                    "tns_ns": endpoint_tns,
+                    "failing_endpoints": int(
+                        endpoint_metrics["setup_failing_endpoints"]
+                    ),
+                    "failing_endpoint_constraints": int(
+                        endpoint_metrics[
+                            "setup_failing_endpoint_constraints"
+                        ]
+                    ),
+                    "timing_met": endpoint_wns >= 0,
                     **timing,
                     "critical_path_ns": physical_delays["overall"],
                     "clock_domain_delays_ns": physical_delays,
@@ -589,6 +662,7 @@ def run_multi_fpga_physical_flow(
                     "packed_contract": packed_report,
                     "openparf_placement": placement_report,
                     "vpr_route": route_report,
+                    "runtime_sdc": runtime_sdc_report,
                     "boundary_timing": {
                         "status": "pass",
                         "query": boundary_query_report,

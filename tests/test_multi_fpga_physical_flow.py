@@ -197,6 +197,20 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     },
                 }
 
+            def fake_eblif(_ir, output, _report):
+                output.write_text(".model partition\n.end\n", encoding="utf-8")
+                return {
+                    "status": "pass",
+                    "output": str(output),
+                    "output_sha256": _sha256(output),
+                    "emitted_atoms": 2,
+                    "source_instances": 2,
+                    "clock_nets": {
+                        "fabric_clk": "fabric_clk",
+                        "clk": "clk",
+                    },
+                }
+
             def fake_architecture(**kwargs):
                 write_json(kwargs["architecture_output_path"], {})
                 write_json(kwargs["timing_output_path"], {})
@@ -229,7 +243,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "status": "pass",
                     "architecture": {"sha256": _sha256(arch)},
                     "circuit": {"sha256": _sha256(circuit)},
-                    "metrics": {"critical_path_ns": 1.0},
+                    "metrics": {
+                        "critical_path_ns": 1.0,
+                        "setup_wns_ns": 3.0,
+                        "setup_worst_slack_ns": 3.0,
+                        "setup_tns_ns": 0.0,
+                        "setup_failing_endpoint_constraints": 0,
+                        "setup_failing_endpoints": 0,
+                    },
                     "route_check": {"status": "pass"},
                 }
 
@@ -253,6 +274,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 patch(
                     "emuflow.multi_fpga_physical_flow.run_vpr_pack_place",
                     side_effect=fake_pack,
+                ),
+                patch(
+                    "emuflow.multi_fpga_physical_flow.emit_vtr_eblif",
+                    side_effect=fake_eblif,
                 ),
                 patch(
                     "emuflow.multi_fpga_physical_flow.run_vtr_architecture_import",

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 #include <string_view>
 
@@ -32,6 +33,13 @@ tatum::TimingPathInfo find_least_slack_critical_path_delay(const tatum::TimingCo
 
 //Returns the total negative slack (setup) of all timing end-points and clock domain pairs
 float find_setup_total_negative_slack(const tatum::SetupTimingAnalyzer& setup_analyzer);
+
+//Returns the number of negative setup-slack endpoint/domain-pair constraints
+//summed by find_setup_total_negative_slack().
+size_t find_setup_failing_endpoint_constraints(const tatum::SetupTimingAnalyzer& setup_analyzer);
+
+//Returns the number of logical endpoints with at least one negative setup tag.
+size_t find_setup_failing_endpoints(const tatum::SetupTimingAnalyzer& setup_analyzer);
 
 //Returns the worst negative slack (setup) across all timing end-points and clock domain pairs
 float find_setup_worst_negative_slack(const tatum::SetupTimingAnalyzer& setup_analyzer);
@@ -143,7 +151,7 @@ struct TimingStats {
     void writeXML(std::ostream& output) const;
 
   public:
-    TimingStats(std::string prefix, double least_slack_cpd_delay, double fmax, double setup_worst_neg_slack, double setup_total_neg_slack, double setup_worst_skew, double critical_path_skew);
+    TimingStats(std::string prefix, double least_slack_cpd_delay, double fmax, double setup_worst_slack, double setup_worst_neg_slack, double setup_total_neg_slack, size_t setup_failing_endpoint_constraints, size_t setup_failing_endpoints, double setup_worst_skew, double critical_path_skew);
 
     enum OutputFormat {
         HumanReadable,
@@ -153,8 +161,11 @@ struct TimingStats {
 
     double least_slack_cpd_delay;
     double fmax;
+    double setup_worst_slack;
     double setup_worst_neg_slack;
     double setup_total_neg_slack;
+    size_t setup_failing_endpoint_constraints;
+    size_t setup_failing_endpoints;
     double setup_worst_skew;
     double critical_path_skew;
     std::string prefix;

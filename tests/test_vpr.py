@@ -1,4 +1,5 @@
 import subprocess
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.vpr import (
     build_vtr_yosys_script,
     run_vpr_route_packed,
+    validate_vpr_timing_summary,
     validate_vpr_outputs,
 )
 
@@ -76,6 +78,11 @@ class VprTest(unittest.TestCase):
                 Total wirelength: 29761, average net length: 12.7894
                 Final critical path delay (least slack): 8.08208 ns,
                 Fmax: 123.731 MHz
+                Final setup Worst Negative Slack (sWNS): -0.25 ns
+                Final setup Worst Slack: -0.25 ns
+                Final setup Total Negative Slack (sTNS): -0.5 ns
+                Final setup Failing Endpoint Constraints (sFEC): 3
+                Final setup Failing Endpoints: 2
                 intra-domain critical path delays (CPDs):
                   n10 to n10 CPD: 2.5 ns (400 MHz)
                   n20 to n20 CPD: 8 ns (125 MHz)
@@ -92,6 +99,8 @@ class VprTest(unittest.TestCase):
         self.assertEqual(report["metrics"]["clb_blocks"], 263)
         self.assertEqual(report["metrics"]["wirelength"], 29761)
         self.assertEqual(report["metrics"]["fmax_mhz"], 123.731)
+        self.assertEqual(report["metrics"]["setup_tns_ns"], -0.5)
+        self.assertEqual(report["metrics"]["setup_failing_endpoints"], 2)
         self.assertEqual(
             report["metrics"]["clock_domain_cpd_ns"],
             {"n10->n10": 2.5, "n10->n20": 3.25, "n20->n20": 8.0},
@@ -100,6 +109,37 @@ class VprTest(unittest.TestCase):
             report["stages"], ["pack", "place", "route", "analysis"]
         )
 
+    def test_machine_timing_summary_is_independently_bound_to_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "timing-summary.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "cpd": 8.0,
+                        "fmax": 125.0,
+                        "swns": -0.25,
+                        "worst_slack": -0.25,
+                        "stns": -0.5,
+                        "sfec": 3,
+                        "failing_endpoints": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metrics = {
+                "critical_path_ns": 8.0,
+                "fmax_mhz": 125.0,
+                "setup_wns_ns": -0.25,
+                "setup_worst_slack_ns": -0.25,
+                "setup_tns_ns": -0.5,
+                "setup_failing_endpoint_constraints": 3,
+                "setup_failing_endpoints": 2,
+            }
+            report = validate_vpr_timing_summary(path, metrics)
+            self.assertEqual(report["metrics"]["setup_tns_ns"], -0.5)
+            metrics["setup_tns_ns"] = -0.25
+            with self.assertRaisesRegex(ValidationError, "disagrees"):
+                validate_vpr_timing_summary(path, metrics)
     def test_route_report_rejects_missing_success_marker(self) -> None:
         with self.assertRaisesRegex(ValidationError, "success marker"):
             validate_vpr_outputs(
@@ -165,6 +205,21 @@ class VprTest(unittest.TestCase):
                     "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
                     encoding="utf-8",
                 )
+                summary_index = arguments.index("--write_timing_summary") + 1
+                Path(arguments[summary_index]).write_text(
+                    json.dumps(
+                        {
+                            "cpd": 1.0,
+                            "fmax": 1000.0,
+                            "swns": 0.0,
+                            "worst_slack": 3.0,
+                            "stns": 0.0,
+                            "sfec": 0,
+                            "failing_endpoints": 0,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 return subprocess.CompletedProcess(
                     arguments,
                     0,
@@ -172,6 +227,12 @@ class VprTest(unittest.TestCase):
                     Netlist num_nets: 2
                     Netlist num_blocks: 3
                     Total wirelength: 12
+                    Final critical path delay (least slack): 1 ns, Fmax: 1000 MHz
+                    Final setup Worst Negative Slack (sWNS): 0 ns
+                    Final setup Worst Slack: 3 ns
+                    Final setup Total Negative Slack (sTNS): 0 ns
+                    Final setup Failing Endpoint Constraints (sFEC): 0
+                    Final setup Failing Endpoints: 0
                     VPR succeeded
                     """,
                 )
@@ -202,6 +263,7 @@ class VprTest(unittest.TestCase):
         self.assertIn("--net_file", report["command"])
         self.assertIn("--place_file", report["command"])
         self.assertIn("--write_rr_graph", report["command"])
+        self.assertIn("--write_timing_summary", report["command"])
         self.assertEqual(report["route_check"]["status"], "pass")
         self.assertFalse(report["configuration"]["retain_rr_graph"])
         self.assertIn("boundary_timing", report)

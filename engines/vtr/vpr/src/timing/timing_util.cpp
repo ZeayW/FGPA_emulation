@@ -75,6 +75,34 @@ float find_setup_total_negative_slack(const tatum::SetupTimingAnalyzer& setup_an
     return tns;
 }
 
+size_t find_setup_failing_endpoint_constraints(const tatum::SetupTimingAnalyzer& setup_analyzer) {
+    auto& timing_ctx = g_vpr_ctx.timing();
+
+    size_t count = 0;
+    for (tatum::NodeId node : timing_ctx.graph->logical_outputs()) {
+        for (tatum::TimingTag tag : setup_analyzer.setup_slacks(node)) {
+            if (tag.time().value() < 0.) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+size_t find_setup_failing_endpoints(const tatum::SetupTimingAnalyzer& setup_analyzer) {
+    auto& timing_ctx = g_vpr_ctx.timing();
+
+    size_t count = 0;
+    for (tatum::NodeId node : timing_ctx.graph->logical_outputs()) {
+        bool failing = false;
+        for (tatum::TimingTag tag : setup_analyzer.setup_slacks(node)) {
+            failing |= tag.time().value() < 0.;
+        }
+        count += failing;
+    }
+    return count;
+}
+
 float find_setup_worst_negative_slack(const tatum::SetupTimingAnalyzer& setup_analyzer) {
     auto& timing_ctx = g_vpr_ctx.timing();
 
@@ -239,8 +267,11 @@ void TimingStats::writeHuman(std::ostream& output) const {
 
     output << prefix << "critical path skew: " << critical_path_skew << " ns\n";
 
+    output << prefix << "setup Worst Slack: " << setup_worst_slack << " ns\n";
     output << prefix << "setup Worst Negative Slack (sWNS): " << setup_worst_neg_slack << " ns\n";
     output << prefix << "setup Total Negative Slack (sTNS): " << setup_total_neg_slack << " ns\n";
+    output << prefix << "setup Failing Endpoint Constraints (sFEC): " << setup_failing_endpoint_constraints << "\n";
+    output << prefix << "setup Failing Endpoints: " << setup_failing_endpoints << "\n";
     output << prefix << "setup Worst Skew (sWS): " << setup_worst_skew << " ns\n";
     output << "\n";
 }
@@ -251,8 +282,11 @@ void TimingStats::writeJSON(std::ostream& output) const {
     output << "  \"fmax\": " << fmax << ",\n";
     output << "  \"cpd_skew\": " << critical_path_skew << ",\n";
 
+    output << "  \"worst_slack\": " << setup_worst_slack << ",\n";
     output << "  \"swns\": " << setup_worst_neg_slack << ",\n";
     output << "  \"stns\": " << setup_total_neg_slack << ",\n";
+    output << "  \"sfec\": " << setup_failing_endpoint_constraints << ",\n";
+    output << "  \"failing_endpoints\": " << setup_failing_endpoints << ",\n";
     output << "  \"sws\": " << setup_worst_skew << "\n";
     output << "}\n";
 }
@@ -264,18 +298,24 @@ void TimingStats::writeXML(std::ostream& output) const {
     output << "  <cpd value=\"" << least_slack_cpd_delay << "\" unit=\"ns\" description=\"Final critical path delay\"></nets>\n";
     output << "  <fmax value=\"" << fmax << "\" unit=\"MHz\" description=\"Max circuit frequency\"></fmax>\n";
     output << "  <cpd_skew value=\"" << critical_path_skew << "\" unit=\"ns\" description=\"Skew on the critical path's clock domain pair\"></cpd_skew>\n";
+    output << "  <worst_slack value=\"" << setup_worst_slack << "\" unit=\"ns\" description=\"setup Worst Slack\"></worst_slack>\n";
     output << "  <swns value=\"" << setup_worst_neg_slack << "\" unit=\"ns\" description=\"setup Worst Negative Slack (sWNS)\"></swns>\n";
     output << "  <stns value=\"" << setup_total_neg_slack << "\" unit=\"ns\" description=\"setup Total Negative Slack (sTNS)\"></stns>\n";
+    output << "  <sfec value=\"" << setup_failing_endpoint_constraints << "\" unit=\"constraints\" description=\"setup Failing Endpoint Constraints\"></sfec>\n";
+    output << "  <failing_endpoints value=\"" << setup_failing_endpoints << "\" unit=\"endpoints\" description=\"setup Failing Endpoints\"></failing_endpoints>\n";
     output << "  <sws value=\"" << setup_worst_skew << "\" unit=\"ns\" description=\"setup Worst Skew (sWS)\"></sws>\n";
 
     output << "</block_usage_report>\n";
 }
 
-TimingStats::TimingStats(std::string pref, double cpd, double f_max, double swns, double stns, double sws, double cpd_skew) {
+TimingStats::TimingStats(std::string pref, double cpd, double f_max, double worst_slack, double swns, double stns, size_t sfec, size_t failing_endpoints, double sws, double cpd_skew) {
     least_slack_cpd_delay = cpd;
     fmax = f_max;
+    setup_worst_slack = worst_slack;
     setup_worst_neg_slack = swns;
     setup_total_neg_slack = stns;
+    setup_failing_endpoint_constraints = sfec;
+    setup_failing_endpoints = failing_endpoints;
     setup_worst_skew = sws;
     critical_path_skew = cpd_skew;
     prefix = std::move(pref);
@@ -333,8 +373,11 @@ void print_setup_timing_summary(const tatum::TimingConstraints& constraints,
 
     double least_slack_cpd_delay = sec_to_nanosec(least_slack_cpd.delay());
     double fmax = sec_to_mhz(least_slack_cpd.delay());
+    double setup_worst_slack = sec_to_nanosec(least_slack_cpd.slack());
     double setup_worst_neg_slack = sec_to_nanosec(find_setup_worst_negative_slack(setup_analyzer));
     double setup_total_neg_slack = sec_to_nanosec(find_setup_total_negative_slack(setup_analyzer));
+    size_t setup_failing_endpoint_constraints = find_setup_failing_endpoint_constraints(setup_analyzer);
+    size_t setup_failing_endpoints = find_setup_failing_endpoints(setup_analyzer);
 
     auto setup_worst_skew_paths = find_setup_worst_skew_per_domain_pair(constraints, setup_analyzer);
     double setup_worst_skew = setup_worst_skew_paths.empty() ? std::numeric_limits<double>::quiet_NaN()
@@ -345,7 +388,10 @@ void print_setup_timing_summary(const tatum::TimingConstraints& constraints,
     double critical_path_skew = find_skew_for_domain_pair(setup_worst_skew_paths, least_slack_cpd.launch_domain(), least_slack_cpd.capture_domain());
 
     const auto stats = TimingStats(prefix.data(), least_slack_cpd_delay, fmax,
-                                   setup_worst_neg_slack, setup_total_neg_slack, setup_worst_skew, critical_path_skew);
+                                   setup_worst_slack, setup_worst_neg_slack,
+                                   setup_total_neg_slack,
+                                   setup_failing_endpoint_constraints, setup_failing_endpoints,
+                                   setup_worst_skew, critical_path_skew);
     if (!timing_summary_filename.empty())
         write_setup_timing_summary(timing_summary_filename, stats);
 
@@ -359,8 +405,11 @@ void print_setup_timing_summary(const tatum::TimingConstraints& constraints,
 
     VTR_LOG("%scritical path skew: %g ns\n", prefix.data(), critical_path_skew);
 
+    VTR_LOG("%ssetup Worst Slack: %g ns\n", prefix.data(), setup_worst_slack);
     VTR_LOG("%ssetup Worst Negative Slack (sWNS): %g ns\n", prefix.data(), setup_worst_neg_slack);
     VTR_LOG("%ssetup Total Negative Slack (sTNS): %g ns\n", prefix.data(), setup_total_neg_slack);
+    VTR_LOG("%ssetup Failing Endpoint Constraints (sFEC): %zu\n", prefix.data(), setup_failing_endpoint_constraints);
+    VTR_LOG("%ssetup Failing Endpoints: %zu\n", prefix.data(), setup_failing_endpoints);
     VTR_LOG("%ssetup Worst Skew (sWS): %g ns\n", prefix.data(), setup_worst_skew);
     VTR_LOG("\n");
 
