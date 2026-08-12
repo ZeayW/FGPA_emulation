@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -220,9 +221,40 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
   for (const auto& hop : model.hops) {
     if (hop.parent >= 0) children[hop.parent].push_back(hop.index);
   }
-  std::vector<std::vector<unsigned char>> occupied(
-      model.lane_resource_count,
-      std::vector<unsigned char>(model.frame_slots, 0));
+  // The external resource identifiers are sparse, and even the compacted
+  // resource_count * frame_slots product can be enormous.  Only one cell per
+  // scheduled hop is occupied, so keep a deterministic open-addressed set of
+  // those cells.  Its storage is O(hops), independent of identifier ranges and
+  // frame length, and build_schedule can be called repeatedly by LNS without
+  // retaining hundreds of thousands of small allocations.
+  std::size_t occupancy_capacity = 2;
+  while (occupancy_capacity < static_cast<std::size_t>(hop_count) * 2) {
+    occupancy_capacity <<= 1;
+  }
+  constexpr std::uint64_t empty_occupancy =
+      std::numeric_limits<std::uint64_t>::max();
+  std::vector<std::uint64_t> occupied(occupancy_capacity, empty_occupancy);
+  const std::size_t occupancy_mask = occupancy_capacity - 1;
+  auto occupancy_index = [&](std::uint64_t key) {
+    return static_cast<std::size_t>(key * 11400714819323198485ull) &
+           occupancy_mask;
+  };
+  auto is_occupied = [&](std::uint64_t key) {
+    std::size_t position = occupancy_index(key);
+    while (occupied[position] != empty_occupancy) {
+      if (occupied[position] == key) return true;
+      position = (position + 1) & occupancy_mask;
+    }
+    return false;
+  };
+  auto occupy = [&](std::uint64_t key) {
+    std::size_t position = occupancy_index(key);
+    while (occupied[position] != empty_occupancy &&
+           occupied[position] != key) {
+      position = (position + 1) & occupancy_mask;
+    }
+    occupied[position] = key;
+  };
 
   for (int round = 0; round <= maximum_round; ++round) {
     int source_ready = 0;
@@ -267,11 +299,15 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       const int latest = std::min(
           ready + hop.ratio,
           model.frame_slots - model.runtime_barrier_slots - hop.latency);
-      const int lane_domain = hop.lane_resource;
       int slot = ready;
-      while (slot < latest && occupied[lane_domain][slot]) ++slot;
+      auto occupancy_key = [&](int candidate_slot) {
+        return static_cast<std::uint64_t>(hop.lane_resource) *
+                   static_cast<std::uint64_t>(model.frame_slots) +
+               static_cast<std::uint64_t>(candidate_slot);
+      };
+      while (slot < latest && is_occupied(occupancy_key(slot))) ++slot;
       if (slot >= latest) return result;
-      occupied[lane_domain][slot] = 1;
+      occupy(occupancy_key(slot));
       result.slots[index] = slot;
       result.ready[index] = ready;
       ++scheduled;

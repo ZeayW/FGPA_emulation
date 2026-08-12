@@ -1839,6 +1839,11 @@ against the dense reconstruction, including its negative validation cases;
 this keeps public contest scale runs near-linear without weakening the
 certificate.  Academic ratio and timing-DAG providers still build their dense
 model once and share it across optimization, scheduling, timing, and feedback.
+The native concrete-slot optimizer compacts only lane resources that actually
+occur and stores occupied `(resource, slot)` cells in a deterministic sparse
+table whose memory is proportional to scheduled hops.  Sparse external lane
+IDs and long frames therefore cannot create a `max-ID x frame` or
+`resource-count x frame` allocation during repeated LNS schedule rebuilds.
 
 The Phase 5 ratio plan also seals a deterministic clock/protocol compatibility
 artifact. The normal pausible-clock transport uses `global-frame-cdc`: all

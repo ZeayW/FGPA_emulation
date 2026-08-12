@@ -134,6 +134,12 @@ class Phase5Test(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("lane_resource_count", source)
         self.assertIn("lane_resource_index", source)
+        self.assertIn("occupancy_capacity", source)
+        self.assertNotIn(
+            "static_cast<std::size_t>(model.lane_resource_count) *\n"
+            "          model.frame_slots",
+            source,
+        )
         self.assertNotIn(
             "const int lane_domains = (maximum_domain + 1) * lane_stride",
             source,
