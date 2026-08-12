@@ -91,7 +91,7 @@ foreach line [lrange $map_lines 1 end] {
 }
 
 set timing_paths [find_timing_paths -path_delay max \
-  -group_count $max_paths -endpoint_count 1 -sort_by_slack]
+  -group_count $max_paths -endpoint_count $max_paths -sort_by_slack]
 set output [open $output_path w]
 puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
 set emitted 0
