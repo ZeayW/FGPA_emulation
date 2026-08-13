@@ -58,11 +58,42 @@
       ]
     },
     {
+      "id": "shared-physical-lookahead",
+      "stage": "physical-lookahead",
+      "dependencies": [
+        "shared-phase1-5",
+        "phase6-baseline"
+      ],
+      "inputs": {},
+      "configuration": {
+        "lookahead_seed": 1,
+        "note": "optional shared physical evidence used by multiple Phase 6 providers"
+      },
+      "command": [
+        "replace-with-lookahead-command",
+        "--upstream",
+        "{dependency:shared-phase1-5}",
+        "--baseline",
+        "{dependency:phase6-baseline}",
+        "--out",
+        "{output_dir}"
+      ],
+      "validator": [
+        "replace-with-independent-lookahead-validator",
+        "{artifact_root}"
+      ],
+      "environment": {},
+      "artifacts": [
+        "lookahead-report.json"
+      ]
+    },
+    {
       "id": "phase7-baseline-seed1",
       "stage": "phase7",
       "provider": "baseline",
       "physical_seed": 1,
       "dependencies": [
+        "shared-phase1-5",
         "phase6-baseline"
       ],
       "inputs": {},

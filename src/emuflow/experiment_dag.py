@@ -24,7 +24,6 @@ EXPERIMENT_CHECKPOINT_SCHEMA = "emuflow.experiment-checkpoint/v1"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*")
-_STAGES = ("shared-phase1-5", "phase6", "phase7")
 _PROVIDERS = ("baseline", "placement-aware", "chimew")
 _TOKEN_RE = re.compile(
     r"\{(output_dir|artifact_root|dependency:([a-z0-9_.-]+))\}"
@@ -131,9 +130,7 @@ def _validate_node(raw: Any, seen: Mapping[str, Mapping[str, Any]]) -> Dict[str,
     if not isinstance(raw, dict):
         raise ValidationError("experiment nodes must be objects")
     node_id = _identifier(raw.get("id"), "node id")
-    stage = _string(raw.get("stage"), f"node {node_id} stage")
-    if stage not in _STAGES:
-        raise ValidationError(f"experiment node {node_id} stage is invalid")
+    stage = _identifier(raw.get("stage"), f"node {node_id} stage")
     dependencies = raw.get("dependencies", [])
     if not isinstance(dependencies, list) or not all(
         isinstance(item, str) and item for item in dependencies
@@ -147,41 +144,43 @@ def _validate_node(raw: Any, seen: Mapping[str, Mapping[str, Any]]) -> Dict[str,
         raise ValidationError(
             f"experiment node {node_id} dependencies must precede the node"
         )
-    if stage == "shared-phase1-5" and dependencies:
-        raise ValidationError("shared Phase 1-5 checkpoint cannot have dependencies")
-    if stage == "phase6" and (
-        len(dependencies) != 1 or seen[dependencies[0]]["stage"] != "shared-phase1-5"
-    ):
-        raise ValidationError(
-            f"experiment Phase 6 node {node_id} must depend on one shared Phase 1-5 node"
-        )
-    if stage == "phase7" and (
-        len(dependencies) != 1 or seen[dependencies[0]]["stage"] != "phase6"
-    ):
-        raise ValidationError(
-            f"experiment Phase 7 node {node_id} must depend on one Phase 6 node"
-        )
-
     provider = raw.get("provider")
-    if stage == "shared-phase1-5":
-        if provider is not None or raw.get("physical_seed") is not None:
-            raise ValidationError("shared Phase 1-5 node cannot select provider/seed")
-    else:
+    if provider is not None:
         if provider not in _PROVIDERS:
             raise ValidationError(f"experiment node {node_id} provider is invalid")
-        if stage == "phase6" and raw.get("physical_seed") is not None:
-            raise ValidationError("Phase 6 checkpoint cannot select physical seed")
-        if stage == "phase7":
-            seed = raw.get("physical_seed")
-            if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-                raise ValidationError(
-                    f"experiment Phase 7 node {node_id} physical seed is invalid"
-                )
-            dependency_provider = seen[dependencies[0]].get("provider")
-            if dependency_provider != provider:
-                raise ValidationError(
-                    f"experiment Phase 7 node {node_id} provider disagrees with Phase 6"
-                )
+    seed = raw.get("physical_seed")
+    if seed is not None and (
+        isinstance(seed, bool) or not isinstance(seed, int) or seed < 0
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} physical seed is invalid"
+        )
+    if stage == "shared-phase1-5" and (
+        dependencies or provider is not None or seed is not None
+    ):
+        raise ValidationError(
+            "shared Phase 1-5 checkpoint cannot have dependencies/provider/seed"
+        )
+    if stage == "phase6" and (provider is None or seed is not None):
+        raise ValidationError(
+            f"experiment Phase 6 node {node_id} requires provider and no physical seed"
+        )
+    if stage == "phase7":
+        if provider is None or seed is None:
+            raise ValidationError(
+                f"experiment Phase 7 node {node_id} requires provider and physical seed"
+            )
+        matching_phase6 = [
+            seen[dependency]
+            for dependency in dependencies
+            if seen[dependency]["stage"] == "phase6"
+            and seen[dependency].get("provider") == provider
+        ]
+        if len(matching_phase6) != 1:
+            raise ValidationError(
+                f"experiment Phase 7 node {node_id} must depend on exactly one "
+                "matching Phase 6 provider checkpoint"
+            )
 
     inputs = raw.get("inputs", {})
     if not isinstance(inputs, dict) or not all(
@@ -193,9 +192,9 @@ def _validate_node(raw: Any, seen: Mapping[str, Mapping[str, Any]]) -> Dict[str,
         raise ValidationError(
             f"experiment node {node_id} inputs must map labels to SHA-256 values"
         )
-    if stage == "shared-phase1-5" and not inputs:
+    if not dependencies and not inputs:
         raise ValidationError(
-            "shared Phase 1-5 checkpoint requires explicit source/platform input hashes"
+            f"experiment root node {node_id} requires explicit input hashes"
         )
     configuration = raw.get("configuration", {})
     if not isinstance(configuration, dict):

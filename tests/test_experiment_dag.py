@@ -96,11 +96,30 @@ class ExperimentDagTest(unittest.TestCase):
                     "artifacts": ["phase6.json"],
                 },
                 {
+                    "id": "shared-lookahead",
+                    "stage": "physical-lookahead",
+                    "dependencies": ["shared-phase1-5", "phase6-baseline"],
+                    "inputs": {},
+                    "configuration": {"lookahead_seed": 11},
+                    "command": _writer(
+                        "lookahead",
+                        "lookahead.json",
+                        "{dependency:shared-phase1-5}",
+                        "{dependency:phase6-baseline}",
+                    ),
+                    "validator": _validator(
+                        "lookahead.json",
+                        "{dependency:shared-phase1-5}",
+                        "{dependency:phase6-baseline}",
+                    ),
+                    "artifacts": ["lookahead.json"],
+                },
+                {
                     "id": "phase7-baseline-seed1",
                     "stage": "phase7",
                     "provider": "baseline",
                     "physical_seed": 1,
-                    "dependencies": ["phase6-baseline"],
+                    "dependencies": ["shared-phase1-5", "phase6-baseline"],
                     "inputs": {},
                     "configuration": {
                         "physical_backend": "open",
@@ -109,10 +128,13 @@ class ExperimentDagTest(unittest.TestCase):
                     "command": _writer(
                         "baseline-seed1",
                         "physical-summary.json",
+                        "{dependency:shared-phase1-5}",
                         "{dependency:phase6-baseline}",
                     ),
                     "validator": _validator(
-                        "physical-summary.json", "{dependency:phase6-baseline}"
+                        "physical-summary.json",
+                        "{dependency:shared-phase1-5}",
+                        "{dependency:phase6-baseline}",
                     ),
                     "artifacts": ["physical-summary.json"],
                 },
@@ -121,7 +143,7 @@ class ExperimentDagTest(unittest.TestCase):
                     "stage": "phase7",
                     "provider": "chimew",
                     "physical_seed": 1,
-                    "dependencies": ["phase6-chimew"],
+                    "dependencies": ["shared-phase1-5", "phase6-chimew"],
                     "inputs": {},
                     "configuration": {
                         "physical_backend": "open",
@@ -130,10 +152,13 @@ class ExperimentDagTest(unittest.TestCase):
                     "command": _writer(
                         "chimew-seed1",
                         "physical-summary.json",
+                        "{dependency:shared-phase1-5}",
                         "{dependency:phase6-chimew}",
                     ),
                     "validator": _validator(
-                        "physical-summary.json", "{dependency:phase6-chimew}"
+                        "physical-summary.json",
+                        "{dependency:shared-phase1-5}",
+                        "{dependency:phase6-chimew}",
                     ),
                     "artifacts": ["physical-summary.json"],
                 },
@@ -153,7 +178,7 @@ class ExperimentDagTest(unittest.TestCase):
             plan1_path = root / "plan1.json"
             plan1 = plan_experiment(spec, cache, plan1_path)
             self.assertEqual(
-                plan1["counts"], {"reuse": 0, "ready": 1, "waiting": 4}
+                plan1["counts"], {"reuse": 0, "ready": 1, "waiting": 5}
             )
             self.assertEqual(plan1["nodes"][0]["state"], "ready")
 
@@ -165,7 +190,7 @@ class ExperimentDagTest(unittest.TestCase):
             plan2_path = root / "plan2.json"
             plan2 = plan_experiment(spec, cache, plan2_path)
             self.assertEqual(
-                plan2["counts"], {"reuse": 1, "ready": 2, "waiting": 2}
+                plan2["counts"], {"reuse": 1, "ready": 2, "waiting": 3}
             )
 
             baseline6 = run_experiment_node(
@@ -178,6 +203,7 @@ class ExperimentDagTest(unittest.TestCase):
             self.assertEqual(by_id["shared-phase1-5"], "reuse")
             self.assertEqual(by_id["phase6-baseline"], "reuse")
             self.assertEqual(by_id["phase6-chimew"], "ready")
+            self.assertEqual(by_id["shared-lookahead"], "ready")
             self.assertEqual(by_id["phase7-baseline-seed1"], "ready")
             self.assertEqual(by_id["phase7-chimew-seed1"], "waiting")
 
@@ -221,7 +247,7 @@ class ExperimentDagTest(unittest.TestCase):
             source_path = self._write_spec(root, changed_source)
             source_plan = plan_experiment(source_path, cache, root / "source.json")
             self.assertEqual(
-                source_plan["counts"], {"reuse": 0, "ready": 1, "waiting": 4}
+                source_plan["counts"], {"reuse": 0, "ready": 1, "waiting": 5}
             )
 
     def test_existing_external_result_can_be_imported_without_rerun(self) -> None:
@@ -293,19 +319,19 @@ class ExperimentDagTest(unittest.TestCase):
 
     def test_invalid_dependencies_provider_seed_and_placeholders_are_rejected(self) -> None:
         invalid = self._spec()
-        invalid["nodes"][3]["provider"] = "chimew"
-        with self.assertRaisesRegex(ValidationError, "provider disagrees"):
+        invalid["nodes"][4]["provider"] = "chimew"
+        with self.assertRaisesRegex(ValidationError, "matching Phase 6 provider"):
             validate_experiment_spec(invalid)
         invalid = self._spec()
         invalid["nodes"][1]["command"].append("{dependency:phase6-chimew}")
         with self.assertRaisesRegex(ValidationError, "undeclared dependency"):
             validate_experiment_spec(invalid)
         invalid = self._spec()
-        invalid["nodes"][3]["physical_seed"] = -1
+        invalid["nodes"][4]["physical_seed"] = -1
         with self.assertRaisesRegex(ValidationError, "physical seed"):
             validate_experiment_spec(invalid)
         invalid = self._spec()
-        del invalid["nodes"][3]["configuration"]["physical_workers"]
+        del invalid["nodes"][4]["configuration"]["physical_workers"]
         with self.assertRaisesRegex(ValidationError, "physical_workers"):
             validate_experiment_spec(invalid)
         invalid = self._spec()

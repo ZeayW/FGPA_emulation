@@ -42,6 +42,11 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   tools, seed, worker count where relevant, expected artifacts, and an
   independent semantic validator.  Do not create artificial boundaries merely
   to fit a particular experiment name.
+- The DAG implementation and experiment spec must support arbitrary named
+  stages and multiple dependencies; it must not hard-code one current flow's
+  phase sequence.  Physical lookahead, source preparation, qualification, and
+  aggregation are explicit reusable nodes whenever they are shared or have a
+  different invalidation boundary.
 - Plan before execution.  Inventory existing caches and repository-external
   archives, independently validate compatible prior artifacts, and import
   valid results before submitting work.  A new branch, report, experiment

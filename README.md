@@ -757,15 +757,21 @@ A full-flow Phase 6 provider comparison is one concrete example:
 
 ```text
 shared Phase 1--5
-  +-- baseline Phase 6 --------+-- Phase 7 seed 1/2/3
-  +-- placement-aware Phase 6 -+-- Phase 7 seed 1/2/3
-  +-- Chimew Phase 6 ----------+-- Phase 7 seed 1/2/3
+  +-- baseline Phase 6 --+-- fixed physical lookahead
+                         +-- placement-aware Phase 6 -+-- Phase 7 seed 1/2/3
+                         +-- Chimew Phase 6 ----------+-- Phase 7 seed 1/2/3
+                         +-- baseline Phase 6 --------+-- Phase 7 seed 1/2/3
 ```
 
 Phase 1--5 is therefore built and independently validated once for a frozen
 RTL/BoardDB/partition/routing/schedule configuration.  Each Phase 6 provider
 has one checkpoint independent of physical seed.  Only Phase 7 expands across
-provider and seed.  Repeating a planner invocation validates every cached
+provider and seed.  When an algorithm needs placement/congestion lookahead,
+that prepass is a separate fixed-seed checkpoint shared by every applicable
+provider; it is not silently regenerated for each final physical seed.
+Experiment DAG stages are not limited to the Phase 1--7 names, and a node may
+depend on multiple earlier checkpoints when its semantic contract requires
+them.  Repeating a planner invocation validates every cached
 artifact and reports each node as:
 
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
