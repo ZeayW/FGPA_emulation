@@ -151,16 +151,16 @@ class VprBoundaryTimingTest(unittest.TestCase):
                             "bit": 0,
                             "direction": "output",
                             "net": "emuflow_top_output_000000",
-                            "source_net": "tx-external",
+                            "source_net": "n1",
                             "packed_block": "out:emuflow_top_output_000000",
                         },
                         {
                             "port": "rx_port",
                             "bit": 0,
                             "direction": "input",
-                            "net": "rx-external",
-                            "source_net": "rx-external",
-                            "packed_block": "rx-external",
+                            "net": "n2",
+                            "source_net": "n2",
+                            "packed_block": "n2",
                         },
                     ]
                 },
@@ -170,14 +170,14 @@ class VprBoundaryTimingTest(unittest.TestCase):
                 query_path.read_text(encoding="utf-8").splitlines()[1:],
                 [
                     "tx0\ttx\ti0.out[0]\tout:emuflow_top_output_000000.outpad[0]",
-                    "rx0\trx\trx-external.inpad[0]\ti1.D[0]",
+                    "rx0\trx\tn2.inpad[0]\ti1.D[0]",
                 ],
             )
             timing_tsv = root / "timing.tsv"
             timing_tsv.write_text(
                 "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"
                 "tx0\ttx\t1.25\ti0.out[0]\tout:emuflow_top_output_000000.outpad[0]\n"
-                "rx0\trx\t0.75\trx-external.inpad[0]\ti1.D[0]\n",
+                "rx0\trx\t0.75\tn2.inpad[0]\ti1.D[0]\n",
                 encoding="utf-8",
             )
             output = root / "boundary-timing.json"

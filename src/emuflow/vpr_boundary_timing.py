@@ -162,7 +162,8 @@ def write_vpr_boundary_timing_query(
             if (
                 record is None
                 or record["direction"] != expected_direction
-                or record.get("source_net", record["net"]) != external_net
+                or record.get("source_net", record["net"])
+                != f"n{net_index[external_net]}"
             ):
                 raise ValidationError(
                     f"VPR boundary endpoint {endpoint_id!r} disagrees with "
