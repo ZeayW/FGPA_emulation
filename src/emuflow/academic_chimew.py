@@ -24,6 +24,7 @@ from .chimew_bank_channel import (
 from .chimew_grouping import (
     CHIMEW_ACADEMIC_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
+    CHIMEW_TIMING_GUARD_PROVIDER,
     build_chimew_initial_groups,
     materialize_chimew_schedule_ratios,
 )
@@ -722,11 +723,18 @@ def materialize_academic_chimew_inputs(
         if timing_source is not None
         else set()
     )
+    if protected_entries:
+        schedule["chimew_timing_guard"] = {
+            "provider": CHIMEW_TIMING_GUARD_PROVIDER,
+            "scope": "EmuFlow extension, not a Chimew paper claim",
+            "source_sha256": _sha256(timing_source),
+            "maximum_weight": maximum_timing_weight,
+            "protected_entries": sorted(protected_entries),
+        }
     initial = build_chimew_initial_groups(
         schedule,
         crossings,
         executable=grouper,
-        protected_entries=protected_entries,
     )
     refined = refine_chimew_groups(
         schedule, crossings, initial, positions, executable=refiner

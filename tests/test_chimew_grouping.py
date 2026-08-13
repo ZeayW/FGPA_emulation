@@ -11,6 +11,7 @@ from emuflow.chimew_grouping import (
     CHIMEW_CROSSING_SCHEMA,
     CHIMEW_GROUPING_PROVIDER,
     CHIMEW_SCHEDULE_RATIO_PROVIDER,
+    CHIMEW_TIMING_GUARD_PROVIDER,
     _oracle_groups,
     build_chimew_initial_groups,
     materialize_chimew_schedule_ratios,
@@ -154,6 +155,34 @@ class ChimewGroupingTest(unittest.TestCase):
         groups = {item["schedule_entry"]: item["group"] for item in result["entries"]}
         self.assertEqual(groups["s0"], groups["s1"])
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_schedule_seals_timing_guard_for_pipeline_replay(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        for index, entry in enumerate(schedule["entries"]):
+            entry.update({"lane": index // 2, "slot": index % 2})
+        schedule["chimew_timing_guard"] = {
+            "provider": CHIMEW_TIMING_GUARD_PROVIDER,
+            "scope": "EmuFlow extension, not a Chimew paper claim",
+            "source_sha256": "a" * 64,
+            "maximum_weight": 10.0,
+            "protected_entries": ["s0"],
+        }
+        implicit = build_chimew_initial_groups(
+            schedule, self.crossings, executable=str(self.executable)
+        )
+        explicit = build_chimew_initial_groups(
+            schedule,
+            self.crossings,
+            executable=str(self.executable),
+            protected_entries={"s0"},
+        )
+        self.assertEqual(implicit, explicit)
+        invalid = copy.deepcopy(schedule)
+        invalid["chimew_timing_guard"]["protected_entries"] = ["s0", "s0"]
+        with self.assertRaisesRegex(ValidationError, "entries are invalid"):
+            build_chimew_initial_groups(
+                invalid, self.crossings, executable=str(self.executable)
+            )
 
     def test_normalized_region_substitute_is_rejected(self) -> None:
         invalid = copy.deepcopy(self.crossings)

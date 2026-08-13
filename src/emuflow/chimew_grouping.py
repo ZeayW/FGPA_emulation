@@ -31,6 +31,7 @@ CHIMEW_ACADEMIC_CROSSING_PROVIDER = (
 CHIMEW_SCHEDULE_RATIO_PROVIDER = (
     "emuflow-lane-occupancy-ratio-materializer-v1"
 )
+CHIMEW_TIMING_GUARD_PROVIDER = "emuflow-chimew-critical-lane-guard-v1"
 
 
 def _popcount(value: int) -> int:
@@ -290,6 +291,26 @@ def _guarded_lane_domains(
     }
 
 
+def _schedule_timing_guard(schedule: Mapping[str, Any]) -> Optional[set[str]]:
+    raw = schedule.get("chimew_timing_guard")
+    if raw is None:
+        return None
+    if (
+        not isinstance(raw, Mapping)
+        or raw.get("provider") != CHIMEW_TIMING_GUARD_PROVIDER
+        or raw.get("scope") != "EmuFlow extension, not a Chimew paper claim"
+    ):
+        raise ValidationError("Chimew schedule timing guard is invalid")
+    entries = raw.get("protected_entries")
+    if (
+        not isinstance(entries, list)
+        or any(not isinstance(entry, str) or not entry for entry in entries)
+        or entries != sorted(set(entries))
+    ):
+        raise ValidationError("Chimew schedule timing guard entries are invalid")
+    return set(entries)
+
+
 def _oracle_groups(
     entries: Sequence[Mapping[str, Any]],
     encodings: Mapping[str, int],
@@ -467,7 +488,19 @@ def build_chimew_initial_groups(
 
     encodings = validate_chimew_crossings(schedule, crossing_document)
     entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
-    guarded_lanes = _guarded_lane_domains(entries, protected_entries or set())
+    scheduled_guard = _schedule_timing_guard(schedule)
+    if (
+        protected_entries is not None
+        and scheduled_guard is not None
+        and protected_entries != scheduled_guard
+    ):
+        raise ValidationError("Chimew explicit and scheduled timing guards differ")
+    effective_guard = (
+        protected_entries
+        if protected_entries is not None
+        else scheduled_guard or set()
+    )
+    guarded_lanes = _guarded_lane_domains(entries, effective_guard)
     native = _run_native(entries, encodings, guarded_lanes, executable)
     oracle = _oracle_groups(entries, encodings, guarded_lanes)
     if native != oracle:
