@@ -67,6 +67,38 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _record_chimew_fixed_io_target(
+    targets: Dict[str, float],
+    packed_groups: Dict[str, str],
+    group_packed_blocks: Dict[str, str],
+    *,
+    packed_name: str,
+    group: str,
+    target_y: float,
+) -> None:
+    """Record one endpoint while preserving group-level TDM sharing.
+
+    Chimew assigns a physical channel to a signal group, not to every signal
+    independently.  Multiple schedule entries in the same group therefore
+    intentionally lower to the same packed boundary I/O block.  Across groups
+    the mapping remains one-to-one.
+    """
+
+    previous_group = packed_groups.setdefault(packed_name, group)
+    if previous_group != group:
+        raise ValidationError(
+            "Chimew packed I/O cluster is shared by different signal groups"
+        )
+    previous_packed = group_packed_blocks.setdefault(group, packed_name)
+    if previous_packed != packed_name:
+        raise ValidationError(
+            "Chimew signal group is split across packed I/O clusters"
+        )
+    previous_target = targets.setdefault(packed_name, target_y)
+    if not math.isclose(previous_target, target_y, abs_tol=1.0e-12):
+        raise ValidationError("Chimew packed I/O cluster has conflicting anchors")
+
+
 def _write_vpr_runtime_sdc(
     path: Path,
     eblif_report: Mapping[str, Any],
@@ -584,6 +616,8 @@ def run_multi_fpga_physical_flow(
                     for item in eblif_report.get("top_ports", [])
                 }
                 boundary_endpoints = read_json(boundary_identity_path)["endpoints"]
+                packed_groups: Dict[str, str] = {}
+                group_packed_blocks: Dict[str, str] = {}
                 for endpoint in boundary_endpoints:
                     entry_id = endpoint["schedule_entry"]
                     hint = hint_by_entry.get(entry_id)
@@ -633,15 +667,13 @@ def run_multi_fpga_physical_flow(
                         raise ValidationError(
                             f"Chimew boundary {endpoint['id']!r} has no packed I/O cluster"
                         )
-                    previous = fixed_io_targets.setdefault(packed_name, target_y)
-                    if not math.isclose(previous, target_y, abs_tol=1.0e-12):
-                        raise ValidationError(
-                            "Chimew packed I/O cluster has conflicting anchors"
-                        )
-                expected_endpoints = len(boundary_endpoints)
-                if len(fixed_io_targets) != expected_endpoints:
-                    raise ValidationError(
-                        "Chimew fixed I/O anchor coverage is not one-to-one"
+                    _record_chimew_fixed_io_target(
+                        fixed_io_targets,
+                        packed_groups,
+                        group_packed_blocks,
+                        packed_name=packed_name,
+                        group=binding["group"],
+                        target_y=target_y,
                     )
             placement_report = run_packed_openparf_placement(
                 packed_contract,

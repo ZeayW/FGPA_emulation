@@ -8,7 +8,10 @@ from unittest.mock import patch
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
-from emuflow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
+from emuflow.multi_fpga_physical_flow import (
+    _record_chimew_fixed_io_target,
+    run_multi_fpga_physical_flow,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +65,40 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_chimew_fixed_io_targets_allow_only_intragroup_tdm_sharing(self):
+        targets = {}
+        packed_groups = {}
+        group_packed_blocks = {}
+        for _slot in range(2):
+            _record_chimew_fixed_io_target(
+                targets,
+                packed_groups,
+                group_packed_blocks,
+                packed_name="packed_io0",
+                group="group0",
+                target_y=0.25,
+            )
+        self.assertEqual(targets, {"packed_io0": 0.25})
+
+        with self.assertRaisesRegex(ValidationError, "different signal groups"):
+            _record_chimew_fixed_io_target(
+                targets,
+                packed_groups,
+                group_packed_blocks,
+                packed_name="packed_io0",
+                group="group1",
+                target_y=0.25,
+            )
+        with self.assertRaisesRegex(ValidationError, "split across"):
+            _record_chimew_fixed_io_target(
+                targets,
+                packed_groups,
+                group_packed_blocks,
+                packed_name="packed_io1",
+                group="group0",
+                target_y=0.25,
+            )
+
     def test_every_partition_is_bound_through_checked_route(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
