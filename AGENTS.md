@@ -23,6 +23,65 @@ These requirements apply to all work in this repository.
   advanced the branch, rebase safely and repeat the verification; never force
   push over unrelated work.
 
+## Universal experiment lifecycle and checkpoint reuse
+
+These rules apply to every present and future EmuFlow experiment: correctness
+and determinism validation, benchmark qualification, algorithm A/B and
+ablation studies, scalability and performance measurements, public-contest
+evaluation, synthesis and partitioning runs, routing and scheduling studies,
+Phase 6 provider comparisons, physical implementation, timing closure, and
+complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
+
+- Before starting any repeated, multistage, expensive, or evidence-producing
+  run, express it as a content-addressed DAG through `experiment-cache`.  A
+  cheap one-off diagnostic may run outside the DAG only when it will not be
+  used as benchmark, qualification, completion, performance, or QoR evidence.
+- Decompose the DAG at real reusable boundaries.  Each node must represent one
+  deterministic stage and declare its exact dependencies, input SHA-256
+  values, source commit, configuration, command and environment contract,
+  tools, seed, worker count where relevant, expected artifacts, and an
+  independent semantic validator.  Do not create artificial boundaries merely
+  to fit a particular experiment name.
+- Plan before execution.  Inventory existing caches and repository-external
+  archives, independently validate compatible prior artifacts, and import
+  valid results before submitting work.  A new branch, report, experiment
+  label, comparison arm, directory layout, or downstream objective is never by
+  itself a reason to recompute an unchanged node.
+- Execute only the smallest missing frontier.  A changed input, option, tool,
+  or dependency invalidates that node and its descendants, not unrelated
+  nodes or valid ancestors.  Never delete or bypass a whole cache as a shortcut
+  for targeted invalidation, and never restart completed ancestors merely to
+  recover from or resume a downstream failure.
+- Cache reuse is authorized only by the complete content identity plus a
+  passing independent validator and sealed artifacts.  Names, paths, mtimes,
+  logs, a declared `pass` status, or visually similar results are insufficient.
+  If a stage has no adequate validator, its result is not reusable evidence
+  until that validation gap is repaired.
+- Fair A/B and ablation experiments must share the exact validated upstream
+  checkpoints and differ only in the intended variable.  Compute each unique
+  baseline once.  Reuse a valid baseline in every later comparison rather than
+  rerunning it for symmetry or presentation.
+- Preserve failed and partial run evidence outside the repository, then
+  re-plan from the last valid checkpoint.  Do not overwrite another attempt's
+  artifacts, silently turn a failed attempt into a fresh run directory, or
+  publish a partial checkpoint as complete.
+- HPC farms may submit only `ready` cache misses.  Re-plan after every completed
+  frontier; skip `reuse` nodes and keep `waiting` nodes blocked on their exact
+  dependency keys.  Concurrent tasks require isolated output directories and
+  immutable source/tool identities.  Parallelism changes scheduling, not the
+  evidence contract, unless the worker count is explicitly part of identity.
+- A cached checkpoint proves only that one node completed its declared gate.
+  It does not by itself prove an end-to-end claim.  Report completion or QoR
+  only when every required terminal node and claim-specific validator exists;
+  otherwise retain an explicit planned, running, incomplete, or blocked state.
+- Experiment specs, plans, farm state, logs, transient paths, and large
+  artifacts stay outside the source repository.  Check in only reusable
+  schemas, policies, small lawful fixtures, and canonical benchmark registries.
+- Force-rerunning an otherwise valid checkpoint is exceptional.  Record the
+  explicit reason (for example, nondeterminism replication or measurement
+  noise study) and give the repeated run a distinct declared identity; never
+  make force-rerun the default behavior of an automation or validation task.
+
 ## End-to-end acceptance is mandatory
 
 - A Phase 6 algorithm, provider, optimization, or default-selection change is
@@ -117,18 +176,12 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   benchmark-catalog entries or as evidence for provider promotion and final
   WNS/TNS claims. Use a naturally connected upstream RTL design for those
   decisions.
-- Reuse a frozen Phase 5 or canonical Phase 6 checkpoint when possible; do not
-  rerun Phase 1--5 merely to reach Phase 7.  However, never coerce an
-  incompatible communication-only artifact into a fake physical netlist.
-- Full-flow experiments must be managed as a content-addressed DAG with the
-  `experiment-cache` interface: one shared Phase 1--5 checkpoint, one Phase 6
-  checkpoint per provider, and Phase 7 checkpoints keyed by provider and
-  physical seed.  A provider/seed arm that already has a valid checkpoint is a
-  cache hit and must not be submitted again.
-- Cache identity must include the source commit, explicit input SHA-256 values,
-  stage configuration, command contract, dependency checkpoint keys, provider,
-  seed, physical backend/options, and worker count as applicable.  Never reuse
-  based only on a directory name, timestamp, run label, or claimed status.
+- Applying the universal experiment policy to a provider comparison means one
+  shared Phase 1--5 checkpoint, one Phase 6 checkpoint per provider, and Phase
+  7 checkpoints keyed by provider and physical seed.  Reuse the frozen Phase 5
+  and canonical Phase 6 checkpoints; do not rerun Phase 1--5 merely to reach
+  Phase 7.  However, never coerce an incompatible communication-only artifact
+  into a fake physical netlist.
 - Existing pre-cache results should be registered with `experiment-cache
   import` only after the node's independent semantic validator passes and all
   declared artifacts pass hash sealing.  New node executions use the same

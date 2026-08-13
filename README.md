@@ -743,8 +743,17 @@ inside one Phase-7 task.
 ### Content-addressed experiment DAG and checkpoint reuse
 
 The validation farm schedules tasks; `experiment-cache` decides which tasks
-still need to exist.  Full-flow provider comparisons are represented as this
-DAG:
+still need to exist.  This is the repository-wide execution policy for every
+repeated, multistage, expensive, or evidence-producing experiment, including
+correctness and determinism validation, benchmarks, A/B and ablation studies,
+scalability measurements, contest evaluation, synthesis, partitioning,
+routing, scheduling, physical implementation, and complete flows.  Before
+execution, inventory and validate prior artifacts, import compatible results,
+and run only the smallest missing DAG frontier.  Renaming an experiment,
+starting a new comparison, changing a report, or moving to another branch does
+not justify recomputing an unchanged checkpoint.
+
+A full-flow Phase 6 provider comparison is one concrete example:
 
 ```text
 shared Phase 1--5
@@ -764,12 +773,13 @@ artifact and reports each node as:
 - `waiting`: an exact dependency checkpoint is not yet available.
 
 The node key binds the full source commit, explicit input SHA-256 values,
-configuration, argv/environment contract, dependency keys, provider, seed,
-backend options, and worker count supplied by the experiment spec.  Changing a
-Chimew parameter invalidates only Chimew Phase 6 and its Phase 7 descendants;
-changing RTL or BoardDB invalidates the shared Phase 1--5 node and all
-descendants.  A corrupt or modified checkpoint is rejected rather than
-silently rerun or reused.
+configuration, argv/environment contract, dependency keys, algorithm/provider,
+seed, backend options, and worker count supplied by the experiment spec.
+Changing any node input invalidates only that node and its descendants.  For
+example, a Chimew parameter invalidates only Chimew Phase 6 and its Phase 7
+descendants, while changing RTL or BoardDB invalidates the shared Phase 1--5
+node and all descendants.  A corrupt or modified checkpoint is rejected rather
+than silently rerun or reused.
 
 Plan the first frontier:
 
@@ -803,8 +813,9 @@ emuflow experiment-cache farm-spec \
 
 After the farm passes, run `experiment-cache plan` again.  The completed
 frontier becomes `reuse` and only newly unblocked nodes become `ready`.  Thus a
-successful baseline Phase 6 or baseline/seed Phase 7 result is never submitted
-again in a later A/B comparison.
+successful baseline or any other unchanged stage is never submitted again in
+a later experiment.  A failed downstream task resumes from its last valid
+dependency rather than restarting valid ancestors.
 
 Previously completed results do not need to be recomputed.  Define the same
 node identity and expected artifact list, create a plan, then import the old
@@ -825,7 +836,10 @@ a validated external reference instead of copying a large physical run; if the
 old artifact is later changed or removed, subsequent planning fails loudly.
 Directory names, mtimes, and a report that merely says `pass` never authorize
 reuse.  Experiment plans and resulting farm tasks remain outside the source
-repository, while reusable policy stays in the checked-in end-to-end matrix.
+repository, while reusable policy and canonical registries stay checked in.
+Force-runs are exceptional (for example, deliberate nondeterminism or noise
+replication), must record their reason, and must use a distinct declared
+identity instead of overwriting or bypassing a valid checkpoint.
 
 ### Public contest compatibility
 
