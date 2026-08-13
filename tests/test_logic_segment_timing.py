@@ -251,6 +251,57 @@ class LogicSegmentTimingTest(unittest.TestCase):
             "i2__bit0.addr1[3]",
         )
 
+    def test_vpr_top_output_uses_eblif_packed_alias(self):
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "dut__fpga0",
+                    "top": "dut__fpga0",
+                    "source_format": "test",
+                },
+                "ports": [
+                    {
+                        "id": "result",
+                        "name": "result",
+                        "direction": "output",
+                        "width": 1,
+                        "clock": False,
+                    }
+                ],
+                "instances": [],
+                "nets": [
+                    {
+                        "id": "result_net",
+                        "name": "result_net",
+                        "drivers": [],
+                        "sinks": [
+                            {"instance": None, "port": "result", "bit": 0}
+                        ],
+                        "cut_class": "undriven",
+                    }
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        self.assertEqual(
+            _vpr_atom_pin(
+                ir,
+                {},
+                {"instance": None, "port": "result", "bit": 0},
+                {},
+                {
+                    ("result", 0): {
+                        "direction": "output",
+                        "source_net": "n0",
+                        "packed_block": "out:emuflow_top_output_000003",
+                    }
+                },
+            ),
+            "out:emuflow_top_output_000003.outpad[0]",
+        )
+
     def test_import_is_identity_and_coverage_strict(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

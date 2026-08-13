@@ -69,7 +69,13 @@ def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
     return port if width <= 1 else f"{port}__{bit}"
 
 
-def _top_pin(ir: EmuIR, endpoint: Mapping[str, Any]) -> str:
+def _top_pin(
+    ir: EmuIR,
+    endpoint: Mapping[str, Any],
+    eblif_top_ports: Optional[
+        Mapping[tuple[str, int], Mapping[str, Any]]
+    ] = None,
+) -> str:
     matches = []
     for index, net in enumerate(ir.value["nets"]):
         for collection in ("drivers", "sinks"):
@@ -85,6 +91,21 @@ def _top_pin(ir: EmuIR, endpoint: Mapping[str, Any]) -> str:
             f"physical top endpoint {endpoint!r} does not bind one net"
         )
     net_index, collection = matches[0]
+    if eblif_top_ports is not None:
+        record = eblif_top_ports.get((endpoint["port"], endpoint["bit"]))
+        direction = "input" if collection == "drivers" else "output"
+        if (
+            record is None
+            or record.get("direction") != direction
+            or record.get("source_net", record.get("net")) != f"n{net_index}"
+            or not isinstance(record.get("packed_block"), str)
+        ):
+            raise ValidationError(
+                f"physical top endpoint {endpoint!r} disagrees with "
+                "the eBLIF top-port map"
+            )
+        suffix = "inpad[0]" if direction == "input" else "outpad[0]"
+        return f"{record['packed_block']}.{suffix}"
     return (
         f"n{net_index}.inpad[0]"
         if collection == "drivers"
@@ -97,10 +118,13 @@ def _vpr_atom_pin(
     instance_index: Mapping[str, int],
     endpoint: Mapping[str, Any],
     instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    eblif_top_ports: Optional[
+        Mapping[tuple[str, int], Mapping[str, Any]]
+    ] = None,
 ) -> str:
     instance_id = endpoint["instance"]
     if instance_id is None:
-        return _top_pin(ir, endpoint)
+        return _top_pin(ir, endpoint, eblif_top_ports)
     if instances is None:
         instances = {
             instance["id"]: instance for instance in ir.value["instances"]
@@ -406,6 +430,7 @@ def _write_logic_segment_query(
                     instance_index,
                     endpoint,
                     merged_instances,
+                    eblif_top_ports,
                 ),
             )
         return _vivado_object(
