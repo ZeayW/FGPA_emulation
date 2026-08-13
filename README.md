@@ -274,11 +274,17 @@ such a vertex; a run with relaxed balance is a legal capacity/topology result,
 not evidence of high-quality balanced partitioning. Supporting controlled
 combinational cuts requires an explicit multi-phase settling and equivalence
 contract and is a planned semantic extension, not a partitioner tuning flag.
+For Xilinx-mapped flip-flops, `FDRE.R` and `FDSE.S` are synchronous controls
+and are therefore legal second-round `register_input` transport boundaries,
+just like `D` and `CE`. `FDCE.CLR` and `FDPE.PRE` remain asynchronous and are
+never reclassified as transport-safe boundaries. This distinction prevents a
+high-fanout synthesized synchronous reset or set from incorrectly gluing an
+otherwise partitionable design into one combinational atomic component.
 
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
 | Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; VPR consumes the original XML for exact mode-aware packing |
-| Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
+| Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source; the importer distinguishes synchronous FDRE/FDSE controls from asynchronous FDCE/FDPE controls when classifying legal transport cuts |
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB, retains bounded alternate endpoint paths, and can query explicitly selected cut nets; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
 | System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path, DAC 2025-informed delay-demand-balanced, directed metric-closure, nearest-terminal Steiner, shallow-light, and adaptive-hop multicast trees, then applies checked batch-conflict timing-path rerouting. It exports the complete checked pool and selected refined tree for each demand. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |

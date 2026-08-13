@@ -12,7 +12,15 @@ from .resources import ResourceVector, classify_primitive_resources
 _CLOCK_NAME = re.compile(r"(^|[_/])(clk|clock)([_/]|$)", re.IGNORECASE)
 _RESET_NAME = re.compile(r"(^|[_/])(rst|reset|aresetn?)([_/]|$)", re.IGNORECASE)
 _SEQUENTIAL_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
-_TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {"D", "CE"}
+_TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {
+    # FDRE/FDSE sample R/S on the active clock edge, so these synchronous
+    # controls have the same paused-clock transport semantics as D and CE.
+    # FDCE.CLR and FDPE.PRE are asynchronous and deliberately remain absent.
+    "FDCE": {"D", "CE"},
+    "FDPE": {"D", "CE"},
+    "FDRE": {"D", "CE", "R"},
+    "FDSE": {"D", "CE", "S"},
+}
 _VTR_RAM_INPUTS = {
     "VTR_SP_RAM": {"addr", "data", "we"},
     "VTR_DP_RAM": {"addr1", "addr2", "data1", "data2", "we1", "we2"},
@@ -25,7 +33,7 @@ def _is_transport_safe_sequential_input(
     port: str,
 ) -> bool:
     if cell_type in _SEQUENTIAL_TYPES:
-        return port in _TRANSPORT_SAFE_SEQUENTIAL_INPUTS
+        return port in _TRANSPORT_SAFE_SEQUENTIAL_INPUTS[cell_type]
     if cell_type.startswith("$_DFF_"):
         return port == "D"
     return port in _VTR_RAM_INPUTS.get(cell_type, set())
