@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from .errors import EmuFlowError, ValidationError
-from .io import write_json
+from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .route_artifact import validate_vpr_route_artifacts
 from .synthesis import _yosys_identifier, _yosys_quote
@@ -493,6 +493,7 @@ def run_vpr_pack_place(
     *,
     executable: Optional[str] = None,
     seed: int = 1,
+    resume: bool = False,
 ) -> Dict[str, Any]:
     """Pack and place only, for an OpenPARF-to-VPR physical handoff.
 
@@ -510,6 +511,20 @@ def run_vpr_pack_place(
         raise EmuFlowError("VPR seed must be non-negative")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = output_dir / "vpr-pack-place-report.json"
+    if resume:
+        if checkpoint.is_file() or checkpoint.is_symlink():
+            return validate_vpr_pack_place_checkpoint(
+                architecture,
+                circuit,
+                output_dir,
+                seed=seed,
+            )
+        if any(output_dir.iterdir()):
+            raise ValidationError(
+                "VPR pack/place resume found a partial checkpoint without "
+                "a completed report"
+            )
     command = resolve_native_executable("vpr", executable)
     arguments = [
         command,
@@ -578,6 +593,89 @@ def run_vpr_pack_place(
         "log": str(log_path),
     }
     write_json(output_dir / "vpr-pack-place-report.json", report)
+    return report
+
+
+def validate_vpr_pack_place_checkpoint(
+    architecture: Path,
+    circuit: Path,
+    output_dir: Path,
+    *,
+    seed: int = 1,
+) -> Dict[str, Any]:
+    """Independently validate and return a completed pack/place checkpoint."""
+
+    architecture = architecture.resolve()
+    circuit = circuit.resolve()
+    output_dir = output_dir.resolve()
+    report_path = output_dir / "vpr-pack-place-report.json"
+    if report_path.is_symlink() or not report_path.is_file():
+        raise ValidationError("VPR pack/place checkpoint report is missing")
+    report = read_json(report_path)
+    if (
+        report.get("status") != "pass"
+        or report.get("provider") != VPR_PROVIDER
+        or report.get("stages") != ["pack", "place"]
+        or report.get("configuration") != {"seed": seed}
+    ):
+        raise ValidationError("VPR pack/place checkpoint identity is invalid")
+    for label, expected in (
+        ("architecture", architecture),
+        ("circuit", circuit),
+    ):
+        binding = report.get(label)
+        if (
+            not isinstance(binding, dict)
+            or binding.get("path") != str(expected)
+            or binding.get("sha256") != _sha256(expected)
+        ):
+            raise ValidationError(
+                f"VPR pack/place checkpoint {label} binding disagrees"
+            )
+    stem = circuit.stem
+    expected_artifacts = {
+        "packed_netlist": output_dir / f"{stem}.net",
+        "placement": output_dir / f"{stem}.place",
+    }
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(
+        expected_artifacts
+    ):
+        raise ValidationError("VPR pack/place checkpoint artifacts are incomplete")
+    for label, expected in expected_artifacts.items():
+        binding = artifacts[label]
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"path", "bytes", "sha256"}
+            or binding.get("path") != str(expected)
+            or expected.is_symlink()
+            or not expected.is_file()
+            or binding.get("bytes") != expected.stat().st_size
+            or binding.get("sha256") != _sha256(expected)
+        ):
+            raise ValidationError(
+                f"VPR pack/place checkpoint {label} seal disagrees"
+            )
+    log_path = output_dir / "vpr.console.log"
+    if (
+        report.get("log") != str(log_path)
+        or log_path.is_symlink()
+        or not log_path.is_file()
+    ):
+        raise ValidationError("VPR pack/place checkpoint log is missing")
+    log = log_path.read_text(encoding="utf-8")
+    if "VPR succeeded" not in log:
+        raise ValidationError("VPR pack/place checkpoint log has no success marker")
+    expected_metrics: Dict[str, Any] = {}
+    for name, pattern in _INTEGER_PATTERNS.items():
+        matches = pattern.findall(log)
+        if matches:
+            expected_metrics[name] = int(matches[-1])
+    if (
+        not {"packed_nets", "packed_blocks"}.issubset(expected_metrics)
+        or report.get("metrics") != expected_metrics
+    ):
+        raise ValidationError("VPR pack/place checkpoint metrics disagree")
     return report
 
 

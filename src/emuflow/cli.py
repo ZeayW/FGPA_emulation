@@ -1299,6 +1299,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1,
         help="run independent per-FPGA physical backends concurrently",
     )
+    multi_fpga_physical.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "reuse only independently hash-validated VPR pack/place "
+            "checkpoints before continuing OpenPARF and detailed routing"
+        ),
+    )
     multi_fpga_bsp = multi_fpga_subparsers.add_parser(
         "bsp",
         help=(
@@ -3341,6 +3349,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 routes_path=args.routes,
                 path_database_path=args.path_database,
                 workers=args.workers,
+                resume=args.resume,
             )
             _print_json(report["summary"])
             return 0

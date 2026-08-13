@@ -364,6 +364,13 @@ emuflow multi-fpga finalize-physical \
   --physical build/routing-tdm-upgrade/physical-resumed
 ```
 
+The standalone physical command also accepts `--resume`. It reuses a completed
+VPR pack/place checkpoint only after independently checking the architecture
+and circuit hashes, seed, exact packed-netlist and placement paths, byte counts,
+artifact hashes, reconstructed log metrics, and the VPR success marker. It then
+continues with OpenPARF placement and checked VPR detailed routing. A partial,
+mixed-run, or modified checkpoint is rejected instead of being silently reused.
+
 For public instances too large for a complete physical run, the scale gate
 independently reconstructs both Phase 4 route legality/timing and Phase 5
 ratio/slot legality against one byte-identical assignment, platform, and

@@ -366,6 +366,7 @@ def run_multi_fpga_physical_flow(
     path_database_path: Optional[Path] = None,
     logic_path_database_path: Optional[Path] = None,
     workers: int = 1,
+    resume: bool = False,
 ) -> Dict[str, Any]:
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
@@ -408,9 +409,11 @@ def run_multi_fpga_physical_flow(
         raise ValidationError("split manifest does not cover the BoardDB FPGAs")
 
     output_dir = output_dir.resolve()
-    if output_dir.exists() and (
-        not output_dir.is_dir() or any(output_dir.iterdir())
-    ):
+    if output_dir.exists() and not output_dir.is_dir():
+        raise EmuFlowError(
+            f"multi-FPGA physical output must be an empty directory: {output_dir}"
+        )
+    if output_dir.exists() and any(output_dir.iterdir()) and not resume:
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
@@ -530,6 +533,7 @@ def run_multi_fpga_physical_flow(
                 fpga_root / "vpr-pack-place",
                 executable=vpr,
                 seed=seed,
+                resume=resume,
             )
             packed_netlist = Path(
                 pack_report["artifacts"]["packed_netlist"]["path"]
@@ -988,6 +992,7 @@ def run_multi_fpga_physical_flow(
             "requested_workers": workers,
             "effective_workers": effective_workers,
             "ordering": "boarddb-fpga-order",
+            "pack_place_resume": resume,
         },
         "expected_fpgas": expected_fpgas,
         "fpgas": records,
