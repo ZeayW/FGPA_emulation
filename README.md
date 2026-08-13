@@ -1347,6 +1347,19 @@ disjoint and their count plus canonical set hash exactly matches the sealed
 source TimingPathDB. Without that proof it reports
 `cross-fpga-path-subset`, and the final A/B validator rejects a global claim.
 
+A completed open-backend Phase 7 A/B on the 67,674-instance
+`picorv32_x32_ring_top` design and the four-FPGA academic mesh exercises this
+whole-design contract. Both arms cover the same 22,272 original paths
+(21,711 same-FPGA and 561 cross-FPGA paths) with the same canonical path-set
+SHA. The frozen default routing/TDM arm reports target-clock WNS/TNS of
+`-40.314765708 ns` / `-21137.255055545 ns`; the global-candidate routing plus
+timing-DAG TDM arm reports `-39.988960548 ns` / `-21062.004768017 ns`.
+Therefore the candidate improves whole-design WNS by `0.325805160 ns` and TNS
+by `75.250287528 ns`. These are not per-FPGA endpoint aggregates or a
+cross-FPGA-only subset. Both arms also close the 640-ns virtual runtime clock
+with zero negative-slack paths. This is academic-architecture physical
+evidence rather than vendor bitstream signoff.
+
 ### Source-backed Arm MPS4 BoardDB
 
 EmuFlow can materialize the three-board example documented in Arm's
@@ -1849,10 +1862,12 @@ only after global capacity and the same lexicographic route/TDM timing
 objective are recomputed.  A separate Python oracle exhaustively evaluates
 the compact candidate product, and regression coverage includes a case whose
 global optimum mixes shortest-path and nearest-terminal Steiner trees across
-different demands.  This provider remains non-default: the large-public-case
-scale gate is separate algorithm evidence, while the completed real-RTL
-Phase 7 comparison above showed a small global WNS/TNS regression rather than
-a QoR improvement.
+different demands. This provider remains opt-in: large-public-case scale
+checks are separate algorithm evidence, while the completed real-RTL Phase 7
+comparison above now demonstrates a whole-design WNS/TNS improvement on one
+independently sealed physical A/B. Promotion to the default still requires
+the same whole-design Phase 7 gate on a broader design/platform set; a
+cross-FPGA-only proxy is not sufficient evidence.
 
 Every Phase 5 run now also emits `tdm_feedback.json`, a concrete schedule
 certificate that reconstructs occupied slot-lanes, realized wait, remaining
