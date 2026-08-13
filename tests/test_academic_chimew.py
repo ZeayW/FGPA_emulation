@@ -360,7 +360,19 @@ class AcademicChimewTest(unittest.TestCase):
             ]
             self.assertEqual(len(critical_channels), 1)
             self.assertEqual(
-                critical_channels[0]["order"], critical_entry["lane"]
+                critical_channels[0]["order"], 0
+            )
+            electrical_map = read_json(
+                Path(lookahead["artifacts"]["electrical_map"]["path"])
+            )
+            critical_electrical_channel = next(
+                channel
+                for channel in electrical_map["channels"]
+                if channel["chimew_channel"] == critical_channels[0]["id"]
+            )
+            self.assertEqual(
+                critical_electrical_channel["physical_lane"],
+                critical_entry["lane"],
             )
             report = run_chimew_phase6_pipeline(
                 Path(lookahead["artifacts"]["schedule"]["path"]),

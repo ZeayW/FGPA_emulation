@@ -870,7 +870,7 @@ def materialize_academic_chimew_inputs(
                     }
                 )
                 raw_channels = []
-                for lane in domain_lanes:
+                for domain_order, lane in enumerate(domain_lanes):
                     channel_id = (
                         f"academic-{link_id}-{direction}-channel-{lane:04d}"
                     )
@@ -882,7 +882,7 @@ def materialize_academic_chimew_inputs(
                     raw_channels.append(
                         {
                             "id": channel_id,
-                            "order": lane,
+                            "order": domain_order,
                             "pin_a": {
                                 "x": fpga_order[endpoint_a] * coordinate_scale,
                                 "y": a_y_min + fraction * (a_y_max - a_y_min),
