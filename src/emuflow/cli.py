@@ -72,6 +72,7 @@ from .contest_public import (
     validate_public_contest_evaluation,
 )
 from .contest_validation_matrix import load_contest_validation_matrix
+from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -1390,6 +1391,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--yosys",
         help="explicit comparison override; defaults to the in-tree build",
     )
+    benchmark_matrix = subparsers.add_parser(
+        "benchmark-matrix-validate",
+        help=(
+            "validate canonical real-RTL x contest-BoardDB Phase 1-7 cases"
+        ),
+    )
+    benchmark_matrix.add_argument("matrix", type=Path)
 
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -3009,6 +3017,11 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
+
+    if args.command == "benchmark-matrix-validate":
+        _, report = load_end_to_end_validation_matrix(args.matrix)
+        _print_json(report)
+        return 0
 
     if args.command == "phase1":
         report = run_phase1(

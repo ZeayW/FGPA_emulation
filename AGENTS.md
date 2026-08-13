@@ -81,6 +81,36 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 
 ## Benchmark and execution policy
 
+- `benchmarks/end_to_end_validation_matrix.json` is the sole registry for
+  provider comparisons and complete Phase 1--7 WNS/TNS claims.  Ad-hoc runs
+  may diagnose a bug, but they must not be reported as benchmark evidence.
+- Every registered full-flow case has two independently named axes:
+  `workload` is a naturally connected, hash-pinned upstream RTL design and
+  `platform` is a hash-pinned public-contest case materialized as BoardDB.
+  The workload supplies cells/nets and the contest case supplies only FPGA
+  topology and link capacities.  Never feed contest communication nodes to
+  synthesis or describe a raw contest-graph result as a physical RTL run.
+- Always identify a run by the canonical `<workload>__<suite>-<case>` ID.  A
+  bare label such as `case6`, `case07`, or `NVDLA run` is ambiguous and is not
+  acceptable in reports, manifests, filenames, or user-facing summaries.
+- The canonical initial QoR set is Koios DLA medium combined separately with
+  EDA 2023 case6, case7, and case9 BoardDBs.  Case6 is the primary QoR case;
+  case7 and case9 are topology replications.  Adding or replacing a case
+  requires updating the versioned matrix and its validator tests first.
+- The raw public-contest coverage plan remains separately recorded in
+  `benchmarks/contest_validation_matrix.json`.  Passing fetch/import/evaluate
+  for that matrix proves a communication-algorithm gate only; it never
+  promotes an entry in the end-to-end matrix.
+- A matrix entry in `planned` or `blocked` state is not evidence.  `qualified`
+  requires a content-addressed replayable manifest for all required providers,
+  physical seeds, gates, hashes, global timing metrics, DRC, and unrouted-net
+  checks.  Repository configuration must never contain transient server paths.
+- Baseline, placement-aware, and Chimew Phase 6 arms must use identical frozen
+  source, BoardDB, Phase 1/3/4/5 artifacts, physical backend/options, worker
+  count, and seeds 1/2/3.  Only the Phase 6 provider may differ.
+- The primary final QoR is whole-design target-clock WNS and TNS after Phase
+  7/7C.  Per-FPGA WNS/TNS, Phase 6 cost, crossings, RUDY, and congestion are
+  diagnostics and must not be substituted for the primary metrics.
 - Small fixtures are suitable for correctness and determinism tests, but a
   default algorithm or QoR claim also requires a materially sized real design.
 - Replicated-core or artificially coupled RTL harnesses are not accepted as

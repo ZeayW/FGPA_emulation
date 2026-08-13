@@ -905,7 +905,64 @@ materialized link IDs. Link delay remains the explicitly configured BoardDB
 clock/latency model; the contest's `beta + alpha * ratio` formula remains in
 the separate official-score adapter.
 
-The repository-level qualification plan is recorded in
+### Benchmark taxonomy and canonical full-flow matrix
+
+EmuFlow deliberately separates three benchmark classes.  Mixing them produces
+plausible-looking but invalid comparisons:
+
+| Class | Design payload | Platform payload | Valid claim |
+| --- | --- | --- | --- |
+| RTL regression | Small or medium upstream RTL | A generic development BoardDB | Correctness, schema, determinism, and stage integration |
+| Public contest algorithm case | The contest's communication graph | The contest's topology/capacity model | Import, routing/TDM/topology scoring, and BoardDB materialization |
+| Canonical end-to-end QoR case | A naturally connected upstream RTL/EmuIR | A contest-derived BoardDB topology and link capacity | Complete Phase 1--7 physical closure and global WNS/TNS comparison |
+
+The third class is the only one accepted for Phase 6 provider promotion and
+final physical QoR.  The contest case does **not** replace RTL: its graph nodes
+are not synthesized cells.  EmuFlow synthesizes and partitions the real RTL,
+then maps that workload onto the separately materialized contest BoardDB.
+
+The canonical registry is
+`benchmarks/end_to_end_validation_matrix.json`.  Its first qualification set
+is one real, naturally connected Koios DLA-medium workload on three different
+public EDA 2023 BoardDBs:
+
+- `koios-dla-medium-l5__eda2023-case6` — primary QoR case;
+- `koios-dla-medium-l5__eda2023-case7` — topology replication;
+- `koios-dla-medium-l5__eda2023-case9` — topology replication.
+
+Each case replaces the generic platform in the Phase 1 run contract with the
+contest-derived BoardDB.  The academic VTR template supplies an explicitly
+labelled public device model; EDA 2023 supplies FPGA identities, topology, and
+link capacities.  This is an academic physical projection, not a claim about
+an unpublished contest board's package pins.
+
+The matrix is executable policy rather than prose.  Its validator checks the
+RTL catalog and run contract, contest catalog and BoardDB gate, repository-safe
+paths, unambiguous IDs, the three Phase 6 arms (`baseline`,
+`placement-aware`, and `chimew`), physical seeds 1/2/3, complete Phase 1--7/7C
+gates, frozen A/B hashes/options/workers, zero DRC/unrouted requirements, and
+the QoR contract:
+
+```bash
+emuflow benchmark-matrix-validate \
+  benchmarks/end_to_end_validation_matrix.json
+```
+
+Whole-design target-clock WNS and TNS after physical Phase 7/7C are the
+primary metrics.  Per-FPGA WNS/TNS, crossings, congestion, RUDY, critical
+paths, and runtime remain required diagnostics but cannot replace the global
+metrics.  All three providers use the same frozen Phase 1/3/4/5 artifacts,
+backend options, worker count, and seeds.  A case marked `planned` is exactly
+that: it is not completed evidence.  Promotion to `qualified` requires a
+content-addressed replayable manifest; machine paths and transient HPC state
+are never written into the repository.
+
+This naming rule is mandatory in reports and run directories: always use the
+full `<workload>__<suite>-<case>` ID.  Bare names such as “case6” are prohibited
+because they hide whether the run used the contest communication graph, Koios,
+NVDLA, or another workload.
+
+The repository-level **raw contest algorithm** qualification plan is recorded in
 `benchmarks/contest_validation_matrix.json`.  This versioned matrix covers
 every hash-pinned public EDA 2023, RePart/EDA 2024, and EDA 2025 case plus the
 embedded ICCAD 2019 official sample.  `qualification` deliberately separates
@@ -1016,7 +1073,7 @@ commit, install, and every candidate-file SHA-256 value in each task before it
 is submitted. Replacing a candidate after farm planning is therefore rejected
 before evaluation.
 
-BoardDB projection and Phase 3–7 remain separate matrix gates and are not
+BoardDB projection and Phase 3–7 remain separate raw-contest matrix gates and are not
 upgraded merely because fetch, import, or evaluation passed.
 
 ICCAD 2019 Problem B is supported in its official text format. The adapter

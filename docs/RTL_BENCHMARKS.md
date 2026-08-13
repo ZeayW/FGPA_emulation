@@ -54,6 +54,36 @@ regular structure and invented communication do not qualify them for Phase 6
 provider promotion or final WNS/TNS claims. Materially sized acceptance runs
 must use a naturally connected upstream RTL design.
 
+## Canonical full-flow combinations
+
+RTL workload selection and BoardDB topology selection are independent axes.
+For complete Phase 1--7 validation, use the real workload from this catalog
+and replace the generic platform in its Phase 1 run contract with a
+hash-pinned contest-derived BoardDB.  Contest nodes and nets remain inputs to
+the communication-algorithm adapters only; they are never treated as RTL.
+
+The only authoritative full-flow registry is
+`benchmarks/end_to_end_validation_matrix.json`.  The initial set uses Koios
+DLA medium with EDA 2023 case6, case7, and case9 separately.  The full
+combination ID, such as `koios-dla-medium-l5__eda2023-case6`, must be used in
+reports and artifacts; a bare contest case name is ambiguous.
+
+The separate `benchmarks/contest_validation_matrix.json` tracks raw public
+contest fetch/import/evaluation coverage.  Success there does not constitute
+RTL synthesis, FPGA-internal place-and-route, Phase 7 closure, or WNS/TNS
+evidence.  Validate the end-to-end registry with:
+
+```bash
+emuflow benchmark-matrix-validate \
+  benchmarks/end_to_end_validation_matrix.json
+```
+
+The checked-in entries start in `planned` state.  Only content-addressed,
+independently replayable Phase 1--7/7C evidence for baseline,
+placement-aware, and Chimew across the required physical seeds can change a
+case to `qualified`.  Final decisions use whole-design target-clock WNS/TNS;
+per-FPGA timing and Phase 6 costs are diagnostics.
+
 ## Current flow gaps exposed by larger designs
 
 The present Phase 2 smoke-test path accepts LUT1-LUT6 and primary FF
