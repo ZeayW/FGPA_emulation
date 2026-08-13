@@ -740,6 +740,93 @@ argv arrays rather than shell fragments. This farm-level concurrency is
 orthogonal to `--physical-workers N`, which parallelizes the FPGA partitions
 inside one Phase-7 task.
 
+### Content-addressed experiment DAG and checkpoint reuse
+
+The validation farm schedules tasks; `experiment-cache` decides which tasks
+still need to exist.  Full-flow provider comparisons are represented as this
+DAG:
+
+```text
+shared Phase 1--5
+  +-- baseline Phase 6 --------+-- Phase 7 seed 1/2/3
+  +-- placement-aware Phase 6 -+-- Phase 7 seed 1/2/3
+  +-- Chimew Phase 6 ----------+-- Phase 7 seed 1/2/3
+```
+
+Phase 1--5 is therefore built and independently validated once for a frozen
+RTL/BoardDB/partition/routing/schedule configuration.  Each Phase 6 provider
+has one checkpoint independent of physical seed.  Only Phase 7 expands across
+provider and seed.  Repeating a planner invocation validates every cached
+artifact and reports each node as:
+
+- `reuse`: a byte-valid content-addressed checkpoint already exists;
+- `ready`: every dependency is cached and this node must run;
+- `waiting`: an exact dependency checkpoint is not yet available.
+
+The node key binds the full source commit, explicit input SHA-256 values,
+configuration, argv/environment contract, dependency keys, provider, seed,
+backend options, and worker count supplied by the experiment spec.  Changing a
+Chimew parameter invalidates only Chimew Phase 6 and its Phase 7 descendants;
+changing RTL or BoardDB invalidates the shared Phase 1--5 node and all
+descendants.  A corrupt or modified checkpoint is rejected rather than
+silently rerun or reused.
+
+Plan the first frontier:
+
+```bash
+emuflow experiment-cache plan \
+  --spec /shared/experiments/koios-case6.json \
+  --cache /shared/emuflow/checkpoints \
+  --out /shared/experiments/koios-case6.plan.json
+```
+
+An experiment spec uses `emuflow.experiment-dag-spec/v1`; a deliberately
+non-runnable schema example is installed from
+`benchmarks/experiment_dag.schema.example.json`.  Every node declares
+its stage, dependencies, content hashes, configuration, argv, environment,
+independent validator argv, and the artifact files/directories that prove
+completion. Commands write only to
+`{output_dir}` and may read a dependency through
+`{dependency:<node-id>}`.  This makes the dependency path itself irrelevant to
+identity while the dependency's content key remains sealed.
+
+Compile only the current cache-miss frontier into the existing HPC farm:
+
+```bash
+emuflow experiment-cache farm-spec \
+  --plan /shared/experiments/koios-case6.plan.json \
+  --install-dir /shared/emuflow/install/$COMMIT \
+  --node hpc1 --node hpc2 --node hpc3 --node hpc4 \
+  --farm-id koios-case6-frontier1 \
+  --out /shared/experiments/koios-case6.frontier1.farm.json
+```
+
+After the farm passes, run `experiment-cache plan` again.  The completed
+frontier becomes `reuse` and only newly unblocked nodes become `ready`.  Thus a
+successful baseline Phase 6 or baseline/seed Phase 7 result is never submitted
+again in a later A/B comparison.
+
+Previously completed results do not need to be recomputed.  Define the same
+node identity and expected artifact list, create a plan, then import the old
+artifact root.  Import ancestor checkpoints first (shared Phase 1--5, then the
+provider's Phase 6) so the Phase 7 result is bound to those exact dependency
+keys:
+
+```bash
+emuflow experiment-cache import \
+  --plan /shared/experiments/koios-case6.plan.json \
+  --node phase7-baseline-seed1 \
+  --artifact-root /shared/archives/old-baseline-seed1
+```
+
+Import first runs the same independent semantic validator used after a new
+execution, then recomputes and seals every declared file or directory.  The cache keeps
+a validated external reference instead of copying a large physical run; if the
+old artifact is later changed or removed, subsequent planning fails loudly.
+Directory names, mtimes, and a report that merely says `pass` never authorize
+reuse.  Experiment plans and resulting farm tasks remain outside the source
+repository, while reusable policy stays in the checked-in end-to-end matrix.
+
 ### Public contest compatibility
 
 EmuFlow keeps a contest's exact abstract machine model separate from BoardDB

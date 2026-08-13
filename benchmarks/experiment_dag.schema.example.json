@@ -1,0 +1,94 @@
+{
+  "schema": "emuflow.experiment-dag-spec/v1",
+  "experiment_id": "replace-with-canonical-workload-platform-id",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "nodes": [
+    {
+      "id": "shared-phase1-5",
+      "stage": "shared-phase1-5",
+      "dependencies": [],
+      "inputs": {
+        "rtl_source_bundle": "0000000000000000000000000000000000000000000000000000000000000000",
+        "boarddb": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "configuration": {
+        "note": "replace with all Phase 1-5 options and tool identities"
+      },
+      "command": [
+        "replace-with-pinned-emuflow-command",
+        "--out",
+        "{output_dir}"
+      ],
+      "validator": [
+        "replace-with-independent-phase1-5-validator",
+        "{artifact_root}"
+      ],
+      "environment": {},
+      "artifacts": [
+        "phase5/phase5_report.json",
+        "phase5/schedule.json"
+      ]
+    },
+    {
+      "id": "phase6-baseline",
+      "stage": "phase6",
+      "provider": "baseline",
+      "dependencies": [
+        "shared-phase1-5"
+      ],
+      "inputs": {},
+      "configuration": {
+        "note": "replace with complete Phase 6 baseline options"
+      },
+      "command": [
+        "replace-with-phase6-command",
+        "--upstream",
+        "{dependency:shared-phase1-5}",
+        "--out",
+        "{output_dir}"
+      ],
+      "validator": [
+        "replace-with-independent-phase6-validator",
+        "{artifact_root}"
+      ],
+      "environment": {},
+      "artifacts": [
+        "phase6_report.json",
+        "manifest.json"
+      ]
+    },
+    {
+      "id": "phase7-baseline-seed1",
+      "stage": "phase7",
+      "provider": "baseline",
+      "physical_seed": 1,
+      "dependencies": [
+        "phase6-baseline"
+      ],
+      "inputs": {},
+      "configuration": {
+        "physical_backend": "open",
+        "physical_workers": 8,
+        "note": "replace with complete Phase 7 options"
+      },
+      "command": [
+        "replace-with-phase7-command",
+        "--phase6",
+        "{dependency:phase6-baseline}",
+        "--seed",
+        "1",
+        "--out",
+        "{output_dir}"
+      ],
+      "validator": [
+        "replace-with-independent-phase7-validator",
+        "{artifact_root}"
+      ],
+      "environment": {},
+      "artifacts": [
+        "physical-summary.json",
+        "phase7c_report.json"
+      ]
+    }
+  ]
+}

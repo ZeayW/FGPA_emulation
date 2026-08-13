@@ -73,6 +73,12 @@ from .contest_public import (
 )
 from .contest_validation_matrix import load_contest_validation_matrix
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
+from .experiment_dag import (
+    build_experiment_farm_spec,
+    import_experiment_checkpoint,
+    plan_experiment,
+    run_experiment_node,
+)
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -296,6 +302,42 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     farm_worker.add_argument("--task", type=Path, required=True)
     farm_worker.add_argument("--detach", action="store_true")
+
+    experiment = subparsers.add_parser(
+        "experiment-cache",
+        help="plan and execute content-addressed staged validation checkpoints",
+    )
+    experiment_subparsers = experiment.add_subparsers(
+        dest="experiment_command", required=True
+    )
+    experiment_plan = experiment_subparsers.add_parser(
+        "plan", help="resolve cache hits and the next runnable DAG frontier"
+    )
+    experiment_plan.add_argument("--spec", type=Path, required=True)
+    experiment_plan.add_argument("--cache", type=Path, required=True)
+    experiment_plan.add_argument("--out", type=Path, required=True)
+    experiment_import = experiment_subparsers.add_parser(
+        "import", help="validate and register an already completed checkpoint"
+    )
+    experiment_import.add_argument("--plan", type=Path, required=True)
+    experiment_import.add_argument("--expected-plan-sha256")
+    experiment_import.add_argument("--node", required=True)
+    experiment_import.add_argument("--artifact-root", type=Path, required=True)
+    experiment_farm = experiment_subparsers.add_parser(
+        "farm-spec", help="compile only the current cache-miss frontier"
+    )
+    experiment_farm.add_argument("--plan", type=Path, required=True)
+    experiment_farm.add_argument("--install-dir", type=Path, required=True)
+    experiment_farm.add_argument("--node", action="append", default=[])
+    experiment_farm.add_argument("--farm-id", required=True)
+    experiment_farm.add_argument("--out", type=Path, required=True)
+    experiment_run = experiment_subparsers.add_parser(
+        "run-node", help=argparse.SUPPRESS
+    )
+    experiment_run.add_argument("--plan", type=Path, required=True)
+    experiment_run.add_argument("--expected-plan-sha256")
+    experiment_run.add_argument("--node", required=True)
+    experiment_run.add_argument("--run-dir", type=Path, required=True)
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
     platform_subparsers = platform_parser.add_subparsers(
@@ -2460,6 +2502,34 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "experiment-cache":
+        if args.experiment_command == "plan":
+            report = plan_experiment(args.spec, args.cache, args.out)
+        elif args.experiment_command == "import":
+            report = import_experiment_checkpoint(
+                args.plan,
+                args.node,
+                args.artifact_root,
+                expected_plan_sha256=args.expected_plan_sha256,
+            )
+        elif args.experiment_command == "farm-spec":
+            report = build_experiment_farm_spec(
+                args.plan,
+                args.install_dir,
+                args.node,
+                args.farm_id,
+                args.out,
+            )
+        else:
+            report = run_experiment_node(
+                args.plan,
+                args.node,
+                args.run_dir,
+                expected_plan_sha256=args.expected_plan_sha256,
+            )
+        _print_json(report)
+        return 0 if report.get("status") != "failed" else 2
+
     if args.command == "archive":
         if args.archive_command == "create":
             report = create_validation_archive(

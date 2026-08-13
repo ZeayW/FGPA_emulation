@@ -120,6 +120,27 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 - Reuse a frozen Phase 5 or canonical Phase 6 checkpoint when possible; do not
   rerun Phase 1--5 merely to reach Phase 7.  However, never coerce an
   incompatible communication-only artifact into a fake physical netlist.
+- Full-flow experiments must be managed as a content-addressed DAG with the
+  `experiment-cache` interface: one shared Phase 1--5 checkpoint, one Phase 6
+  checkpoint per provider, and Phase 7 checkpoints keyed by provider and
+  physical seed.  A provider/seed arm that already has a valid checkpoint is a
+  cache hit and must not be submitted again.
+- Cache identity must include the source commit, explicit input SHA-256 values,
+  stage configuration, command contract, dependency checkpoint keys, provider,
+  seed, physical backend/options, and worker count as applicable.  Never reuse
+  based only on a directory name, timestamp, run label, or claimed status.
+- Existing pre-cache results should be registered with `experiment-cache
+  import` only after the node's independent semantic validator passes and all
+  declared artifacts pass hash sealing.  New node executions use the same
+  validator before cache publication.
+  Imported artifacts remain externally stored and any later byte change must
+  break reuse.  Do not rerun a valid baseline merely to make its directory
+  layout resemble a newer candidate.
+- Re-plan after every completed DAG frontier.  Only `ready` cache misses may be
+  compiled into a validation farm; `reuse` nodes are skipped and `waiting`
+  nodes remain blocked on their exact dependency keys.  A changed Phase 6
+  option invalidates that provider and its Phase 7 descendants, while a changed
+  RTL or BoardDB hash invalidates the shared checkpoint and every descendant.
 - Independent A/B runs may and should use different HPC nodes concurrently.
   Each run must use an isolated output directory and the same immutable source
   commit and versioned tool installation.
