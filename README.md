@@ -1298,6 +1298,11 @@ Passing a public VTR TimingDB with
 `--architecture-timing-db build/architecture/timing.json` automatically
 enables this mode. OpenSTA retains one bounded alternate path per endpoint in
 the global export rather than collapsing a clock group to a single worst path.
+Hierarchical Verilog escaped identifiers are resolved back to canonical EmuIR
+launch/capture identities even when OpenSTA's Tcl export adds a second
+backslash-escaping layer.  The adapter accepts only a unique exact alias and
+rejects ambiguous spellings, so a structured endpoint certificate cannot be
+silently attached to the wrong instance.
 After a partition is selected, the provider can also issue directed
 through-net queries for the actual cut nets, so a timing-relevant cut is not
 silently absent merely because it fell outside the global worst-path prefix.

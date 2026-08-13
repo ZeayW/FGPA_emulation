@@ -65,12 +65,12 @@ def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
 def sta_object_index(ir: EmuIR) -> Dict[str, Dict[str, Any]]:
     """Map provider object names to stable EmuIR endpoint identities."""
     pins = _instance_pin_inventory(ir)
-    result: Dict[str, Dict[str, Any]] = {}
+    canonical: Dict[str, Dict[str, Any]] = {}
     for instance in ir.value["instances"]:
         instance_id = instance["id"]
         for port, bit in pins[instance_id]:
             name = f"{instance_id}/{_scalar_pin(port, bit, pins[instance_id])}"
-            result[name] = {
+            canonical[name] = {
                 "object": name,
                 "instance": instance_id,
                 "port": port,
@@ -82,12 +82,36 @@ def sta_object_index(ir: EmuIR) -> Dict[str, Dict[str, Any]]:
             if port["width"] > 1:
                 names = [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"]
             for name in names:
-                result[name] = {
+                canonical[name] = {
                     "object": name,
                     "instance": None,
                     "port": port["id"],
                     "bit": bit,
                 }
+
+    # OpenSTA reports Verilog escaped identifiers through Tcl.  A literal
+    # backslash in the mapped-Verilog object name is therefore escaped one
+    # additional time in ``get_full_name`` and in the exported path ID.  Add
+    # that exact provider spelling as an O(1) alias while retaining the
+    # provider-neutral EmuIR spelling in the endpoint certificate.
+    #
+    # Do not guess through an ambiguous name.  It is possible (although very
+    # unusual) for one canonical object to contain one literal backslash and
+    # another to contain two.  Such an IR cannot be mapped bijectively through
+    # OpenSTA's textual path identity, so reject it instead of silently binding
+    # the path to the wrong endpoint.
+    result = dict(canonical)
+    for name, endpoint in canonical.items():
+        alias = name.replace("\\", "\\\\")
+        if alias == name:
+            continue
+        existing = result.get(alias)
+        if existing is not None and existing != endpoint:
+            raise ValidationError(
+                "STA provider object alias is ambiguous between "
+                f"{existing['object']!r} and {name!r}"
+            )
+        result[alias] = endpoint
     return result
 
 
