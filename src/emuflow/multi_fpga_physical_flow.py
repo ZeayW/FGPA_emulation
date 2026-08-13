@@ -364,10 +364,16 @@ def run_multi_fpga_physical_flow(
     assignment_path: Optional[Path] = None,
     routes_path: Optional[Path] = None,
     path_database_path: Optional[Path] = None,
+    logic_path_database_path: Optional[Path] = None,
     workers: int = 1,
 ) -> Dict[str, Any]:
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
+    if logic_path_database_path is not None and path_database_path is None:
+        raise ValidationError(
+            "physical logic timing database requires the complete original "
+            "STA path database"
+        )
     split_root = split_root.resolve()
     manifest_path = split_root / "manifest.json"
     manifest = read_json(manifest_path)
@@ -392,6 +398,11 @@ def run_multi_fpga_physical_flow(
             "physical logic timing requires original IR, assignment, routes, "
             "and STA path database together"
         )
+    effective_logic_path_database_path = (
+        logic_path_database_path
+        if logic_path_database_path is not None
+        else path_database_path
+    )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
         raise ValidationError("split manifest does not cover the BoardDB FPGAs")
@@ -583,7 +594,7 @@ def run_multi_fpga_physical_flow(
                 logic_query_report = write_vpr_logic_segment_query(
                     original_ir_path,
                     assignment_path,
-                    path_database_path,
+                    effective_logic_path_database_path,
                     routes_path,
                     schedule_path,
                     platform,
@@ -774,7 +785,7 @@ def run_multi_fpga_physical_flow(
                 logic_query_report = write_vivado_logic_segment_query(
                     original_ir_path,
                     assignment_path,
-                    path_database_path,
+                    effective_logic_path_database_path,
                     routes_path,
                     schedule_path,
                     platform,

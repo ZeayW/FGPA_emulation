@@ -328,6 +328,19 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 ],
                 0,
             )
+            self.assertEqual(
+                Path(
+                    report["timing"]["cut_path_projection"]["output"]
+                ).read_text(encoding="utf-8"),
+                (output / "timing/cut-timing-paths.json").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            projected = read_json(output / "timing/cut-timing-paths.json")
+            self.assertEqual(
+                Path(projected["source"]["input"]).resolve(),
+                (output / "timing/path-database.json").resolve(),
+            )
             self.assertIn(
                 "timing_validation", report["stages"]["tdm"]
             )
@@ -404,6 +417,42 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 "runtime/runtime_contract.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)
+
+            direct_output = root / "multi-direct"
+            direct_report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=direct_output,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                timing_driven=True,
+                board_link_timing_db=link_timing_path,
+                clock_periods={"clk": 10.0},
+                opensta=str(fake_sta),
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                cross_stage_iterations=0,
+                equivalence_cycles=2,
+            )
+            direct_projection = direct_report["timing"][
+                "cut_path_projection"
+            ]
+            self.assertEqual(
+                Path(direct_projection["output"]).read_text(
+                    encoding="utf-8"
+                ),
+                (direct_output / "timing/cut-timing-paths.json").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            direct_projected = read_json(
+                direct_output / "timing/cut-timing-paths.json"
+            )
+            self.assertEqual(
+                Path(direct_projected["source"]["input"]).resolve(),
+                (direct_output / "timing/path-database.json").resolve(),
+            )
 
     def test_nonempty_output_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -850,7 +850,6 @@ def run_multi_fpga_flow(
 
     timing_root = output_dir / "timing"
     path_database_path = timing_root / "path-database.json"
-    effective_path_database_path = path_database_path
     cut_path_database_path = None
     net_weights_path = timing_root / "partition-net-weights.json"
     timing_report = None
@@ -1026,11 +1025,14 @@ def run_multi_fpga_flow(
                 log_path=timing_root / "opensta-cut-paths.log",
                 through_nets=cut_net_ids,
             )
-            effective_path_database_path = cut_path_database_path
             timing_report["cut_path_sta"] = cut_sta_report
         projected_timing_paths = timing_root / "cut-timing-paths.json"
+        # Phase 4/5 must optimize the same complete original TimingPathDB
+        # population that Phase 7C later reports.  The post-partition
+        # through-net STA run is useful qualification evidence, but using it
+        # as the routing population silently drops original cross-FPGA paths.
         projection_report = project_sta_path_database(
-            effective_path_database_path,
+            path_database_path,
             assignment_path,
             projected_timing_paths,
         )
@@ -1250,7 +1252,10 @@ def run_multi_fpga_flow(
             assignment_path=assignment_path if timing_driven else None,
             routes_path=routes_path if timing_driven else None,
             path_database_path=(
-                effective_path_database_path if timing_driven else None
+                path_database_path if timing_driven else None
+            ),
+            logic_path_database_path=(
+                path_database_path if timing_driven else None
             ),
             workers=physical_workers,
         )
@@ -1385,7 +1390,10 @@ def run_multi_fpga_flow(
             assignment_path=assignment_path if timing_driven else None,
             routes_path=routes_path if timing_driven else None,
             path_database_path=(
-                effective_path_database_path if timing_driven else None
+                path_database_path if timing_driven else None
+            ),
+            logic_path_database_path=(
+                path_database_path if timing_driven else None
             ),
             workers=physical_workers,
         )

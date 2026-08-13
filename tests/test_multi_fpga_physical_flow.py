@@ -342,6 +342,20 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     workers=0,
                 )
 
+    def test_rejects_logic_database_without_complete_original_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(
+                ValidationError, "complete original STA path database"
+            ):
+                run_multi_fpga_physical_flow(
+                    root,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    logic_path_database_path=root / "cut-paths.json",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

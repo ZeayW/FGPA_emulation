@@ -213,6 +213,14 @@ identities let partition projection retain the actual sink of each multicast
 member and discard local fanout of otherwise-global nets; provider inputs
 without resolvable endpoints retain an explicit conservative per-partition
 bound.
+Phase 4 and Phase 5 project their cross-FPGA timing population from that
+complete original TimingPathDB, so every original path that becomes
+cross-partition is optimized and remains identifiable at Phase 7C. An
+additional post-partition OpenSTA through-cut query is retained as diagnostic
+coverage evidence for the selected cut nets; it is not substituted for the
+complete original path population. The physical stage likewise keeps the
+complete database for same-FPGA and final set-hash coverage, while using the
+projected member identities for routed cross-FPGA logic-segment queries.
 Both original-target-clock and virtual-runtime-clock system slack are
 reported.
 
@@ -1359,6 +1367,43 @@ by `75.250287528 ns`. These are not per-FPGA endpoint aggregates or a
 cross-FPGA-only subset. Both arms also close the 640-ns virtual runtime clock
 with zero negative-slack paths. This is academic-architecture physical
 evidence rather than vendor bitstream signoff.
+
+The same frozen design on the two-FPGA point-to-point BoardDB is a useful
+negative control. Both complete Phase 7 arms cover all 22,272 source paths
+(22,053 local and 219 cross-FPGA) and report identical 4-ns target-clock
+WNS/TNS: `-15.227118790 ns` / `-17784.330743091 ns`. Thus the measured
+whole-design delta is exactly zero on this topology even though the Phase 4
+route and Phase 5 schedule artifacts differ. Both arms close the 128-ns
+runtime clock with zero negative-slack paths. This result is retained because
+it shows that the routing/TDM upgrade is topology- and bottleneck-dependent;
+it is not presented as a universal improvement.
+
+A second four-FPGA run disables one mesh link, leaving a connected tree and
+forcing every legal route onto that tree. Both arms again cover all 22,272
+original paths (21,711 local and 561 cross-FPGA), pass the independent Phase
+4/5/physical/path-set validator, and close the 1,280-ns runtime clock. The
+default arm reports target-clock WNS/TNS of `-40.761430302 ns` /
+`-21270.744857033 ns`; the upgraded arm reports `-39.322093319 ns` /
+`-20962.158840711 ns`. The corresponding improvements are `1.439336983 ns`
+(3.53% negative-WNS deficit reduction) and `308.586016322 ns` (1.45%
+negative-TNS deficit reduction). The identical route/load summaries confirm
+that this case has no alternate-tree freedom; the final change comes from the
+different timing-aware transport realization exercised by the complete
+Phase 6/7 path.
+
+An eight-FPGA mesh topology stress run also completes both Phase 7 arms and
+independently validates the same complete 22,272-path population, now with
+21,347 local and 925 cross-FPGA paths. The default WNS/TNS is
+`-83.433461504 ns` / `-34246.984061081 ns`; the upgraded result is
+`-81.956688189 ns` / `-32596.097385430 ns`. This is a `1.476773315 ns`
+(1.77%) WNS improvement and a `1650.886675651 ns` (4.82%) TNS improvement;
+negative-slack paths fall from 9,180 to 9,008, and both arms close the 128-ns
+runtime clock. This particular all-eight-used partition is intentionally a
+topology/worker-count stress case, not balanced-partition evidence: the
+instance counts are 16,915, 7, 16,905, 16,909, 11, 10, 8, and 16,909 across
+the eight FPGAs because large atomic clusters forced the minimum-used
+constraint to relax effective balance. A balanced large-design result remains
+a separate validation requirement.
 
 ### Source-backed Arm MPS4 BoardDB
 
