@@ -706,7 +706,28 @@ def materialize_academic_chimew_inputs(
             for entry in schedule["entries"]
         ],
     }
-    initial = build_chimew_initial_groups(schedule, crossings, executable=grouper)
+    maximum_timing_weight = max(timing_weights.values(), default=1.0)
+    protected_entries = (
+        {
+            entry_id
+            for entry_id, weight in timing_weights.items()
+            if maximum_timing_weight > 1.0
+            and math.isclose(
+                weight,
+                maximum_timing_weight,
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            )
+        }
+        if timing_source is not None
+        else set()
+    )
+    initial = build_chimew_initial_groups(
+        schedule,
+        crossings,
+        executable=grouper,
+        protected_entries=protected_entries,
+    )
     refined = refine_chimew_groups(
         schedule, crossings, initial, positions, executable=refiner
     )
@@ -993,6 +1014,7 @@ def materialize_academic_chimew_inputs(
         "qualification": "academic-virtual-physical-model",
         "design": schedule["design"],
         "platform": schedule["platform"],
+        "timing_guard": initial["timing_guard"],
         "metrics": {
             "signals": len(schedule["entries"]),
             "placement_endpoint_fallbacks": fallbacks,

@@ -247,16 +247,86 @@ def _nearest_key(
     )
 
 
+def _guarded_lane_domains(
+    entries: Sequence[Mapping[str, Any]], protected_entries: set[str]
+) -> Dict[str, Optional[Tuple[str, str, str, int]]]:
+    """Keep every member of a protected entry's frozen lane together.
+
+    This is an EmuFlow timing extension around Chimew Algorithm 1.  Protecting
+    the whole lane (rather than only the critical member) preserves the exact
+    Phase 5 mux membership seen by the timing prepass.
+    """
+
+    if not protected_entries:
+        return {entry["id"]: None for entry in entries}
+    unknown = protected_entries - {entry["id"] for entry in entries}
+    if unknown:
+        raise ValidationError(
+            "Chimew timing guard references unknown schedule entries: "
+            + ", ".join(sorted(unknown)[:10])
+        )
+    protected_lanes = {
+        (
+            entry["link"],
+            entry["from"],
+            entry["to"],
+            _integer(entry.get("lane"), f"{entry['id']}.lane"),
+        )
+        for entry in entries
+        if entry["id"] in protected_entries
+    }
+    return {
+        entry["id"]: (
+            lane
+            if (lane := (
+                entry["link"],
+                entry["from"],
+                entry["to"],
+                _integer(entry.get("lane"), f"{entry['id']}.lane"),
+            )) in protected_lanes
+            else None
+        )
+        for entry in entries
+    }
+
+
 def _oracle_groups(
-    entries: Sequence[Mapping[str, Any]], encodings: Mapping[str, int]
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    guarded_lanes: Optional[
+        Mapping[str, Optional[Tuple[str, str, str, int]]]
+    ] = None,
 ) -> tuple[Dict[str, int], int, int]:
-    buckets: Dict[tuple[Tuple[str, str, str], int], list[int]] = defaultdict(list)
+    guarded_lanes = guarded_lanes or {}
+    buckets: Dict[
+        tuple[
+            Tuple[str, str, str],
+            int,
+            Optional[Tuple[str, str, str, int]],
+        ],
+        list[int],
+    ] = defaultdict(list)
     for index, entry in enumerate(entries):
-        buckets[(_domain(entry), _tdm_ratio(entry))].append(index)
+        buckets[
+            (
+                _domain(entry),
+                _tdm_ratio(entry),
+                guarded_lanes.get(entry["id"]),
+            )
+        ].append(index)
     assignment: Dict[str, int] = {}
     group_count = 0
     crossing_bits = 0
-    for (_, ratio), indices in sorted(buckets.items()):
+    guard_sentinel = ("", "", "", -1)
+    for (_, ratio, _guard), indices in sorted(
+        buckets.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1],
+            item[0][2] is not None,
+            item[0][2] or guard_sentinel,
+        ),
+    ):
         remaining_by_encoding: Dict[int, deque[int]] = defaultdict(deque)
         for index in indices:
             remaining_by_encoding[encodings[entries[index]["id"]]].append(index)
@@ -325,9 +395,19 @@ def _oracle_groups(
 def _run_native(
     entries: Sequence[Mapping[str, Any]],
     encodings: Mapping[str, int],
+    guarded_lanes: Mapping[str, Optional[Tuple[str, str, str, int]]],
     executable: Optional[str],
 ) -> tuple[Dict[str, int], int, int]:
-    domains = sorted({_domain(entry) for entry in entries})
+    guard_sentinel = ("", "", "", -1)
+    domains = sorted(
+        {
+            (_domain(entry), guarded_lanes.get(entry["id"]))
+            for entry in entries
+        },
+        key=lambda item: (
+            item[0], item[1] is not None, item[1] or guard_sentinel
+        ),
+    )
     domain_index = {domain: index for index, domain in enumerate(domains)}
     with tempfile.TemporaryDirectory(prefix="emuflow-chimew-grouping-") as temporary:
         root = Path(temporary)
@@ -336,7 +416,8 @@ def _run_native(
         lines = ["EMUFLOW_CHIMEW_GROUPER_INPUT_V2"]
         for index, entry in enumerate(entries):
             lines.append(
-                f"SIGNAL {index} {domain_index[_domain(entry)]} "
+                f"SIGNAL {index} "
+                f"{domain_index[(_domain(entry), guarded_lanes.get(entry['id']))]} "
                 f"{_tdm_ratio(entry)} {_tdm_slot(entry, index)} "
                 f"{encodings[entry['id']]}"
             )
@@ -380,13 +461,15 @@ def build_chimew_initial_groups(
     crossing_document: Mapping[str, Any],
     *,
     executable: Optional[str] = None,
+    protected_entries: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """Run paper Algorithm 1 and independently replay every group decision."""
 
     encodings = validate_chimew_crossings(schedule, crossing_document)
     entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
-    native = _run_native(entries, encodings, executable)
-    oracle = _oracle_groups(entries, encodings)
+    guarded_lanes = _guarded_lane_domains(entries, protected_entries or set())
+    native = _run_native(entries, encodings, guarded_lanes, executable)
+    oracle = _oracle_groups(entries, encodings, guarded_lanes)
     if native != oracle:
         raise EmuFlowError("native Chimew grouping disagrees with Python replay")
     assignment, group_count, crossing_bits = native
@@ -400,6 +483,15 @@ def build_chimew_initial_groups(
         "integration_status": "not-a-phase6-pin-plan",
         "tie_break": "stable-encoding-count-then-schedule-entry-order",
         "integration_constraints": "frozen-phase5-slot-unique-within-group",
+        "timing_guard": {
+            "scope": "EmuFlow extension, not a Chimew paper claim",
+            "protected_entries": sum(
+                guarded_lanes[entry["id"]] is not None for entry in entries
+            ),
+            "protected_lane_groups": len(
+                {guard for guard in guarded_lanes.values() if guard is not None}
+            ),
+        },
         "metrics": {
             "signals": len(entries),
             "groups": group_count,
@@ -411,6 +503,11 @@ def build_chimew_initial_groups(
                 "schedule_entry": entry["id"],
                 "group": assignment[entry["id"]],
                 "encoding": encodings[entry["id"]],
+                **(
+                    {"timing_guard_lane": list(guarded_lanes[entry["id"]])}
+                    if guarded_lanes[entry["id"]] is not None
+                    else {}
+                ),
             }
             for entry in entries
         ],

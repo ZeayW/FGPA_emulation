@@ -165,6 +165,27 @@ class ChimewRefinementTest(unittest.TestCase):
                 executable=str(self.refiner),
             )
 
+    def test_timing_guard_must_cover_the_complete_original_lane(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        for index, entry in enumerate(schedule["entries"]):
+            entry["lane"] = index // 2
+            entry["slot"] = index % 2
+        guarded = build_chimew_initial_groups(
+            schedule,
+            self.crossings,
+            executable=str(self.grouper),
+            protected_entries={"s0"},
+        )
+        guarded["entries"][1].pop("timing_guard_lane")
+        with self.assertRaisesRegex(ValidationError, "complete lane"):
+            refine_chimew_groups(
+                schedule,
+                self.crossings,
+                guarded,
+                self.positions,
+                executable=str(self.refiner),
+            )
+
     def test_prefix_sum_pairwise_objective_matches_exhaustive(self) -> None:
         random_generator = random.Random(731)
         for size in range(1, 80):

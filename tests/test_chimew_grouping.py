@@ -109,6 +109,24 @@ class ChimewGroupingTest(unittest.TestCase):
         self.assertEqual(groups["s3"], groups["s4"])
         self.assertNotEqual(groups["s0"], groups["s3"])
 
+    def test_timing_guard_preserves_complete_frozen_lane(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        for index, entry in enumerate(schedule["entries"]):
+            entry["lane"] = index // 2
+            entry["slot"] = index % 2
+        result = build_chimew_initial_groups(
+            schedule,
+            self.crossings,
+            executable=str(self.executable),
+            protected_entries={"s0"},
+        )
+        groups = {item["schedule_entry"]: item for item in result["entries"]}
+        self.assertEqual(groups["s0"]["group"], groups["s1"]["group"])
+        self.assertEqual(groups["s0"]["timing_guard_lane"], groups["s1"]["timing_guard_lane"])
+        self.assertNotIn("timing_guard_lane", groups["s2"])
+        self.assertEqual(result["timing_guard"]["protected_lane_groups"], 1)
+        self.assertEqual(result["timing_guard"]["protected_entries"], 2)
+
     def test_normalized_region_substitute_is_rejected(self) -> None:
         invalid = copy.deepcopy(self.crossings)
         invalid["provider"] = "openparf-lookahead-centroid-v1"

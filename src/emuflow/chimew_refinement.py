@@ -162,6 +162,40 @@ def _validate_initial_groups(
     return groups
 
 
+def _timing_guards(
+    schedule: Mapping[str, Any], initial: Mapping[str, Any]
+) -> Dict[str, Optional[tuple[Any, ...]]]:
+    schedule_by_id = {entry["id"]: entry for entry in schedule.get("entries", [])}
+    guards: Dict[str, Optional[tuple[Any, ...]]] = {}
+    for record in initial.get("entries", []):
+        raw = record.get("timing_guard_lane")
+        if raw is not None and (
+            not isinstance(raw, list)
+            or len(raw) != 4
+            or not all(isinstance(value, str) and value for value in raw[:3])
+            or isinstance(raw[3], bool)
+            or not isinstance(raw[3], int)
+            or raw[3] < 0
+        ):
+            raise ValidationError("Chimew timing guard lane is invalid")
+        entry_id = record["schedule_entry"]
+        guard = tuple(raw) if raw is not None else None
+        if guard is not None:
+            entry = schedule_by_id[entry_id]
+            expected = (
+                entry["link"], entry["from"], entry["to"], entry.get("lane")
+            )
+            if guard != expected:
+                raise ValidationError("Chimew timing guard lane disagrees with schedule")
+        guards[entry_id] = guard
+    guarded_lanes = {guard for guard in guards.values() if guard is not None}
+    for entry_id, entry in schedule_by_id.items():
+        lane = (entry["link"], entry["from"], entry["to"], entry.get("lane"))
+        if (lane in guarded_lanes) != (guards.get(entry_id) is not None):
+            raise ValidationError("Chimew timing guard does not cover a complete lane")
+    return guards
+
+
 def _median(values: Sequence[float]) -> float:
     ordered = sorted(values)
     middle = len(ordered) // 2
@@ -198,6 +232,7 @@ def _oracle_refine(
     encodings: Mapping[str, int],
     positions: Mapping[str, float],
     initial: Mapping[str, int],
+    guards: Optional[Mapping[str, Optional[tuple[Any, ...]]]] = None,
 ) -> Tuple[Dict[str, int], int, int, float, float]:
     assignment = dict(initial)
     all_groups = set(assignment.values())
@@ -205,11 +240,32 @@ def _oracle_refine(
     for entry_id, group in assignment.items():
         members[group].add(entry_id)
     before_total = _pairwise_objective(members, positions, all_groups)
-    buckets: Dict[Tuple[Tuple[str, str, str], int, int], list[str]] = defaultdict(list)
+    guards = guards or {}
+    buckets: Dict[
+        Tuple[Tuple[str, str, str], int, int, Optional[tuple[Any, ...]]],
+        list[str],
+    ] = defaultdict(list)
     for entry in entries:
-        buckets[(_domain(entry), _tdm_ratio(entry), encodings[entry["id"]])].append(entry["id"])
+        buckets[
+            (
+                _domain(entry),
+                _tdm_ratio(entry),
+                encodings[entry["id"]],
+                guards.get(entry["id"]),
+            )
+        ].append(entry["id"])
     accepted = moved = 0
-    for (_, _, encoding), bucket in sorted(buckets.items()):
+    guard_sentinel = ("", "", "", -1)
+    for (_, _, encoding, _guard), bucket in sorted(
+        buckets.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1],
+            item[0][2],
+            item[0][3] is not None,
+            item[0][3] or guard_sentinel,
+        ),
+    ):
         affected = {assignment[entry_id] for entry_id in bucket}
         if len(bucket) < 2 or len(affected) < 2:
             continue
@@ -264,9 +320,16 @@ def _run_native(
     encodings: Mapping[str, int],
     positions: Mapping[str, float],
     initial: Mapping[str, int],
+    guards: Mapping[str, Optional[tuple[Any, ...]]],
     executable: Optional[str],
 ) -> Tuple[Dict[str, int], int, int, float, float]:
-    domains = sorted({_domain(entry) for entry in entries})
+    guard_sentinel = ("", "", "", -1)
+    domains = sorted(
+        {(_domain(entry), guards.get(entry["id"])) for entry in entries},
+        key=lambda item: (
+            item[0], item[1] is not None, item[1] or guard_sentinel
+        ),
+    )
     domain_index = {domain: index for index, domain in enumerate(domains)}
     with tempfile.TemporaryDirectory(prefix="emuflow-chimew-refinement-") as temporary:
         root = Path(temporary)
@@ -277,7 +340,8 @@ def _run_native(
             entry_id = entry["id"]
             lines.append(
                 "SIGNAL "
-                f"{index} {domain_index[_domain(entry)]} {_tdm_ratio(entry)} "
+                f"{index} {domain_index[(_domain(entry), guards.get(entry_id))]} "
+                f"{_tdm_ratio(entry)} "
                 f"{encodings[entry_id]} {initial[entry_id]} "
                 f"{positions[entry_id]:.17g}"
             )
@@ -329,9 +393,10 @@ def refine_chimew_groups(
     encodings = validate_chimew_crossings(schedule, crossing_document)
     positions = validate_chimew_positions(schedule, position_document)
     initial = _validate_initial_groups(schedule, initial_grouping, encodings)
+    guards = _timing_guards(schedule, initial_grouping)
     entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
-    native = _run_native(entries, encodings, positions, initial, executable)
-    oracle = _oracle_refine(entries, encodings, positions, initial)
+    native = _run_native(entries, encodings, positions, initial, guards, executable)
+    oracle = _oracle_refine(entries, encodings, positions, initial, guards)
     if native[:3] != oracle[:3] or any(
         not math.isclose(native[index], oracle[index], rel_tol=1e-12, abs_tol=1e-9)
         for index in (3, 4)
