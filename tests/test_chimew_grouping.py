@@ -135,6 +135,22 @@ class ChimewGroupingTest(unittest.TestCase):
         groups = {item["schedule_entry"]: item["group"] for item in result["entries"]}
         self.assertNotIn(groups["s4"], {groups[f"s{index}"] for index in range(4)})
 
+    def test_frozen_slots_never_collide_inside_a_group(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        for index, entry in enumerate(schedule["entries"]):
+            entry["slot"] = index % 2
+        result = build_chimew_initial_groups(
+            schedule, self.crossings, executable=str(self.executable)
+        )
+        slots_by_group = {}
+        source = {entry["id"]: entry for entry in schedule["entries"]}
+        for item in result["entries"]:
+            slots = slots_by_group.setdefault(item["group"], set())
+            slot = source[item["schedule_entry"]]["slot"]
+            self.assertNotIn(slot, slots)
+            slots.add(slot)
+        self.assertEqual(result["metrics"]["groups"], 3)
+
     def test_random_small_inputs_preserve_capacity_and_coverage(self) -> None:
         randomizer = random.Random(17)
         count = 80

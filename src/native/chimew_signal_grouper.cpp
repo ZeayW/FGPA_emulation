@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -17,6 +18,7 @@ struct Signal {
   int index = -1;
   int domain = -1;
   int ratio = 0;
+  int slot = -1;
   unsigned long long encoding = 0;
 };
 
@@ -27,7 +29,7 @@ int popcount(unsigned long long value) {
 std::vector<Signal> read_input(const std::string& path) {
   std::ifstream stream(path);
   std::string header;
-  if (!(stream >> header) || header != "EMUFLOW_CHIMEW_GROUPER_INPUT_V1") {
+  if (!(stream >> header) || header != "EMUFLOW_CHIMEW_GROUPER_INPUT_V2") {
     throw std::runtime_error("invalid Chimew grouper input header");
   }
   std::vector<Signal> signals;
@@ -37,12 +39,12 @@ std::vector<Signal> read_input(const std::string& path) {
       throw std::runtime_error("invalid Chimew grouper record");
     }
     Signal signal;
-    if (!(stream >> signal.index >> signal.domain >> signal.ratio >>
+    if (!(stream >> signal.index >> signal.domain >> signal.ratio >> signal.slot >>
           signal.encoding)) {
       throw std::runtime_error("malformed Chimew signal record");
     }
     if (signal.index != static_cast<int>(signals.size()) ||
-        signal.domain < 0 || signal.ratio <= 0) {
+        signal.domain < 0 || signal.ratio <= 0 || signal.slot < 0) {
       throw std::runtime_error("invalid Chimew signal identity");
     }
     signals.push_back(signal);
@@ -65,6 +67,7 @@ std::vector<std::vector<int>> group_bucket(
   int remaining_count = static_cast<int>(remaining.size());
   while (remaining_count > 0) {
     std::vector<int> group;
+    std::set<int> used_slots;
     bool have_seed = false;
     unsigned long long target = 0;
     std::tuple<int, long long, int> seed_key;
@@ -86,8 +89,16 @@ std::vector<std::vector<int>> group_bucket(
       unsigned long long best_encoding = 0;
       std::tuple<int, int, int, int, long long, int> best_key{
           4, 0, 0, 0, 0, 0};
+      int best_signal = -1;
       for (const auto& [encoding, indices] : remaining_by_encoding) {
         if (indices.empty()) {
+          continue;
+        }
+        const auto compatible = std::find_if(
+            indices.begin(), indices.end(), [&](int signal) {
+              return used_slots.count(signals[signal].slot) == 0;
+            });
+        if (compatible == indices.end()) {
           continue;
         }
         int category = 2;
@@ -102,18 +113,25 @@ std::vector<std::vector<int>> group_bucket(
             category == 2 ? different : 0,
             -popcount(encoding),
             static_cast<int>(indices.size()),
-            -static_cast<long long>(encoding), indices.front());
+            -static_cast<long long>(encoding), *compatible);
         if (!have_best || key < best_key) {
           have_best = true;
           best_encoding = encoding;
+          best_signal = *compatible;
           best_key = key;
         }
       }
+      if (!have_best) {
+        break;
+      }
       auto& selected_indices = remaining_by_encoding[best_encoding];
-      const int selected = selected_indices.front();
-      selected_indices.pop_front();
+      const auto selected_position = std::find(
+          selected_indices.begin(), selected_indices.end(), best_signal);
+      const int selected = *selected_position;
+      selected_indices.erase(selected_position);
       target |= best_encoding;
       group.push_back(selected);
+      used_slots.insert(signals[selected].slot);
       --remaining_count;
     }
     groups.push_back(std::move(group));
@@ -148,7 +166,7 @@ void run(const std::string& input_path, const std::string& output_path) {
   if (!output) {
     throw std::runtime_error("cannot open Chimew grouper output");
   }
-  output << "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V1\n";
+  output << "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2\n";
   output << "METRIC " << group_id << " " << crossing_bits << "\n";
   for (int index = 0; index < static_cast<int>(assignment.size()); ++index) {
     output << "ASSIGN " << index << " " << assignment[index] << "\n";

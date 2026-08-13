@@ -159,6 +159,12 @@ def _tdm_ratio(entry: Mapping[str, Any]) -> int:
     )
 
 
+def _tdm_slot(entry: Mapping[str, Any], index: int) -> int:
+    """Return a frozen Phase 5 slot, or a unique paper-kernel-only slot."""
+
+    return _integer(entry.get("slot", index), f"{entry['id']}.slot")
+
+
 def materialize_chimew_schedule_ratios(
     schedule: Mapping[str, Any],
 ) -> Dict[str, Any]:
@@ -272,22 +278,40 @@ def _oracle_groups(
                 ),
             )
             members = []
+            used_slots: set[int] = set()
             while remaining_count and len(members) < ratio:
+                compatible = {
+                    encoding: next(
+                        (
+                            signal
+                            for signal in remaining
+                            if _tdm_slot(entries[signal], signal) not in used_slots
+                        ),
+                        None,
+                    )
+                    for encoding, remaining in remaining_by_encoding.items()
+                    if remaining
+                }
+                compatible = {
+                    encoding: signal
+                    for encoding, signal in compatible.items()
+                    if signal is not None
+                }
+                if not compatible:
+                    break
                 selected_encoding = min(
-                    (
-                        encoding
-                        for encoding, remaining in remaining_by_encoding.items()
-                        if remaining
-                    ),
+                    compatible,
                     key=lambda encoding: _nearest_key(
                         encoding,
                         target,
                         multiplicity,
-                        remaining_by_encoding[encoding][0],
+                        compatible[encoding],
                     ),
                 )
-                selected = remaining_by_encoding[selected_encoding].popleft()
+                selected = compatible[selected_encoding]
+                remaining_by_encoding[selected_encoding].remove(selected)
                 members.append(selected)
+                used_slots.add(_tdm_slot(entries[selected], selected))
                 target |= selected_encoding
                 multiplicity[selected_encoding] -= 1
                 remaining_count -= 1
@@ -309,11 +333,12 @@ def _run_native(
         root = Path(temporary)
         input_path = root / "input.txt"
         output_path = root / "output.txt"
-        lines = ["EMUFLOW_CHIMEW_GROUPER_INPUT_V1"]
+        lines = ["EMUFLOW_CHIMEW_GROUPER_INPUT_V2"]
         for index, entry in enumerate(entries):
             lines.append(
                 f"SIGNAL {index} {domain_index[_domain(entry)]} "
-                f"{_tdm_ratio(entry)} {encodings[entry['id']]}"
+                f"{_tdm_ratio(entry)} {_tdm_slot(entry, index)} "
+                f"{encodings[entry['id']]}"
             )
         input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         command = resolve_native_executable(
@@ -330,7 +355,7 @@ def _run_native(
                 + (completed.stderr.strip() or completed.stdout.strip())
             )
         lines = output_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V1":
+    if not lines or lines[0] != "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2":
         raise EmuFlowError("Chimew signal grouper output header is invalid")
     assignment: Dict[str, int] = {}
     group_count = crossing_bits = None
@@ -374,6 +399,7 @@ def build_chimew_initial_groups(
         "paper_scope": "FPGA-2026-Algorithm-1-initial-grouping",
         "integration_status": "not-a-phase6-pin-plan",
         "tie_break": "stable-encoding-count-then-schedule-entry-order",
+        "integration_constraints": "frozen-phase5-slot-unique-within-group",
         "metrics": {
             "signals": len(entries),
             "groups": group_count,
