@@ -260,10 +260,10 @@ def _oracle_refine(
         buckets.items(),
         key=lambda item: (
             item[0][0],
-            item[0][1],
-            item[0][2],
             item[0][3] is not None,
             item[0][3] or guard_sentinel,
+            item[0][1],
+            item[0][2],
         ),
     ):
         affected = {assignment[entry_id] for entry_id in bucket}

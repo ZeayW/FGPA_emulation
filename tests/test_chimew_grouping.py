@@ -139,6 +139,22 @@ class ChimewGroupingTest(unittest.TestCase):
         )
         self.assertEqual(legacy, guarded_api)
 
+    def test_guarded_mixed_ratio_domain_order_matches_native(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        schedule["entries"][0].update({"lane": 0, "slot": 0, "tdm_ratio": 2})
+        schedule["entries"][1].update({"lane": 0, "slot": 1, "tdm_ratio": 2})
+        for index, entry in enumerate(schedule["entries"][2:], start=2):
+            entry.update({"lane": index, "slot": 0})
+        result = build_chimew_initial_groups(
+            schedule,
+            self.crossings,
+            executable=str(self.executable),
+            protected_entries={"s0"},
+        )
+        groups = {item["schedule_entry"]: item["group"] for item in result["entries"]}
+        self.assertEqual(groups["s0"], groups["s1"])
+        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
     def test_normalized_region_substitute_is_rejected(self) -> None:
         invalid = copy.deepcopy(self.crossings)
         invalid["provider"] = "openparf-lookahead-centroid-v1"

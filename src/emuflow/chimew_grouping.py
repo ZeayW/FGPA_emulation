@@ -322,9 +322,9 @@ def _oracle_groups(
         buckets.items(),
         key=lambda item: (
             item[0][0],
-            item[0][1],
             item[0][2] is not None,
             item[0][2] or guard_sentinel,
+            item[0][1],
         ),
     ):
         remaining_by_encoding: Dict[int, deque[int]] = defaultdict(deque)
