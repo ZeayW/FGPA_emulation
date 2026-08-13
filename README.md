@@ -1396,7 +1396,12 @@ source TimingPathDB. Without that proof it reports
 
 A completed open-backend Phase 7 A/B on the 67,674-instance
 `picorv32_x32_ring_top` design and the four-FPGA academic mesh exercises this
-whole-design contract. Both arms cover the same 22,272 original paths
+whole-design contract.  The CPU core is source-backed PicoRV32 RTL, but the
+32-core connected harness, fixed inter-core traffic, partition constraints,
+and multi-FPGA BoardDB are EmuFlow academic test fixtures.  This run is
+therefore an end-to-end contract and topology-sensitivity acceptance test,
+not evidence of improvement across independent real applications.  Both arms
+cover the same 22,272 original paths
 (21,711 same-FPGA and 561 cross-FPGA paths) with the same canonical path-set
 SHA. The frozen default routing/TDM arm reports target-clock WNS/TNS of
 `-40.314765708 ns` / `-21137.255055545 ns`; the global-candidate routing plus
