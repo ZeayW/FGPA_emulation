@@ -427,6 +427,10 @@ reduction: for a negative baseline, compare the reduction in `-WNS` or `-TNS`;
 if the baseline already closes, the percentage is `N/A` and a closure
 transition is reported separately. Phase 6 crossing, grouping, RUDY, position,
 wirelength, and pin-distance metrics remain diagnostic explanations.
+The versioned `emuflow.system-route-tdm-ab/v4` comparison artifact records
+those percentages and closure transitions for target-clock and virtual-runtime
+global WNS/TNS, and independently recomputes them when the bundle is validated;
+signed slack values are never divided to manufacture a percentage.
 
 The open VPR route now provides this endpoint-complete contract and binds its
 machine-readable WNS, TNS, logical failing endpoints, and failing endpoint

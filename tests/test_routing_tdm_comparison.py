@@ -156,8 +156,8 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                     },
                     "target_clock": {
                         "worst_slack_bound_ns": global_slack,
-                        "tns_bound_ns": 2.0 * global_slack,
-                        "negative_slack_paths": 2,
+                        "tns_bound_ns": 2.0 * min(0.0, global_slack),
+                        "negative_slack_paths": 2 if global_slack < 0.0 else 0,
                     },
                     "runtime_clock": {
                         "worst_slack_bound_ns": 10.0 + value,
@@ -201,11 +201,104 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                 result["validation"]["target_global_tns_improvement_ns"],
                 1.5,
             )
+            self.assertEqual(
+                result["global_timing_improvement"][
+                    "target_global_wns_ns"
+                ]["negative_slack_deficit_reduction_percent"],
+                25.0,
+            )
+            self.assertEqual(
+                result["global_timing_improvement"][
+                    "target_global_wns_ns"
+                ]["closure_transition"],
+                "remained-open",
+            )
             self.assertTrue(output.is_file())
             tampered = copy.deepcopy(result)
             tampered["physical_delta_upgrade_minus_baseline"]["worst_wns_ns"] = 99
             with self.assertRaises(ValidationError):
                 validate_system_route_tdm_ab_comparison(tampered)
+
+    def test_reports_closure_and_na_percentage_for_closed_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, 2.5
+            )
+            up_report = self._report(
+                upgrade,
+                GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER,
+                3.0,
+            )
+            write_json(
+                baseline / "multi-fpga-flow-report.json", base_report
+            )
+            write_json(
+                upgrade / "multi-fpga-flow-report.json", up_report
+            )
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                result = build_system_route_tdm_ab_comparison(
+                    baseline, upgrade, root / "comparison.json"
+                )
+            wns = result["global_timing_improvement"][
+                "target_global_wns_ns"
+            ]
+            self.assertIsNone(
+                wns["negative_slack_deficit_reduction_percent"]
+            )
+            self.assertEqual(wns["closure_transition"], "remained-closed")
+
+            tampered = copy.deepcopy(result)
+            tampered["global_timing_improvement"][
+                "target_global_wns_ns"
+            ]["closure_transition"] = "closed"
+            with self.assertRaisesRegex(ValidationError, "improvement disagrees"):
+                validate_system_route_tdm_ab_comparison(tampered)
+
+    def test_reports_negative_slack_crossing_as_timing_closure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            write_json(
+                baseline / "multi-fpga-flow-report.json",
+                self._report(
+                    baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+                ),
+            )
+            write_json(
+                upgrade / "multi-fpga-flow-report.json",
+                self._report(
+                    upgrade,
+                    GLOBAL_CANDIDATE_PROVIDER,
+                    TDM_ACADEMIC_SCHEDULE_PROVIDER,
+                    2.5,
+                ),
+            )
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                result = build_system_route_tdm_ab_comparison(
+                    baseline, upgrade, root / "comparison.json"
+                )
+            wns = result["global_timing_improvement"][
+                "target_global_wns_ns"
+            ]
+            self.assertEqual(wns["closure_transition"], "closed")
+            self.assertEqual(
+                wns["negative_slack_deficit_reduction_percent"], 100.0
+            )
 
     def test_rejects_cross_fpga_subset_mislabeled_as_global(self):
         with tempfile.TemporaryDirectory() as temporary:

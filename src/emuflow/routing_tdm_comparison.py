@@ -20,7 +20,7 @@ from .tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
-SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v3"
+SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v4"
 SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v1"
 _FROZEN_ARTIFACTS = (
     "emuir",
@@ -124,6 +124,35 @@ def _finite_metrics(value: Dict[str, Any], fields: Iterable[str], label: str) ->
             or not math.isfinite(float(item))
         ):
             raise ValidationError(f"routing/TDM A/B {label} metric {field!r} is invalid")
+
+
+def _negative_slack_improvement(
+    baseline: float, upgrade: float
+) -> Dict[str, Any]:
+    """Describe slack improvement without dividing signed timing values."""
+
+    delta = upgrade - baseline
+    baseline_deficit = max(0.0, -baseline)
+    upgrade_deficit = max(0.0, -upgrade)
+    return {
+        "absolute_improvement_ns": delta,
+        "negative_slack_deficit_reduction_percent": (
+            (baseline_deficit - upgrade_deficit) * 100.0 / baseline_deficit
+            if baseline_deficit > 0.0
+            else None
+        ),
+        "baseline_closed": baseline >= 0.0,
+        "upgrade_closed": upgrade >= 0.0,
+        "closure_transition": (
+            "closed"
+            if baseline < 0.0 <= upgrade
+            else "regressed"
+            if baseline >= 0.0 > upgrade
+            else "remained-closed"
+            if baseline >= 0.0 and upgrade >= 0.0
+            else "remained-open"
+        ),
+    }
 
 
 def _route_metrics(stage: Dict[str, Any]) -> Dict[str, Any]:
@@ -359,6 +388,20 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
     }
     if report.get("global_timing_delta_upgrade_minus_baseline") != expected_global:
         raise ValidationError("routing/TDM A/B global timing delta disagrees")
+    expected_improvements = {
+        field: _negative_slack_improvement(
+            float(arms["baseline"]["global_timing"][field]),
+            float(arms["upgrade"]["global_timing"][field]),
+        )
+        for field in (
+            "target_global_wns_ns",
+            "target_global_tns_ns",
+            "runtime_global_wns_ns",
+            "runtime_global_tns_ns",
+        )
+    }
+    if report.get("global_timing_improvement") != expected_improvements:
+        raise ValidationError("routing/TDM A/B global timing improvement disagrees")
     return {
         "status": "pass",
         "target_global_wns_improvement_ns": expected_global[
@@ -497,6 +540,18 @@ def build_system_route_tdm_ab_comparison(
                 "compressed_representative_paths",
                 "original_path_coverage",
             }
+        },
+        "global_timing_improvement": {
+            field: _negative_slack_improvement(
+                float(arms["baseline"]["global_timing"][field]),
+                float(arms["upgrade"]["global_timing"][field]),
+            )
+            for field in (
+                "target_global_wns_ns",
+                "target_global_tns_ns",
+                "runtime_global_wns_ns",
+                "runtime_global_tns_ns",
+            )
         },
     }
     result["validation"] = validate_system_route_tdm_ab_comparison(result)
