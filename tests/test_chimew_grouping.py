@@ -127,6 +127,18 @@ class ChimewGroupingTest(unittest.TestCase):
         self.assertEqual(result["timing_guard"]["protected_lane_groups"], 1)
         self.assertEqual(result["timing_guard"]["protected_entries"], 2)
 
+    def test_empty_timing_guard_keeps_legacy_assignment(self) -> None:
+        legacy = build_chimew_initial_groups(
+            self.schedule, self.crossings, executable=str(self.executable)
+        )
+        guarded_api = build_chimew_initial_groups(
+            self.schedule,
+            self.crossings,
+            executable=str(self.executable),
+            protected_entries=set(),
+        )
+        self.assertEqual(legacy, guarded_api)
+
     def test_normalized_region_substitute_is_rejected(self) -> None:
         invalid = copy.deepcopy(self.crossings)
         invalid["provider"] = "openparf-lookahead-centroid-v1"
