@@ -371,16 +371,19 @@ def _write_logic_segment_query(
     merged_pins = _instance_pin_inventory(merged_ir)
     eblif_top_ports = None
     if object_provider == "vpr" and eblif_report is not None:
-        records = eblif_report.get("top_ports")
-        if not isinstance(records, list):
+        top_port_records = eblif_report.get("top_ports")
+        if not isinstance(top_port_records, list):
             raise ValidationError("logic segment eBLIF top-port map is invalid")
         eblif_top_ports = {}
-        for record in records:
-            if not isinstance(record, Mapping):
+        for top_port_record in top_port_records:
+            if not isinstance(top_port_record, Mapping):
                 raise ValidationError(
                     "logic segment eBLIF top-port record is invalid"
                 )
-            identity = (record.get("port"), record.get("bit"))
+            identity = (
+                top_port_record.get("port"),
+                top_port_record.get("bit"),
+            )
             if (
                 not isinstance(identity[0], str)
                 or isinstance(identity[1], bool)
@@ -390,7 +393,7 @@ def _write_logic_segment_query(
                 raise ValidationError(
                     "logic segment eBLIF top-port map is inconsistent"
                 )
-            eblif_top_ports[identity] = record
+            eblif_top_ports[identity] = top_port_record
     if object_provider not in {"vpr", "vivado"}:
         raise ValidationError("logic segment object provider is invalid")
 
