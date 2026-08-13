@@ -92,7 +92,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             sources = {}
-            for name in ("assignment", "platform", "timing"):
+            for name in ("assignment", "platform", "constraints", "timing"):
                 path = root / f"{name}.json"
                 write_json(path, {"name": name})
                 sources[name] = path
@@ -106,27 +106,90 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                 route_root.mkdir()
                 tdm_root.mkdir()
                 write_json(route_root / "routes.json", {"provider": route_provider})
+                write_json(
+                    route_root / "route_constraints.normalized.json",
+                    {"name": "constraints"},
+                )
                 write_json(tdm_root / "schedule.json", {"provider": tdm_provider})
+                if label == "upgrade":
+                    write_json(tdm_root / "ratio_plan.json", {"provider": "ratio"})
                 arms[label] = (route_root, tdm_root)
             with (
                 patch(
                     "emuflow.routing_tdm_comparison.validate_phase4",
-                    return_value={"status": "pass", "routed_sinks": 17},
+                    return_value={
+                        "status": "pass", "routed_sinks": 17,
+                        "tree_edges": 19, "total_link_bit_hops": 29,
+                        "max_link_utilization": 0.5, "overloaded_links": 0,
+                        "worst_slack_ns": -3.0,
+                        "worst_normalized_slack": -0.3,
+                        "estimated_worst_tdm_slack_ns": -5.0,
+                    },
                 ),
                 patch(
                     "emuflow.routing_tdm_comparison.validate_phase5",
-                    return_value={"status": "pass", "scheduled_bit_hops": 23},
+                    return_value={
+                        "status": "pass", "scheduled_bit_hops": 23,
+                        "frame_slots": 32, "completion_slot": 12,
+                        "max_domain_utilization": 0.75, "collisions": 0,
+                        "timing": {
+                            "status": "pass", "worst_slack_ns": -2.0,
+                            "worst_normalized_slack": -0.2,
+                            "p01_normalized_slack": -0.1,
+                            "median_normalized_slack": 0.3,
+                            "negative_slack_paths": 2,
+                        },
+                    },
                 ),
             ):
                 report = build_system_route_tdm_scale_comparison(
-                    sources["assignment"], sources["platform"], sources["timing"],
+                    sources["assignment"], sources["platform"],
+                    sources["constraints"], sources["timing"],
                     *arms["baseline"], *arms["upgrade"], root / "scale.json",
+                    baseline_runtime_seconds=10.0,
+                    upgrade_runtime_seconds=8.0,
                 )
             self.assertEqual(report["validation"]["baseline_routed_sinks"], 17)
+            self.assertEqual(report["runtime_delta_seconds"], -2.0)
+            self.assertEqual(
+                report["delta_upgrade_minus_baseline"]["tdm_worst_slack_ns"],
+                0.0,
+            )
             broken = copy.deepcopy(report)
             broken["arms"]["upgrade"]["tdm_provider"] = "wrong"
             with self.assertRaises(ValidationError):
                 validate_system_route_tdm_scale_comparison(broken)
+            broken = copy.deepcopy(report)
+            broken["frozen_upstream"]["route_constraints"] = "f" * 64
+            # A different valid digest is structurally valid in the detached
+            # report, but changing a reconstructed metric must still fail.
+            broken["arms"]["upgrade"]["metrics"]["tdm_worst_slack_ns"] = 1.0
+            with self.assertRaisesRegex(ValidationError, "delta"):
+                validate_system_route_tdm_scale_comparison(broken)
+
+            write_json(
+                arms["upgrade"][0] / "route_constraints.normalized.json",
+                {"name": "different-constraints"},
+            )
+            with self.assertRaisesRegex(ValidationError, "constraints differ"):
+                with (
+                    patch(
+                        "emuflow.routing_tdm_comparison.validate_phase4",
+                        return_value=report["arms"]["upgrade"]["route_validation"],
+                    ),
+                    patch(
+                        "emuflow.routing_tdm_comparison.validate_phase5",
+                        return_value=report["arms"]["upgrade"]["tdm_validation"],
+                    ),
+                ):
+                    build_system_route_tdm_scale_comparison(
+                        sources["assignment"], sources["platform"],
+                        sources["constraints"], sources["timing"],
+                        *arms["baseline"], *arms["upgrade"],
+                        root / "tampered-scale.json",
+                        baseline_runtime_seconds=10.0,
+                        upgrade_runtime_seconds=8.0,
+                    )
 
     def _report(self, root: Path, route: str, tdm: str, value: float):
         tool = root.parent / "physical-tool"

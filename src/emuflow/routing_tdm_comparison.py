@@ -22,7 +22,7 @@ from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
 SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v5"
-SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v1"
+SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v2"
 _FROZEN_ARTIFACTS = (
     "platform",
     "emuir",
@@ -61,6 +61,25 @@ _GLOBAL_TIMING_METRICS = (
     "original_path_coverage",
 )
 _BASELINE_PHASE6_PROVIDER = "deterministic-cut-shadow-split-v1"
+_SCALE_METRIC_FIELDS = (
+    "route_tree_edges",
+    "route_total_link_bit_hops",
+    "route_max_link_utilization",
+    "route_overloaded_links",
+    "route_worst_slack_ns",
+    "route_worst_normalized_slack",
+    "route_estimated_worst_tdm_slack_ns",
+    "tdm_frame_slots",
+    "tdm_completion_slot",
+    "tdm_max_domain_utilization",
+    "tdm_scheduled_bit_hops",
+    "tdm_collisions",
+    "tdm_worst_slack_ns",
+    "tdm_worst_normalized_slack",
+    "tdm_p01_normalized_slack",
+    "tdm_median_normalized_slack",
+    "tdm_negative_slack_paths",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -902,7 +921,7 @@ def validate_system_route_tdm_scale_comparison(
         raise ValidationError("routing/TDM scale comparison identity is invalid")
     sources = report.get("frozen_upstream")
     if not isinstance(sources, dict) or set(sources) != {
-        "assignment", "platform", "timing_paths"
+        "assignment", "platform", "route_constraints", "timing_paths"
     }:
         raise ValidationError("routing/TDM scale frozen upstream is incomplete")
     for digest in sources.values():
@@ -925,11 +944,45 @@ def validate_system_route_tdm_scale_comparison(
             or arm.get("tdm_validation", {}).get("status") != "pass"
         ):
             raise ValidationError(f"routing/TDM scale {label} arm is invalid")
+        runtime = arm.get("runtime_seconds")
+        metrics = arm.get("metrics")
+        if (
+            isinstance(runtime, bool)
+            or not isinstance(runtime, (int, float))
+            or not math.isfinite(float(runtime))
+            or float(runtime) < 0.0
+            or not isinstance(metrics, dict)
+            or set(metrics) != set(_SCALE_METRIC_FIELDS)
+        ):
+            raise ValidationError(
+                f"routing/TDM scale {label} metrics are invalid"
+            )
+        _finite_metrics(metrics, _SCALE_METRIC_FIELDS, f"scale {label}")
         seals = arm.get("artifacts")
-        if not isinstance(seals, dict) or set(seals) != {"routes", "schedule"}:
+        if not isinstance(seals, dict) or set(seals) != {
+            "routes", "schedule", "ratio_plan"
+        }:
             raise ValidationError(f"routing/TDM scale {label} seals are invalid")
-        if any(not isinstance(value, str) or len(value) != 64 for value in seals.values()):
+        if any(
+            value is not None and not _valid_digest(value)
+            for value in seals.values()
+        ) or (label == "baseline") != (seals["ratio_plan"] is None):
             raise ValidationError(f"routing/TDM scale {label} digest is invalid")
+    expected_delta = {
+        field: (
+            float(arms["upgrade"]["metrics"][field])
+            - float(arms["baseline"]["metrics"][field])
+        )
+        for field in _SCALE_METRIC_FIELDS
+    }
+    expected_runtime_delta = (
+        float(arms["upgrade"]["runtime_seconds"])
+        - float(arms["baseline"]["runtime_seconds"])
+    )
+    if report.get("delta_upgrade_minus_baseline") != expected_delta:
+        raise ValidationError("routing/TDM scale metric delta disagrees")
+    if report.get("runtime_delta_seconds") != expected_runtime_delta:
+        raise ValidationError("routing/TDM scale runtime delta disagrees")
     return {
         "status": "pass",
         "baseline_routed_sinks": arms["baseline"]["route_validation"].get(
@@ -944,24 +997,74 @@ def validate_system_route_tdm_scale_comparison(
         "upgrade_scheduled_bit_hops": arms["upgrade"]["tdm_validation"].get(
             "scheduled_bit_hops"
         ),
+        "tdm_worst_slack_improvement_ns": expected_delta[
+            "tdm_worst_slack_ns"
+        ],
+        "runtime_delta_seconds": expected_runtime_delta,
     }
+
+
+def _scale_metrics(
+    route_validation: Dict[str, Any], tdm_validation: Dict[str, Any]
+) -> Dict[str, Any]:
+    timing = tdm_validation.get("timing")
+    if not isinstance(timing, dict) or timing.get("status") != "pass":
+        raise ValidationError("routing/TDM scale timing reconstruction is missing")
+    values = {
+        "route_tree_edges": route_validation.get("tree_edges"),
+        "route_total_link_bit_hops": route_validation.get(
+            "total_link_bit_hops"
+        ),
+        "route_max_link_utilization": route_validation.get(
+            "max_link_utilization"
+        ),
+        "route_overloaded_links": route_validation.get("overloaded_links"),
+        "route_worst_slack_ns": route_validation.get("worst_slack_ns"),
+        "route_worst_normalized_slack": route_validation.get(
+            "worst_normalized_slack"
+        ),
+        "route_estimated_worst_tdm_slack_ns": route_validation.get(
+            "estimated_worst_tdm_slack_ns"
+        ),
+        "tdm_frame_slots": tdm_validation.get("frame_slots"),
+        "tdm_completion_slot": tdm_validation.get("completion_slot"),
+        "tdm_max_domain_utilization": tdm_validation.get(
+            "max_domain_utilization"
+        ),
+        "tdm_scheduled_bit_hops": tdm_validation.get("scheduled_bit_hops"),
+        "tdm_collisions": tdm_validation.get("collisions"),
+        "tdm_worst_slack_ns": timing.get("worst_slack_ns"),
+        "tdm_worst_normalized_slack": timing.get("worst_normalized_slack"),
+        "tdm_p01_normalized_slack": timing.get("p01_normalized_slack"),
+        "tdm_median_normalized_slack": timing.get(
+            "median_normalized_slack"
+        ),
+        "tdm_negative_slack_paths": timing.get("negative_slack_paths"),
+    }
+    _finite_metrics(values, _SCALE_METRIC_FIELDS, "scale reconstructed")
+    return values
 
 
 def build_system_route_tdm_scale_comparison(
     assignment_path: Path,
     platform_path: Path,
+    route_constraints_path: Path,
     timing_paths_path: Path,
     baseline_route_root: Path,
     baseline_tdm_root: Path,
     upgrade_route_root: Path,
     upgrade_tdm_root: Path,
     output_path: Path,
+    *,
+    baseline_runtime_seconds: float,
+    upgrade_runtime_seconds: float,
 ) -> Dict[str, Any]:
     """Independently replay and seal Phase 4/5 on a frozen large instance."""
 
     source_paths = {
         "assignment": assignment_path.resolve(),
         "platform": platform_path.resolve(),
+        "route_constraints": route_constraints_path.resolve(),
         "timing_paths": timing_paths_path.resolve(),
     }
     for label, path in source_paths.items():
@@ -976,8 +1079,15 @@ def build_system_route_tdm_scale_comparison(
         "baseline": (ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER),
         "upgrade": (GLOBAL_CANDIDATE_PROVIDER, TDM_ACADEMIC_SCHEDULE_PROVIDER),
     }
+    runtimes = {
+        "baseline": baseline_runtime_seconds,
+        "upgrade": upgrade_runtime_seconds,
+    }
     for label, (route_root, tdm_root) in roots.items():
         routes_path = route_root / "routes.json"
+        normalized_constraints_path = (
+            route_root / "route_constraints.normalized.json"
+        )
         schedule_path = tdm_root / "schedule.json"
         ratio_path = tdm_root / "ratio_plan.json"
         for artifact_label, path in (("routes", routes_path), ("schedule", schedule_path)):
@@ -985,6 +1095,15 @@ def build_system_route_tdm_scale_comparison(
                 raise ValidationError(
                     f"routing/TDM scale {label} {artifact_label} is missing"
                 )
+        if (
+            normalized_constraints_path.is_symlink()
+            or not normalized_constraints_path.is_file()
+            or read_json(normalized_constraints_path)
+            != read_json(source_paths["route_constraints"])
+        ):
+            raise ValidationError(
+                f"routing/TDM scale {label} normalized route constraints differ"
+            )
         routes = read_json(routes_path)
         schedule = read_json(schedule_path)
         route_provider, tdm_provider = expected[label]
@@ -1002,14 +1121,31 @@ def build_system_route_tdm_scale_comparison(
             schedule_path,
             ratio_path if ratio_path.is_file() and not ratio_path.is_symlink() else None,
         )
+        runtime = runtimes[label]
+        if (
+            isinstance(runtime, bool)
+            or not isinstance(runtime, (int, float))
+            or not math.isfinite(float(runtime))
+            or float(runtime) < 0.0
+        ):
+            raise ValidationError(
+                f"routing/TDM scale {label} runtime is invalid"
+            )
         arms[label] = {
             "route_provider": route_provider,
             "tdm_provider": tdm_provider,
             "route_validation": route_validation,
             "tdm_validation": tdm_validation,
+            "metrics": _scale_metrics(route_validation, tdm_validation),
+            "runtime_seconds": float(runtime),
             "artifacts": {
                 "routes": _sha256(routes_path),
                 "schedule": _sha256(schedule_path),
+                "ratio_plan": (
+                    _sha256(ratio_path)
+                    if ratio_path.is_file() and not ratio_path.is_symlink()
+                    else None
+                ),
             },
         }
     report = {
@@ -1020,6 +1156,17 @@ def build_system_route_tdm_scale_comparison(
             label: _sha256(path) for label, path in source_paths.items()
         },
         "arms": arms,
+        "delta_upgrade_minus_baseline": {
+            field: (
+                float(arms["upgrade"]["metrics"][field])
+                - float(arms["baseline"]["metrics"][field])
+            )
+            for field in _SCALE_METRIC_FIELDS
+        },
+        "runtime_delta_seconds": (
+            arms["upgrade"]["runtime_seconds"]
+            - arms["baseline"]["runtime_seconds"]
+        ),
     }
     report["validation"] = validate_system_route_tdm_scale_comparison(report)
     write_json(output_path, report)

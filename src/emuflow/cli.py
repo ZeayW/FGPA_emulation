@@ -924,12 +924,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="independently replay and compare frozen large Phase 4/5 arms",
     )
     for name in (
-        "assignment", "platform", "timing-paths", "baseline-route",
+        "assignment", "platform", "route-constraints", "timing-paths", "baseline-route",
         "baseline-tdm", "upgrade-route", "upgrade-tdm", "output",
     ):
         multi_fpga_scale_compare.add_argument(
             f"--{name}", type=Path, required=True
         )
+    multi_fpga_scale_compare.add_argument(
+        "--baseline-runtime-seconds", type=float, required=True
+    )
+    multi_fpga_scale_compare.add_argument(
+        "--upgrade-runtime-seconds", type=float, required=True
+    )
     multi_fpga_finalize = multi_fpga_subparsers.add_parser(
         "finalize-physical",
         help=(
@@ -3250,12 +3256,15 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = build_system_route_tdm_scale_comparison(
                 args.assignment,
                 args.platform,
+                args.route_constraints,
                 args.timing_paths,
                 args.baseline_route,
                 args.baseline_tdm,
                 args.upgrade_route,
                 args.upgrade_tdm,
                 args.output,
+                baseline_runtime_seconds=args.baseline_runtime_seconds,
+                upgrade_runtime_seconds=args.upgrade_runtime_seconds,
             )
             _print_json(report["validation"])
             return 0

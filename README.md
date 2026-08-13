@@ -379,11 +379,20 @@ TimingPathDB. It reports algorithmic scale evidence, never Phase 7 QoR:
 ```bash
 emuflow multi-fpga compare-routing-tdm-scale \
   --assignment imported/assignment.json --platform imported/platform.json \
+  --route-constraints imported/route-constraints.json \
   --timing-paths imported/timing-paths.json \
   --baseline-route baseline-route --baseline-tdm baseline-tdm \
   --upgrade-route upgrade-route --upgrade-tdm upgrade-tdm \
+  --baseline-runtime-seconds 123.4 --upgrade-runtime-seconds 98.7 \
   --output routing-tdm-scale-comparison.json
 ```
+
+The v2 scale report additionally seals the normalized route constraints and
+the academic ratio plan, records independently reconstructed compact
+routing/TDM timing, load, frame, collision, and bit-hop metrics, and recomputes
+every candidate-minus-baseline delta.  Runtime is the measured combined Phase
+4/5 wall time supplied by the sealed orchestrator.  These metrics remain
+communication-graph algorithm evidence, not physical Phase 7 WNS/TNS.
 
 For the source-complete academic physical flow, Phase 6 now defaults to
 `--phase6-provider auto`. When `--physical --physical-backend open` has at
