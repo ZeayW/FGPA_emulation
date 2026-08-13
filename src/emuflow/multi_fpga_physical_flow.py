@@ -681,6 +681,7 @@ def run_multi_fpga_physical_flow(
                     fpga_id,
                     logic_query_path,
                     logic_identity_path,
+                    eblif_report=eblif_report,
                 )
                 logic_raw_path = (
                     fpga_root / "vpr-route" / "logic-segment-timing.tsv"

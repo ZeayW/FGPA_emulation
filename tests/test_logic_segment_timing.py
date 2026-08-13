@@ -5,6 +5,7 @@ from pathlib import Path
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.logic_segment_timing import (
+    _boundary_tx_port,
     _vivado_object,
     _vpr_atom_pin,
     import_vivado_logic_segment_timing,
@@ -13,6 +14,58 @@ from emuflow.logic_segment_timing import (
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_vpr_boundary_tx_uses_eblif_output_alias(self):
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "dut",
+                    "top": "dut",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": [],
+                "nets": [
+                    {
+                        "id": "external",
+                        "name": "external",
+                        "drivers": [],
+                        "sinks": [],
+                        "cut_class": "undriven",
+                    }
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        endpoints = {
+            "tx0": {
+                "kind": "tx",
+                "merged_ir": {
+                    "external_net": "external",
+                    "external_port": "tx_link",
+                    "external_port_bit": 3,
+                },
+            }
+        }
+        self.assertEqual(
+            _boundary_tx_port(
+                ir,
+                {},
+                endpoints,
+                "tx0",
+                {"external": 0},
+                {
+                    ("tx_link", 3): {
+                        "direction": "output",
+                        "source_net": "n0",
+                        "packed_block": "out:emuflow_top_output_000007",
+                    }
+                },
+            ),
+            "out:emuflow_top_output_000007.outpad[0]",
+        )
+
     def test_vivado_pin_mapping_covers_logic_ff_and_memory_endpoints(self):
         ir = EmuIR(
             {

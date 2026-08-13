@@ -252,6 +252,9 @@ def _boundary_tx_port(
     endpoints: Mapping[str, Mapping[str, Any]],
     endpoint_id: str,
     net_index: Optional[Mapping[str, int]] = None,
+    eblif_top_ports: Optional[
+        Mapping[tuple[str, int], Mapping[str, Any]]
+    ] = None,
 ) -> str:
     endpoint = endpoints.get(endpoint_id)
     if endpoint is None or endpoint.get("kind") != "tx":
@@ -263,6 +266,23 @@ def _boundary_tx_port(
         }
     if external_net not in net_index:
         raise ValidationError("logic segment TX external net is absent")
+    if eblif_top_ports is not None:
+        merged = endpoint["merged_ir"]
+        record = eblif_top_ports.get(
+            (merged.get("external_port"), merged.get("external_port_bit"))
+        )
+        if (
+            record is None
+            or record.get("direction") != "output"
+            or record.get("source_net", record.get("net"))
+            != f"n{net_index[external_net]}"
+            or not isinstance(record.get("packed_block"), str)
+        ):
+            raise ValidationError(
+                f"logic segment TX {endpoint_id!r} disagrees with "
+                "the eBLIF top-port map"
+            )
+        return f"{record['packed_block']}.outpad[0]"
     return f"out:n{net_index[external_net]}.outpad[0]"
 
 
@@ -308,6 +328,7 @@ def _write_logic_segment_query(
     identity_path: Path,
     *,
     object_provider: str,
+    eblif_report: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build physical path queries for all exact logical segments on one FPGA."""
     original_ir = EmuIR.load(original_ir_path)
@@ -348,6 +369,28 @@ def _write_logic_segment_query(
         net["id"]: net for net in original_ir.value["nets"]
     }
     merged_pins = _instance_pin_inventory(merged_ir)
+    eblif_top_ports = None
+    if object_provider == "vpr" and eblif_report is not None:
+        records = eblif_report.get("top_ports")
+        if not isinstance(records, list):
+            raise ValidationError("logic segment eBLIF top-port map is invalid")
+        eblif_top_ports = {}
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ValidationError(
+                    "logic segment eBLIF top-port record is invalid"
+                )
+            identity = (record.get("port"), record.get("bit"))
+            if (
+                not isinstance(identity[0], str)
+                or isinstance(identity[1], bool)
+                or not isinstance(identity[1], int)
+                or identity in eblif_top_ports
+            ):
+                raise ValidationError(
+                    "logic segment eBLIF top-port map is inconsistent"
+                )
+            eblif_top_ports[identity] = record
     if object_provider not in {"vpr", "vivado"}:
         raise ValidationError("logic segment object provider is invalid")
 
@@ -376,6 +419,7 @@ def _write_logic_segment_query(
                     endpoints,
                     endpoint_id,
                     merged_net_index,
+                    eblif_top_ports,
                 ),
             )
         endpoint = endpoints.get(endpoint_id)
@@ -631,6 +675,8 @@ def write_vpr_logic_segment_query(
     fpga: str,
     query_path: Path,
     identity_path: Path,
+    *,
+    eblif_report: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     return _write_logic_segment_query(
         original_ir_path,
@@ -645,6 +691,7 @@ def write_vpr_logic_segment_query(
         query_path,
         identity_path,
         object_provider="vpr",
+        eblif_report=eblif_report,
     )
 
 
