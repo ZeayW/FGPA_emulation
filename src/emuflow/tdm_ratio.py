@@ -927,6 +927,7 @@ def _round_barrier_legalize(
             key=lambda index: current_timing[index]["normalized_slack"],
         )
         candidates = []
+        boundary_migration_candidates = []
         for key in sorted(current_buckets):
             domain, direction, ratio = key
             if domain not in failing_domains or ratio >= max_ratio:
@@ -998,8 +999,6 @@ def _round_barrier_legalize(
                     )
                 )
                 saving = before - after
-                if saving <= 0:
-                    continue
                 candidate_worst = unaffected_worst
                 ratio_delta = target - ratio
                 for path_position, beta in path_impacts:
@@ -1015,23 +1014,55 @@ def _round_barrier_legalize(
                         ),
                     )
                 loss = max(0.0, current_worst - candidate_worst)
-                candidates.append(
-                    (
-                        loss / saving,
-                        loss,
-                        -saving,
-                        target - ratio,
-                        len(current_buckets[key]),
-                        key,
-                        target,
+                if saving > 0:
+                    candidates.append(
+                        (
+                            loss / saving,
+                            loss,
+                            -saving,
+                            target - ratio,
+                            len(current_buckets[key]),
+                            key,
+                            target,
+                        )
                     )
-                )
-        if not candidates:
+                else:
+                    candidate_counts = {
+                        bucket_key: Counter(bucket_count)
+                        for bucket_key, bucket_count in current_counts.items()
+                        if bucket_key != key and bucket_key != target_key
+                    }
+                    candidate_counts[target_key] = merged_count
+                    candidate_boundary = boundary_score(candidate_counts)[0]
+                    boundary_migration_candidates.append(
+                        (
+                            candidate_boundary,
+                            loss,
+                            target - ratio,
+                            len(current_buckets[key]),
+                            key,
+                            target,
+                        )
+                    )
+        if candidates:
+            *_, selected_key, selected_target = min(candidates)
+        elif boundary_migration_candidates:
+            # A fixed round boundary can hide a legal ratio promotion.  In
+            # particular, a promotion may only become useful after the best
+            # boundary moves away from the frame midpoint.  Re-evaluate the
+            # complete boundary objective for every monotone merge and take
+            # the least damaging monotone step.  Repeated merges are
+            # complete: ratios only increase through a finite legal set, and
+            # the all-max-ratio state is reached before infeasibility is
+            # reported.
+            *_, selected_key, selected_target = min(
+                boundary_migration_candidates
+            )
+        else:
             raise ValidationError(
                 "TDM round-barrier legalization cannot reduce lane "
                 "fragmentation to a feasible solution"
             )
-        *_, selected_key, selected_target = min(candidates)
         for hop in current_buckets[selected_key]:
             hop["discrete_ratio"] = selected_target
             promoted_indices.add(hop["index"])

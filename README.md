@@ -1979,6 +1979,14 @@ against the dense reconstruction, including its negative validation cases;
 this keeps public contest scale runs near-linear without weakening the
 certificate.  Academic ratio and timing-DAG providers still build their dense
 model once and share it across optimization, scheduling, timing, and feedback.
+Their two-round discrete legalizer jointly optimizes the round boundary and
+ratio buckets. A promotion that does not save a lane at the current boundary
+is not rejected prematurely: the checker recomputes the complete boundary
+objective, selects the least damaging monotone boundary-migration step, and
+continues over the finite legal ratio set. This matters when asymmetric
+round traffic moves the feasible boundary far from the frame midpoint. The
+resulting lane assignment is still independently checked against both round
+windows and the concrete slot schedule.
 The native concrete-slot optimizer compacts only lane resources that actually
 occur and stores occupied `(resource, slot)` cells in a deterministic sparse
 table whose memory is proportional to scheduled hops.  Sparse external lane

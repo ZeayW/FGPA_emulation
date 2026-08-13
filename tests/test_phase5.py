@@ -25,6 +25,7 @@ from emuflow.tdm import (
 )
 from emuflow.tdm_ratio import (
     _prepare_model,
+    _round_barrier_legalize,
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
@@ -1105,6 +1106,68 @@ class Phase5Test(unittest.TestCase):
             self.assertTrue(
                 (root / "phase5" / "ratio_plan.json").is_file()
             )
+
+    def test_round_barrier_promotion_can_migrate_the_boundary(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "boundary_migration",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        hops = []
+        for ratio, round_counts in ((1, (0, 1)), (2, (1, 3))):
+            for transport_round, count in enumerate(round_counts):
+                for _ in range(count):
+                    index = len(hops)
+                    hops.append(
+                        {
+                            "index": index,
+                            "domain": 0,
+                            "direction": 0,
+                            "discrete_ratio": ratio,
+                            "transport_round": transport_round,
+                            "demand": index,
+                            "hop": 0,
+                            "lane": 0,
+                            "beta_ns": 1.0,
+                            "base_delay_ns": 1.0,
+                            "net": f"n{index}",
+                            "capacity_key": "ab:a->b",
+                            "link": "ab",
+                        }
+                    )
+        model = {
+            "constraints": {"frame_slots": 8},
+            "domains": [{"index": 0, "link": "ab", "lanes": 2}],
+            "normalization": {
+                "positive_slack_scale_ns": 10.0,
+                "negative_slack_scale_ns": 10.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "timing_paths": [
+                {
+                    "path": f"p{index}",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "fixed_delay_ns": 0.0,
+                    "hops": [index],
+                }
+                for index in range(len(hops))
+            ],
+        }
+
+        legalization = _round_barrier_legalize(
+            hops, model, platform, max_ratio=8, ratio_quantum=2
+        )
+
+        self.assertEqual(legalization["source_ready_slot"], 3)
+        self.assertEqual(legalization["promotion_steps"], 1)
+        self.assertEqual(legalization["promoted_hops"], 4)
+        self.assertEqual(
+            [(hop["transport_round"], hop["discrete_ratio"]) for hop in hops],
+            [(1, 1), (0, 4), (1, 4), (1, 4), (1, 4)],
+        )
 
     def test_academic_post_refinement_improves_worst_slack(
         self,
