@@ -763,6 +763,18 @@ shared Phase 1--5
                          +-- baseline Phase 6 --------+-- Phase 7 seed 1/2/3
 ```
 
+The checked-in `experiment-stage` commands implement these semantic
+boundaries. `shared-validate` checks a frozen Phase 1--5 flow root;
+`lookahead-run` performs one fixed-seed open physical prepass and materializes
+the source-bound placement/congestion inputs; `phase6-run` accepts
+`baseline`, `placement-aware`, or `chimew`; and `phase7-run` executes exactly
+one provider/physical-seed terminal plus Phase 7C. Every run command has a
+matching independent `*-validate` command suitable for an experiment DAG
+node. The experiment runner pre-creates an empty staging directory, which the
+stage commands intentionally accept while rejecting any non-empty output.
+For the lookahead seed, baseline Phase 7 reuses the frozen prepass rather than
+running physical implementation again.
+
 Phase 1--5 is therefore built and independently validated once for a frozen
 RTL/BoardDB/partition/routing/schedule configuration.  Each Phase 6 provider
 has one checkpoint independent of physical seed.  Only Phase 7 expands across

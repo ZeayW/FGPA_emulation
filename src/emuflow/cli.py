@@ -79,6 +79,15 @@ from .experiment_dag import (
     plan_experiment,
     run_experiment_node,
 )
+from .experiment_stages import (
+    run_phase6_checkpoint,
+    run_phase7_checkpoint,
+    run_physical_lookahead,
+    validate_phase6_checkpoint,
+    validate_phase7_checkpoint,
+    validate_physical_lookahead,
+    validate_shared_phase1_5,
+)
 from .errors import EmuFlowError
 from .fpga_interchange import (
     check_ir_architecture_capacity,
@@ -338,6 +347,73 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_run.add_argument("--expected-plan-sha256")
     experiment_run.add_argument("--node", required=True)
     experiment_run.add_argument("--run-dir", type=Path, required=True)
+
+    experiment_stage = subparsers.add_parser(
+        "experiment-stage",
+        help="run or validate reusable Phase 1-7 experiment checkpoints",
+    )
+    experiment_stage_subparsers = experiment_stage.add_subparsers(
+        dest="experiment_stage_command", required=True
+    )
+    shared_validate = experiment_stage_subparsers.add_parser(
+        "shared-validate", help="validate a frozen Phase 1-5 flow root"
+    )
+    shared_validate.add_argument("--shared", type=Path, required=True)
+    shared_validate.add_argument("--platform", type=Path, required=True)
+    lookahead_run = experiment_stage_subparsers.add_parser(
+        "lookahead-run", help="run one reusable physical-lookahead checkpoint"
+    )
+    lookahead_run.add_argument("--shared", type=Path, required=True)
+    lookahead_run.add_argument("--platform", type=Path, required=True)
+    lookahead_run.add_argument("--seed", type=int, default=1)
+    lookahead_run.add_argument("--workers", type=int, default=8)
+    lookahead_run.add_argument("--region-count", type=int, default=4)
+    lookahead_run.add_argument("--out", type=Path, required=True)
+    lookahead_validate = experiment_stage_subparsers.add_parser(
+        "lookahead-validate", help="independently validate a lookahead checkpoint"
+    )
+    lookahead_validate.add_argument("root", type=Path)
+    lookahead_validate.add_argument("--shared", type=Path, required=True)
+    lookahead_validate.add_argument("--platform", type=Path, required=True)
+    phase6_run = experiment_stage_subparsers.add_parser(
+        "phase6-run", help="run one reusable Phase 6 provider checkpoint"
+    )
+    phase6_run.add_argument("--shared", type=Path, required=True)
+    phase6_run.add_argument("--lookahead", type=Path, required=True)
+    phase6_run.add_argument("--platform", type=Path, required=True)
+    phase6_run.add_argument(
+        "--provider",
+        choices=("baseline", "placement-aware", "chimew"),
+        required=True,
+    )
+    phase6_run.add_argument("--equivalence-cycles", type=int, default=16)
+    phase6_run.add_argument("--equivalence-seed", type=int, default=20260727)
+    phase6_run.add_argument("--out", type=Path, required=True)
+    phase6_validate = experiment_stage_subparsers.add_parser(
+        "phase6-validate", help="independently validate a Phase 6 checkpoint"
+    )
+    phase6_validate.add_argument("root", type=Path)
+    phase6_validate.add_argument("--shared", type=Path, required=True)
+    phase6_validate.add_argument("--lookahead", type=Path, required=True)
+    phase6_validate.add_argument("--platform", type=Path, required=True)
+    phase7_run = experiment_stage_subparsers.add_parser(
+        "phase7-run", help="run one provider/seed physical terminal checkpoint"
+    )
+    phase7_run.add_argument("--shared", type=Path, required=True)
+    phase7_run.add_argument("--lookahead", type=Path, required=True)
+    phase7_run.add_argument("--phase6", type=Path, required=True)
+    phase7_run.add_argument("--platform", type=Path, required=True)
+    phase7_run.add_argument("--seed", type=int, required=True)
+    phase7_run.add_argument("--workers", type=int, default=8)
+    phase7_run.add_argument("--out", type=Path, required=True)
+    phase7_validate = experiment_stage_subparsers.add_parser(
+        "phase7-validate", help="independently validate a Phase 7 checkpoint"
+    )
+    phase7_validate.add_argument("root", type=Path)
+    phase7_validate.add_argument("--shared", type=Path, required=True)
+    phase7_validate.add_argument("--lookahead", type=Path, required=True)
+    phase7_validate.add_argument("--phase6", type=Path, required=True)
+    phase7_validate.add_argument("--platform", type=Path, required=True)
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
     platform_subparsers = platform_parser.add_subparsers(
@@ -2502,6 +2578,57 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "experiment-stage":
+        if args.experiment_stage_command == "shared-validate":
+            report = validate_shared_phase1_5(args.shared, args.platform)
+        elif args.experiment_stage_command == "lookahead-run":
+            report = run_physical_lookahead(
+                args.shared,
+                args.platform,
+                args.out,
+                seed=args.seed,
+                workers=args.workers,
+                region_count=args.region_count,
+            )
+        elif args.experiment_stage_command == "lookahead-validate":
+            report = validate_physical_lookahead(
+                args.root, args.shared, args.platform
+            )
+        elif args.experiment_stage_command == "phase6-run":
+            report = run_phase6_checkpoint(
+                args.shared,
+                args.lookahead,
+                args.platform,
+                args.out,
+                provider=args.provider,
+                equivalence_cycles=args.equivalence_cycles,
+                equivalence_seed=args.equivalence_seed,
+            )
+        elif args.experiment_stage_command == "phase6-validate":
+            report = validate_phase6_checkpoint(
+                args.root, args.shared, args.lookahead, args.platform
+            )
+        elif args.experiment_stage_command == "phase7-run":
+            report = run_phase7_checkpoint(
+                args.shared,
+                args.lookahead,
+                args.phase6,
+                args.platform,
+                args.out,
+                seed=args.seed,
+                workers=args.workers,
+            )
+        else:
+            report = validate_phase7_checkpoint(
+                args.root,
+                args.shared,
+                args.lookahead,
+                args.phase6,
+                args.platform,
+            )
+        _print_json(report)
+        return 0
+
     if args.command == "experiment-cache":
         if args.experiment_command == "plan":
             report = plan_experiment(args.spec, args.cache, args.out)

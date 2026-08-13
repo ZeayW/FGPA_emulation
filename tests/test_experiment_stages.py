@@ -1,0 +1,115 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from emuflow.cli import _build_parser
+from emuflow.errors import EmuFlowError
+from emuflow.experiment_stages import (
+    _placement_aware_positions,
+    _prepare_empty_output,
+)
+from emuflow.io import write_json
+from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
+
+
+class ExperimentStagesTest(unittest.TestCase):
+    def test_checkpoint_runner_accepts_precreated_empty_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "staging"
+            output.mkdir()
+            self.assertEqual(
+                _prepare_empty_output(output, "checkpoint"), output.resolve()
+            )
+            (output / "artifact").write_text("present", encoding="utf-8")
+            with self.assertRaisesRegex(EmuFlowError, "must be an empty"):
+                _prepare_empty_output(output, "checkpoint")
+
+    def test_placement_aware_positions_reuse_frozen_open_placement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir = root / "ir.json"
+            schedule = root / "schedule.json"
+            placement = root / "placement.json"
+            write_json(
+                ir,
+                {
+                    "nets": [
+                        {
+                            "id": "n0",
+                            "drivers": [{"instance": "a"}],
+                            "sinks": [{"instance": "b"}],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                schedule,
+                {
+                    "design": "d",
+                    "platform": "p",
+                    "entries": [
+                        {"id": "e0", "net": "n0", "from": "f0", "to": "f1"}
+                    ],
+                },
+            )
+            write_json(
+                placement,
+                {
+                    "fpgas": [
+                        {
+                            "fpga": "f0",
+                            "instances": [{"id": "a", "normalised_y": 0.2}],
+                        },
+                        {
+                            "fpga": "f1",
+                            "instances": [{"id": "b", "normalised_y": 0.9}],
+                        },
+                    ]
+                },
+            )
+            positions = _placement_aware_positions(
+                ir, schedule, placement, region_count=4
+            )
+            self.assertEqual(positions["schema"], SIGNAL_POSITION_HINTS_SCHEMA)
+            self.assertEqual(
+                positions["entries"],
+                [
+                    {
+                        "schedule_entry": "e0",
+                        "source_y": 0.2,
+                        "sink_y": 0.9,
+                        "source_region": 0,
+                        "sink_region": 3,
+                        "source_fallback": False,
+                        "sink_fallback": False,
+                    }
+                ],
+            )
+
+    def test_cli_exposes_provider_seed_checkpoint_commands(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "experiment-stage",
+                "phase7-run",
+                "--shared",
+                "shared",
+                "--lookahead",
+                "lookahead",
+                "--phase6",
+                "phase6",
+                "--platform",
+                "boarddb.json",
+                "--seed",
+                "3",
+                "--workers",
+                "8",
+                "--out",
+                "out",
+            ]
+        )
+        self.assertEqual(args.seed, 3)
+        self.assertEqual(args.workers, 8)
+
+
+if __name__ == "__main__":
+    unittest.main()

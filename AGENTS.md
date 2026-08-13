@@ -187,6 +187,11 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   and canonical Phase 6 checkpoints; do not rerun Phase 1--5 merely to reach
   Phase 7.  However, never coerce an incompatible communication-only artifact
   into a fake physical netlist.
+- Use the checked-in `experiment-stage` run/validate pairs for the canonical
+  Phase 6 provider matrix.  Materialize physical lookahead once at a declared
+  seed, derive both placement-aware and Chimew inputs from that same frozen
+  placement, and reuse the lookahead itself as baseline Phase 7 at the matching
+  seed.  Do not hide a fresh baseline physical run inside either candidate arm.
 - Existing pre-cache results should be registered with `experiment-cache
   import` only after the node's independent semantic validator passes and all
   declared artifacts pass hash sealing.  New node executions use the same
