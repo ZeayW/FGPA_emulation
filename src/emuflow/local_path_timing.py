@@ -12,7 +12,6 @@ from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .logic_segment_timing import (
-    LOGIC_SEGMENT_QUERY_HEADER,
     LOGIC_SEGMENT_TIMING_HEADER,
     _vpr_atom_pin,
 )
@@ -26,7 +25,11 @@ from .sta import (
 
 
 LOCAL_PATH_IDENTITY_SCHEMA = "emuflow.local-path-identity/v1"
+LOCAL_PATH_IDENTITY_SCHEMA_V2 = "emuflow.local-path-identity/v2"
 LOCAL_PATH_TIMING_SCHEMA = "emuflow.local-path-timing/v1"
+LOCAL_PATH_QUERY_HEADER_V2 = (
+    "endpoint\tkind\tstart_pin\tend_pin\tpath_pins"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -64,10 +67,11 @@ def _source_manifest(
 
 
 def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
-    if (
-        database.get("schema") != LOCAL_PATH_IDENTITY_SCHEMA
-        or database.get("status") != "pass"
-    ):
+    schema = database.get("schema")
+    if schema not in {
+        LOCAL_PATH_IDENTITY_SCHEMA,
+        LOCAL_PATH_IDENTITY_SCHEMA_V2,
+    } or database.get("status") != "pass":
         raise ValidationError("local path identity is invalid")
     fpga = database.get("fpga")
     if not isinstance(fpga, str) or not fpga:
@@ -104,7 +108,7 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
     ids = set()
     for index, path in enumerate(paths):
         context = f"local path identity[{index}]"
-        if not isinstance(path, dict) or set(path) != {
+        expected_fields = {
             "id",
             "kind",
             "fpga",
@@ -112,7 +116,10 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
             "clock_period_ns",
             "start_pin",
             "end_pin",
-        }:
+        }
+        if schema == LOCAL_PATH_IDENTITY_SCHEMA_V2:
+            expected_fields.update({"measurement", "path_pins"})
+        if not isinstance(path, dict) or set(path) != expected_fields:
             raise ValidationError(f"{context} is invalid")
         path_id = path["id"]
         if (
@@ -133,6 +140,27 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
             or not path["end_pin"]
         ):
             raise ValidationError(f"{context} is invalid")
+        if schema == LOCAL_PATH_IDENTITY_SCHEMA_V2:
+            measurement = path["measurement"]
+            pins = path["path_pins"]
+            if measurement not in {
+                "explicit-routed-path-chain",
+                "endpoint-longest-path-fallback",
+            } or not isinstance(pins, list):
+                raise ValidationError(f"{context} measurement is invalid")
+            if measurement == "explicit-routed-path-chain":
+                if (
+                    len(pins) < 2
+                    or pins[0] != path["start_pin"]
+                    or pins[-1] != path["end_pin"]
+                    or not all(
+                        isinstance(pin, str) and pin and "," not in pin
+                        for pin in pins
+                    )
+                ):
+                    raise ValidationError(f"{context} path chain is invalid")
+            elif pins:
+                raise ValidationError(f"{context} fallback chain is invalid")
         ids.add(path_id)
     coverage = database.get("coverage")
     if not isinstance(coverage, dict) or coverage != {
@@ -140,6 +168,98 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
     }:
         raise ValidationError("local path identity coverage is invalid")
     return {"status": "pass", "fpga": fpga, "local_paths": len(paths)}
+
+
+def _same_endpoint(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    return all(
+        left.get(key) == right.get(key)
+        for key in ("instance", "port", "bit")
+    )
+
+
+def _explicit_vpr_path_pins(
+    path: Mapping[str, Any],
+    original_nets: Mapping[str, Mapping[str, Any]],
+    merged_ir: EmuIR,
+    merged_index: Mapping[str, int],
+    merged_instances: Mapping[str, Mapping[str, Any]],
+    start: Mapping[str, Any],
+    end: Mapping[str, Any],
+) -> list[str]:
+    """Recover one unambiguous selected STA path as adjacent VPR atom pins.
+
+    ``path_nets`` names the ordered OpenSTA path, but a net may feed several
+    pins of the same cell.  In that case the net sequence does not identify a
+    unique primitive arc, so return an empty chain and retain the exact
+    endpoint-longest-path fallback.  Never guess a pin or silently shorten a
+    path.
+    """
+
+    path_nets = path.get("path_nets")
+    if not isinstance(path_nets, list) or not path_nets:
+        return []
+    try:
+        selected = [original_nets[net_id] for net_id in path_nets]
+    except KeyError:
+        return []
+
+    pins = [
+        _vpr_atom_pin(
+            merged_ir, merged_index, start, merged_instances
+        )
+    ]
+    expected_driver: Mapping[str, Any] = start
+    for index, net in enumerate(selected):
+        drivers = [
+            driver for driver in net["drivers"]
+            if _same_endpoint(driver, expected_driver)
+        ]
+        if len(drivers) != 1:
+            return []
+        if index + 1 == len(selected):
+            candidates = [
+                sink for sink in net["sinks"]
+                if _same_endpoint(sink, end)
+            ]
+            next_driver = None
+        else:
+            next_net = selected[index + 1]
+            pairs = [
+                (sink, driver)
+                for sink in net["sinks"]
+                for driver in next_net["drivers"]
+                if sink.get("instance") is not None
+                and sink.get("instance") == driver.get("instance")
+            ]
+            if len(pairs) != 1:
+                return []
+            candidates = [pairs[0][0]]
+            next_driver = pairs[0][1]
+        if len(candidates) != 1:
+            return []
+        try:
+            pins.append(
+                _vpr_atom_pin(
+                    merged_ir, merged_index, candidates[0], merged_instances
+                )
+            )
+            if next_driver is not None:
+                pins.append(
+                    _vpr_atom_pin(
+                        merged_ir,
+                        merged_index,
+                        next_driver,
+                        merged_instances,
+                    )
+                )
+        except ValidationError:
+            return []
+        expected_driver = next_driver if next_driver is not None else end
+    if pins[-1] != _vpr_atom_pin(
+        merged_ir, merged_index, end, merged_instances
+    ):
+        return []
+    return pins
 
 
 def write_vpr_local_path_query(
@@ -190,6 +310,9 @@ def write_vpr_local_path_query(
     merged_instances = {
         item["id"]: item for item in merged_ir.value["instances"]
     }
+    original_nets = {
+        item["id"]: item for item in original_ir.value["nets"]
+    }
     records = []
     unresolved = []
     for path in database["paths"]:
@@ -216,21 +339,39 @@ def write_vpr_local_path_query(
             )
         if start_fpga != fpga:
             continue
-        records.append(
+        record = {
+            "id": path["id"],
+            "kind": "local",
+            "fpga": fpga,
+            "clock_domain": path["clock_domain"],
+            "clock_period_ns": float(path["clock_period_ns"]),
+            "start_pin": _vpr_atom_pin(
+                merged_ir, merged_index, start, merged_instances
+            ),
+            "end_pin": _vpr_atom_pin(
+                merged_ir, merged_index, end, merged_instances
+            ),
+        }
+        path_pins = _explicit_vpr_path_pins(
+            path,
+            original_nets,
+            merged_ir,
+            merged_index,
+            merged_instances,
+            start,
+            end,
+        )
+        record.update(
             {
-                "id": path["id"],
-                "kind": "local",
-                "fpga": fpga,
-                "clock_domain": path["clock_domain"],
-                "clock_period_ns": float(path["clock_period_ns"]),
-                "start_pin": _vpr_atom_pin(
-                    merged_ir, merged_index, start, merged_instances
+                "measurement": (
+                    "explicit-routed-path-chain"
+                    if path_pins
+                    else "endpoint-longest-path-fallback"
                 ),
-                "end_pin": _vpr_atom_pin(
-                    merged_ir, merged_index, end, merged_instances
-                ),
+                "path_pins": path_pins,
             }
         )
+        records.append(record)
     if unresolved:
         raise ValidationError(
             "complete local path timing has unresolved original endpoints: "
@@ -238,11 +379,11 @@ def write_vpr_local_path_query(
         )
     records.sort(key=lambda item: item["id"])
     identity = {
-        "schema": LOCAL_PATH_IDENTITY_SCHEMA,
+        "schema": LOCAL_PATH_IDENTITY_SCHEMA_V2,
         "status": "pass",
         "design": assignment["design"],
         "fpga": fpga,
-        "provider": "original-timing-pathdb-to-vpr-routed-endpoints-v1",
+        "provider": "original-timing-pathdb-to-vpr-selected-chain-v2",
         "source": _source_manifest(
             database,
             path_database_path,
@@ -257,10 +398,20 @@ def write_vpr_local_path_query(
     identity_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(identity_path, identity)
     rows = [
-        LOGIC_SEGMENT_QUERY_HEADER,
+        LOCAL_PATH_QUERY_HEADER_V2,
         *(
             "\t".join(
-                (item["id"], "local", item["start_pin"], item["end_pin"])
+                (
+                    item["id"],
+                    "local",
+                    item["start_pin"],
+                    item["end_pin"],
+                    (
+                        ",".join(item["path_pins"])
+                        if item["path_pins"]
+                        else "-"
+                    ),
+                )
             )
             for item in records
         ),
@@ -271,6 +422,13 @@ def write_vpr_local_path_query(
         "status": "pass",
         "fpga": fpga,
         "local_paths": len(records),
+        "measurement_counts": {
+            name: sum(item["measurement"] == name for item in records)
+            for name in (
+                "explicit-routed-path-chain",
+                "endpoint-longest-path-fallback",
+            )
+        },
         "query": str(query_path),
         "identity": str(identity_path),
     }
@@ -322,11 +480,13 @@ def import_vpr_local_path_timing(
         "status": "pass",
         "design": identity["design"],
         "fpga": identity["fpga"],
-        "provider": "vpr-tatum-original-local-setup-path-delay-v1",
+        "provider": "vpr-tatum-selected-local-setup-path-delay-v2",
         "qualification": (
-            "source-bound-routed-endpoint-delay-with-capture-setup"
+            "source-bound-routed-selected-path-delay-with-exact-fallback-"
+            "and-capture-setup"
         ),
         "source": identity["source"],
+        "identity_schema": identity["schema"],
         "coverage": identity["coverage"],
         "paths": [
             {**item, "delay_ns": measured[item["id"]]}
@@ -349,7 +509,9 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
     }
     identity.update(
         {
-            "schema": LOCAL_PATH_IDENTITY_SCHEMA,
+            "schema": database.get(
+                "identity_schema", LOCAL_PATH_IDENTITY_SCHEMA
+            ),
             "provider": "local-path-timing-validation",
             "paths": [
                 {key: value for key, value in item.items() if key != "delay_ns"}
@@ -369,4 +531,20 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
         ):
             raise ValidationError("local path timing delay is invalid")
         maximum = max(maximum, float(delay))
-    return {**checked, "maximum_delay_ns": maximum}
+    measurement_counts = {}
+    if database.get("identity_schema") == LOCAL_PATH_IDENTITY_SCHEMA_V2:
+        measurement_counts = {
+            name: sum(
+                item.get("measurement") == name
+                for item in database["paths"]
+            )
+            for name in (
+                "explicit-routed-path-chain",
+                "endpoint-longest-path-fallback",
+            )
+        }
+    return {
+        **checked,
+        "maximum_delay_ns": maximum,
+        "measurement_counts": measurement_counts,
+    }

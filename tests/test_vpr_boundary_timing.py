@@ -28,6 +28,11 @@ class VprBoundaryTimingTest(unittest.TestCase):
         self.assertIn(
             "Clock-capture edges carry setup/hold constraints", source
         )
+        self.assertIn("explicit path evaluations", source)
+        self.assertIn(
+            "endpoint\\tkind\\tstart_pin\\tend_pin\\tpath_pins", source
+        )
+        self.assertIn("matches != 1", source)
 
     def test_query_maps_emuir_objects_to_vpr_atom_pins(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

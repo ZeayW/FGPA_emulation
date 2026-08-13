@@ -238,7 +238,7 @@ labelled per-FPGA diagnostics, but never substitutes them for global timing.
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
-| Fully open physical route | Implemented through whole-design physical/TDM timing; the former large Koios run proves the cross-FPGA subset, while a new complete original-path A/B rerun is the current final-QoR gate |
+| Fully open physical route | Implemented through whole-design physical/TDM timing; a source-backed 528,104-instance Koios GEMM A/B now proves exact all-original-path global WNS/TNS, while Koios DLA is the active independent-design replication gate |
 | Vivado physical route | Implemented for routed DUT logic segments and stable RAMB endpoint recovery; its former large Koios evidence is likewise a cross-FPGA subset until same-FPGA original-path timing is exported |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
@@ -1394,6 +1394,18 @@ disjoint and their count plus canonical set hash exactly matches the sealed
 source TimingPathDB. Without that proof it reports
 `cross-fpga-path-subset`, and the final A/B validator rejects a global claim.
 
+The local-path query uses the ordered net chain already sealed in each
+original TimingPathDB member. When that chain maps unambiguously to adjacent
+VPR atom pins, VPR sums the selected routed timing edges directly instead of
+re-running a whole timing-DAG traversal for every launch/capture pair. An
+ambiguous pin transition is never guessed: it is explicitly labelled and
+retains the conservative endpoint-longest-path traversal. The identity bundle
+records the selected pin chain or fallback for every path, and the independent
+checker rejects changed endpoints, chains, coverage, or source hashes. This
+keeps complete large-design local timing proportional to the selected path
+edges plus a small number of exact fallbacks rather than to the product of the
+path population and the complete FPGA timing graph.
+
 A completed open-backend Phase 7 A/B on the 67,674-instance
 `picorv32_x32_ring_top` design and the four-FPGA academic mesh exercises this
 whole-design contract.  The CPU core is source-backed PicoRV32 RTL, but the
@@ -1411,6 +1423,37 @@ by `75.250287528 ns`. These are not per-FPGA endpoint aggregates or a
 cross-FPGA-only subset. Both arms also close the 640-ns virtual runtime clock
 with zero negative-slack paths. This is academic-architecture physical
 evidence rather than vendor bitstream signoff.
+
+A source-backed Koios GEMM run supplies the corresponding independent,
+large-application result. The design contains 528,104 synthesized instances
+and is implemented on the same four-FPGA academic mesh. Both complete
+physical arms cover the identical set of all 178,366 original timing paths:
+128,106 same-FPGA paths and 50,260 cross-FPGA paths, with canonical path-set
+SHA-256
+`434570616ed92f8a503a57c884a84be8372db834edfde43df7dc14d000a6e312`.
+The frozen default Phase 4/5 arm reports target-clock WNS/TNS of
+`-4951.4633630111 ns` / `-76195549.1968224 ns`; global candidate-tree routing
+plus timing-DAG TDM reports `-2595.959268017 ns` /
+`-39857513.89737587 ns`. Thus the upgrade improves global WNS by
+`2355.5040949941 ns` and TNS by `36338035.29944653 ns`, reducing their
+negative deficits by 47.57% and 47.69%, respectively. Both arms close the
+8,192-ns virtual runtime clock. Negative target-slack paths increase slightly
+from 79,167 to 80,186, so the result is an improvement in worst and aggregate
+deficit rather than in every individual path.
+
+This GEMM comparison also demonstrates why the acceptance metric is the
+whole original path set. The upgraded arm's aggregate per-FPGA physical TNS
+improves by 17,526.5 ns and its failing physical endpoints fall by 3,345, but
+its worst local physical slack is 1.77958 ns worse. Looking only at that local
+WNS would therefore give the opposite conclusion from the independently
+recomputed global system WNS/TNS. The frozen physical artifacts predate the
+two later Phase-5 compatibility repairs; the sealed route constraints make
+the first repair inactive (`tdm_min_ratio=1`, quantum 8, and every selected
+ratio already a multiple of 8), while the recorded four positive-saving
+promotion steps prove that the new no-candidate round-boundary fallback was
+not exercised. The current in-tree A/B validator independently rehashes the
+frozen sources and routes, traverses all 178,366 paths, and rechecks the
+physical, legality, coverage, and QoR claims before accepting this result.
 
 The same frozen design on the two-FPGA point-to-point BoardDB is a useful
 negative control. Both complete Phase 7 arms cover all 22,272 source paths

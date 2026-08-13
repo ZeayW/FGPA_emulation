@@ -203,6 +203,19 @@ def _local_path_database(
             ids.add(path_id)
             delay = float(item["delay_ns"])
             period = float(item["clock_period_ns"])
+            measurement = item.get(
+                "measurement", "endpoint-longest-path-fallback"
+            )
+            if measurement == "explicit-routed-path-chain":
+                physical_logic_model = "routed-selected-path-chain-exact"
+            elif measurement == "endpoint-longest-path-fallback":
+                physical_logic_model = (
+                    "routed-endpoint-longest-path-conservative"
+                )
+            else:
+                raise ValidationError(
+                    "physical local path measurement is invalid"
+                )
             records.append(
                 {
                     "path": path_id,
@@ -218,7 +231,7 @@ def _local_path_database(
                     "physical_logic_delay_bound_ns": delay,
                     "physical_interface_delay_bound_ns": 0.0,
                     "physical_interface_model": "not-applicable-local-path",
-                    "physical_logic_model": "routed-original-endpoint-exact",
+                    "physical_logic_model": physical_logic_model,
                     "physical_logic_member_path": path_id,
                     "physical_routed_stage_delay_bound_ns": delay,
                     "scheduled_link_tdm_delay_ns": 0.0,
