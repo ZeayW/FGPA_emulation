@@ -233,6 +233,9 @@ def validate_chimew_electrical_map(
             raise ValidationError("Chimew electrical IOSTANDARD support is invalid")
         if record.get("reserved") is not False:
             raise ValidationError("Chimew electrical channel is reserved")
+        placement_anchor = record.get("placement_anchor", True)
+        if not isinstance(placement_anchor, bool):
+            raise ValidationError("Chimew electrical placement anchor is invalid")
         if record.get("electrical_class") != "single_ended_parallel":
             raise ValidationError(
                 "Chimew electrical maps require single-ended parallel channels"
@@ -257,6 +260,7 @@ def validate_chimew_electrical_map(
             "supported_iostandards": sorted(supported),
             "bank_voltage": voltage,
             "electrical_class": "single_ended_parallel",
+            "placement_anchor": placement_anchor,
             # Preserve the optimizer's physical site coordinates all the way
             # into the sealed Phase-6 binding.  The concrete lane number is
             # an electrical identity, not a device-placement coordinate.
@@ -833,6 +837,8 @@ def validate_chimew_phase6_binding(
                     raise ValidationError(
                         "Chimew electrical binding pin lies outside FPGA bounds"
                     )
+        if not isinstance(record.get("placement_anchor", True), bool):
+            raise ValidationError("Chimew electrical placement anchor is invalid")
         covered.update(members)
     if covered != set(schedule_by_id):
         raise ValidationError("Chimew electrical binding coverage is incomplete")

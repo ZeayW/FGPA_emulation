@@ -2033,7 +2033,11 @@ unprotected groups still run the normal Chimew grouping, position refinement,
 and bank/channel matching over the remaining lanes.  The guard is recorded in
 the lookahead report and independently checked before refinement and matching.
 This is an EmuFlow timing-integration constraint, not part of the published
-Chimew algorithm.
+Chimew algorithm.  On academic platforms without a real package-pin BSP, only
+these timing-covered groups become physical placement anchors, and their anchor
+coordinate is the source/sink placement centroid from the sealed prepass.
+Unprotected channel coordinates remain optimization/certificate data and are
+not misrepresented as real package-pin constraints.
 
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report

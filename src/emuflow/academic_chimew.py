@@ -858,6 +858,23 @@ def materialize_academic_chimew_inputs(
                 for lane, group_key in sorted(fixed_groups.items())
             )
             for domain_id, domain_groups, domain_lanes in domain_specs:
+                guarded_domain = len(domain_groups) == 1 and (
+                    domain_groups[0] in fixed_lane_by_group
+                )
+                guarded_points = None
+                if guarded_domain:
+                    guarded_members = grouped[domain_groups[0]]
+                    source_y = sum(
+                        member["fanout"]["y"] for member in guarded_members
+                    ) / len(guarded_members)
+                    sink_y = sum(
+                        member["fanins"][0]["y"] for member in guarded_members
+                    ) / len(guarded_members)
+                    guarded_points = (
+                        (source_y, sink_y)
+                        if direction == "a_to_b"
+                        else (sink_y, source_y)
+                    )
                 for group_key in domain_groups:
                     assignment_domain_by_group[group_key] = domain_id
                 bank_a_id = f"academic-{endpoint_a}-{domain_id}-bank"
@@ -885,11 +902,21 @@ def materialize_academic_chimew_inputs(
                             "order": domain_order,
                             "pin_a": {
                                 "x": fpga_order[endpoint_a] * coordinate_scale,
-                                "y": a_y_min + fraction * (a_y_max - a_y_min),
+                                "y": (
+                                    guarded_points[0]
+                                    if guarded_points is not None
+                                    else a_y_min
+                                    + fraction * (a_y_max - a_y_min)
+                                ),
                             },
                             "pin_b": {
                                 "x": fpga_order[endpoint_b] * coordinate_scale,
-                                "y": b_y_min + fraction * (b_y_max - b_y_min),
+                                "y": (
+                                    guarded_points[1]
+                                    if guarded_points is not None
+                                    else b_y_min
+                                    + fraction * (b_y_max - b_y_min)
+                                ),
                             },
                         }
                     )
@@ -924,6 +951,7 @@ def materialize_academic_chimew_inputs(
                             "bank_voltage": 1.8,
                             "electrical_class": "single_ended_parallel",
                             "reserved": False,
+                            "placement_anchor": guarded_domain,
                         }
                     )
                 bank_pairs.append(

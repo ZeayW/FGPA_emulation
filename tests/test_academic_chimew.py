@@ -374,6 +374,17 @@ class AcademicChimewTest(unittest.TestCase):
                 critical_electrical_channel["physical_lane"],
                 critical_entry["lane"],
             )
+            self.assertTrue(
+                critical_electrical_channel["placement_anchor"]
+            )
+            self.assertTrue(
+                all(
+                    channel["placement_anchor"] is False
+                    for channel in electrical_map["channels"]
+                    if channel["chimew_channel"]
+                    != critical_electrical_channel["chimew_channel"]
+                )
+            )
             report = run_chimew_phase6_pipeline(
                 Path(lookahead["artifacts"]["schedule"]["path"]),
                 PLATFORM,
@@ -408,6 +419,17 @@ class AcademicChimewTest(unittest.TestCase):
                 planned[critical_entry["id"]]["physical_lane"],
                 critical_entry["lane"],
             )
+            electrical_binding = read_json(
+                root
+                / "timing-chimew"
+                / report["artifacts"]["adapter_electrical_binding"]["path"]
+            )
+            protected_binding = next(
+                binding
+                for binding in electrical_binding["entries"]
+                if critical_entry["id"] in binding["schedule_entries"]
+            )
+            self.assertTrue(protected_binding["placement_anchor"])
             self.assertEqual(
                 qualification["source_binding"]["digests"]["timing_paths"],
                 lookahead["timing_weighting"]["source_sha256"],

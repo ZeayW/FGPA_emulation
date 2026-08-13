@@ -624,8 +624,10 @@ def run_multi_fpga_physical_flow(
                     binding = binding_by_entry.get(entry_id)
                     if hint is None or binding is None:
                         raise ValidationError(
-                            "Chimew physical anchors do not cover every boundary endpoint"
+                            "Chimew physical bindings do not cover every boundary endpoint"
                         )
+                    if not binding.get("placement_anchor", True):
+                        continue
                     # Bind the selected Chimew channel's actual physical site
                     # coordinate.  A lane number is only an electrical
                     # identity and cannot be used as a placement coordinate.
