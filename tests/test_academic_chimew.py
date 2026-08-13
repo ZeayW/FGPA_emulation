@@ -211,6 +211,15 @@ class AcademicChimewTest(unittest.TestCase):
                 lookahead["metrics"]["placement_endpoint_fallbacks"], 0
             )
             artifacts = lookahead["artifacts"]
+            materialized_schedule = read_json(
+                Path(artifacts["schedule"]["path"])
+            )
+            self.assertTrue(
+                all(
+                    "tdm_ratio" in entry
+                    for entry in materialized_schedule["entries"]
+                )
+            )
             bank_input = read_json(Path(artifacts["bank_channel_input"]["path"]))
             electrical_map = read_json(Path(artifacts["electrical_map"]["path"]))
             directions = {group["direction"] for group in bank_input["groups"]}
@@ -233,7 +242,7 @@ class AcademicChimewTest(unittest.TestCase):
             self.assertIn((0, "a_to_b"), lane_directions)
             self.assertIn((0, "b_to_a"), lane_directions)
             report = run_chimew_phase6_pipeline(
-                schedule,
+                Path(artifacts["schedule"]["path"]),
                 PLATFORM,
                 Path(artifacts["crossings"]["path"]),
                 Path(artifacts["positions"]["path"]),
@@ -325,7 +334,7 @@ class AcademicChimewTest(unittest.TestCase):
                 )
             )
             report = run_chimew_phase6_pipeline(
-                schedule,
+                Path(lookahead["artifacts"]["schedule"]["path"]),
                 PLATFORM,
                 Path(lookahead["artifacts"]["crossings"]["path"]),
                 Path(lookahead["artifacts"]["positions"]["path"]),
@@ -365,6 +374,9 @@ class AcademicChimewTest(unittest.TestCase):
             critical_entry = schedule_document["entries"][0]
             duplicate = dict(critical_entry)
             duplicate["id"] = critical_entry["id"] + "-next-hop"
+            duplicate["slot"] = max(
+                entry["slot"] for entry in schedule_document["entries"]
+            ) + 1
             schedule_document["entries"].append(duplicate)
             write_json(schedule, schedule_document)
             timing = root / "timing.json"

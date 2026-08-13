@@ -25,6 +25,7 @@ from .chimew_grouping import (
     CHIMEW_ACADEMIC_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     build_chimew_initial_groups,
+    materialize_chimew_schedule_ratios,
 )
 from .chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
@@ -519,7 +520,19 @@ def materialize_academic_chimew_inputs(
     if not 2 <= region_count <= 31:
         raise ValidationError("academic Chimew region count must be in [2, 31]")
     ir = read_json(ir_path)
-    schedule = read_json(schedule_path)
+    source_schedule = read_json(schedule_path)
+    explicit_ratios = [
+        "tdm_ratio" in entry for entry in source_schedule.get("entries", [])
+    ]
+    if any(explicit_ratios) and not all(explicit_ratios):
+        raise ValidationError(
+            "academic Chimew schedule mixes explicit and implicit TDM ratios"
+        )
+    schedule = (
+        source_schedule
+        if explicit_ratios and all(explicit_ratios)
+        else materialize_chimew_schedule_ratios(source_schedule)
+    )
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     timing_weights, timing_source, timing_coverage = _timing_weights(
@@ -961,6 +974,7 @@ def materialize_academic_chimew_inputs(
     inputs_dir = output_dir / "inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)
     documents = {
+        "schedule": schedule,
         "crossings": crossings,
         "positions": positions,
         "rudy_input": rudy_input,
@@ -989,6 +1003,17 @@ def materialize_academic_chimew_inputs(
             "predicted_sll_crossings": total_crossings,
             "groups": len(group_records),
             "virtual_package_pins": len(package_records),
+            "tdm_groups_before_chimew": len(
+                {
+                    (
+                        entry["link"],
+                        entry["from"],
+                        entry["to"],
+                        entry["lane"],
+                    )
+                    for entry in schedule["entries"]
+                }
+            ),
         },
         "artifacts": {
             label: {"path": str(path), "sha256": _sha256(path)}

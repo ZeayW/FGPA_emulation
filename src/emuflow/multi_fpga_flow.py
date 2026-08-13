@@ -1227,10 +1227,11 @@ def run_multi_fpga_flow(
             refiner=phase6_chimew_refiner,
         )
         inputs = lookahead["artifacts"]
+        chimew_schedule_path = Path(inputs["schedule"]["path"])
         sources_map = lookahead["sources"]
         chimew_pipeline_root = comparison_root / "chimew"
         pipeline = run_chimew_phase6_pipeline(
-            schedule_path,
+            chimew_schedule_path,
             platform_path,
             Path(inputs["crossings"]["path"]),
             Path(inputs["positions"]["path"]),
@@ -1252,7 +1253,7 @@ def run_multi_fpga_flow(
         phase6_report = run_phase6(
             ir_path,
             assignment_path,
-            schedule_path,
+            chimew_schedule_path,
             platform_path,
             phase6_root,
             equivalence_cycles=equivalence_cycles,
