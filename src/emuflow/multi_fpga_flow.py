@@ -559,7 +559,7 @@ def run_multi_fpga_flow(
     simulation_frames: int = 16,
     equivalence_cycles: int = 16,
     equivalence_seed: int = 20260727,
-    phase6_provider: str = "auto",
+    phase6_provider: str = "baseline",
     phase6_chimew_region_count: int = 4,
     phase6_chimew_grouper: Optional[str] = None,
     phase6_chimew_refiner: Optional[str] = None,

@@ -83,6 +83,10 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 
 - Small fixtures are suitable for correctness and determinism tests, but a
   default algorithm or QoR claim also requires a materially sized real design.
+- Replicated-core or artificially coupled RTL harnesses are not accepted as
+  benchmark-catalog entries or as evidence for provider promotion and final
+  WNS/TNS claims. Use a naturally connected upstream RTL design for those
+  decisions.
 - Reuse a frozen Phase 5 or canonical Phase 6 checkpoint when possible; do not
   rerun Phase 1--5 merely to reach Phase 7.  However, never coerce an
   incompatible communication-only artifact into a fake physical netlist.

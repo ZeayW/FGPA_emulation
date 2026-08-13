@@ -19,8 +19,7 @@ python3 scripts/benchmarks/fetch.py fetch picorv32
 ```
 
 The checked-in run contracts cover SERV L1, PicoRV32 L2, secworks AES L3,
-the PicoRV32 x32 L5 scale harness, and the current Koios L5 fixtures. Run the
-AES progression rung with:
+and the current Koios L5 fixtures. Run the AES progression rung with:
 
 ```bash
 python3 scripts/benchmarks/fetch.py fetch secworks_aes
@@ -42,13 +41,18 @@ The source catalog and fetcher cover the following progression:
 | L2 | PicoRV32 | 761-2019 LUT and 442-1085 FF, plus LUTRAM | Main Phase 2 growth target |
 | L3 | secworks AES | about 3020 LUT and 2992 FF on Kintex-7 | Medium routing/density and forced partition stress |
 | L4 | VTR classic and Ibex | mixed; Ibex is 16.85-66.02 kGE by configuration | Frontend diversity, SystemVerilog and dependency stress |
-| L5 scale gate | PicoRV32 x32 harness | 121,984 mapped LUT/FF primitives | 100k-cell frontend, OpenPARF and routing scalability |
 | L5-L6 | Koios 2.0 | 40 medium and large DL designs | Large RTL, BRAM/DSP and multi-FPGA system stress |
 | L7 | NVDLA nvdlav1 | 3,123,117 synthesized cells; 1,825,473 LUTs and 915,739 FFs | Real connected million-cell stress |
 
 The progression is an acceptance ladder, not a checked-in result table.
 Machine configuration, exact synthesis counts, QoR measurements, logs, and
 artifact hashes are maintained in local experiment records.
+
+Replicated-core and artificially coupled RTL harnesses are deliberately not
+part of this catalog. They can be useful private stress fixtures, but their
+regular structure and invented communication do not qualify them for Phase 6
+provider promotion or final WNS/TNS claims. Materially sized acceptance runs
+must use a naturally connected upstream RTL design.
 
 ## Current flow gaps exposed by larger designs
 

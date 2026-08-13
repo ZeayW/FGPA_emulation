@@ -10,7 +10,6 @@ from emuflow.errors import EmuFlowError, ValidationError
 ROOT = Path(__file__).resolve().parents[1]
 SERV_SPEC = ROOT / "benchmarks" / "runs" / "serv_l1.json"
 PICORV32_SPEC = ROOT / "benchmarks" / "runs" / "picorv32_l2.json"
-PICORV32_X32_SPEC = ROOT / "benchmarks" / "runs" / "picorv32_x32_l5.json"
 SECWORKS_AES_SPEC = ROOT / "benchmarks" / "runs" / "secworks_aes_l3.json"
 KOIOS_DLA_MEDIUM_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_dla_medium_l5.json"
@@ -40,18 +39,6 @@ class BenchmarkRunTest(unittest.TestCase):
             self.assertEqual(
                 [path.name for path in sources],
                 ["picorv32.v"],
-            )
-
-    def test_picorv32_x32_spec_and_sources(self) -> None:
-        spec = BenchmarkRun.load(PICORV32_X32_SPEC)
-        self.assertEqual(spec.value["top"], "picorv32_x32_top")
-        self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
-        source_root = ROOT / "third_party" / "rtl" / "picorv32"
-        if source_root.is_dir():
-            sources = spec.resolve_sources(ROOT)
-            self.assertEqual(
-                [path.name for path in sources],
-                ["picorv32.v", "picorv32_x32_top.v"],
             )
 
     def test_secworks_aes_l3_spec_and_sources(self) -> None:

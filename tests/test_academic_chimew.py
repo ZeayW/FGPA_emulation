@@ -745,7 +745,7 @@ class AcademicChimewTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "deltas disagree"):
                 validate_phase6_ab_comparison(report)
 
-    def test_open_compile_defaults_to_auto_chimew_selection(self) -> None:
+    def test_open_compile_defaults_to_stable_baseline(self) -> None:
         arguments = _build_parser().parse_args(
             [
                 "multi-fpga",
@@ -758,7 +758,7 @@ class AcademicChimewTest(unittest.TestCase):
                 "unused",
             ]
         )
-        self.assertEqual(arguments.phase6_provider, "auto")
+        self.assertEqual(arguments.phase6_provider, "baseline")
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(EmuFlowError, "requires --physical"):
                 run_multi_fpga_flow(

@@ -287,19 +287,18 @@ then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
 
-For the source-complete academic physical flow, Phase 6 now defaults to
-`--phase6-provider auto`. When `--physical --physical-backend open` has at
-least one scheduled inter-FPGA signal, `auto` runs a frozen historical Phase 6
-and open-physical prepass, derives byte-bound Chimew lookahead inputs from the
-resulting VPR/OpenPARF artifacts, and promotes the certified Chimew pin plan to
-the canonical Phase 6 split. The same command then runs the canonical open
-physical flow and emits `phase6-comparison/comparison-report.json`, sealing the
-common EmuIR, assignment, routes, schedule, and BoardDB hashes and reporting
-baseline-versus-Chimew pin metrics, wirelength, critical path, per-FPGA and
-aggregate WNS/TNS, failing endpoints, closure, and runtime. Use
-`--phase6-provider baseline` to reproduce the previous static split/lane
-behavior. A compile without open physical lookahead keeps that baseline
-because it cannot honestly invent placement evidence.
+The stable Phase 6 default is `--phase6-provider baseline`, which preserves
+the checked static split/lane behavior. Chimew remains an explicit research
+path: `--phase6-provider chimew` selects it directly, while an explicit
+`--phase6-provider auto` selects it only for an open physical run with at
+least one scheduled inter-FPGA signal. That path runs a frozen baseline
+physical prepass, derives byte-bound Chimew lookahead inputs from the resulting
+VPR/OpenPARF artifacts, and emits `phase6-comparison/comparison-report.json`.
+It seals the common EmuIR, assignment, routes, schedule, and BoardDB hashes and
+reports baseline-versus-Chimew pin metrics, wirelength, critical path,
+per-FPGA and aggregate WNS/TNS, failing endpoints, closure, and runtime. A
+compile without open physical lookahead retains the baseline because it cannot
+honestly invent placement evidence.
 
 The academic adapter divides normalized OpenPARF placement into explicit
 virtual regions for the Chimew crossing encoding and synthesizes a virtual
@@ -1529,43 +1528,13 @@ hash-bound `open-physical-flow-report.json`. Use `--logic-only` for RTL that
 must deliberately avoid hard-block inference, or `--architecture` to provide
 another VTR XML explicitly.
 
-For a materially larger multi-FPGA acceptance run, the repository includes
-`benchmarks/rtl/picorv32_x32_ring_top.v`. It instantiates 32 pinned PicoRV32
-cores and couples them through a registered ring so that synthesis cannot turn
-the benchmark into 32 independent islands with a vacuous Phase 6. A complete
-open A/B run uses the same frozen Phase 1--5 artifacts for the historical
-baseline and Chimew candidate, then runs physical Phase 7 for
-both and compares the WNS/TNS contract above. The `auto` provider performs
-that sealed A/B path in one command:
-
-```bash
-emuflow multi-fpga compile \
-  third_party/rtl/picorv32/picorv32.v \
-  benchmarks/rtl/picorv32_x32_ring_top.v \
-  --top picorv32_x32_ring_top --clock clk \
-  --platform platforms/virtual/academic_vtr_4fpga_mesh.json \
-  --timing-driven --clock-period clk=10 \
-  --physical --physical-backend open --physical-workers 4 \
-  --phase6-provider auto \
-  --out build/picorv32-x32-ring-chimew-ab
-```
-
-This connected harness has also been used for a frozen three-seed open-physical
-A/B on 67,674 synthesized instances and four FPGAs.  Both arms completed VPR
-placement/routing and Phase 7C with zero unrouted nets and zero DRC violations
-for every seed.  Relative to the previous placement-aware baseline, the
-timing-guarded soft Chimew candidate changed global target-clock WNS by
-`-0.4504`, `+0.6502`, and `+0.8303 ns`, but changed global TNS by `-19.0003`,
-`-0.3233`, and `-8.1944 ns`.  Mean deltas were therefore `+0.3434 ns` WNS and
-`-9.1727 ns` TNS; WNS improved in two of three seeds, while TNS improved in
-zero of three.  Path decomposition attributes the repeatable TNS loss primarily
-to FPGA-internal logic-placement delay rather than interface delay.  The
-current candidate consequently fails the promotion gate and remains an
-optional research provider; it is not the default open-flow Phase 6 algorithm.
-This is open-academic VTR evidence, not vendor timing sign-off or hardware
-closure.  Future promotion requires a revised integration that improves both
-global WNS and global TNS repeatably, not a Phase 6 proxy improvement or a
-selected favorable seed.
+Replicated-core and artificially coupled RTL harnesses are intentionally
+excluded from the checked-in benchmark catalog. Although such harnesses can
+exercise scale and produce mechanically valid physical reports, their regular
+structure and invented communication can distort Phase 6 placement effects.
+They are therefore not accepted as provider-promotion or final WNS/TNS
+evidence. A Phase 6 QoR claim must use a naturally connected upstream RTL
+design and the complete Phase 7 acceptance contract above.
 
 The equivalent explicit stage commands are shown below for development and
 debugging.
@@ -2016,8 +1985,8 @@ This distinction applies equally to the larger public `case6`, `case7`, and
 grouping, legality, determinism, runtime, and memory scaling, but their
 communication-graph records are not synthesizable RTL and cannot continue to
 physical Phase 7. Consequently they cannot provide final WNS/TNS and cannot
-replace the connected PicoRV32 (or another real RTL) baseline-versus-Chimew
-acceptance run.
+replace a naturally connected upstream RTL baseline-versus-Chimew acceptance
+run.
 
 For timing-driven open compilation, the academic Chimew adapter also seals the
 projected `emuflow.sta-paths/v1` database and applies the existing bounded
