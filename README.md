@@ -2025,12 +2025,15 @@ pin distance, wirelength, congestion, runtime, and legality are supporting
 metrics only.
 
 The timing-driven adapter additionally preserves the complete original Phase 5
-lane group for every signal in the maximum criticality tier.  Freezing all
-members of that lane keeps the critical transport mux membership unchanged;
-the remaining lanes still run the normal Chimew grouping and position
-refinement.  The guard is recorded in the lookahead report and independently
-checked before refinement.  This is an EmuFlow timing-integration constraint,
-not part of the published Chimew algorithm.
+lane group for every timing-covered signal whose projected weight exceeds the
+unit default.  Freezing all members of that lane keeps the critical transport
+mux membership unchanged.  The two-stage assignment isolates each protected
+group in a one-channel domain so its physical lane identity is preserved too;
+unprotected groups still run the normal Chimew grouping, position refinement,
+and bank/channel matching over the remaining lanes.  The guard is recorded in
+the lookahead report and independently checked before refinement and matching.
+This is an EmuFlow timing-integration constraint, not part of the published
+Chimew algorithm.
 
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report

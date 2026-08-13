@@ -333,6 +333,35 @@ class AcademicChimewTest(unittest.TestCase):
                     if entry != critical_entry["id"]
                 )
             )
+            materialized_schedule = read_json(
+                Path(lookahead["artifacts"]["schedule"]["path"])
+            )
+            self.assertEqual(
+                materialized_schedule["chimew_timing_guard"][
+                    "protected_entries"
+                ],
+                [critical_entry["id"]],
+            )
+            critical_group = next(
+                group
+                for group in bank_input["groups"]
+                if any(
+                    member["id"] == critical_entry["id"]
+                    for member in group["members"]
+                )
+            )
+            critical_domain = critical_group["domain"]
+            self.assertIn("timing-guard-lane", critical_domain)
+            critical_channels = [
+                channel
+                for pair in bank_input["bank_pairs"]
+                if pair["domain"] == critical_domain
+                for channel in pair["channels"]
+            ]
+            self.assertEqual(len(critical_channels), 1)
+            self.assertEqual(
+                critical_channels[0]["order"], critical_entry["lane"]
+            )
             report = run_chimew_phase6_pipeline(
                 Path(lookahead["artifacts"]["schedule"]["path"]),
                 PLATFORM,
@@ -354,6 +383,18 @@ class AcademicChimewTest(unittest.TestCase):
             )
             qualification = read_json(
                 root / "timing-chimew" / report["artifacts"]["qualification"]["path"]
+            )
+            pin_plan = read_json(
+                root
+                / "timing-chimew"
+                / report["artifacts"]["adapter_pin_plan"]["path"]
+            )
+            planned = {
+                entry["schedule_entry"]: entry for entry in pin_plan["entries"]
+            }
+            self.assertEqual(
+                planned[critical_entry["id"]]["physical_lane"],
+                critical_entry["lane"],
             )
             self.assertEqual(
                 qualification["source_binding"]["digests"]["timing_paths"],

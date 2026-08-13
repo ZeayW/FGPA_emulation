@@ -712,13 +712,7 @@ def materialize_academic_chimew_inputs(
         {
             entry_id
             for entry_id, weight in timing_weights.items()
-            if maximum_timing_weight > 1.0
-            and math.isclose(
-                weight,
-                maximum_timing_weight,
-                rel_tol=0.0,
-                abs_tol=1.0e-12,
-            )
+            if weight > 1.0 and not math.isclose(weight, 1.0, abs_tol=1.0e-12)
         }
         if timing_source is not None
         else set()
@@ -729,6 +723,9 @@ def materialize_academic_chimew_inputs(
             "scope": "EmuFlow extension, not a Chimew paper claim",
             "source_sha256": _sha256(timing_source),
             "maximum_weight": maximum_timing_weight,
+            "minimum_protected_weight": min(
+                timing_weights[entry_id] for entry_id in protected_entries
+            ),
             "protected_entries": sorted(protected_entries),
         }
     initial = build_chimew_initial_groups(
@@ -773,10 +770,40 @@ def materialize_academic_chimew_inputs(
             }
         )
 
+    schedule_by_id = {entry["id"]: entry for entry in schedule["entries"]}
+    protected_lane_keys = {
+        (
+            schedule_by_id[entry_id]["link"],
+            schedule_by_id[entry_id]["from"],
+            schedule_by_id[entry_id]["to"],
+            schedule_by_id[entry_id]["lane"],
+        )
+        for entry_id in protected_entries
+    }
+    fixed_lane_by_group: Dict[Tuple[str, str, int], int] = {}
+    for key, members in grouped.items():
+        member_lanes = {
+            (
+                schedule_by_id[member["id"]]["link"],
+                schedule_by_id[member["id"]]["from"],
+                schedule_by_id[member["id"]]["to"],
+                schedule_by_id[member["id"]]["lane"],
+            )
+            for member in members
+        }
+        guarded = member_lanes & protected_lane_keys
+        if guarded:
+            if len(member_lanes) != 1 or len(guarded) != 1:
+                raise ValidationError(
+                    "academic Chimew timing guard did not preserve an exact lane"
+                )
+            fixed_lane_by_group[key] = next(iter(guarded))[3]
+
     domains = []
     bank_pairs = []
     channels = []
     package_records = []
+    assignment_domain_by_group: Dict[Tuple[str, str, int], str] = {}
     for link_id in sorted({key[0] for key in grouped}):
         link = link_by_id[link_id]
         endpoint_a, endpoint_b = link.endpoints
@@ -792,86 +819,130 @@ def materialize_academic_chimew_inputs(
             {key[1] for key in grouped if key[0] == link_id}
         )
         for direction in active_directions:
-            domain_id = f"{link_id}:{direction}"
-            bank_a_id = f"academic-{endpoint_a}-{domain_id}-bank"
-            bank_b_id = f"academic-{endpoint_b}-{domain_id}-bank"
-            domains.append(
-                {"id": domain_id, "fpga_a": endpoint_a, "fpga_b": endpoint_b}
+            base_domain_id = f"{link_id}:{direction}"
+            group_keys = sorted(
+                key for key in grouped if key[:2] == (link_id, direction)
             )
-            raw_channels = []
-            for lane in range(lane_count):
-                channel_id = (
-                    f"academic-{link_id}-{direction}-channel-{lane:04d}"
+            fixed_groups = {
+                fixed_lane_by_group[key]: key
+                for key in group_keys
+                if key in fixed_lane_by_group
+            }
+            if len(fixed_groups) != sum(
+                key in fixed_lane_by_group for key in group_keys
+            ):
+                raise ValidationError(
+                    "academic Chimew timing guard assigned two groups to one lane"
                 )
-                fraction = (
-                    0.5
-                    if lane_count == 1
-                    else float(lane) / float(lane_count - 1)
+            unguarded_groups = [
+                key for key in group_keys if key not in fixed_lane_by_group
+            ]
+            available_lanes = [
+                lane for lane in range(lane_count) if lane not in fixed_groups
+            ]
+            if len(unguarded_groups) > len(available_lanes):
+                raise ValidationError(
+                    "academic Chimew timing guard leaves too few assignable lanes"
                 )
-                raw_channels.append(
+            domain_specs = []
+            if unguarded_groups:
+                domain_specs.append(
+                    (base_domain_id, unguarded_groups, available_lanes)
+                )
+            domain_specs.extend(
+                (
+                    f"{base_domain_id}:timing-guard-lane-{lane:04d}",
+                    [group_key],
+                    [lane],
+                )
+                for lane, group_key in sorted(fixed_groups.items())
+            )
+            for domain_id, domain_groups, domain_lanes in domain_specs:
+                for group_key in domain_groups:
+                    assignment_domain_by_group[group_key] = domain_id
+                bank_a_id = f"academic-{endpoint_a}-{domain_id}-bank"
+                bank_b_id = f"academic-{endpoint_b}-{domain_id}-bank"
+                domains.append(
                     {
-                        "id": channel_id,
-                        "order": lane,
-                        "pin_a": {
+                        "id": domain_id,
+                        "fpga_a": endpoint_a,
+                        "fpga_b": endpoint_b,
+                    }
+                )
+                raw_channels = []
+                for lane in domain_lanes:
+                    channel_id = (
+                        f"academic-{link_id}-{direction}-channel-{lane:04d}"
+                    )
+                    fraction = (
+                        0.5
+                        if lane_count == 1
+                        else float(lane) / float(lane_count - 1)
+                    )
+                    raw_channels.append(
+                        {
+                            "id": channel_id,
+                            "order": lane,
+                            "pin_a": {
+                                "x": fpga_order[endpoint_a] * coordinate_scale,
+                                "y": a_y_min + fraction * (a_y_max - a_y_min),
+                            },
+                            "pin_b": {
+                                "x": fpga_order[endpoint_b] * coordinate_scale,
+                                "y": b_y_min + fraction * (b_y_max - b_y_min),
+                            },
+                        }
+                    )
+                    # A full-duplex physical lane has distinct transmit/receive
+                    # package pins.  Direction-qualified synthetic identities keep
+                    # the academic model honest while allowing the BoardDB's
+                    # per-direction lane capacity to be used concurrently.
+                    pin_a = (
+                        f"ACADEMIC_{endpoint_a}_{link_id}_{direction}_P{lane}"
+                    )
+                    pin_b = (
+                        f"ACADEMIC_{endpoint_b}_{link_id}_{direction}_P{lane}"
+                    )
+                    package_records.extend(
+                        [
+                            {"fpga": endpoint_a, "pin": pin_a},
+                            {"fpga": endpoint_b, "pin": pin_b},
+                        ]
+                    )
+                    channels.append(
+                        {
+                            "chimew_channel": channel_id,
+                            "link": link_id,
+                            "physical_lane": lane,
+                            "direction": direction,
+                            "bank_a": bank_a_id,
+                            "bank_b": bank_b_id,
+                            "package_pin_a": pin_a,
+                            "package_pin_b": pin_b,
+                            "iostandard": "LVCMOS18",
+                            "supported_iostandards": ["LVCMOS18"],
+                            "bank_voltage": 1.8,
+                            "electrical_class": "single_ended_parallel",
+                            "reserved": False,
+                        }
+                    )
+                bank_pairs.append(
+                    {
+                        "id": f"academic-{domain_id}-bank-pair",
+                        "domain": domain_id,
+                        "bank_a": {
+                            "id": bank_a_id,
                             "x": fpga_order[endpoint_a] * coordinate_scale,
-                            "y": a_y_min + fraction * (a_y_max - a_y_min),
+                            "y": (a_y_min + a_y_max) / 2.0,
                         },
-                        "pin_b": {
+                        "bank_b": {
+                            "id": bank_b_id,
                             "x": fpga_order[endpoint_b] * coordinate_scale,
-                            "y": b_y_min + fraction * (b_y_max - b_y_min),
+                            "y": (b_y_min + b_y_max) / 2.0,
                         },
+                        "channels": raw_channels,
                     }
                 )
-                # A full-duplex physical lane has distinct transmit/receive
-                # package pins.  Direction-qualified synthetic identities keep
-                # the academic model honest while allowing the BoardDB's
-                # per-direction lane capacity to be used concurrently.
-                pin_a = (
-                    f"ACADEMIC_{endpoint_a}_{link_id}_{direction}_P{lane}"
-                )
-                pin_b = (
-                    f"ACADEMIC_{endpoint_b}_{link_id}_{direction}_P{lane}"
-                )
-                package_records.extend(
-                    [
-                        {"fpga": endpoint_a, "pin": pin_a},
-                        {"fpga": endpoint_b, "pin": pin_b},
-                    ]
-                )
-                channels.append(
-                    {
-                        "chimew_channel": channel_id,
-                        "link": link_id,
-                        "physical_lane": lane,
-                        "direction": direction,
-                        "bank_a": bank_a_id,
-                        "bank_b": bank_b_id,
-                        "package_pin_a": pin_a,
-                        "package_pin_b": pin_b,
-                        "iostandard": "LVCMOS18",
-                        "supported_iostandards": ["LVCMOS18"],
-                        "bank_voltage": 1.8,
-                        "electrical_class": "single_ended_parallel",
-                        "reserved": False,
-                    }
-                )
-            bank_pairs.append(
-                {
-                    "id": f"academic-{domain_id}-bank-pair",
-                    "domain": domain_id,
-                    "bank_a": {
-                        "id": bank_a_id,
-                        "x": fpga_order[endpoint_a] * coordinate_scale,
-                        "y": (a_y_min + a_y_max) / 2.0,
-                    },
-                    "bank_b": {
-                        "id": bank_b_id,
-                        "x": fpga_order[endpoint_b] * coordinate_scale,
-                        "y": (b_y_min + b_y_max) / 2.0,
-                    },
-                    "channels": raw_channels,
-                }
-            )
 
     package_source = output_dir / "sources" / "package-pins.json"
     write_json(
@@ -887,7 +958,9 @@ def materialize_academic_chimew_inputs(
     group_records = [
         {
             "id": f"academic-{link_id}-{direction}-group-{group_id}",
-            "domain": f"{link_id}:{direction}",
+            "domain": assignment_domain_by_group[
+                (link_id, direction, group_id)
+            ],
             "kind": "tdm_group",
             "direction": direction,
             "members": members,
@@ -913,6 +986,7 @@ def materialize_academic_chimew_inputs(
         "groups": group_records,
         "metrics": {
             "groups": len(group_records),
+            "timing_guard_fixed_lanes": len(fixed_lane_by_group),
             "signals": len(schedule["entries"]),
             "fanins": len(schedule["entries"]),
             "bank_pairs": len(bank_pairs),
