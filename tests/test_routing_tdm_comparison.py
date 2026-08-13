@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from emuflow.cli import _build_parser
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.routing_tdm_comparison import (
@@ -88,6 +89,27 @@ def _physical(value: float, tool: Path):
 
 
 class RoutingTdmComparisonTest(unittest.TestCase):
+    def test_scale_cli_requires_and_parses_v2_sources_and_runtimes(self):
+        arguments = _build_parser().parse_args(
+            [
+                "multi-fpga", "compare-routing-tdm-scale",
+                "--assignment", "assignment.json",
+                "--platform", "platform.json",
+                "--route-constraints", "constraints.json",
+                "--timing-paths", "timing.json",
+                "--baseline-route", "baseline-route",
+                "--baseline-tdm", "baseline-tdm",
+                "--upgrade-route", "upgrade-route",
+                "--upgrade-tdm", "upgrade-tdm",
+                "--baseline-runtime-seconds", "12.5",
+                "--upgrade-runtime-seconds", "9.25",
+                "--output", "scale.json",
+            ]
+        )
+        self.assertEqual(arguments.route_constraints, Path("constraints.json"))
+        self.assertEqual(arguments.baseline_runtime_seconds, 12.5)
+        self.assertEqual(arguments.upgrade_runtime_seconds, 9.25)
+
     def test_builds_independently_replayed_scale_comparison(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
