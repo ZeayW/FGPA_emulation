@@ -130,7 +130,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                 write_json(route_root / "routes.json", {"provider": route_provider})
                 write_json(
                     route_root / "route_constraints.normalized.json",
-                    {"name": "constraints"},
+                    {"name": "normalized-constraints"},
                 )
                 write_json(tdm_root / "schedule.json", {"provider": tdm_provider})
                 if label == "upgrade":
@@ -162,6 +162,14 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                             "negative_slack_paths": 2,
                         },
                     },
+                ),
+                patch(
+                    "emuflow.routing_tdm_comparison.Platform.load",
+                    return_value=object(),
+                ),
+                patch(
+                    "emuflow.routing_tdm_comparison.load_route_constraints",
+                    return_value={"name": "normalized-constraints"},
                 ),
             ):
                 report = build_system_route_tdm_scale_comparison(
@@ -207,6 +215,14 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                     patch(
                         "emuflow.routing_tdm_comparison.validate_phase5",
                         return_value=report["arms"]["upgrade"]["tdm_validation"],
+                    ),
+                    patch(
+                        "emuflow.routing_tdm_comparison.Platform.load",
+                        return_value=object(),
+                    ),
+                    patch(
+                        "emuflow.routing_tdm_comparison.load_route_constraints",
+                        return_value={"name": "normalized-constraints"},
                     ),
                 ):
                     build_system_route_tdm_scale_comparison(

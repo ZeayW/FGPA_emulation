@@ -17,6 +17,8 @@ from .multi_fpga_flow import (
 )
 from .phase4 import validate_phase4
 from .phase5 import validate_phase5
+from .platform import Platform
+from .routing import load_route_constraints
 from .tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
@@ -1089,6 +1091,9 @@ def build_system_route_tdm_scale_comparison(
         "baseline": baseline_runtime_seconds,
         "upgrade": upgrade_runtime_seconds,
     }
+    normalized_constraints = load_route_constraints(
+        source_paths["route_constraints"], Platform.load(source_paths["platform"])
+    )
     for label, (route_root, tdm_root) in roots.items():
         routes_path = route_root / "routes.json"
         normalized_constraints_path = (
@@ -1104,8 +1109,7 @@ def build_system_route_tdm_scale_comparison(
         if (
             normalized_constraints_path.is_symlink()
             or not normalized_constraints_path.is_file()
-            or read_json(normalized_constraints_path)
-            != read_json(source_paths["route_constraints"])
+            or read_json(normalized_constraints_path) != normalized_constraints
         ):
             raise ValidationError(
                 f"routing/TDM scale {label} normalized route constraints differ"
