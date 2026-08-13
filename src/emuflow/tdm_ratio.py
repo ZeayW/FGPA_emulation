@@ -401,17 +401,19 @@ def _write_native_input(
     max_iterations: int,
     max_ratio: int,
     ratio_quantum: int,
+    min_ratio: int,
     post_refinement_iterations: int,
     exact_domain_limit: int,
     convergence: float,
     continuous_seed: Optional[Sequence[float]] = None,
 ) -> None:
     normalization = model["normalization"]
-    header = "EMUFLOW_TDM_RATIO_INPUT_V6"
+    header = "EMUFLOW_TDM_RATIO_INPUT_V7"
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(header + "\n")
         stream.write(
             f"PARAM {max_iterations} {max_ratio} {ratio_quantum} "
+            f"{min_ratio} "
             f"{post_refinement_iterations} {exact_domain_limit} "
             f"{convergence:.17g} "
             f"{normalization['positive_slack_scale_ns']:.17g} "
@@ -1137,7 +1139,7 @@ def build_tdm_ratio_plan(
     executable: Optional[str] = None,
     max_iterations: int = 500,
     max_ratio: Optional[int] = None,
-    ratio_quantum: int = 8,
+    ratio_quantum: Optional[int] = None,
     post_refinement_iterations: int = 200,
     exact_domain_limit: int = DEFAULT_EXACT_DOMAIN_LIMIT,
     convergence: float = 1.0e-9,
@@ -1151,6 +1153,11 @@ def build_tdm_ratio_plan(
         if prepared_model is not None
         else _prepare_model(routes, platform)
     )
+    min_ratio = int(model["constraints"].get("tdm_min_ratio", 1))
+    if ratio_quantum is None:
+        ratio_quantum = int(
+            model["constraints"].get("tdm_ratio_quantum", 8)
+        )
     if max_ratio is None:
         link_by_id = {link.id: link for link in platform.links}
         usable_slots = min(
@@ -1191,6 +1198,12 @@ def build_tdm_ratio_plan(
         raise ValidationError(
             "TDM ratio max_ratio must be 1 or a multiple of ratio_quantum"
         )
+    if min_ratio != 1 and min_ratio % ratio_quantum != 0:
+        raise ValidationError(
+            "TDM ratio min_ratio must be 1 or a multiple of ratio_quantum"
+        )
+    if min_ratio > max_ratio:
+        raise ValidationError("TDM ratio min_ratio cannot exceed max_ratio")
     if (
         isinstance(convergence, bool)
         or not isinstance(convergence, (int, float))
@@ -1216,7 +1229,7 @@ def build_tdm_ratio_plan(
                 isinstance(ratio, bool)
                 or not isinstance(ratio, (int, float))
                 or not math.isfinite(float(ratio))
-                or not 1.0 <= float(ratio) <= max_ratio
+                or not float(min_ratio) <= float(ratio) <= max_ratio
             ):
                 raise ValidationError(
                     "TDM ratio continuous seed contains an invalid ratio"
@@ -1235,6 +1248,7 @@ def build_tdm_ratio_plan(
             max_iterations=max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
+            min_ratio=min_ratio,
             post_refinement_iterations=post_refinement_iterations,
             exact_domain_limit=exact_domain_limit,
             convergence=float(convergence),
@@ -1282,6 +1296,7 @@ def build_tdm_ratio_plan(
             "max_iterations": max_iterations,
             "max_ratio": max_ratio,
             "ratio_quantum": ratio_quantum,
+            "min_ratio": min_ratio,
             "post_refinement_iterations": post_refinement_iterations,
             "exact_domain_limit": exact_domain_limit,
             "convergence": float(convergence),
@@ -1399,6 +1414,7 @@ def validate_tdm_ratio_plan(
         raise ValidationError("ratio plan.configuration: expected an object")
     max_ratio = configuration.get("max_ratio")
     ratio_quantum = configuration.get("ratio_quantum")
+    min_ratio = configuration.get("min_ratio", 1)
     exact_domain_limit = configuration.get("exact_domain_limit")
     convergence = configuration.get("convergence")
     if (
@@ -1408,6 +1424,10 @@ def validate_tdm_ratio_plan(
         or isinstance(ratio_quantum, bool)
         or not isinstance(ratio_quantum, int)
         or ratio_quantum <= 0
+        or isinstance(min_ratio, bool)
+        or not isinstance(min_ratio, int)
+        or min_ratio <= 0
+        or min_ratio > max_ratio
         or isinstance(exact_domain_limit, bool)
         or not isinstance(exact_domain_limit, int)
         or exact_domain_limit < 0
@@ -1416,8 +1436,21 @@ def validate_tdm_ratio_plan(
         or float(convergence) <= 0.0
     ):
         raise ValidationError("ratio plan.configuration is invalid")
-    allowed_ratios = {1} | set(
-        range(ratio_quantum, max_ratio + 1, ratio_quantum)
+    if min_ratio != 1 and min_ratio % ratio_quantum != 0:
+        raise ValidationError("ratio plan.configuration min_ratio is invalid")
+    if min_ratio != int(model["constraints"].get("tdm_min_ratio", 1)):
+        raise ValidationError(
+            "ratio plan.configuration min_ratio differs from routes"
+        )
+    allowed_ratios = (
+        ({1} if min_ratio == 1 else set())
+        | set(
+            range(
+                ratio_quantum if min_ratio == 1 else min_ratio,
+                max_ratio + 1,
+                ratio_quantum,
+            )
+        )
     )
 
     raw_hops = plan.get("hops")
@@ -1448,7 +1481,7 @@ def validate_tdm_ratio_plan(
             isinstance(continuous, bool)
             or not isinstance(continuous, (int, float))
             or not math.isfinite(float(continuous))
-            or float(continuous) < 1.0 - 1.0e-9
+            or float(continuous) < float(min_ratio) - 1.0e-9
             or float(continuous) > max_ratio + 1.0e-9
         ):
             raise ValidationError(

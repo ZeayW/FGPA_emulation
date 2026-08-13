@@ -2044,6 +2044,14 @@ The academic Phase 5 provider is likewise rooted in editable C++17 source at
 versioned timing model, realizes the optimized ratio/lane groups as an exact
 slot schedule, and independently checks capacity, ratio legality, timing,
 collisions, precedence, round barriers, and transported values.
+Unless an experiment supplies an explicit override, Phase 5 inherits both the
+minimum legal ratio and the ratio quantum from the normalized Phase 4 route
+constraints and seals the resolved values in `ratio_plan.json`.  The native
+continuous/discrete optimizers and the independent checker enforce the same
+domain.  This matters for imported architectures such as EDA 2023, whose
+inter-FPGA Wire ratios start at four rather than the generic ratio-one domain;
+silently widening that domain would make an otherwise legal schedule solve a
+different platform problem.
 Its multi-round legalizer evaluates the exact capacity boundary through
 monotone quotient intervals and scores ratio promotions from incremental
 domain and affected-path deltas, avoiding frame-slot-by-bucket and

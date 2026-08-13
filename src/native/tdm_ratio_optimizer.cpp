@@ -82,11 +82,12 @@ Input read_input(const std::string& path) {
   }
   std::string line;
   std::getline(stream, line);
+  const bool input_v7 = line == "EMUFLOW_TDM_RATIO_INPUT_V7";
   const bool input_v4 = line == "EMUFLOW_TDM_RATIO_INPUT_V4";
   const bool input_v6 = line == "EMUFLOW_TDM_RATIO_INPUT_V6";
   const bool input_v5 = line == "EMUFLOW_TDM_RATIO_INPUT_V5";
   const bool input_v3 = input_v5 || line == "EMUFLOW_TDM_RATIO_INPUT_V3";
-  if (!input_v6 && !input_v4 && !input_v5 && !input_v3 &&
+  if (!input_v7 && !input_v6 && !input_v4 && !input_v5 && !input_v3 &&
       line != "EMUFLOW_TDM_RATIO_INPUT_V2") {
     throw std::runtime_error("invalid input header");
   }
@@ -99,7 +100,13 @@ Input read_input(const std::string& path) {
     std::string kind;
     record >> kind;
     if (kind == "PARAM") {
-      if (input_v3) {
+      if (input_v7) {
+        record >> input.max_iterations >> input.max_ratio >>
+            input.ratio_quantum >> input.min_ratio >>
+            input.post_refinement_iterations >> input.exact_domain_limit >>
+            input.convergence >> input.positive_scale >>
+            input.negative_scale >> input.max_period;
+      } else if (input_v3) {
         int harmonic_legalization = 0;
         record >> input.max_iterations >> input.max_ratio >>
             input.ratio_quantum >> input.min_ratio >>
@@ -130,7 +137,7 @@ Input read_input(const std::string& path) {
       int index = -1;
       Hop hop;
       record >> index >> hop.domain >> hop.direction;
-      if (input_v6) {
+      if (input_v7 || input_v6) {
         record >> hop.compatibility;
       } else {
         hop.compatibility = 0;
@@ -151,7 +158,8 @@ Input read_input(const std::string& path) {
         throw std::runtime_error("PATH indices must be contiguous");
       }
       input.paths.push_back(std::move(timing_path));
-    } else if (kind == "SEED" && (input_v6 || input_v4 || input_v5)) {
+    } else if (kind == "SEED" &&
+               (input_v7 || input_v6 || input_v4 || input_v5)) {
       int index = -1;
       double ratio = 0.0;
       record >> index >> ratio;
@@ -213,7 +221,7 @@ Input read_input(const std::string& path) {
       }
     }
   }
-  if ((input_v6 || input_v4 || input_v5) &&
+  if ((input_v7 || input_v6 || input_v4 || input_v5) &&
       !input.seed_ratios.empty() &&
       input.seed_ratios.size() != input.hops.size()) {
     throw std::runtime_error("seeded input requires one SEED per hop");

@@ -2027,7 +2027,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     phase5.add_argument("--max-ratio", type=int)
-    phase5.add_argument("--ratio-quantum", type=int, default=8)
+    phase5.add_argument(
+        "--ratio-quantum",
+        type=int,
+        help=(
+            "explicit comparison override; defaults to the frozen Phase 4 "
+            "route constraint"
+        ),
+    )
     phase5.add_argument(
         "--post-refinement-iterations", type=int, default=200
     )

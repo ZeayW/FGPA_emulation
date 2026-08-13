@@ -524,6 +524,70 @@ class Phase5Test(unittest.TestCase):
             "pass",
         )
 
+    def test_phase5_inherits_nonunit_ratio_domain_from_routes(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        routes["constraints"]["tdm_min_ratio"] = 4
+        routes["constraints"]["tdm_ratio_quantum"] = 4
+        plan = build_timing_dag_ratio_plan(
+            routes,
+            platform,
+            dag_executable=str(tdm_timing_dag_optimizer()),
+            legalization_executable=str(tdm_ratio_optimizer()),
+            post_refinement_iterations=20,
+        )
+        self.assertEqual(plan["configuration"]["min_ratio"], 4)
+        self.assertEqual(plan["configuration"]["ratio_quantum"], 4)
+        self.assertEqual(plan["configuration"]["max_ratio"], 28)
+        self.assertTrue(
+            all(
+                hop["continuous_ratio"] >= 4.0
+                and hop["discrete_ratio"] >= 4
+                and hop["discrete_ratio"] % 4 == 0
+                for hop in plan["hops"]
+            )
+        )
+        self.assertEqual(
+            validate_tdm_ratio_plan(routes, platform, plan)["status"],
+            "pass",
+        )
+        tampered = copy.deepcopy(plan)
+        tampered["hops"][0]["discrete_ratio"] = 1
+        with self.assertRaisesRegex(ValidationError, "discrete ratio"):
+            validate_tdm_ratio_plan(routes, platform, tampered)
+        rebound = copy.deepcopy(plan)
+        rebound["configuration"]["min_ratio"] = 1
+        with self.assertRaisesRegex(ValidationError, "differs from routes"):
+            validate_tdm_ratio_plan(routes, platform, rebound)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            report = run_phase5(
+                routes_path,
+                platform_path,
+                root / "phase5",
+                provider="aspdac26-timing-dag-lagrangian-v1",
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                max_ratio=28,
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(report["status"], "pass")
+            persisted = json.loads(
+                (root / "phase5" / "ratio_plan.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(persisted["configuration"]["min_ratio"], 4)
+            self.assertEqual(
+                persisted["configuration"]["ratio_quantum"], 4
+            )
+
     def test_phase5_accepts_timing_dag_provider_end_to_end(self) -> None:
         routes, _platform = self._timing_dag_fixture()
         platform_value = _platform_value(
