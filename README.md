@@ -427,10 +427,18 @@ reduction: for a negative baseline, compare the reduction in `-WNS` or `-TNS`;
 if the baseline already closes, the percentage is `N/A` and a closure
 transition is reported separately. Phase 6 crossing, grouping, RUDY, position,
 wirelength, and pin-distance metrics remain diagnostic explanations.
-The versioned `emuflow.system-route-tdm-ab/v4` comparison artifact records
+The versioned `emuflow.system-route-tdm-ab/v5` comparison artifact records
 those percentages and closure transitions for target-clock and virtual-runtime
 global WNS/TNS, and independently recomputes them when the bundle is validated;
-signed slack values are never divided to manufacture a percentage.
+signed slack values are never divided to manufacture a percentage.  The same
+gate now also freezes the normalized BoardDB, Phase-3 and Phase-4 constraints,
+and compares the Phase-7 backend descriptor, architecture SHA-256, FPGA order,
+worker configuration, VPR pack/place seed, route channel width, and hashes of
+the external executables recorded by the physical reports.  Newly generated
+top-level flow reports seal those inputs directly.  A pre-v5 flow can still be
+compared only when its formerly unlisted BoardDB and normalized constraints
+are present at their canonical checked locations below the flow root; this
+keeps already-running physical jobs usable without weakening the v5 evidence.
 
 The open VPR route now provides this endpoint-complete contract and binds its
 machine-readable WNS, TNS, logical failing endpoints, and failing endpoint

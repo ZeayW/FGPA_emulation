@@ -21,12 +21,58 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _physical(value: float):
+def _physical(value: float, tool: Path):
+    architecture_sha = "a" * 64
     return {
+        "backend": {
+            "schema": "emuflow.physical-backend/v1",
+            "id": "open",
+            "implementation_engine": "vpr-openparf-vpr",
+            "timing_engine": "vpr",
+            "architecture_class": "public-academic",
+            "source_model": "source-complete",
+            "qualification": "academic-architecture-not-vendor-signoff",
+            "capabilities": {
+                "packing": True,
+                "placement": True,
+                "routing": True,
+                "timing": True,
+                "bitstream": False,
+            },
+        },
+        "architecture": {
+            "status": "pass",
+            "mode": "provided",
+            "path": "/flow-local/architecture.xml",
+            "sha256": architecture_sha,
+        },
+        "execution": {
+            "requested_workers": 1,
+            "effective_workers": 1,
+            "ordering": "boarddb-fpga-order",
+            "pack_place_resume": False,
+        },
+        "expected_fpgas": ["fpga0"],
         "fpgas": [
             {
+                "fpga": "fpga0",
                 "critical_path_ns": 10.0 - value,
-                "stages": {"vpr_route": {"metrics": {"wirelength": 100 - int(value)}}},
+                "stages": {
+                    "vpr_pack_place": {
+                        "architecture": {"sha256": architecture_sha},
+                        "configuration": {"seed": 1},
+                        "command": [str(tool), "--pack", "--place"],
+                    },
+                    "vpr_route": {
+                        "architecture": {"sha256": architecture_sha},
+                        "configuration": {
+                            "route_channel_width": 300,
+                            "retain_rr_graph": False,
+                        },
+                        "command": [str(tool), "--route"],
+                        "metrics": {"wirelength": 100 - int(value)},
+                    },
+                },
                 "physical_result": {
                     "timing": {
                         "wns_ns": value,
@@ -83,9 +129,12 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                 validate_system_route_tdm_scale_comparison(broken)
 
     def _report(self, root: Path, route: str, tdm: str, value: float):
+        tool = root.parent / "physical-tool"
+        tool.write_bytes(b"pinned physical tool\n")
         artifacts = {}
         for key in (
-            "emuir", "assignment", "timing_path_database",
+            "platform", "emuir", "partition_constraints",
+            "route_constraints", "assignment", "timing_path_database",
             "partition_net_weights", "routes",
         ):
             path = root / f"{key}.json"
@@ -130,7 +179,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                 },
             },
             "artifacts": artifacts,
-            "physical": _physical(value),
+            "physical": _physical(value, tool),
             "runtime": {
                 "system_timing": {
                     "schema": "emuflow.system-timing/v2",
@@ -416,6 +465,152 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             ):
                 with self.assertRaises(ValidationError):
                     build_system_route_tdm_ab_comparison(baseline, upgrade, root / "comparison.json")
+
+    def test_rejects_mixed_boarddb_and_physical_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+            )
+            up_report = self._report(
+                upgrade,
+                GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER,
+                -0.25,
+            )
+            write_json(upgrade / "platform.json", {"name": "other-board"})
+            up_report["artifacts"]["platform"]["sha256"] = _sha256(
+                upgrade / "platform.json"
+            )
+            write_json(baseline / "multi-fpga-flow-report.json", base_report)
+            write_json(upgrade / "multi-fpga-flow-report.json", up_report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(ValidationError, "platform.*differs"):
+                    build_system_route_tdm_ab_comparison(
+                        baseline, upgrade, root / "board-mixed.json"
+                    )
+
+            write_json(upgrade / "platform.json", {"kind": "platform"})
+            up_report["artifacts"]["platform"]["sha256"] = _sha256(
+                upgrade / "platform.json"
+            )
+            up_report["physical"]["fpgas"][0]["stages"][
+                "vpr_pack_place"
+            ]["configuration"]["seed"] = 9
+            write_json(upgrade / "multi-fpga-flow-report.json", up_report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "architecture, tools, seed, workers"
+                ):
+                    build_system_route_tdm_ab_comparison(
+                        baseline, upgrade, root / "seed-mixed.json"
+                    )
+
+    def test_reads_pre_v5_canonical_frozen_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+            )
+            up_report = self._report(
+                upgrade,
+                GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER,
+                -0.25,
+            )
+            canonical = {
+                "platform": "frontend/phase1/platform.normalized.json",
+                "partition_constraints": "partition/constraints.normalized.json",
+                "route_constraints": (
+                    "system-route/route_constraints.normalized.json"
+                ),
+            }
+            for flow_root, report in (
+                (baseline, base_report),
+                (upgrade, up_report),
+            ):
+                for key, relative in canonical.items():
+                    source = flow_root / report["artifacts"][key]["path"]
+                    destination = flow_root / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(source.read_bytes())
+                    del report["artifacts"][key]
+                write_json(flow_root / "multi-fpga-flow-report.json", report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                result = build_system_route_tdm_ab_comparison(
+                    baseline, upgrade, root / "legacy.json"
+                )
+            self.assertEqual(result["validation"]["status"], "pass")
+            self.assertEqual(
+                set(result["frozen_upstream"]),
+                {
+                    "platform",
+                    "emuir",
+                    "partition_constraints",
+                    "route_constraints",
+                    "assignment",
+                    "timing_path_database",
+                    "partition_net_weights",
+                },
+            )
+
+    def test_rejects_resealed_reproducibility_tamper(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            write_json(
+                baseline / "multi-fpga-flow-report.json",
+                self._report(
+                    baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+                ),
+            )
+            write_json(
+                upgrade / "multi-fpga-flow-report.json",
+                self._report(
+                    upgrade,
+                    GLOBAL_CANDIDATE_PROVIDER,
+                    TDM_ACADEMIC_SCHEDULE_PROVIDER,
+                    -0.25,
+                ),
+            )
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                result = build_system_route_tdm_ab_comparison(
+                    baseline, upgrade, root / "comparison.json"
+                )
+            tampered = copy.deepcopy(result)
+            tampered["arms"]["baseline"]["physical_reproducibility"][
+                "vpr_pack_place_seed"
+            ]["fpga0"] = 17
+            tampered["arms"]["upgrade"]["physical_reproducibility"][
+                "vpr_pack_place_seed"
+            ]["fpga0"] = 17
+            with self.assertRaisesRegex(
+                ValidationError, "reproducibility evidence disagrees"
+            ):
+                validate_system_route_tdm_ab_comparison(tampered)
 
     def test_normalizes_only_each_flow_root_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from pathlib import Path
@@ -20,14 +21,22 @@ from .tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
-SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v4"
+SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v5"
 SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v1"
 _FROZEN_ARTIFACTS = (
+    "platform",
     "emuir",
+    "partition_constraints",
+    "route_constraints",
     "assignment",
     "timing_path_database",
     "partition_net_weights",
 )
+_LEGACY_FIXED_ARTIFACT_PATHS = {
+    "platform": "frontend/phase1/platform.normalized.json",
+    "partition_constraints": "partition/constraints.normalized.json",
+    "route_constraints": "system-route/route_constraints.normalized.json",
+}
 _PHYSICAL_METRICS = (
     "total_wirelength",
     "worst_critical_path_ns",
@@ -60,6 +69,14 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _normalized_json_sha256(path: Path, root: Path) -> str:
@@ -113,6 +130,249 @@ def _checked_artifact(root: Path, report: Dict[str, Any], key: str) -> str:
     if actual != expected:
         raise ValidationError(f"routing/TDM A/B artifact {key!r} hash disagrees")
     return actual
+
+
+def _checked_frozen_artifact(
+    root: Path, report: Dict[str, Any], key: str
+) -> tuple[Path, str]:
+    """Check a frozen input, including canonical pre-v5 flow locations.
+
+    Complete flows created before the v5 comparison gate did not repeat the
+    platform and normalized constraint seals in the top-level artifact table.
+    They did, however, materialize those inputs at fixed checked paths below
+    the flow root.  Reading those exact paths keeps already-running physical
+    jobs usable while v5 reports emitted by new flows seal them directly.
+    """
+
+    artifact = report.get("artifacts", {}).get(key)
+    if artifact is not None:
+        digest = _checked_artifact(root, report, key)
+        return root / artifact["path"], digest
+    relative = _LEGACY_FIXED_ARTIFACT_PATHS.get(key)
+    if relative is None:
+        raise ValidationError(f"routing/TDM A/B artifact {key!r} is missing")
+    root = root.resolve()
+    path = root / relative
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError(f"routing/TDM A/B artifact {key!r} is missing")
+    resolved = path.resolve()
+    if resolved.parent != root and root not in resolved.parents:
+        raise ValidationError(f"routing/TDM A/B artifact {key!r} escapes its flow")
+    return resolved, _sha256(resolved)
+
+
+def _valid_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _tool_executable_seals(physical: Dict[str, Any]) -> Dict[str, str]:
+    """Hash every external executable actually recorded by Phase 7."""
+
+    seals: Dict[str, str] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            command = value.get("command")
+            if isinstance(command, list) and command:
+                raw = command[0]
+                if not isinstance(raw, str) or not raw:
+                    raise ValidationError(
+                        "routing/TDM A/B physical command executable is invalid"
+                    )
+                path = Path(raw).expanduser()
+                if path.is_symlink():
+                    path = path.resolve()
+                if not path.is_file():
+                    raise ValidationError(
+                        f"routing/TDM A/B physical executable is missing: {raw}"
+                    )
+                digest = _sha256(path)
+                previous = seals.setdefault(raw, digest)
+                if previous != digest:
+                    raise ValidationError(
+                        "routing/TDM A/B physical executable changed during validation"
+                    )
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(physical.get("fpgas"))
+    if not seals:
+        raise ValidationError(
+            "routing/TDM A/B physical flow records no executable provenance"
+        )
+    return dict(sorted(seals.items()))
+
+
+def _physical_reproducibility_source(
+    physical: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Retain the minimal Phase-7 records needed for independent replay."""
+
+    records = physical.get("fpgas")
+    if not isinstance(records, list):
+        raise ValidationError(
+            "routing/TDM A/B physical FPGA evidence is missing"
+        )
+    compact_records = []
+    for record in records:
+        stages = record.get("stages") if isinstance(record, dict) else None
+        if not isinstance(stages, dict):
+            raise ValidationError(
+                "routing/TDM A/B physical stage evidence is missing"
+            )
+        retained_stages = {}
+        for name in ("vpr_pack_place", "vpr_route"):
+            stage = stages.get(name)
+            if isinstance(stage, dict):
+                retained_stages[name] = {
+                    key: json.loads(json.dumps(stage[key]))
+                    for key in ("architecture", "configuration", "command")
+                    if key in stage
+                }
+        compact_records.append(
+            {"fpga": record.get("fpga"), "stages": retained_stages}
+        )
+    return {
+        key: json.loads(json.dumps(physical[key]))
+        for key in (
+            "backend",
+            "architecture",
+            "execution",
+            "expected_fpgas",
+        )
+    } | {"fpgas": compact_records}
+
+
+def _physical_reproducibility_configuration(
+    physical: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Rebuild the backend settings that must be identical across A/B arms."""
+
+    backend = physical.get("backend")
+    expected = physical.get("expected_fpgas")
+    execution = physical.get("execution")
+    architecture = physical.get("architecture")
+    records = physical.get("fpgas")
+    if (
+        not isinstance(backend, dict)
+        or not isinstance(expected, list)
+        or not expected
+        or any(not isinstance(item, str) or not item for item in expected)
+        or not isinstance(execution, dict)
+        or set(execution)
+        != {
+            "requested_workers",
+            "effective_workers",
+            "ordering",
+            "pack_place_resume",
+        }
+        or not isinstance(records, list)
+    ):
+        raise ValidationError(
+            "routing/TDM A/B physical reproducibility metadata is incomplete"
+        )
+    requested = execution.get("requested_workers")
+    effective = execution.get("effective_workers")
+    if (
+        isinstance(requested, bool)
+        or not isinstance(requested, int)
+        or requested <= 0
+        or isinstance(effective, bool)
+        or not isinstance(effective, int)
+        or effective <= 0
+        or effective > min(requested, len(expected))
+        or execution.get("ordering") != "boarddb-fpga-order"
+        or not isinstance(execution.get("pack_place_resume"), bool)
+    ):
+        raise ValidationError(
+            "routing/TDM A/B physical execution settings are invalid"
+        )
+    by_id = {
+        record.get("fpga"): record
+        for record in records
+        if isinstance(record, dict)
+    }
+    if (
+        list(expected) != [record.get("fpga") for record in records]
+        or set(by_id) != set(expected)
+    ):
+        raise ValidationError(
+            "routing/TDM A/B physical FPGA order is not deterministic"
+        )
+    backend_id = backend.get("id")
+    canonical_architecture = (
+        {
+            key: value
+            for key, value in architecture.items()
+            if key not in {"path", "output"}
+        }
+        if isinstance(architecture, dict)
+        else architecture
+    )
+    result: Dict[str, Any] = {
+        "backend": backend,
+        "expected_fpgas": list(expected),
+        "execution": dict(execution),
+        "architecture": canonical_architecture,
+        "tool_executables": _tool_executable_seals(physical),
+    }
+    if backend_id == "open":
+        architecture_sha = (
+            architecture.get("sha256") if isinstance(architecture, dict) else None
+        )
+        if not _valid_digest(architecture_sha):
+            raise ValidationError(
+                "routing/TDM A/B open architecture seal is missing"
+            )
+        seeds: Dict[str, int] = {}
+        widths: Dict[str, int] = {}
+        for fpga_id in expected:
+            stages = by_id[fpga_id].get("stages")
+            if not isinstance(stages, dict):
+                raise ValidationError(
+                    f"routing/TDM A/B physical stages for {fpga_id} are missing"
+                )
+            pack = stages.get("vpr_pack_place")
+            route = stages.get("vpr_route")
+            if not isinstance(pack, dict) or not isinstance(route, dict):
+                raise ValidationError(
+                    f"routing/TDM A/B VPR stages for {fpga_id} are missing"
+                )
+            seed = pack.get("configuration", {}).get("seed")
+            width = route.get("configuration", {}).get("route_channel_width")
+            if (
+                isinstance(seed, bool)
+                or not isinstance(seed, int)
+                or seed < 0
+                or isinstance(width, bool)
+                or not isinstance(width, int)
+                or width <= 0
+                or width % 2
+                or pack.get("architecture", {}).get("sha256") != architecture_sha
+                or route.get("architecture", {}).get("sha256") != architecture_sha
+            ):
+                raise ValidationError(
+                    f"routing/TDM A/B VPR configuration for {fpga_id} is invalid"
+                )
+            seeds[fpga_id] = seed
+            widths[fpga_id] = width
+        result["vpr_pack_place_seed"] = seeds
+        result["vpr_route_channel_width"] = widths
+    elif backend_id == "vivado":
+        if not isinstance(architecture, dict):
+            raise ValidationError(
+                "routing/TDM A/B Vivado architecture metadata is missing"
+            )
+    else:
+        raise ValidationError("routing/TDM A/B physical backend is unsupported")
+    return result
 
 
 def _finite_metrics(value: Dict[str, Any], fields: Iterable[str], label: str) -> None:
@@ -311,14 +571,10 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
     ):
         raise ValidationError("routing/TDM A/B comparison identity is invalid")
     frozen = report.get("frozen_upstream")
-    if not isinstance(frozen, dict) or not {"emuir", "assignment"}.issubset(frozen):
+    if not isinstance(frozen, dict) or set(frozen) != set(_FROZEN_ARTIFACTS):
         raise ValidationError("routing/TDM A/B frozen upstream is incomplete")
     for digest in frozen.values():
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
+        if not _valid_digest(digest):
             raise ValidationError("routing/TDM A/B frozen digest is invalid")
     configuration = report.get("configuration")
     if configuration != {
@@ -364,6 +620,71 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
             or len(source["sha256"]) != 64
         ):
             raise ValidationError(f"routing/TDM A/B {label} source seal is invalid")
+        reproducibility = arm.get("physical_reproducibility")
+        reproducibility_source = arm.get("physical_reproducibility_source")
+        evidence = arm.get("physical_reproducibility_evidence")
+        reproducibility_keys = {
+            "backend",
+            "expected_fpgas",
+            "execution",
+            "architecture",
+            "tool_executables",
+        }
+        if isinstance(reproducibility, dict) and reproducibility.get(
+            "backend", {}
+        ).get("id") == "open":
+            reproducibility_keys.update(
+                {"vpr_pack_place_seed", "vpr_route_channel_width"}
+            )
+        if (
+            not isinstance(reproducibility, dict)
+            or set(reproducibility) != reproducibility_keys
+            or not isinstance(reproducibility.get("backend"), dict)
+            or not isinstance(reproducibility.get("expected_fpgas"), list)
+            or not isinstance(reproducibility.get("execution"), dict)
+            or not isinstance(reproducibility.get("architecture"), dict)
+            or not isinstance(reproducibility.get("tool_executables"), dict)
+            or not reproducibility["tool_executables"]
+            or not isinstance(reproducibility_source, dict)
+            or _physical_reproducibility_configuration(
+                reproducibility_source
+            )
+            != reproducibility
+            or not isinstance(evidence, dict)
+            or set(evidence)
+            != {"physical_report_sha256", "configuration_sha256"}
+            or not _valid_digest(evidence.get("physical_report_sha256"))
+            or evidence.get("configuration_sha256")
+            != _json_sha256(reproducibility)
+            or evidence.get("physical_report_sha256")
+            != _json_sha256(reproducibility_source)
+            or any(
+                not isinstance(path, str)
+                or not path
+                or not _valid_digest(digest)
+                for path, digest in reproducibility["tool_executables"].items()
+            )
+            or (
+                reproducibility.get("backend", {}).get("id") == "open"
+                and (
+                    set(reproducibility["vpr_pack_place_seed"])
+                    != set(reproducibility["expected_fpgas"])
+                    or set(reproducibility["vpr_route_channel_width"])
+                    != set(reproducibility["expected_fpgas"])
+                )
+            )
+        ):
+            raise ValidationError(
+                f"routing/TDM A/B {label} reproducibility evidence disagrees"
+            )
+    if (
+        arms["baseline"]["physical_reproducibility"]
+        != arms["upgrade"]["physical_reproducibility"]
+    ):
+        raise ValidationError(
+            "routing/TDM A/B physical architecture, tools, seed, workers, "
+            "or backend options differ"
+        )
     baseline = arms["baseline"]["physical"]
     upgrade = arms["upgrade"]["physical"]
     expected = {
@@ -474,28 +795,31 @@ def build_system_route_tdm_ab_comparison(
 
     frozen: Dict[str, str] = {}
     for key in _FROZEN_ARTIFACTS:
-        baseline_has = key in baseline.get("artifacts", {})
-        upgrade_has = key in upgrade.get("artifacts", {})
-        if baseline_has != upgrade_has:
-            raise ValidationError(f"routing/TDM A/B artifact {key!r} coverage differs")
-        if baseline_has:
-            _checked_artifact(baseline_root, baseline, key)
-            _checked_artifact(upgrade_root, upgrade, key)
-            baseline_path = baseline_root / baseline["artifacts"][key]["path"]
-            upgrade_path = upgrade_root / upgrade["artifacts"][key]["path"]
-            baseline_digest = _normalized_json_sha256(
-                baseline_path, baseline_root
-            )
-            upgrade_digest = _normalized_json_sha256(upgrade_path, upgrade_root)
-            if baseline_digest != upgrade_digest:
-                raise ValidationError(f"routing/TDM A/B frozen artifact {key!r} differs")
-            frozen[key] = baseline_digest
+        baseline_path, _ = _checked_frozen_artifact(
+            baseline_root, baseline, key
+        )
+        upgrade_path, _ = _checked_frozen_artifact(
+            upgrade_root, upgrade, key
+        )
+        baseline_digest = _normalized_json_sha256(
+            baseline_path, baseline_root
+        )
+        upgrade_digest = _normalized_json_sha256(upgrade_path, upgrade_root)
+        if baseline_digest != upgrade_digest:
+            raise ValidationError(f"routing/TDM A/B frozen artifact {key!r} differs")
+        frozen[key] = baseline_digest
 
     arms: Dict[str, Any] = {}
     for label, report in reports.items():
         root = roots[label]
         source_path = root / "multi-fpga-flow-report.json"
         physical = _phase6_physical_metrics(report["physical"])
+        reproducibility_source = _physical_reproducibility_source(
+            report["physical"]
+        )
+        reproducibility = _physical_reproducibility_configuration(
+            reproducibility_source
+        )
         arms[label] = {
             "flow_report": {"sha256": _sha256(source_path)},
             "route_provider": report["stages"]["system_route"]["provider"],
@@ -504,6 +828,14 @@ def build_system_route_tdm_ab_comparison(
             "tdm": _tdm_metrics(report["stages"]["tdm"]),
             "physical": physical,
             "global_timing": _global_timing_metrics(root, report),
+            "physical_reproducibility": reproducibility,
+            "physical_reproducibility_source": reproducibility_source,
+            "physical_reproducibility_evidence": {
+                "physical_report_sha256": _json_sha256(
+                    reproducibility_source
+                ),
+                "configuration_sha256": _json_sha256(reproducibility),
+            },
         }
     baseline_physical = arms["baseline"]["physical"]
     upgrade_physical = arms["upgrade"]["physical"]

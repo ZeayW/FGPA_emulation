@@ -166,7 +166,14 @@ def finalize_multi_fpga_physical_checkpoint(
         "physical": physical_report,
         "stages": stages,
         "artifacts": {
+            "platform": artifact(paths["platform"]),
             "emuir": artifact(paths["emuir"]),
+            "partition_constraints": artifact(
+                root / "partition/constraints.normalized.json"
+            ),
+            "route_constraints": artifact(
+                root / "system-route/route_constraints.normalized.json"
+            ),
             "assignment": artifact(paths["assignment"]),
             "routes": artifact(paths["routes"]),
             "schedule": artifact(paths["schedule"]),
@@ -1523,9 +1530,27 @@ def run_multi_fpga_flow(
             "split": phase6_report,
         },
         "artifacts": {
+            "platform": {
+                "path": "frontend/phase1/platform.normalized.json",
+                "sha256": _sha256(
+                    phase1_root / "platform.normalized.json"
+                ),
+            },
             "emuir": {
                 "path": "frontend/phase1/design.emuir.json",
                 "sha256": _sha256(ir_path),
+            },
+            "partition_constraints": {
+                "path": "partition/constraints.normalized.json",
+                "sha256": _sha256(
+                    phase3_root / "constraints.normalized.json"
+                ),
+            },
+            "route_constraints": {
+                "path": "system-route/route_constraints.normalized.json",
+                "sha256": _sha256(
+                    phase4_root / "route_constraints.normalized.json"
+                ),
             },
             "assignment": {
                 "path": "partition/assignment.json",
