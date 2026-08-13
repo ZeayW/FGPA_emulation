@@ -958,6 +958,12 @@ def validate_system_route_tdm_scale_comparison(
                 f"routing/TDM scale {label} metrics are invalid"
             )
         _finite_metrics(metrics, _SCALE_METRIC_FIELDS, f"scale {label}")
+        if metrics != _scale_metrics(
+            arm["route_validation"], arm["tdm_validation"]
+        ):
+            raise ValidationError(
+                f"routing/TDM scale {label} metrics were not reconstructed"
+            )
         seals = arm.get("artifacts")
         if not isinstance(seals, dict) or set(seals) != {
             "routes", "schedule", "ratio_plan"

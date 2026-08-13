@@ -186,7 +186,12 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             # A different valid digest is structurally valid in the detached
             # report, but changing a reconstructed metric must still fail.
             broken["arms"]["upgrade"]["metrics"]["tdm_worst_slack_ns"] = 1.0
-            with self.assertRaisesRegex(ValidationError, "delta"):
+            with self.assertRaisesRegex(ValidationError, "not reconstructed"):
+                validate_system_route_tdm_scale_comparison(broken)
+            broken = copy.deepcopy(report)
+            broken["arms"]["upgrade"]["metrics"]["tdm_worst_slack_ns"] = 1.0
+            broken["delta_upgrade_minus_baseline"]["tdm_worst_slack_ns"] = 3.0
+            with self.assertRaisesRegex(ValidationError, "not reconstructed"):
                 validate_system_route_tdm_scale_comparison(broken)
 
             write_json(
