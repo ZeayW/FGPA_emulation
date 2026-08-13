@@ -1550,10 +1550,22 @@ emuflow multi-fpga compile \
   --out build/picorv32-x32-ring-chimew-ab
 ```
 
-This connected harness is an acceptance target, not a checked-in QoR claim.
-Final Chimew promotion remains pending until both physical arms have produced
-sealed, comparable WNS/TNS results; README does not infer such numbers from a
-Phase 6-only or contest-only run.
+This connected harness has also been used for a frozen three-seed open-physical
+A/B on 67,674 synthesized instances and four FPGAs.  Both arms completed VPR
+placement/routing and Phase 7C with zero unrouted nets and zero DRC violations
+for every seed.  Relative to the previous placement-aware baseline, the
+timing-guarded soft Chimew candidate changed global target-clock WNS by
+`-0.4504`, `+0.6502`, and `+0.8303 ns`, but changed global TNS by `-19.0003`,
+`-0.3233`, and `-8.1944 ns`.  Mean deltas were therefore `+0.3434 ns` WNS and
+`-9.1727 ns` TNS; WNS improved in two of three seeds, while TNS improved in
+zero of three.  Path decomposition attributes the repeatable TNS loss primarily
+to FPGA-internal logic-placement delay rather than interface delay.  The
+current candidate consequently fails the promotion gate and remains an
+optional research provider; it is not the default open-flow Phase 6 algorithm.
+This is open-academic VTR evidence, not vendor timing sign-off or hardware
+closure.  Future promotion requires a revised integration that improves both
+global WNS and global TNS repeatably, not a Phase 6 proxy improvement or a
+selected favorable seed.
 
 The equivalent explicit stage commands are shown below for development and
 debugging.
