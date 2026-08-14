@@ -249,8 +249,15 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   that lookahead.  Reuse every valid ancestor; do not rerun Phase 1--5 merely
   to reach Phase 7.  Never coerce an incompatible communication-only artifact
   into a fake physical netlist.
-- Use the checked-in `experiment-stage` run/validate pairs for the canonical
-  Phase 6 provider matrix.  Materialize physical lookahead once at a declared
+- Use the checked-in `experiment-stage` run/validate pairs for every canonical
+  boundary: `frontend`, `timing`, `partition`, `cut-timing`, `route`, `tdm`,
+  the hard-linked `shared` view, physical lookahead, Phase 6, and Phase 7.
+  Generate the provider/seed DAG with `benchmark-experiment-compile`; do not
+  hand-collapse Phase 1--5 into a monolithic command. The compiler must bind
+  its case to the checked-in end-to-end matrix and must verify the run-spec
+  RTL/top/clocks plus the contest BoardDB materialization report; an arbitrary
+  platform with a canonical-looking name is not acceptable. Materialize physical
+  lookahead once at a declared
   seed, derive both placement-aware and Chimew inputs from that same frozen
   placement, and reuse the lookahead itself as baseline Phase 7 at the matching
   seed.  Do not hide a fresh baseline physical run inside either candidate arm.

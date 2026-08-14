@@ -31,6 +31,7 @@ from .pin_planning import (
     validate_pin_plan,
 )
 from .platform import Platform
+from .vpr import VTR_HARD_BLOCK_PROFILE
 
 
 EXPERIMENT_LOOKAHEAD_SCHEMA = "emuflow.experiment-physical-lookahead/v1"
@@ -206,6 +207,16 @@ def run_physical_lookahead(
     seed: int,
     workers: int,
     region_count: int,
+    architecture: Path | None = None,
+    architecture_id: str = VTR_HARD_BLOCK_PROFILE,
+    yosys: str | None = None,
+    vpr: str | None = None,
+    architecture_importer: str | None = None,
+    packed_importer: str | None = None,
+    route_checker: str | None = None,
+    openparf_install: Path | None = None,
+    openparf_python: Path | None = None,
+    route_channel_width: int = 300,
 ) -> Dict[str, Any]:
     shared = validate_shared_phase1_5(shared_root, platform_path)
     paths = _shared_paths(shared_root)
@@ -227,7 +238,17 @@ def run_physical_lookahead(
         paths["schedule"],
         output_dir / "physical",
         backend="open",
+        architecture=architecture,
+        architecture_id=architecture_id,
+        yosys=yosys,
+        vpr=vpr,
+        architecture_importer=architecture_importer,
+        packed_importer=packed_importer,
+        route_checker=route_checker,
+        openparf_install=openparf_install,
+        openparf_python=openparf_python,
         seed=seed,
+        route_channel_width=route_channel_width,
         workers=workers,
         original_ir_path=paths["ir"] if _timing_paths(shared_root) else None,
         assignment_path=paths["assignment"] if _timing_paths(shared_root) else None,
@@ -254,6 +275,11 @@ def run_physical_lookahead(
         "seed": seed,
         "workers": workers,
         "region_count": region_count,
+        "architecture_sha256": (
+            _sha256(architecture.resolve()) if architecture is not None else None
+        ),
+        "architecture_id": architecture_id,
+        "route_channel_width": route_channel_width,
         "shared": shared,
         "baseline_phase6_manifest_sha256": _sha256(split_root / "manifest.json"),
         "physical_summary_sha256": _sha256(
@@ -498,6 +524,14 @@ def run_phase7_checkpoint(
     *,
     seed: int,
     workers: int,
+    yosys: str | None = None,
+    vpr: str | None = None,
+    architecture_importer: str | None = None,
+    packed_importer: str | None = None,
+    route_checker: str | None = None,
+    openparf_install: Path | None = None,
+    openparf_python: Path | None = None,
+    route_channel_width: int = 300,
 ) -> Dict[str, Any]:
     phase6 = validate_phase6_checkpoint(
         phase6_root, shared_root, lookahead_root, platform_path
@@ -515,7 +549,15 @@ def run_phase7_checkpoint(
             output_dir / "physical",
             backend="open",
             architecture=lookahead_root / "physical/architecture/vtr-flagship.xml",
+            yosys=yosys,
+            vpr=vpr,
+            architecture_importer=architecture_importer,
+            packed_importer=packed_importer,
+            route_checker=route_checker,
+            openparf_install=openparf_install,
+            openparf_python=openparf_python,
             seed=seed,
+            route_channel_width=route_channel_width,
             workers=workers,
             original_ir_path=paths["ir"] if _timing_paths(shared_root) else None,
             assignment_path=paths["assignment"] if _timing_paths(shared_root) else None,
@@ -542,6 +584,7 @@ def run_phase7_checkpoint(
         "provider": phase6["provider"],
         "physical_seed": seed,
         "workers": workers,
+        "route_channel_width": route_channel_width,
         "phase6_manifest_sha256": _sha256(phase6_root / "split/manifest.json"),
         "physical_summary_sha256": _sha256(output_dir / "physical/physical-summary.json"),
         "qor_sha256": _sha256(output_dir / "runtime/qor_report.json"),

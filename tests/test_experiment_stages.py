@@ -8,11 +8,37 @@ from emuflow.experiment_stages import (
     _placement_aware_positions,
     _prepare_empty_output,
 )
+from emuflow.experiment_upstream import (
+    run_frontend_checkpoint,
+    validate_frontend_checkpoint,
+)
 from emuflow.io import write_json
 from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
+    def test_frontend_checkpoint_is_reusable_and_tamper_evident(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        platform = repository / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "frontend"
+            report = run_frontend_checkpoint(
+                platform,
+                output,
+                yosys_json=repository / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                validate_frontend_checkpoint(output, platform)["status"], "pass"
+            )
+            (output / "phase1/design.emuir.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(Exception, "EmuIR seal"):
+                validate_frontend_checkpoint(output, platform)
+
     def test_checkpoint_runner_accepts_precreated_empty_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "staging"
@@ -109,6 +135,45 @@ class ExperimentStagesTest(unittest.TestCase):
         )
         self.assertEqual(args.seed, 3)
         self.assertEqual(args.workers, 8)
+
+    def test_cli_exposes_fine_grained_phase1_5_commands(self) -> None:
+        parser = _build_parser()
+        timing = parser.parse_args(
+            [
+                "experiment-stage",
+                "timing-run",
+                "--frontend",
+                "frontend",
+                "--clock-period",
+                "clk=10",
+                "--out",
+                "timing",
+            ]
+        )
+        self.assertEqual(timing.clock_period, ["clk=10"])
+        shared = parser.parse_args(
+            [
+                "experiment-stage",
+                "shared-materialize",
+                "--frontend",
+                "f",
+                "--timing",
+                "t",
+                "--partition",
+                "p",
+                "--cut-timing",
+                "c",
+                "--route",
+                "r",
+                "--tdm",
+                "d",
+                "--platform",
+                "board.json",
+                "--out",
+                "shared",
+            ]
+        )
+        self.assertEqual(shared.experiment_stage_command, "shared-materialize")
 
     def test_baseline_phase6_does_not_require_lookahead(self) -> None:
         args = _build_parser().parse_args(

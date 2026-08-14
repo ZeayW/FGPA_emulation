@@ -790,9 +790,14 @@ frontend/synthesis -> timing preparation -> partition -> system route -> TDM
 ```
 
 The checked-in `experiment-stage` commands implement these semantic
-boundaries. `shared-validate` remains a compatibility validator for a frozen
-Phase 1--5 flow root, but v2 DAGs model its frontend/timing/partition/route/TDM
-components separately. `phase6-run --provider baseline` consumes Phase 5
+boundaries. The executable pairs are `frontend-run/validate`,
+`timing-run/validate`, `partition-run/validate`,
+`cut-timing-run/validate`, `route-run/validate`, and `tdm-run/validate`.
+`shared-materialize` then creates a small same-filesystem hard-linked view of
+their validated consumer artifacts, and `shared-validate` rechecks that view.
+The hard links do not duplicate file allocation; on a cross-filesystem test
+environment the command safely falls back to copying. v2 DAGs still model the
+six producing stages separately. `phase6-run --provider baseline` consumes Phase 5
 directly and needs no lookahead. `lookahead-run --baseline-phase6 ...`
 performs one fixed-seed open physical prepass and materializes
 the source-bound placement/congestion inputs; `phase6-run` accepts
@@ -839,11 +844,29 @@ than silently rerun or reused.
 Plan the first frontier:
 
 ```bash
+emuflow benchmark-experiment-compile \
+  --config /shared/experiments/koios-case6.config.json \
+  --repository-root /shared/emuflow/source/$COMMIT \
+  --out /shared/experiments/koios-case6.json
 emuflow experiment-cache plan \
   --spec /shared/experiments/koios-case6.json \
   --cache /shared/emuflow/checkpoints \
   --out /shared/experiments/koios-case6.plan.json
 ```
+
+The canonical compiler requires byte-addressed RTL, BoardDB, the corresponding
+`boarddb_report.json`, timing/device models, the physical architecture, the
+versioned OpenPARF manifest, and every external executable used by synthesis,
+STA, partitioning, routing, scheduling, and physical implementation.  The case
+ID must exist in `benchmarks/end_to_end_validation_matrix.json`; the compiler
+checks the RTL filename/top/clocks against that case's run spec and checks the
+BoardDB bytes, contest-case identity, and contest-matrix digest against its
+materialization report.  Supplying an arbitrary design or merely renaming a
+platform therefore cannot enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
+per provider and nine terminal Phase 7 nodes (three providers by seeds 1, 2,
+and 3). Tool bytes and per-stage implementation closures are part of node
+identity, so a router-only change preserves frontend, STA, and partition
+checkpoints while invalidating routing and its descendants.
 
 New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
 only for migration compatibility. A deliberately

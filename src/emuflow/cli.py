@@ -73,6 +73,7 @@ from .contest_public import (
 )
 from .contest_validation_matrix import load_contest_validation_matrix
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
+from .canonical_experiment import compile_canonical_experiment_spec
 from .experiment_dag import (
     build_experiment_farm_spec,
     import_experiment_checkpoint,
@@ -101,6 +102,22 @@ from .experiment_stages import (
     validate_phase7_checkpoint,
     validate_physical_lookahead,
     validate_shared_phase1_5,
+)
+from .experiment_upstream import (
+    materialize_shared_phase1_5,
+    run_cut_timing_checkpoint,
+    run_frontend_checkpoint,
+    run_partition_checkpoint,
+    run_route_checkpoint,
+    run_tdm_checkpoint,
+    run_timing_checkpoint,
+    validate_cut_timing_checkpoint,
+    validate_frontend_checkpoint,
+    validate_materialized_shared_phase1_5,
+    validate_partition_checkpoint,
+    validate_route_checkpoint,
+    validate_tdm_checkpoint,
+    validate_timing_checkpoint,
 )
 from .errors import EmuFlowError
 from .fpga_interchange import (
@@ -442,6 +459,148 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_stage_subparsers = experiment_stage.add_subparsers(
         dest="experiment_stage_command", required=True
     )
+    frontend_run = experiment_stage_subparsers.add_parser(
+        "frontend-run", help="run one reusable synthesis and Phase 1 checkpoint"
+    )
+    frontend_run.add_argument("--platform", type=Path, required=True)
+    frontend_run.add_argument("--source", type=Path, action="append", default=[])
+    frontend_run.add_argument("--top")
+    frontend_run.add_argument("--clock", action="append", default=[])
+    frontend_run.add_argument("--yosys-json", type=Path)
+    frontend_run.add_argument("--yosys")
+    frontend_run.add_argument(
+        "--mapping-profile",
+        choices=("vtr-hard-blocks", "generic-soft"),
+        default="vtr-hard-blocks",
+    )
+    frontend_run.add_argument("--allow-fabric-clock", action="store_true")
+    frontend_run.add_argument("--out", type=Path, required=True)
+    frontend_validate = experiment_stage_subparsers.add_parser(
+        "frontend-validate", help="independently validate a frontend checkpoint"
+    )
+    frontend_validate.add_argument("root", type=Path)
+    frontend_validate.add_argument("--platform", type=Path, required=True)
+
+    timing_run = experiment_stage_subparsers.add_parser(
+        "timing-run", help="run reusable pre-partition OpenSTA timing"
+    )
+    timing_run.add_argument("--frontend", type=Path, required=True)
+    timing_run.add_argument("--clock-period", action="append", default=[], required=True)
+    timing_run.add_argument("--timing-model", type=Path, default=DEFAULT_TIMING_MODEL)
+    timing_run.add_argument("--architecture-timing-db", type=Path)
+    timing_run.add_argument("--opensta")
+    timing_run.add_argument("--max-paths", type=int, default=200000)
+    timing_run.add_argument("--criticality-scale", type=float, default=9.0)
+    timing_run.add_argument("--criticality-exponent", type=float, default=2.0)
+    timing_run.add_argument("--out", type=Path, required=True)
+    timing_validate = experiment_stage_subparsers.add_parser(
+        "timing-validate", help="independently validate a timing checkpoint"
+    )
+    timing_validate.add_argument("root", type=Path)
+    timing_validate.add_argument("--frontend", type=Path, required=True)
+
+    partition_run = experiment_stage_subparsers.add_parser(
+        "partition-run", help="run one reusable timing-driven Phase 3 checkpoint"
+    )
+    partition_run.add_argument("--frontend", type=Path, required=True)
+    partition_run.add_argument("--timing", type=Path, required=True)
+    partition_run.add_argument("--platform", type=Path, required=True)
+    partition_run.add_argument(
+        "--provider",
+        choices=("tritonpart", "greedy", "repart", "repart-replication", "mfspart"),
+        default="tritonpart",
+    )
+    partition_run.add_argument("--seed", type=int, default=0)
+    partition_run.add_argument("--constraints", type=Path)
+    partition_run.add_argument("--route-constraints", type=Path)
+    partition_run.add_argument("--min-used-fpgas", type=int)
+    partition_run.add_argument("--balance-tolerance", type=float)
+    partition_run.add_argument("--openroad")
+    partition_run.add_argument("--timeout-seconds", type=int, default=3600)
+    partition_run.add_argument("--seed-attempts", type=int, default=1)
+    partition_run.add_argument("--num-initial-solutions", type=int, default=50)
+    partition_run.add_argument("--num-best-initial-solutions", type=int, default=10)
+    partition_run.add_argument("--out", type=Path, required=True)
+    partition_validate = experiment_stage_subparsers.add_parser(
+        "partition-validate", help="independently validate a Phase 3 checkpoint"
+    )
+    partition_validate.add_argument("root", type=Path)
+    partition_validate.add_argument("--frontend", type=Path, required=True)
+    partition_validate.add_argument("--timing", type=Path, required=True)
+    partition_validate.add_argument("--platform", type=Path, required=True)
+
+    cut_timing_run = experiment_stage_subparsers.add_parser(
+        "cut-timing-run", help="extract and project partition cut timing paths"
+    )
+    cut_timing_run.add_argument("--frontend", type=Path, required=True)
+    cut_timing_run.add_argument("--timing", type=Path, required=True)
+    cut_timing_run.add_argument("--partition", type=Path, required=True)
+    cut_timing_run.add_argument("--clock-period", action="append", default=[], required=True)
+    cut_timing_run.add_argument("--timing-model", type=Path, default=DEFAULT_TIMING_MODEL)
+    cut_timing_run.add_argument("--architecture-timing-db", type=Path)
+    cut_timing_run.add_argument("--opensta")
+    cut_timing_run.add_argument("--max-paths", type=int, default=200000)
+    cut_timing_run.add_argument("--out", type=Path, required=True)
+    cut_timing_validate = experiment_stage_subparsers.add_parser(
+        "cut-timing-validate", help="independently validate cut timing"
+    )
+    cut_timing_validate.add_argument("root", type=Path)
+    cut_timing_validate.add_argument("--frontend", type=Path, required=True)
+    cut_timing_validate.add_argument("--partition", type=Path, required=True)
+
+    route_run = experiment_stage_subparsers.add_parser(
+        "route-run", help="run one reusable timing-aware Phase 4 checkpoint"
+    )
+    route_run.add_argument("--partition", type=Path, required=True)
+    route_run.add_argument("--cut-timing", type=Path, required=True)
+    route_run.add_argument("--platform", type=Path, required=True)
+    route_run.add_argument("--constraints", type=Path)
+    route_run.add_argument("--frame-slots", type=int)
+    route_run.add_argument("--max-iterations", type=int)
+    route_run.add_argument("--router")
+    route_run.add_argument("--out", type=Path, required=True)
+    route_validate = experiment_stage_subparsers.add_parser(
+        "route-validate", help="independently validate a Phase 4 checkpoint"
+    )
+    route_validate.add_argument("root", type=Path)
+    route_validate.add_argument("--partition", type=Path, required=True)
+    route_validate.add_argument("--cut-timing", type=Path, required=True)
+    route_validate.add_argument("--platform", type=Path, required=True)
+
+    tdm_run = experiment_stage_subparsers.add_parser(
+        "tdm-run", help="run one reusable timing-aware Phase 5 checkpoint"
+    )
+    tdm_run.add_argument("--route", type=Path, required=True)
+    tdm_run.add_argument("--platform", type=Path, required=True)
+    tdm_run.add_argument("--simulation-frames", type=int, default=16)
+    tdm_run.add_argument("--provider")
+    tdm_run.add_argument("--ratio-max-iterations", type=int, default=500)
+    tdm_run.add_argument("--max-ratio", type=int)
+    tdm_run.add_argument("--ratio-quantum", type=int, default=8)
+    tdm_run.add_argument("--post-refinement-iterations", type=int, default=200)
+    tdm_run.add_argument("--slot-refinement-iterations", type=int, default=0)
+    tdm_run.add_argument("--ratio-optimizer")
+    tdm_run.add_argument("--timing-dag-optimizer")
+    tdm_run.add_argument("--slot-optimizer")
+    tdm_run.add_argument("--out", type=Path, required=True)
+    tdm_validate = experiment_stage_subparsers.add_parser(
+        "tdm-validate", help="independently validate a Phase 5 checkpoint"
+    )
+    tdm_validate.add_argument("root", type=Path)
+    tdm_validate.add_argument("--route", type=Path, required=True)
+    tdm_validate.add_argument("--platform", type=Path, required=True)
+
+    shared_materialize = experiment_stage_subparsers.add_parser(
+        "shared-materialize", help="materialize a hard-linked validated Phase 1-5 view"
+    )
+    shared_materialize.add_argument("--frontend", type=Path, required=True)
+    shared_materialize.add_argument("--timing", type=Path, required=True)
+    shared_materialize.add_argument("--partition", type=Path, required=True)
+    shared_materialize.add_argument("--cut-timing", type=Path, required=True)
+    shared_materialize.add_argument("--route", type=Path, required=True)
+    shared_materialize.add_argument("--tdm", type=Path, required=True)
+    shared_materialize.add_argument("--platform", type=Path, required=True)
+    shared_materialize.add_argument("--out", type=Path, required=True)
     shared_validate = experiment_stage_subparsers.add_parser(
         "shared-validate", help="validate a frozen Phase 1-5 flow root"
     )
@@ -456,6 +615,18 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_run.add_argument("--seed", type=int, default=1)
     lookahead_run.add_argument("--workers", type=int, default=8)
     lookahead_run.add_argument("--region-count", type=int, default=4)
+    lookahead_run.add_argument("--architecture", type=Path)
+    lookahead_run.add_argument(
+        "--architecture-id", default="vtr-flagship-k6-n10-40nm"
+    )
+    lookahead_run.add_argument("--yosys")
+    lookahead_run.add_argument("--vpr")
+    lookahead_run.add_argument("--architecture-importer")
+    lookahead_run.add_argument("--packed-importer")
+    lookahead_run.add_argument("--route-checker")
+    lookahead_run.add_argument("--openparf-install", type=Path)
+    lookahead_run.add_argument("--openparf-python", type=Path)
+    lookahead_run.add_argument("--route-channel-width", type=int, default=300)
     lookahead_run.add_argument("--out", type=Path, required=True)
     lookahead_validate = experiment_stage_subparsers.add_parser(
         "lookahead-validate", help="independently validate a lookahead checkpoint"
@@ -494,6 +665,14 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7_run.add_argument("--platform", type=Path, required=True)
     phase7_run.add_argument("--seed", type=int, required=True)
     phase7_run.add_argument("--workers", type=int, default=8)
+    phase7_run.add_argument("--yosys")
+    phase7_run.add_argument("--vpr")
+    phase7_run.add_argument("--architecture-importer")
+    phase7_run.add_argument("--packed-importer")
+    phase7_run.add_argument("--route-checker")
+    phase7_run.add_argument("--openparf-install", type=Path)
+    phase7_run.add_argument("--openparf-python", type=Path)
+    phase7_run.add_argument("--route-channel-width", type=int, default=300)
     phase7_run.add_argument("--out", type=Path, required=True)
     phase7_validate = experiment_stage_subparsers.add_parser(
         "phase7-validate", help="independently validate a Phase 7 checkpoint"
@@ -1605,6 +1784,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     benchmark_matrix.add_argument("matrix", type=Path)
+    benchmark_experiment = subparsers.add_parser(
+        "benchmark-experiment-compile",
+        help="compile one canonical real-RTL Phase 1-7 experiment DAG",
+    )
+    benchmark_experiment.add_argument("--config", type=Path, required=True)
+    benchmark_experiment.add_argument("--repository-root", type=Path, required=True)
+    benchmark_experiment.add_argument("--out", type=Path, required=True)
 
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -2668,8 +2854,120 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "experiment-stage":
-        if args.experiment_stage_command == "shared-validate":
-            report = validate_shared_phase1_5(args.shared, args.platform)
+        if args.experiment_stage_command == "frontend-run":
+            report = run_frontend_checkpoint(
+                args.platform,
+                args.out,
+                sources=args.source,
+                top=args.top,
+                clocks=args.clock,
+                yosys_json=args.yosys_json,
+                yosys=args.yosys,
+                mapping_profile=args.mapping_profile,
+                require_no_fabric_clock=not args.allow_fabric_clock,
+            )
+        elif args.experiment_stage_command == "frontend-validate":
+            report = validate_frontend_checkpoint(args.root, args.platform)
+        elif args.experiment_stage_command == "timing-run":
+            report = run_timing_checkpoint(
+                args.frontend,
+                args.out,
+                clocks=parse_clock_definitions(args.clock_period),
+                timing_model_path=args.timing_model,
+                architecture_timing_db_path=args.architecture_timing_db,
+                opensta=args.opensta,
+                max_paths=args.max_paths,
+                criticality_scale=args.criticality_scale,
+                criticality_exponent=args.criticality_exponent,
+            )
+        elif args.experiment_stage_command == "timing-validate":
+            report = validate_timing_checkpoint(args.frontend, args.root)
+        elif args.experiment_stage_command == "partition-run":
+            report = run_partition_checkpoint(
+                args.frontend,
+                args.timing,
+                args.platform,
+                args.out,
+                provider=args.provider,
+                seed=args.seed,
+                constraints_path=args.constraints,
+                route_constraints_path=args.route_constraints,
+                min_used_fpgas=args.min_used_fpgas,
+                balance_tolerance=args.balance_tolerance,
+                openroad=args.openroad,
+                timeout_seconds=args.timeout_seconds,
+                seed_attempts=args.seed_attempts,
+                num_initial_solutions=args.num_initial_solutions,
+                num_best_initial_solutions=args.num_best_initial_solutions,
+            )
+        elif args.experiment_stage_command == "partition-validate":
+            report = validate_partition_checkpoint(
+                args.frontend, args.timing, args.platform, args.root
+            )
+        elif args.experiment_stage_command == "cut-timing-run":
+            report = run_cut_timing_checkpoint(
+                args.frontend,
+                args.timing,
+                args.partition,
+                args.out,
+                clocks=parse_clock_definitions(args.clock_period),
+                timing_model_path=args.timing_model,
+                architecture_timing_db_path=args.architecture_timing_db,
+                opensta=args.opensta,
+                max_paths=args.max_paths,
+            )
+        elif args.experiment_stage_command == "cut-timing-validate":
+            report = validate_cut_timing_checkpoint(
+                args.frontend, args.partition, args.root
+            )
+        elif args.experiment_stage_command == "route-run":
+            report = run_route_checkpoint(
+                args.partition,
+                args.cut_timing,
+                args.platform,
+                args.out,
+                constraints_path=args.constraints,
+                frame_slots=args.frame_slots,
+                max_iterations=args.max_iterations,
+                router=args.router,
+            )
+        elif args.experiment_stage_command == "route-validate":
+            report = validate_route_checkpoint(
+                args.partition, args.cut_timing, args.platform, args.root
+            )
+        elif args.experiment_stage_command == "tdm-run":
+            report = run_tdm_checkpoint(
+                args.route,
+                args.platform,
+                args.out,
+                simulation_frames=args.simulation_frames,
+                provider=args.provider,
+                ratio_max_iterations=args.ratio_max_iterations,
+                max_ratio=args.max_ratio,
+                ratio_quantum=args.ratio_quantum,
+                post_refinement_iterations=args.post_refinement_iterations,
+                slot_refinement_iterations=args.slot_refinement_iterations,
+                ratio_optimizer=args.ratio_optimizer,
+                timing_dag_optimizer=args.timing_dag_optimizer,
+                slot_optimizer=args.slot_optimizer,
+            )
+        elif args.experiment_stage_command == "tdm-validate":
+            report = validate_tdm_checkpoint(args.route, args.platform, args.root)
+        elif args.experiment_stage_command == "shared-materialize":
+            report = materialize_shared_phase1_5(
+                args.frontend,
+                args.timing,
+                args.partition,
+                args.cut_timing,
+                args.route,
+                args.tdm,
+                args.platform,
+                args.out,
+            )
+        elif args.experiment_stage_command == "shared-validate":
+            report = validate_materialized_shared_phase1_5(
+                args.shared, args.platform
+            )
         elif args.experiment_stage_command == "lookahead-run":
             report = run_physical_lookahead(
                 args.shared,
@@ -2679,6 +2977,16 @@ def _dispatch(args: argparse.Namespace) -> int:
                 seed=args.seed,
                 workers=args.workers,
                 region_count=args.region_count,
+                architecture=args.architecture,
+                architecture_id=args.architecture_id,
+                yosys=args.yosys,
+                vpr=args.vpr,
+                architecture_importer=args.architecture_importer,
+                packed_importer=args.packed_importer,
+                route_checker=args.route_checker,
+                openparf_install=args.openparf_install,
+                openparf_python=args.openparf_python,
+                route_channel_width=args.route_channel_width,
             )
         elif args.experiment_stage_command == "lookahead-validate":
             report = validate_physical_lookahead(
@@ -2707,6 +3015,14 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.out,
                 seed=args.seed,
                 workers=args.workers,
+                yosys=args.yosys,
+                vpr=args.vpr,
+                architecture_importer=args.architecture_importer,
+                packed_importer=args.packed_importer,
+                route_checker=args.route_checker,
+                openparf_install=args.openparf_install,
+                openparf_python=args.openparf_python,
+                route_channel_width=args.route_channel_width,
             )
         else:
             report = validate_phase7_checkpoint(
@@ -3352,6 +3668,13 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "benchmark-matrix-validate":
         _, report = load_end_to_end_validation_matrix(args.matrix)
+        _print_json(report)
+        return 0
+
+    if args.command == "benchmark-experiment-compile":
+        report = compile_canonical_experiment_spec(
+            args.config, args.repository_root, args.out
+        )
         _print_json(report)
         return 0
 
