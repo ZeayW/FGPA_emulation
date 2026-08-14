@@ -593,7 +593,20 @@ def compile_canonical_experiment_spec(
                 phase7_id, "phase7", ["shared-phase1-5", "physical-lookahead", phase6_id],
                 [executable, "experiment-stage", "phase7-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--yosys", str(tools["yosys"]), "--vpr", str(tools["vpr"]), "--architecture-importer", str(tools["architecture_importer"]), "--packed-importer", str(tools["packed_importer"]), "--route-checker", str(tools["route_checker"]), "--openparf-install", str(openparf_install), "--openparf-python", str(tools["openparf_python"]), "--route-channel-width", str(channel_width), "--out", "{output_dir}"],
                 [executable, "experiment-stage", "phase7-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--route-channel-width", str(channel_width)],
-                [_artifact("runtime", "evidence-critical"), _artifact("experiment-phase7-report.json", "evidence-critical"), _artifact("physical", "diagnostic")],
+                [
+                    _artifact("runtime", "evidence-critical"),
+                    _artifact(
+                        "physical/physical-summary.json", "evidence-critical"
+                    ),
+                    _artifact(
+                        "physical/multi-fpga-physical-flow-report.json",
+                        "evidence-critical",
+                    ),
+                    _artifact(
+                        "experiment-phase7-report.json", "evidence-critical"
+                    ),
+                    _artifact("physical", "diagnostic"),
+                ],
                 inputs=("platform", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
                 configuration={"physical_backend": "open", "physical_workers": workers, "physical_seed": seed, "route_channel_width": channel_width},
                 peak_gib=48, retained_gib=8, provider=provider, physical_seed=seed,

@@ -86,6 +86,11 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   `diagnostic` and `failure-diagnostic` are optional evidence; only
   `regenerable-scratch` is prunable.  File size alone never decides retention.
   In particular, 64 MiB is not a replay limit.
+- Every canonical Phase 7 terminal retains its runtime/QoR bundle,
+  `physical-summary.json`, and `multi-fpga-physical-flow-report.json` as
+  evidence-critical artifacts. The complete per-FPGA placement/routing work
+  directory remains diagnostic and may be collected after those reports and
+  their independent validation certificate are sealed.
 - HPC farms may submit only `ready` cache misses.  Re-plan after every completed
   frontier; skip `reuse` nodes and keep `waiting` nodes blocked on their exact
   dependency keys.  Concurrent tasks require isolated output directories and

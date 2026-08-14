@@ -883,6 +883,11 @@ physical result from a different arm cannot be relabelled and imported.
 An explicitly supplied VTR architecture is copied into the immutable
 lookahead physical checkpoint.  Later Phase 7 seeds consume that sealed copy,
 so deleting or changing the original fetch directory cannot break replay.
+Each terminal evidence bundle retains the runtime/QoR directory plus the
+physical summary and full multi-FPGA physical-flow report. The much larger
+per-FPGA placement/routing work directory is a diagnostic artifact: it remains
+available in the checkpoint until retention/GC policy collects it, but it is
+not multiplied into every permanent evidence bundle.
 
 New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
 only for migration compatibility. A deliberately

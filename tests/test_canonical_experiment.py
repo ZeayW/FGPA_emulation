@@ -193,6 +193,19 @@ class CanonicalExperimentTest(unittest.TestCase):
                 {(provider, seed) for provider in ("baseline", "placement-aware", "chimew") for seed in (1, 2, 3)},
             )
             self.assertTrue(all(item["configuration"]["physical_workers"] == 8 for item in terminals))
+            for terminal in terminals:
+                roles = {
+                    item["path"]: item["role"] for item in terminal["artifacts"]
+                }
+                self.assertEqual(
+                    roles["physical/physical-summary.json"],
+                    "evidence-critical",
+                )
+                self.assertEqual(
+                    roles["physical/multi-fpga-physical-flow-report.json"],
+                    "evidence-critical",
+                )
+                self.assertEqual(roles["physical"], "diagnostic")
             self.assertTrue(
                 all(
                     item["validator"][-6:]
