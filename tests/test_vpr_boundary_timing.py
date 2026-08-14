@@ -37,6 +37,11 @@ class VprBoundaryTimingTest(unittest.TestCase):
         self.assertIn("result += relax_delay(launch_edge)", source)
         self.assertIn("node_clock_capture_edge", source)
         self.assertIn("result += setup", source)
+        self.assertIn('queries[index].kind == "launch"', source)
+        self.assertIn('queries[index].kind == "capture"', source)
+        self.assertIn("pin_by_name.reserve", source)
+        self.assertIn("find_query_pin(fields[2])", source)
+        self.assertNotIn("atom_netlist.find_pin(fields[2])", source)
 
     def test_query_maps_emuir_objects_to_vpr_atom_pins(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

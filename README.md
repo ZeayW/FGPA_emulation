@@ -239,7 +239,7 @@ labelled per-FPGA diagnostics, but never substitutes them for global timing.
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
-| Fully open physical route | Implemented through whole-design physical/TDM timing; a source-backed 528,104-instance Koios GEMM A/B proves complete all-original-path coverage with conservative local-delay bounds, while Koios DLA is the active selected-chain exactness and independent-design replication gate |
+| Fully open physical route | Implemented through whole-design physical/TDM timing; historical PicoRV32 and 528,104-instance Koios GEMM A/B artifacts prove all-original-path population coverage but predate the local launch-Tco repair, while Koios DLA is the active corrected-delay and independent-design replication gate |
 | Vivado physical route | Implemented for routed DUT logic segments and stable RAMB endpoint recovery; its former large Koios evidence is likewise a cross-FPGA subset until same-FPGA original-path timing is exported |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
@@ -1426,15 +1426,15 @@ not evidence of improvement across independent real applications.  Both arms
 cover the same 22,272 original paths
 (21,711 same-FPGA and 561 cross-FPGA paths) with the same canonical path-set
 SHA. Under the legacy endpoint-longest local-delay model, the frozen default
-routing/TDM arm reports conservative target-clock WNS/TNS bounds of
+routing/TDM arm reports historical target-clock WNS/TNS diagnostics of
 `-40.314765708 ns` / `-21137.255055545 ns`; the global-candidate routing plus
 timing-DAG TDM arm reports `-39.988960548 ns` / `-21062.004768017 ns`.
-Therefore the candidate improves this coverage-complete conservative
-whole-design comparison's WNS by `0.325805160 ns` and TNS
-by `75.250287528 ns`. These are not per-FPGA endpoint aggregates or a
+Therefore the historical comparison reports a WNS delta of `0.325805160 ns`
+and a TNS delta of `75.250287528 ns`. These are not per-FPGA endpoint aggregates or a
 cross-FPGA-only subset. Both arms also close the 640-ns virtual runtime clock
-with zero negative-slack paths. This is academic-architecture physical
-evidence rather than vendor bitstream signoff.
+with zero negative-slack paths. These pre-fix absolute timing values omit the
+local launch clock-to-Q contribution and are retained only as regression
+history, not as final timing or provider-promotion evidence.
 
 A source-backed Koios GEMM run supplies the corresponding independent,
 large-application result. The design contains 528,104 synthesized instances
@@ -1444,11 +1444,10 @@ physical arms cover the identical set of all 178,366 original timing paths:
 SHA-256
 `434570616ed92f8a503a57c884a84be8372db834edfde43df7dc14d000a6e312`.
 Using the legacy endpoint-longest local-delay model, the frozen default Phase
-4/5 arm reports conservative target-clock WNS/TNS bounds of
+4/5 arm reports historical target-clock WNS/TNS diagnostics of
 `-4951.4633630111 ns` / `-76195549.1968224 ns`; global candidate-tree routing
 plus timing-DAG TDM reports `-2595.959268017 ns` /
-`-39857513.89737587 ns`. Thus the upgrade improves this coverage-complete
-conservative comparison's WNS by
+`-39857513.89737587 ns`. Thus the historical comparison reports a WNS delta of
 `2355.5040949941 ns` and TNS by `36338035.29944653 ns`, reducing their
 negative deficits by 47.57% and 47.69%, respectively. Both arms close the
 8,192-ns virtual runtime clock. Negative target-slack paths increase slightly
@@ -1467,20 +1466,20 @@ ratio already a multiple of 8), while the recorded four positive-saving
 promotion steps prove that the new no-candidate round-boundary fallback was
 not exercised. The current in-tree A/B validator independently rehashes the
 frozen sources and routes, traverses all 178,366 paths, and rechecks the
-physical, legality, coverage, and QoR claims before accepting this result. It
-does not promote the upgraded provider by itself: the selected-chain VPR rerun
-must additionally publish the exact-versus-bound count and repeat the
-conclusion on an independent design.
+physical, legality, coverage, and QoR claims before accepting this result. The
+archived local-delay values omit launch clock-to-Q, so it does not promote the
+upgraded provider: the corrected selected-chain VPR rerun must publish the
+exact-versus-bound count and repeat the conclusion on an independent design.
 
 The same frozen design on the two-FPGA point-to-point BoardDB is a useful
 negative control. Both complete Phase 7 arms cover all 22,272 source paths
-(22,053 local and 219 cross-FPGA) and report identical conservative 4-ns
-target-clock WNS/TNS bounds: `-15.227118790 ns` / `-17784.330743091 ns`. Thus the measured
+(22,053 local and 219 cross-FPGA) and report identical historical 4-ns
+target-clock diagnostics: `-15.227118790 ns` / `-17784.330743091 ns`. Thus the measured
 whole-design delta is exactly zero on this topology even though the Phase 4
 route and Phase 5 schedule artifacts differ. Both arms close the 128-ns
 runtime clock with zero negative-slack paths. This result is retained because
 it shows that the routing/TDM upgrade is topology- and bottleneck-dependent;
-it is not presented as a universal improvement.
+it is not presented as a universal improvement or corrected absolute timing.
 
 A second four-FPGA run disables one mesh link, leaving a connected tree and
 forcing every legal route onto that tree. Both arms again cover all 22,272
@@ -2013,10 +2012,10 @@ the compact candidate product, and regression coverage includes a case whose
 global optimum mixes shortest-path and nearest-terminal Steiner trees across
 different demands. This provider remains opt-in: large-public-case scale
 checks are separate algorithm evidence, while the completed real-RTL Phase 7
-comparison above demonstrates a coverage-complete conservative whole-design
-timing-bound improvement on one independently sealed physical A/B. Promotion
-to the default still requires
-the same whole-design Phase 7 gate on a broader design/platform set; a
+comparison above is retained as a coverage-complete historical diagnostic, but
+its pre-fix local timing omits launch clock-to-Q. Promotion to the default still
+requires a corrected whole-design Phase 7 gate on a broader design/platform
+set; a
 cross-FPGA-only proxy is not sufficient evidence.
 
 Every Phase 5 run now also emits `tdm_feedback.json`, a concrete schedule

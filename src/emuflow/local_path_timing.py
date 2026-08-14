@@ -483,7 +483,7 @@ def import_vpr_local_path_timing(
         "provider": "vpr-tatum-selected-local-setup-path-delay-v2",
         "qualification": (
             "source-bound-routed-selected-path-delay-with-exact-fallback-"
-            "and-capture-setup"
+            "launch-clock-to-q-and-capture-setup"
         ),
         "source": identity["source"],
         "identity_schema": identity["schema"],

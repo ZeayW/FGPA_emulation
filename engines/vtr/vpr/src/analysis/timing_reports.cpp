@@ -81,6 +81,28 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
     const auto& atom_netlist = atom_ctx.netlist();
     const auto& atom_lookup = atom_ctx.lookup();
     const auto& timing_graph = *g_vpr_ctx.timing().graph;
+    // Netlist::find_pin(string) performs a linear scan over every atom pin.
+    // A complete original-path query can contain hundreds of thousands of pin
+    // names, so using it for every endpoint and selected-chain member turns
+    // query import into O(query_pins * netlist_pins).  Build one independent
+    // exact-name index instead and keep the complete-path analysis linear in
+    // the query plus timing-graph size.
+    std::unordered_map<std::string, AtomPinId> pin_by_name;
+    pin_by_name.reserve(atom_netlist.pins().size());
+    for (AtomPinId pin : atom_netlist.pins()) {
+        const std::string name = atom_netlist.pin_name(pin);
+        const auto inserted = pin_by_name.emplace(name, pin);
+        if (!inserted.second) {
+            VPR_THROW(VPR_ERROR_TIMING,
+                      "EmuFlow timing pin index contains duplicate atom pin '%s'",
+                      name.c_str());
+        }
+    }
+    const auto find_query_pin = [&](const std::string& name) {
+        const auto found = pin_by_name.find(name);
+        return found == pin_by_name.end() ? AtomPinId::INVALID()
+                                          : found->second;
+    };
     std::vector<EmuFlowBoundaryQuery> queries;
     using QueryGroups =
         std::unordered_map<std::size_t, std::vector<std::size_t>>;
@@ -109,8 +131,8 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
             VPR_THROW(VPR_ERROR_TIMING,
                       "Malformed EmuFlow boundary query line %zu", line_number);
         }
-        AtomPinId start_pin = atom_netlist.find_pin(fields[2]);
-        AtomPinId end_pin = atom_netlist.find_pin(fields[3]);
+        AtomPinId start_pin = find_query_pin(fields[2]);
+        AtomPinId end_pin = find_query_pin(fields[3]);
         if (!start_pin || !end_pin) {
             VPR_THROW(VPR_ERROR_TIMING,
                       "EmuFlow boundary query line %zu references absent pin '%s' or '%s'",
@@ -128,7 +150,7 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
             std::stringstream pins(fields[4]);
             std::string pin_name;
             while (std::getline(pins, pin_name, ',')) {
-                AtomPinId pin = atom_netlist.find_pin(pin_name);
+                AtomPinId pin = find_query_pin(pin_name);
                 if (!pin) {
                     VPR_THROW(
                         VPR_ERROR_TIMING,
@@ -316,17 +338,26 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                       queries[index].endpoint.c_str());
         }
         double result = results[index];
-        // A same-FPGA original path is a complete setup path, rather than one
-        // segment of a boundary composition. The data traversal starts at the
-        // external sequential output tnode, so add its incoming clock-launch
-        // edge explicitly; likewise add the capture setup constraint.
-        if (query_class == 2) {
+        // A same-FPGA original path is a complete setup path.  A cross-FPGA
+        // original path is composed from one launch logic segment, zero or
+        // more transition segments, and one capture segment.  Their routed
+        // data traversals start at Q and stop at D, so add the sequential arcs
+        // exactly once at the corresponding ends of either representation.
+        const bool include_launch =
+            query_class == 2
+            || (query_class == 1 && queries[index].kind == "launch");
+        const bool include_capture =
+            query_class == 2
+            || (query_class == 1 && queries[index].kind == "capture");
+        if (include_launch) {
             const tatum::EdgeId launch_edge =
                 timing_graph.node_clock_launch_edge(
                     queries[index].start_node);
             if (launch_edge) {
                 result += relax_delay(launch_edge);
             }
+        }
+        if (include_capture) {
             const tatum::EdgeId capture_edge =
                 timing_graph.node_clock_capture_edge(
                     queries[index].end_node);
