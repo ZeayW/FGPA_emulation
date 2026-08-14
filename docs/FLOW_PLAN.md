@@ -337,15 +337,15 @@ checker reconstructs every tree, capacity domain, direction lock, route
 delay, compressed-path signature, slack, and normalized slack from the
 returned artifact.
 
-The default `timing-aware-route-tdm-cooptimized-v1` provider extends that
+The historical `timing-aware-route-tdm-cooptimized-v1` provider extends that
 kernel with the routing/TDM coupling used in the DAC 2020 and ASP-DAC 2021
-co-optimization formulations. During tree construction it estimates each
-capacity domain's quantized serialization ratio from signal load and physical
-lane count, charges the resulting wait to timing-critical paths, and uses the
-estimated TDM normalized slack as the first lexicographic rip-up/reroute
-objective. Phase 5 then solves the exact per-hop KKT ratios and concrete
-lane/slot schedule. The Phase 4 checker independently reconstructs the proxy;
-the Phase 5 checkers remain the exact acceptance gate.
+co-optimization formulations. The default timing-enabled path now exposes all
+checked tree columns to the `timing-aware-global-candidate-v1` restricted
+master, followed by the ASP-DAC 2026 timing-DAG Phase 5 optimizer and the same
+concrete lane/slot legalization. The historical provider and path-Lagrangian
+Phase 5 optimizer remain explicit rollback and A/B options. The Phase 4
+checker independently reconstructs the proxy; the Phase 5 checkers remain the
+exact acceptance gate.
 
 For real STA input, `emuflow sta emit-vivado-cut-map` produces a lossless
 UTF-8-hex map from stable EmuIR cut-net IDs to the deterministic

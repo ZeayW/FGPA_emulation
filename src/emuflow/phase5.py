@@ -57,7 +57,7 @@ def run_phase5(
     platform = Platform.load(platform_path)
     if provider is None:
         provider = (
-            TDM_RATIO_PROVIDER
+            TDM_TIMING_DAG_RATIO_PROVIDER
             if isinstance(routes.get("timing"), dict)
             else TDM_BASELINE_PROVIDER
         )

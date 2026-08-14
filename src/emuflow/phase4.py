@@ -59,7 +59,7 @@ def run_phase4(
     )
     if provider is None:
         provider = (
-            ROUTE_TDM_PROVIDER
+            GLOBAL_CANDIDATE_PROVIDER
             if timing_paths_path is not None
             else NATIVE_ROUTER_PROVIDER
         )
@@ -142,7 +142,7 @@ def run_phase4(
         if timing_paths_path is not None:
             raise ValueError(
                 f"--provider {NATIVE_ROUTER_PROVIDER} does not accept "
-                f"--timing-paths; use {ROUTE_TDM_PROVIDER}"
+                f"--timing-paths; use {GLOBAL_CANDIDATE_PROVIDER}"
             )
         routes = route_system_native(
             assignment,

@@ -20,6 +20,7 @@ from emuflow.routing import (
 )
 from emuflow.routing_oracle import exact_route_tree_selection
 from emuflow.timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
     TLR_PROVIDER,
     compress_sta_paths,
@@ -798,14 +799,13 @@ class Phase4Test(unittest.TestCase):
             )
             self.assertEqual(
                 routes["provider"],
-                "timing-aware-route-tdm-cooptimized-v1",
+                GLOBAL_CANDIDATE_PROVIDER,
             )
+            self.assertIn("candidate_generation", report)
             self.assertEqual(
                 routes["joint_optimization"]["method"],
-                (
-                    "dac25-informed-delay-demand-balanced+"
-                    "aspdac26-timing-refinement-v2"
-                ),
+                "checked-candidate-pool+"
+                "deterministic-batch-conflict-lns-v2",
             )
             route_by_net = {
                 route["net"]: route for route in routes["routes"]

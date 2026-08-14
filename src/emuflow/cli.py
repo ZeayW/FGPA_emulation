@@ -1100,7 +1100,10 @@ def _build_parser() -> argparse.ArgumentParser:
             ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
         ),
-        help="explicit Phase 4 provider for the complete flow",
+        help=(
+            f"explicit Phase 4 provider; timing-enabled flows default to "
+            f"{GLOBAL_CANDIDATE_PROVIDER}"
+        ),
     )
     multi_fpga_compile.add_argument(
         "--route-candidate-workers",
@@ -1124,6 +1127,10 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
+        ),
+        help=(
+            f"explicit Phase 5 provider; timing-enabled flows default to "
+            f"{TDM_TIMING_DAG_RATIO_PROVIDER}"
         ),
     )
     multi_fpga_compile.add_argument("--ratio-optimizer")
@@ -1953,7 +1960,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ],
         default=None,
         help=(
-            f"defaults to {ROUTE_TDM_PROVIDER} when --timing-paths is "
+            f"defaults to {GLOBAL_CANDIDATE_PROVIDER} when --timing-paths is "
             f"supplied, otherwise {NATIVE_ROUTER_PROVIDER}"
         ),
     )
@@ -2000,8 +2007,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         default=None,
         help=(
-            "defaults to the academic provider when routes contain timing, "
-            "otherwise the deterministic baseline"
+            f"defaults to {TDM_TIMING_DAG_RATIO_PROVIDER} when routes "
+            "contain timing, otherwise the deterministic baseline"
         ),
     )
     phase5.add_argument(
@@ -2183,6 +2190,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--partition-repair-balance", action="store_true"
     )
     cross_stage_optimize.add_argument("--router")
+    cross_stage_optimize.add_argument(
+        "--route-provider",
+        choices=(
+            TLR_PROVIDER,
+            ROUTE_TDM_PROVIDER,
+            GLOBAL_CANDIDATE_PROVIDER,
+        ),
+        help=(
+            f"defaults to {GLOBAL_CANDIDATE_PROVIDER}; the historical "
+            f"{ROUTE_TDM_PROVIDER} remains available for rollback"
+        ),
+    )
+    cross_stage_optimize.add_argument(
+        "--route-candidate-workers",
+        type=int,
+        default=1,
+        help="parallel deterministic candidate generators for global routing",
+    )
     cross_stage_optimize.add_argument("--frame-slots", type=int)
     cross_stage_optimize.add_argument(
         "--optimize-frame-slots",
@@ -3757,6 +3782,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.partition_repair_balance
                 ),
                 router=args.router,
+                route_provider=args.route_provider,
+                route_candidate_workers=args.route_candidate_workers,
                 frame_slots=args.frame_slots,
                 optimize_frame_slots=args.optimize_frame_slots,
                 route_max_iterations=args.route_max_iterations,

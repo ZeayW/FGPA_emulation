@@ -21,6 +21,7 @@ from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import (
     tdm_partition_feedback,
     tdm_ratio_optimizer,
+    tdm_timing_dag_optimizer,
     tlr_router,
 )
 
@@ -261,6 +262,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 opensta=str(fake_sta),
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 frame_slots=32,
                 optimize_frame_slots=True,
                 cross_stage_iterations=1,
@@ -432,6 +434,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 opensta=str(fake_sta),
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 cross_stage_iterations=0,
                 equivalence_cycles=2,
             )

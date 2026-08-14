@@ -24,6 +24,7 @@ from emuflow.tdm import (
     validate_tdm_schedule,
 )
 from emuflow.tdm_ratio import (
+    TDM_TIMING_DAG_RATIO_PROVIDER,
     _prepare_model,
     _round_barrier_legalize,
     build_tdm_ratio_plan,
@@ -1075,6 +1076,7 @@ class Phase5Test(unittest.TestCase):
                 output_dir=root / "phase5",
                 simulation_frames=7,
                 ratio_optimizer=str(executable),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),
                 max_ratio=16,
                 post_refinement_iterations=20,
@@ -1082,7 +1084,7 @@ class Phase5Test(unittest.TestCase):
             )
             self.assertEqual(
                 report["optimization_provider"],
-                "lagrangian-kkt-timing-aware-v1",
+                TDM_TIMING_DAG_RATIO_PROVIDER,
             )
             self.assertGreaterEqual(
                 report["timing_validation"][

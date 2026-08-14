@@ -392,12 +392,19 @@ class CrossStageCandidateTest(unittest.TestCase):
             )
             router = root / "emuflow_tlr_router"
             ratio_optimizer = root / "emuflow_tdm_ratio_optimizer"
+            timing_dag_optimizer = (
+                root / "emuflow_tdm_timing_dag_optimizer"
+            )
             feedback_optimizer = (
                 root / "emuflow_tdm_partition_feedback"
             )
             for source, output in (
                 ("tlr_router.cpp", router),
                 ("tdm_ratio_optimizer.cpp", ratio_optimizer),
+                (
+                    "tdm_timing_dag_optimizer.cpp",
+                    timing_dag_optimizer,
+                ),
                 ("tdm_partition_feedback.cpp", feedback_optimizer),
             ):
                 subprocess.run(
@@ -429,6 +436,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                     balance_tolerance=1.0,
                     router=str(router),
                     ratio_optimizer=str(ratio_optimizer),
+                    timing_dag_optimizer=str(timing_dag_optimizer),
                     feedback_optimizer=str(feedback_optimizer),
                     simulation_frames=2,
                     max_ratio=8,
@@ -590,6 +598,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                 balance_tolerance=1.0,
                 router=str(router),
                 ratio_optimizer=str(ratio_optimizer),
+                timing_dag_optimizer=str(timing_dag_optimizer),
                 feedback_optimizer=str(feedback_optimizer),
                 simulation_frames=2,
                 frame_slots=16,

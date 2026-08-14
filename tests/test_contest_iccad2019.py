@@ -11,6 +11,7 @@ from emuflow.contest_iccad2019 import (
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import tdm_ratio_optimizer, tlr_router
 
 
@@ -165,6 +166,9 @@ class Iccad2019ContestAdapterTest(unittest.TestCase):
                 router=str(tlr_router()),
             )
             self.assertEqual(phase4["status"], "pass")
+            self.assertEqual(
+                phase4["provider"], GLOBAL_CANDIDATE_PROVIDER
+            )
             solution = root / "cpp-solution.out"
             optimized = optimize_iccad2019_ratios(
                 normalized / "contest_instance.json",
@@ -173,7 +177,7 @@ class Iccad2019ContestAdapterTest(unittest.TestCase):
                 optimizer=str(tdm_ratio_optimizer()),
             )
             self.assertEqual(optimized["status"], "pass")
-            self.assertEqual(optimized["maximum_total_tdm_ratio"], 8)
+            self.assertEqual(optimized["maximum_total_tdm_ratio"], 6)
             self.assertLessEqual(optimized["maximum_edge_harmonic_use"], 1.0)
             checked = evaluate_iccad2019_solution(
                 normalized / "contest_instance.json", solution

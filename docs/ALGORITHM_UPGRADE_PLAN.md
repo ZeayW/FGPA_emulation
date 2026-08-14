@@ -500,9 +500,10 @@ lexicographic selector. They no longer alias the same native execution mode.
 This is classified as a **paper-informed extension**, not yet a faithful DAC
 2025 reproduction: the public EmuFlow BoardDB model is more general than the
 contest topology, and paper benchmark/result reproduction is still pending.
-The exported pool and exact-oracle coverage gate are implemented without
-changing the default selector.  The opt-in
-`timing-aware-global-candidate-v1` provider now solves the restricted master
+The exported pool and exact-oracle coverage gate are implemented. Following
+the corrected whole-design Koios DLA Phase 7 A/B gate, the
+`timing-aware-global-candidate-v1` provider is the timing-enabled default and
+solves the restricted master
 exactly when the candidate product has at most 200,000 combinations and uses
 deterministic batch-conflict LNS above that boundary. Its Python oracle
 independently enumerates compact products and reconstructs capacity, route

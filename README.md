@@ -304,8 +304,11 @@ then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
 
-The complete flow accepts `--route-provider timing-aware-global-candidate-v1`
-to select the checked multi-tree global Phase 4 provider and
+Timing-enabled flows now default to
+`--route-provider timing-aware-global-candidate-v1`, the checked multi-tree
+global Phase 4 provider, and to the ASP-DAC 2026 timing-DAG Phase 5 provider.
+The historical `timing-aware-route-tdm-cooptimized-v1` and path-Lagrangian
+providers remain selectable as explicit rollback and A/B baselines. Use
 `--route-candidate-workers N` to parallelize its deterministic candidate
 generation. These options propagate through direct, minimum-frame, and
 cross-stage Phase 3--5 execution, so a complete Phase 7 WNS/TNS experiment
@@ -2019,10 +2022,11 @@ source arborescence. Shallow-light uses a criticality-dependent delay-stretch
 gate, while adaptive-hop derives a strict bound from the direction-feasible
 minimum-hop lower bound. Its independent checker reconstructs
 direction locks, tree reachability and acyclicity, hop bounds, latency, and
-physical delay. Legacy/default providers preserve their earlier selection;
-the opt-in global provider exposes all columns to its restricted master.
+physical delay. Historical providers preserve their earlier selection; the
+default global provider exposes all columns to its restricted master.
 
-The opt-in Phase 4 provider `timing-aware-global-candidate-v1` consumes that
+The default timing-enabled Phase 4 provider
+`timing-aware-global-candidate-v1` consumes that
 boundary in the native kernel.  For compact pools it exhaustively solves the
 restricted master over one tree per demand; larger candidate products use a
 deterministic batch-conflict large-neighborhood search. Candidate generation
@@ -2037,13 +2041,12 @@ only after global capacity and the same lexicographic route/TDM timing
 objective are recomputed.  A separate Python oracle exhaustively evaluates
 the compact candidate product, and regression coverage includes a case whose
 global optimum mixes shortest-path and nearest-terminal Steiner trees across
-different demands. This provider remains opt-in: large-public-case scale
-checks are separate algorithm evidence, while the completed real-RTL Phase 7
-comparison above is retained as a coverage-complete historical diagnostic, but
-its pre-fix local timing omits launch clock-to-Q. Promotion to the default still
-requires a corrected whole-design Phase 7 gate on a broader design/platform
-set; a
-cross-FPGA-only proxy is not sufficient evidence.
+different demands. The provider is promoted to the software default by the
+corrected, coverage-complete Koios DLA Phase 7 comparison above. Broader
+design/platform replication remains an active qualification gate rather than
+a prerequisite for making the checked provider available by default; the
+historical provider remains an explicit rollback option if those gates find a
+regression. A cross-FPGA-only proxy is not sufficient evidence.
 
 Every Phase 5 run now also emits `tdm_feedback.json`, a concrete schedule
 certificate that reconstructs occupied slot-lanes, realized wait, remaining
