@@ -593,9 +593,9 @@ def _round_barrier_legalize(
     ratio_quantum: int,
 ) -> Dict[str, Any]:
     rounds = sorted({hop["transport_round"] for hop in hop_records})
-    if not rounds or rounds[0] != 0 or rounds != list(range(len(rounds))):
+    if not rounds or any(round_id not in {0, 1} for round_id in rounds):
         raise ValidationError(
-            "academic TDM assignment requires contiguous transport rounds"
+            "academic TDM assignment supports transport rounds 0 and 1"
         )
     if len(rounds) > 2:
         raise ValidationError(
@@ -656,7 +656,7 @@ def _round_barrier_legalize(
             if available <= 0:
                 return frame_slots + 1
             return math.ceil(
-                counts.get(0, 0) / min(ratio, available)
+                counts.get(rounds[0], 0) / min(ratio, available)
             )
         round_zero_slots = source_ready_slot - latency
         round_one_slots = (

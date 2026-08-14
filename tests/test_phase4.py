@@ -22,6 +22,7 @@ from emuflow.routing_oracle import exact_route_tree_selection
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
+    NATIVE_TIMING_EVALUATED_PROVIDER,
     TLR_PROVIDER,
     compress_sta_paths,
     load_sta_paths,
@@ -97,6 +98,81 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_timing_oblivious_route_retains_independent_timing_records(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "evaluated_baseline",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=4)],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        timing = {
+            "schema": "emuflow.sta-paths/v1",
+            "design": "route_test",
+            "paths": [
+                {
+                    "id": "p0",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": 9.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": ["n0"],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.json"
+            platform_path = root / "platform.json"
+            timing_path = root / "timing.json"
+            assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            timing_path.write_text(json.dumps(timing), encoding="utf-8")
+            report = run_phase4(
+                assignment_path,
+                platform_path,
+                root / "phase4",
+                timing_paths_path=timing_path,
+                provider=NATIVE_TIMING_EVALUATED_PROVIDER,
+                router=str(tlr_router()),
+            )
+            routes = json.loads(
+                (root / "phase4/routes.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                routes["provider"], NATIVE_TIMING_EVALUATED_PROVIDER
+            )
+            self.assertEqual(
+                routes["timing_evaluation"],
+                {
+                    "mode": "post-route-evaluation-only",
+                    "optimization_enabled": False,
+                    "source_provider": NATIVE_ROUTER_PROVIDER,
+                },
+            )
+            self.assertEqual(len(routes["timing"]["paths"]), 1)
+            self.assertEqual(report["validation"]["timing_paths_original"], 1)
+            normalized = load_sta_paths(timing_path, routes["demands"])
+            self.assertEqual(
+                validate_native_system_routes(
+                    assignment, platform, routes, normalized
+                )["status"],
+                "pass",
+            )
+            tampered = copy.deepcopy(routes)
+            tampered["timing_evaluation"]["optimization_enabled"] = True
+            with self.assertRaisesRegex(
+                ValidationError, "evaluation metadata"
+            ):
+                validate_native_system_routes(
+                    assignment, platform, tampered, normalized
+                )
+
     def test_cpp_router_enforces_source_to_sink_hop_limit(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

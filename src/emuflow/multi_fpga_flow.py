@@ -39,6 +39,11 @@ from .phase6 import run_phase6
 from .phase7c import run_phase7c
 from .platform import Platform
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
+from .tdm import TDM_BASELINE_PROVIDER
+from .timing_routing import (
+    NATIVE_ROUTER_PROVIDER,
+    NATIVE_TIMING_EVALUATED_PROVIDER,
+)
 from .sta import (
     derive_partition_net_weights,
     project_sta_path_database,
@@ -385,6 +390,41 @@ def validate_multi_fpga_flow_report(
     tdm_validation = stages["tdm"].get("validation", {})
     split_validation = stages["split"].get("validation", {})
     equivalence = stages["split"].get("equivalence", {})
+    timing = report.get("timing")
+    timing_optimization = None
+    if timing is not None:
+        if (
+            not isinstance(timing, dict)
+            or timing.get("status") != "pass"
+            or not isinstance(timing.get("optimization_enabled"), bool)
+        ):
+            raise ValidationError(
+                "multi-FPGA TimingPathDB qualification is invalid"
+            )
+        timing_optimization = timing["optimization_enabled"]
+        if timing_optimization and not isinstance(
+            timing.get("partition_weights"), dict
+        ):
+            raise ValidationError(
+                "timing-driven report is missing partition weights"
+            )
+        if not timing_optimization:
+            if (
+                stages["system_route"].get("provider")
+                != NATIVE_TIMING_EVALUATED_PROVIDER
+                or stages["tdm"].get("provider")
+                != TDM_BASELINE_PROVIDER
+                or stages["tdm"].get("timing_validation", {}).get(
+                    "status"
+                )
+                != "pass"
+                or "partition_weights" in timing
+                or timing.get("partition_weights_applied") is not False
+            ):
+                raise ValidationError(
+                    "--no-timing-driven report does not preserve the "
+                    "timing-evaluated Phase 3--5 baseline contract"
+                )
     runtime = report.get("runtime")
     if (
         not isinstance(runtime, dict)
@@ -436,19 +476,37 @@ def validate_multi_fpga_flow_report(
             if isinstance(link_timing, dict)
             else None
         )
-        if (
-            not isinstance(link_timing, dict)
-            or link_timing.get("status") != "pass"
-            or not isinstance(link_validation, dict)
-            or link_validation.get("status") != "pass"
-            or not isinstance(route_projection, dict)
-            or route_projection.get("status") != "pass"
-            or link_timing.get("applied_to")
-            != [
+        link_optimization = (
+            link_timing.get("optimization_enabled")
+            if isinstance(link_timing, dict)
+            else None
+        )
+        expected_applications = (
+            [
                 "phase4-system-routing",
                 "phase5-tdm-ratio-and-schedule-timing",
                 "phase7c-system-timing-when-physical",
             ]
+            if link_optimization
+            else [
+                "phase4-post-route-timing-evaluation",
+                "phase5-baseline-schedule-timing-evaluation",
+                "phase7c-system-timing-when-physical",
+            ]
+        )
+        if (
+            not isinstance(link_timing, dict)
+            or link_timing.get("status") != "pass"
+            or not isinstance(link_optimization, bool)
+            or not isinstance(link_validation, dict)
+            or link_validation.get("status") != "pass"
+            or not isinstance(route_projection, dict)
+            or route_projection.get("status") != "pass"
+            or link_timing.get("applied_to") != expected_applications
+            or (
+                timing_optimization is not None
+                and link_optimization != timing_optimization
+            )
         ):
             raise ValidationError(
                 "multi-FPGA BoardLinkTimingDB application is invalid"
@@ -551,6 +609,15 @@ def validate_multi_fpga_flow_report(
         "equivalence_mismatches": equivalence.get("mismatches"),
         "frame_slots": runtime["validation"].get("frame_slots"),
         "cross_stage_iteration": cross_stage_iteration,
+        "timing_optimization": (
+            "enabled"
+            if timing_optimization
+            else (
+                "disabled-baseline"
+                if timing_optimization is False
+                else "external-path-test"
+            )
+        ),
         "nominal_virtual_frequency_mhz": runtime["validation"].get(
             "nominal_virtual_frequency_mhz"
         ),
@@ -594,7 +661,7 @@ def run_multi_fpga_flow(
     partition_num_best_initial_solutions: int = 10,
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
-    timing_driven: bool = False,
+    timing_driven: bool = True,
     timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,
     timing_model: Path = DEFAULT_TIMING_MODEL,
@@ -698,16 +765,19 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "--timing-vivado applies only to timing-backend=vivado"
         )
-    timing_driven = timing_driven or architecture_timing_db is not None
-    if timing_driven and timing_paths is not None:
+    internal_timing_database = timing_paths is None
+    if timing_paths is not None and (
+        timing_driven or architecture_timing_db is not None
+    ):
         raise EmuFlowError(
             "--timing-driven/--architecture-timing-db cannot be combined "
             "with externally projected --timing-paths"
         )
-    if board_link_timing_db is not None and not timing_driven:
+    if physical and timing_paths is not None:
         raise EmuFlowError(
-            "--board-link-timing-db requires --timing-driven so its bounds "
-            "participate in partition-crossing route/TDM optimization"
+            "physical Phase 7C requires an internally generated complete "
+            "TimingPathDB; externally projected --timing-paths are only "
+            "supported by non-physical algorithm tests"
         )
     if (
         isinstance(cross_stage_iterations, bool)
@@ -719,10 +789,15 @@ def run_multi_fpga_flow(
         raise EmuFlowError(
             "--cross-stage-iterations requires --timing-driven"
         )
-    if timing_driven and not clock_periods:
+    if optimize_frame_slots and not timing_driven:
         raise EmuFlowError(
-            "timing-driven multi-FPGA compilation requires at least one "
-            "--clock-period CLOCK=PERIOD_NS"
+            "--optimize-frame-slots requires --timing-driven"
+        )
+    if internal_timing_database and not clock_periods:
+        raise EmuFlowError(
+            "multi-FPGA timing analysis requires at least one "
+            "--clock-period CLOCK=PERIOD_NS; TimingPathDB remains mandatory "
+            "for physical Phase 7C even with --no-timing-driven"
         )
     serial_bsp_requested = serial_bsp_phy_provider is not None
     serial_bsp_auxiliary = any(
@@ -860,7 +935,7 @@ def run_multi_fpga_flow(
     cut_path_database_path = None
     net_weights_path = timing_root / "partition-net-weights.json"
     timing_report = None
-    if timing_driven:
+    if internal_timing_database:
         timing_root.mkdir(parents=True, exist_ok=True)
         if timing_backend == "opensta":
             sta_report = run_opensta_path_database(
@@ -890,19 +965,26 @@ def run_multi_fpga_flow(
                 max_paths=sta_max_paths,
             )
             timing_mode = "vivado-post-synthesis"
-        weights_report = derive_partition_net_weights(
-            path_database_path,
-            ir_path,
-            net_weights_path,
-            criticality_scale=timing_criticality_scale,
-            criticality_exponent=timing_criticality_exponent,
-        )
+        weights_report = None
+        if timing_driven:
+            weights_report = derive_partition_net_weights(
+                path_database_path,
+                ir_path,
+                net_weights_path,
+                criticality_scale=timing_criticality_scale,
+                criticality_exponent=timing_criticality_exponent,
+            )
         timing_report = {
             "status": "pass",
             "mode": timing_mode,
             "backend": timing_backend,
             "sta": sta_report,
-            "partition_weights": weights_report,
+            "optimization_enabled": timing_driven,
+            **(
+                {"partition_weights": weights_report}
+                if weights_report is not None
+                else {}
+            ),
         }
 
     effective_route_constraints = route_constraints
@@ -937,15 +1019,26 @@ def run_multi_fpga_flow(
             "status": "pass",
             "validation": validation,
             "routing_projection": projection,
-            "applied_to": [
-                "phase4-system-routing",
-                "phase5-tdm-ratio-and-schedule-timing",
-                "phase7c-system-timing-when-physical",
-            ],
+            "optimization_enabled": timing_driven,
+            "applied_to": (
+                [
+                    "phase4-system-routing",
+                    "phase5-tdm-ratio-and-schedule-timing",
+                    "phase7c-system-timing-when-physical",
+                ]
+                if timing_driven
+                else [
+                    "phase4-post-route-timing-evaluation",
+                    "phase5-baseline-schedule-timing-evaluation",
+                    "phase7c-system-timing-when-physical",
+                ]
+            ),
         }
 
     if timing_report is not None:
-        provider_consumes_weights = partition_provider != "greedy"
+        provider_consumes_weights = (
+            timing_driven and partition_provider != "greedy"
+        )
         hop_refiner_consumes_weights = False
         if effective_route_constraints is not None:
             raw_route_constraints = read_json(
@@ -953,7 +1046,7 @@ def run_multi_fpga_flow(
             )
             if not isinstance(raw_route_constraints, dict):
                 raise ValidationError("route constraints must be an object")
-            hop_refiner_consumes_weights = (
+            hop_refiner_consumes_weights = timing_driven and (
                 raw_route_constraints.get("max_route_hops") is not None
             )
         consumers = []
@@ -1007,7 +1100,7 @@ def run_multi_fpga_flow(
     assignment_path = phase3_root / "assignment.json"
 
     projected_timing_paths = timing_paths
-    if timing_driven and not cross_stage_iterations:
+    if internal_timing_database and not cross_stage_iterations:
         if timing_backend == "opensta":
             assignment = read_json(assignment_path)
             cut_net_ids = sorted(
@@ -1018,7 +1111,7 @@ def run_multi_fpga_flow(
             )
             if not cut_net_ids:
                 raise ValidationError(
-                    "timing-driven flow requires partition cut nets"
+                    "TimingPathDB projection requires partition cut nets"
                 )
             cut_path_database_path = timing_root / "cut-path-database.json"
             cut_sta_report = run_opensta_path_database(
@@ -1044,6 +1137,30 @@ def run_multi_fpga_flow(
             projected_timing_paths,
         )
         timing_report["cut_path_projection"] = projection_report
+
+    effective_route_provider = route_provider
+    effective_tdm_provider = tdm_provider
+    if internal_timing_database and not timing_driven:
+        if route_provider not in {
+            None,
+            NATIVE_ROUTER_PROVIDER,
+            NATIVE_TIMING_EVALUATED_PROVIDER,
+        }:
+            raise EmuFlowError(
+                "--no-timing-driven requires the timing-oblivious Phase 4 "
+                "baseline; remove --route-provider"
+            )
+        if tdm_provider not in {None, TDM_BASELINE_PROVIDER}:
+            raise EmuFlowError(
+                "--no-timing-driven requires the timing-oblivious Phase 5 "
+                "baseline; remove --tdm-provider"
+            )
+        if route_candidate_workers != 1:
+            raise EmuFlowError(
+                "--no-timing-driven requires --route-candidate-workers 1"
+            )
+        effective_route_provider = NATIVE_TIMING_EVALUATED_PROVIDER
+        effective_tdm_provider = TDM_BASELINE_PROVIDER
 
     phase4_root = output_dir / "system-route"
     phase5_root = output_dir / "tdm"
@@ -1180,7 +1297,7 @@ def run_multi_fpga_flow(
             max_iterations=route_max_iterations,
             timing_paths_path=projected_timing_paths,
             router=router,
-            provider=route_provider,
+            provider=effective_route_provider,
             candidate_workers=route_candidate_workers,
         )
         phase5_report = run_phase5(
@@ -1188,7 +1305,7 @@ def run_multi_fpga_flow(
             platform_path,
             phase5_root,
             simulation_frames=simulation_frames,
-            provider=tdm_provider,
+            provider=effective_tdm_provider,
             ratio_optimizer=ratio_optimizer,
             timing_dag_optimizer=timing_dag_optimizer,
             slot_optimizer=slot_optimizer,
@@ -1255,15 +1372,11 @@ def run_multi_fpga_flow(
             openparf_python=physical_openparf_python,
             seed=physical_seed,
             route_channel_width=physical_route_channel_width,
-            original_ir_path=ir_path if timing_driven else None,
-            assignment_path=assignment_path if timing_driven else None,
-            routes_path=routes_path if timing_driven else None,
-            path_database_path=(
-                path_database_path if timing_driven else None
-            ),
-            logic_path_database_path=(
-                path_database_path if timing_driven else None
-            ),
+            original_ir_path=ir_path,
+            assignment_path=assignment_path,
+            routes_path=routes_path,
+            path_database_path=path_database_path,
+            logic_path_database_path=path_database_path,
             workers=physical_workers,
         )
         baseline_physical_seconds = time.monotonic() - baseline_physical_started
@@ -1393,15 +1506,11 @@ def run_multi_fpga_flow(
             vivado_max_timing_paths=physical_vivado_max_timing_paths,
             vivado_place_directive=physical_vivado_place_directive,
             vivado_route_directive=physical_vivado_route_directive,
-            original_ir_path=ir_path if timing_driven else None,
-            assignment_path=assignment_path if timing_driven else None,
-            routes_path=routes_path if timing_driven else None,
-            path_database_path=(
-                path_database_path if timing_driven else None
-            ),
-            logic_path_database_path=(
-                path_database_path if timing_driven else None
-            ),
+            original_ir_path=ir_path,
+            assignment_path=assignment_path,
+            routes_path=routes_path,
+            path_database_path=path_database_path,
+            logic_path_database_path=path_database_path,
             workers=physical_workers,
         )
         physical_seconds = time.monotonic() - physical_started
@@ -1667,16 +1776,22 @@ def run_multi_fpga_flow(
                         if cut_path_database_path is not None
                         else {}
                     ),
-                    "partition_net_weights": {
-                        "path": "timing/partition-net-weights.json",
-                        "sha256": _sha256(net_weights_path),
-                    },
+                    **(
+                        {
+                            "partition_net_weights": {
+                                "path": "timing/partition-net-weights.json",
+                                "sha256": _sha256(net_weights_path),
+                            }
+                        }
+                        if net_weights_path.is_file()
+                        else {}
+                    ),
                     "cut_timing_paths": {
                         "path": "timing/cut-timing-paths.json",
                         "sha256": _sha256(projected_timing_paths),
                     },
                 }
-                if timing_driven
+                if internal_timing_database
                 else {}
             ),
         },

@@ -156,6 +156,7 @@ from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
+    NATIVE_TIMING_EVALUATED_PROVIDER,
     ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
 )
@@ -1034,10 +1035,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--timing-driven",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "produce TimingPathDB, derive partition weights, project cut "
-            "paths, and enable timing-aware system routing/TDM"
+            "use the always-generated TimingPathDB to optimize partitioning, "
+            "system routing, and TDM (enabled by default); "
+            "--no-timing-driven retains TimingPathDB and final Phase 7C "
+            "WNS/TNS but uses timing-oblivious Phase 3-5 baselines"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -1051,6 +1055,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="CLOCK=PERIOD_NS",
+        help=(
+            "required analyzed clock target; TimingPathDB is generated in "
+            "both timing-driven and --no-timing-driven modes"
+        ),
     )
     multi_fpga_compile.add_argument(
         "--timing-model",
@@ -1062,7 +1070,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "public VTR TimingDB used to construct the pre-placement "
-            "OpenSTA model; also enables --timing-driven"
+            "OpenSTA model"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -1086,16 +1094,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--board-link-timing-db",
         type=Path,
         help=(
-            "apply versioned board-link delay bounds to timing-driven "
-            "system routing, TDM, and physical system timing"
+            "apply versioned board-link delay bounds to routing/TDM "
+            "optimization when enabled and always to final system timing"
         ),
     )
-    multi_fpga_compile.add_argument("--timing-paths", type=Path)
+    multi_fpga_compile.add_argument(
+        "--timing-paths",
+        type=Path,
+        help=(
+            "externally projected paths for non-physical algorithm tests; "
+            "normal compile runs generate a complete TimingPathDB instead"
+        ),
+    )
     multi_fpga_compile.add_argument("--router")
     multi_fpga_compile.add_argument(
         "--route-provider",
         choices=(
             NATIVE_ROUTER_PROVIDER,
+            NATIVE_TIMING_EVALUATED_PROVIDER,
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
@@ -1954,6 +1970,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         choices=[
             NATIVE_ROUTER_PROVIDER,
+            NATIVE_TIMING_EVALUATED_PROVIDER,
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,

@@ -39,6 +39,18 @@ These requirements apply to all work in this repository.
 
 ## Default timing-QoR terminology is system-global
 
+- `emuflow multi-fpga compile` must enable timing-driven Phase 3--5
+  optimization by default.  A user may explicitly select
+  `--no-timing-driven` for an algorithmic baseline, but every physical flow
+  must still generate, project, preserve, and independently validate the
+  complete original TimingPathDB needed by Phase 7C.  Disabling optimization
+  must never disable timing analysis or silently fall back to per-FPGA-only
+  WNS/TNS.
+- Physical execution requires explicit target periods for every analyzed
+  clock.  Reject a missing period before starting partitioning or physical
+  implementation; never invent a clock period or wait until Phase 7C to
+  discover that routes lack timing paths.
+
 - Unless a report explicitly qualifies the scope, `WNS` and `TNS` mean the
   whole-original-design timing result after Phase 7, including both paths
   whose endpoints remain on one FPGA and paths that cross one or more FPGAs.

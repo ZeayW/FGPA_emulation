@@ -158,7 +158,7 @@ flowchart TD
     SYN --> IR["Versioned EmuIR"]
     IR --> PART["Multi-resource partitioning<br/>timing weights + BoardDB hop domains<br/>OpenROAD/TritonPart, RePart, or baseline"]
 
-    IR -. optional timing analysis .-> TP{"Timing provider"}
+    IR -->|"mandatory timing analysis"| TP{"Timing provider"}
     PUBARCH["Public VTR ArchitectureDB / TimingDB"] --> OSTA["OpenSTA"]
     TP -->|open| OSTA
     TP -->|optional Xilinx| VTIM["Vivado timing<br/>(proprietary)"]
@@ -197,8 +197,12 @@ flowchart TD
     ST --> P7C["Phase 7C system timing-closure report"]
 ```
 
-The solid main path works without timing-driven optimization; `TimingPathDB`
-adds timing weights to partitioning, system routing, and TDM. On the fully
+Every physical main-path run now carries a complete `TimingPathDB` into
+Phase 7C. Timing-driven Phase 3--5 optimization is enabled by default and uses
+that database for partition weights, system routing, and TDM. An explicit
+`--no-timing-driven` run retains the same timing analysis and final global
+WNS/TNS contract, but selects timing-oblivious Phase 3--5 baselines and binds
+the route to TimingPathDB only after route selection. On the fully
 open route, the VTR architecture supplies public resource and delay data,
 OpenSTA supplies pre-partition optimization timing, OpenPARF performs
 placement, and VPR performs exact packing, detailed routing, and post-route
@@ -304,9 +308,9 @@ then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
 
-Timing-enabled flows now default to
+The default flow uses
 `--route-provider timing-aware-global-candidate-v1`, the checked multi-tree
-global Phase 4 provider, and to the ASP-DAC 2026 timing-DAG Phase 5 provider.
+global Phase 4 provider, and the ASP-DAC 2026 timing-DAG Phase 5 provider.
 The historical `timing-aware-route-tdm-cooptimized-v1` and path-Lagrangian
 providers remain selectable as explicit rollback and A/B baselines. Use
 `--route-candidate-workers N` to parallelize its deterministic candidate
@@ -490,6 +494,7 @@ elaborates every FPGA shell with exactly one selected tool:
 
 ```bash
 emuflow multi-fpga compile design.v --top top \
+  --clock clk --clock-period clk=10 \
   --platform build/platforms/arm-mps4-3board.json \
   --serial-bsp-phy-provider build/providers/vivado-gty-10g/serial_phy_provider.json \
   --serial-bsp-runtime-sync-provider providers/runtime_sync_tree/provider.json \
@@ -572,6 +577,7 @@ emuflow platform link-timing-validate \
   --input build/platforms/arm-mps4-link-timing.json
 
 emuflow multi-fpga compile design.v --top top \
+  --clock clk \
   --platform build/platforms/arm-mps4-3board.json \
   --timing-driven --clock-period clk=10 \
   --board-link-timing-db build/platforms/arm-mps4-link-timing.json \
@@ -731,6 +737,7 @@ academic platform:
 emuflow multi-fpga compile examples/rtl/counter.v \
   --top counter \
   --clock clk \
+  --clock-period clk=10 \
   --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --out build/counter-multi-fpga
 ```
@@ -789,7 +796,7 @@ returns, and can optionally gate deletion of the large working directory:
 
 ```bash
 emuflow multi-fpga compile design.v --top top \
-  --clock clk \
+  --clock clk --clock-period clk=10 \
   --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --physical --physical-backend open \
   --out /scratch/runs/design-r1 \
@@ -845,11 +852,11 @@ to a node, creates a unique run directory per task, and rejects mutable
   "tasks": [
     {
       "id": "baseline",
-      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/shared/platforms/board.json", "--partition-provider", "tritonpart", "--out", "{run_dir}"]
+      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--clock-period", "clk=10", "--platform", "/shared/platforms/board.json", "--partition-provider", "tritonpart", "--out", "{run_dir}"]
     },
     {
       "id": "candidate",
-      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/shared/platforms/board.json", "--partition-provider", "mfspart", "--out", "{run_dir}"]
+      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--clock-period", "clk=10", "--platform", "/shared/platforms/board.json", "--partition-provider", "mfspart", "--out", "{run_dir}"]
     }
   ]
 }
@@ -1018,6 +1025,7 @@ emuflow contest eda2025-materialize-boarddb \
 emuflow multi-fpga compile design.v \
   --top top \
   --clock clk \
+  --clock-period clk=10 \
   --platform build/eda2025-case04/rtl-boarddb.json \
   --route-constraints \
     build/eda2025-case04/rtl-boarddb.route_constraints.json \
@@ -1268,6 +1276,7 @@ direction. Pass the generated constraint into a full RTL run with:
 
 ```bash
 emuflow multi-fpga compile design.v --top top --clock clk \
+  --clock-period clk=10 \
   --platform build/benchmarks/repart/case05/rtl-boarddb.json \
   --route-constraints \
     build/benchmarks/repart/case05/rtl-boarddb.route_constraints.json \
@@ -1282,6 +1291,7 @@ timing back into Phase 7C:
 emuflow multi-fpga compile examples/rtl/counter.v \
   --top counter \
   --clock clk \
+  --clock-period clk=10 \
   --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --physical \
   --physical-workers 2 \
@@ -1310,6 +1320,7 @@ Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:
 emuflow multi-fpga compile examples/rtl/counter.v \
   --top counter \
   --clock clk \
+  --clock-period clk=10 \
   --mapping-profile generic-soft \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --physical \
@@ -1328,13 +1339,23 @@ generation remain later gates. Xilinx BoardDB files expose conservative VTR
 planning aliases (`dsp = dsp48`, `bram = floor(bram18k / 2)`); the Vivado
 result independently checks the realized DSP48 and RAMB18/RAMB36 counts.
 
-Add `--timing-driven --clock-period CLOCK=PERIOD_NS` to make this same command
-run the default OpenSTA provider, derive timing-critical partition weights,
-project timing paths onto selected cut nets, and drive timing-aware system
-routing and TDM.
+Timing-driven optimization is enabled by default. Supply an explicit
+`--clock-period CLOCK=PERIOD_NS` for every analyzed clock; the flow runs the
+default OpenSTA provider, derives timing-critical partition weights, projects
+timing paths onto selected cut nets, and drives timing-aware system routing and
+TDM. Designs containing architecture-specific hard blocks must also provide the
+matching `--architecture-timing-db`; the flow rejects uncovered hard macros
+instead of inventing delay data. Pass `--no-timing-driven` only for a
+controlled algorithmic baseline.
+That switch disables use of timing in Phase 3--5 optimization, but still
+generates and projects TimingPathDB and still requires complete physical
+Phase 7C global WNS/TNS. It does not restore the historical timing-less
+physical flow.
 Passing a public VTR TimingDB with
-`--architecture-timing-db build/architecture/timing.json` automatically
-enables this mode. OpenSTA retains one bounded alternate path per endpoint in
+`--architecture-timing-db build/architecture/timing.json` supplies the hard-
+block delay model in either optimization mode; it does not override an
+explicit `--no-timing-driven`. OpenSTA retains one bounded alternate path per
+endpoint in
 the global export rather than collapsing a clock group to a single worst path.
 Hierarchical Verilog escaped identifiers are resolved back to canonical EmuIR
 launch/capture identities even when OpenSTA's Tcl export adds a second

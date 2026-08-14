@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.board_link_timing import build_board_link_timing_model
+from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
@@ -16,8 +17,14 @@ from emuflow.multi_fpga_flow import (
     validate_multi_fpga_flow_report,
 )
 from emuflow.platform import Platform
-from emuflow.tdm import reconstruct_tdm_schedule_timing_paths
-from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from emuflow.tdm import (
+    TDM_BASELINE_PROVIDER,
+    reconstruct_tdm_schedule_timing_paths,
+)
+from emuflow.timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
+    NATIVE_TIMING_EVALUATED_PROVIDER,
+)
 from tests.native_build import (
     tdm_partition_feedback,
     tdm_ratio_optimizer,
@@ -30,9 +37,135 @@ ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = (
     ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json"
 )
+FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_cli_enables_timing_driven_by_default(self) -> None:
+        base = [
+            "multi-fpga",
+            "compile",
+            "design.v",
+            "--platform",
+            "platform.json",
+            "--out",
+            "build",
+        ]
+        self.assertTrue(_build_parser().parse_args(base).timing_driven)
+        self.assertFalse(
+            _build_parser().parse_args(
+                [*base, "--no-timing-driven"]
+            ).timing_driven
+        )
+
+    def test_physical_baseline_still_materializes_timing_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fake_sta = root / "sta"
+            fake_sta.write_text(
+                """#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]
+header = (
+    "path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
+    "slack_ns\\tfixed_delay_ns\\tpath_nets_hex"
+)
+records = [header]
+clock = "clk".encode().hex()
+for index, row in enumerate(rows):
+    _, emuir_hex = row.split("\\t")
+    records.append(
+        f"{'path-' + str(index):s}".encode().hex()
+        + f"\\t{clock}\\t10\\t9.5\\t0.5\\t{emuir_hex}"
+    )
+Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
+    "\\n".join(records) + "\\n"
+)
+""",
+                encoding="utf-8",
+            )
+            fake_sta.chmod(fake_sta.stat().st_mode | stat.S_IXUSR)
+            platform_name = Platform.load(PLATFORM).name
+
+            def fake_physical(*args, **kwargs):
+                self.assertIsNotNone(kwargs["original_ir_path"])
+                self.assertIsNotNone(kwargs["assignment_path"])
+                self.assertIsNotNone(kwargs["routes_path"])
+                self.assertIsNotNone(kwargs["path_database_path"])
+                output = args[3]
+                output.mkdir(parents=True)
+                report = {
+                    "status": "pass",
+                    "design": "counter",
+                    "platform": platform_name,
+                }
+                write_json(
+                    output / "multi-fpga-physical-flow-report.json", report
+                )
+                write_json(output / "physical-summary.json", {"status": "pass"})
+                return report
+
+            def fake_phase7c(*args, **kwargs):
+                routes = read_json(kwargs["routes_path"])
+                self.assertEqual(
+                    routes["provider"], NATIVE_TIMING_EVALUATED_PROVIDER
+                )
+                self.assertTrue(routes["timing"]["paths"])
+                phase5 = read_json(args[4])
+                self.assertEqual(phase5["provider"], TDM_BASELINE_PROVIDER)
+                self.assertIn("timing_validation", phase5)
+                output = args[6]
+                output.mkdir(parents=True)
+                write_json(output / "runtime_contract.json", {})
+                write_json(output / "qor_report.json", {})
+                return {
+                    "status": "pass",
+                    "design": "counter",
+                    "platform": platform_name,
+                    "validation": {"status": "pass"},
+                    "physical": {"status": "pass"},
+                    "system_timing": {"status": "pass"},
+                }
+
+            with (
+                patch(
+                    "emuflow.multi_fpga_flow.run_multi_fpga_physical_flow",
+                    side_effect=fake_physical,
+                ),
+                patch(
+                    "emuflow.multi_fpga_flow.run_phase7c",
+                    side_effect=fake_phase7c,
+                ),
+                patch(
+                    "emuflow.multi_fpga_flow.validate_multi_fpga_flow_report",
+                    return_value={"status": "pass"},
+                ),
+            ):
+                report = run_multi_fpga_flow(
+                    platform_path=PLATFORM,
+                    output_dir=root / "flow",
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    top="counter",
+                    clocks=["clk"],
+                    partition_provider="greedy",
+                    timing_driven=False,
+                    clock_periods={"clk": 10.0},
+                    opensta=str(fake_sta),
+                    router=str(tlr_router()),
+                    frame_slots=32,
+                    phase6_provider="baseline",
+                    physical=True,
+                    equivalence_cycles=2,
+                )
+            self.assertFalse(report["timing"]["optimization_enabled"])
+            self.assertTrue((root / "flow/timing/path-database.json").is_file())
+            self.assertTrue((root / "flow/timing/cut-timing-paths.json").is_file())
+            self.assertFalse(
+                (root / "flow/timing/partition-net-weights.json").exists()
+            )
+
     def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "multi"
@@ -43,6 +176,9 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                timing_driven=False,
+                clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
                 frame_slots=32,
                 equivalence_cycles=2,
@@ -126,6 +262,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                timing_driven=False,
                 router=str(tlr_router()),
                 route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 route_candidate_workers=2,
@@ -148,7 +285,13 @@ class MultiFpgaFlowTest(unittest.TestCase):
 
     def test_checked_board_independent_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            output = Path(temporary_directory) / "multi"
+            root = Path(temporary_directory)
+            output = root / "multi"
+            link_timing_path = root / "board-link-timing.json"
+            write_json(
+                link_timing_path,
+                build_board_link_timing_model(Platform.load(PLATFORM)),
+            )
             report = run_multi_fpga_flow(
                 platform_path=PLATFORM,
                 output_dir=output,
@@ -156,6 +299,10 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                timing_driven=False,
+                board_link_timing_db=link_timing_path,
+                clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
                 frame_slots=32,
                 equivalence_cycles=8,
@@ -165,6 +312,33 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertEqual(report["summary"]["equivalence_mismatches"], 0)
             self.assertEqual(
                 report["runtime"]["validation"]["status"], "pass"
+            )
+            self.assertFalse(report["timing"]["optimization_enabled"])
+            self.assertEqual(
+                report["summary"]["timing_optimization"],
+                "disabled-baseline",
+            )
+            self.assertEqual(
+                report["stages"]["system_route"]["provider"],
+                NATIVE_TIMING_EVALUATED_PROVIDER,
+            )
+            self.assertEqual(
+                report["stages"]["tdm"]["provider"],
+                TDM_BASELINE_PROVIDER,
+            )
+            self.assertIn(
+                "timing_validation", report["stages"]["tdm"]
+            )
+            self.assertFalse(
+                report["board_link_timing"]["optimization_enabled"]
+            )
+            self.assertEqual(
+                report["board_link_timing"]["applied_to"],
+                [
+                    "phase4-post-route-timing-evaluation",
+                    "phase5-baseline-schedule-timing-evaluation",
+                    "phase7c-system-timing-when-physical",
+                ],
             )
             self.assertEqual(report["summary"]["frame_slots"], 32)
             self.assertEqual(
@@ -191,6 +365,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "split/fpga1/netlist.json",
                 "runtime/runtime_contract.json",
                 "runtime/qor_report.json",
+                "timing/path-database.json",
+                "timing/cut-timing-paths.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)
 
@@ -203,6 +379,9 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 top="counter",
                 clocks=["clk"],
                 partition_provider="greedy",
+                timing_driven=False,
+                clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
                 frame_slots=32,
                 equivalence_cycles=2,
@@ -211,6 +390,18 @@ class MultiFpgaFlowTest(unittest.TestCase):
             broken["stages"]["tdm"]["platform"] = "different"
             with self.assertRaisesRegex(
                 ValidationError, "platform identity disagrees"
+            ):
+                validate_multi_fpga_flow_report(broken)
+            broken = copy.deepcopy(report)
+            broken["timing"]["optimization_enabled"] = True
+            with self.assertRaisesRegex(
+                ValidationError, "missing partition weights"
+            ):
+                validate_multi_fpga_flow_report(broken)
+            broken = copy.deepcopy(report)
+            del broken["stages"]["tdm"]["timing_validation"]
+            with self.assertRaisesRegex(
+                ValidationError, "timing-evaluated Phase 3--5 baseline"
             ):
                 validate_multi_fpga_flow_report(broken)
 
@@ -467,6 +658,9 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                     output_dir=output,
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",
+                    timing_driven=False,
+                    clock_periods={"clk": 10.0},
+                    opensta=str(FAKE_OPENSTA),
                 )
 
     def test_compile_can_continue_into_checked_serial_bsp(self) -> None:
@@ -536,6 +730,9 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                     top="counter",
                     clocks=["clk"],
                     partition_provider="greedy",
+                    timing_driven=False,
+                    clock_periods={"clk": 10.0},
+                    opensta=str(FAKE_OPENSTA),
                     router=str(tlr_router()),
                     frame_slots=32,
                     equivalence_cycles=2,
