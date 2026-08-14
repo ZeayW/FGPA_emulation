@@ -123,7 +123,7 @@ class CanonicalQorTest(unittest.TestCase):
             )
             self.assertAlmostEqual(
                 report["comparisons"]["chimew"]["mean_deltas"][
-                    "target_clock_wns_ns"
+                    "global_target_clock_wns_ns"
                 ],
                 0.2,
             )

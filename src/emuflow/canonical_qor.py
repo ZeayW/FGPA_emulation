@@ -19,12 +19,12 @@ _PROVIDERS = ("baseline", "placement-aware", "chimew")
 _SEEDS = (1, 2, 3)
 _ARM_KEYS = {(provider, seed) for provider in _PROVIDERS for seed in _SEEDS}
 _METRICS = (
-    "target_clock_wns_ns",
-    "target_clock_tns_ns",
-    "runtime_clock_wns_ns",
-    "runtime_clock_tns_ns",
-    "per_fpga_worst_wns_ns",
-    "per_fpga_total_tns_ns",
+    "global_target_clock_wns_ns",
+    "global_target_clock_tns_ns",
+    "global_runtime_clock_wns_ns",
+    "global_runtime_clock_tns_ns",
+    "per_fpga_wns_ns",
+    "per_fpga_tns_ns",
 )
 
 
@@ -165,16 +165,16 @@ def _arm_record(
     ):
         raise ValidationError("canonical QoR physical closure is invalid")
     metrics = {
-        "target_clock_wns_ns": target_wns,
-        "target_clock_tns_ns": target_tns,
-        "target_clock_failing_paths": target_failing,
-        "runtime_clock_wns_ns": runtime_wns,
-        "runtime_clock_tns_ns": runtime_tns,
-        "runtime_clock_failing_paths": runtime_failing,
-        "per_fpga_worst_wns_ns": _number(
+        "global_target_clock_wns_ns": target_wns,
+        "global_target_clock_tns_ns": target_tns,
+        "global_target_clock_failing_endpoints": target_failing,
+        "global_runtime_clock_wns_ns": runtime_wns,
+        "global_runtime_clock_tns_ns": runtime_tns,
+        "global_runtime_clock_failing_endpoints": runtime_failing,
+        "per_fpga_wns_ns": _number(
             physical.get("worst_wns_ns"), "per-FPGA worst WNS"
         ),
-        "per_fpga_total_tns_ns": _number(
+        "per_fpga_tns_ns": _number(
             physical.get("total_tns_ns"), "per-FPGA total TNS"
         ),
         "unrouted_nets": 0,
@@ -248,8 +248,8 @@ def _comparison(
         for metric in _METRICS
     }
     target_classes = {
-        classifications["target_clock_wns_ns"],
-        classifications["target_clock_tns_ns"],
+        classifications["global_target_clock_wns_ns"],
+        classifications["global_target_clock_tns_ns"],
     }
     if "mixed" in target_classes or (
         "improved" in target_classes and "regressed" in target_classes
