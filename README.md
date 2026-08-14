@@ -239,7 +239,7 @@ labelled per-FPGA diagnostics, but never substitutes them for global timing.
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
-| Fully open physical route | Implemented through whole-design physical/TDM timing; historical PicoRV32 and 528,104-instance Koios GEMM A/B artifacts prove all-original-path population coverage but predate the local launch-Tco repair, while Koios DLA is the active corrected-delay and independent-design replication gate |
+| Fully open physical route | Implemented through whole-design physical/TDM timing; historical PicoRV32 and 528,104-instance Koios GEMM A/B artifacts prove all-original-path population coverage but predate the local launch-Tco repair, while the corrected Koios DLA gate now validates the repaired complete-path model on an independent design |
 | Vivado physical route | Implemented for routed DUT logic segments and stable RAMB endpoint recovery; its former large Koios evidence is likewise a cross-FPGA subset until same-FPGA original-path timing is exported |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
@@ -1467,9 +1467,36 @@ promotion steps prove that the new no-candidate round-boundary fallback was
 not exercised. The current in-tree A/B validator independently rehashes the
 frozen sources and routes, traverses all 178,366 paths, and rechecks the
 physical, legality, coverage, and QoR claims before accepting this result. The
-archived local-delay values omit launch clock-to-Q, so it does not promote the
-upgraded provider: the corrected selected-chain VPR rerun must publish the
-exact-versus-bound count and repeat the conclusion on an independent design.
+archived local-delay values omit launch clock-to-Q, so that result alone does
+not promote the upgraded provider. The corrected selected-chain DLA gate below
+supplies the required exact-versus-bound count and independent-design result.
+
+That corrected gate is now complete on the source-backed Koios DLA design.
+Both frozen Phase 4/5 arms implement 379,357 synthesized instances on the same
+two-FPGA point-to-point academic VTR platform, use the same 576-ns runtime
+period, and cover the identical set of all 195,532 original TimingPathDB
+members: 187,854 same-FPGA paths and 7,678 cross-FPGA paths. The repaired VPR
+measurement includes launch clock-to-Q exactly once, capture setup exactly
+once, and the selected routed atom-pin chain for every unambiguous path. The
+final population contains 194,828 endpoint-exact physical paths and 704
+explicitly labelled conservative cone bounds, with no unmeasured fallback and
+100% canonical path-set coverage.
+
+The frozen default routing/TDM arm reports target-clock WNS/TNS of
+`-411.661332993 ns` / `-601999.373554433 ns`; global candidate-tree routing
+plus timing-DAG TDM reports `-129.986758067 ns` /
+`-242837.025741354 ns`. The independently reconstructed improvements are
+`281.674574926 ns` in WNS and `359162.347813079 ns` in TNS, reducing the
+negative deficits by 68.42% and 59.66%, respectively. Negative target-slack
+paths fall from 33,673 to 33,356. Both arms close the same runtime clock with
+zero runtime TNS; runtime WNS improves from `160.338667007 ns` to
+`442.013241933 ns`, while the minimum safe period bound falls from
+`415.661332993 ns` to `133.986758067 ns`. This is a system-level improvement,
+not a hidden local-P&R win: the upgraded arm's aggregate per-FPGA physical WNS
+and TNS are 4.50544 ns and 2598.5469 ns worse, respectively. The sealed A/B
+checker rehashes the frozen inputs, reconstructs all 195,532 slacks, and
+recomputes the exact/cone-bound counts and global metrics before accepting the
+comparison.
 
 The same frozen design on the two-FPGA point-to-point BoardDB is a useful
 negative control. Both complete Phase 7 arms cover all 22,272 source paths
