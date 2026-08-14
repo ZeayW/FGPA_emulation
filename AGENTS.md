@@ -241,6 +241,9 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 - Baseline, placement-aware, and Chimew Phase 6 arms must use identical frozen
   source, BoardDB, Phase 1/3/4/5 artifacts, physical backend/options, worker
   count, and seeds 1/2/3.  Only the Phase 6 provider may differ.
+- Canonical whole-design timing uses the target period recorded in the
+  versioned workload run spec. A transient experiment config may not choose or
+  relabel that period; changing it is a new benchmark contract, not a rerun.
 - The primary final QoR is whole-design target-clock WNS and TNS after Phase
   7/7C.  Per-FPGA WNS/TNS, Phase 6 cost, crossings, RUDY, and congestion are
   diagnostics and must not be substituted for the primary metrics.

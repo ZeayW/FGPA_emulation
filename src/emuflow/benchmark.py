@@ -1,4 +1,5 @@
 import hashlib
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -52,7 +53,23 @@ class BenchmarkRun:
         _required_string(value, "design_id", "benchmark")
         _required_string(value, "top", "benchmark")
         _string_list(value.get("sources"), "benchmark.sources")
-        _string_list(value.get("clocks"), "benchmark.clocks")
+        clocks = _string_list(value.get("clocks"), "benchmark.clocks")
+        clock_periods = value.get("clock_periods_ns")
+        if clock_periods is not None and (
+            not isinstance(clock_periods, dict)
+            or set(clock_periods) != set(clocks)
+            or any(
+                isinstance(period, bool)
+                or not isinstance(period, (int, float))
+                or not math.isfinite(float(period))
+                or float(period) <= 0.0
+                for period in clock_periods.values()
+            )
+        ):
+            raise ValidationError(
+                "benchmark.clock_periods_ns: expected one positive finite "
+                "period for every declared clock"
+            )
         _required_string(value, "platform", "benchmark")
         synthesis = value.get("synthesis")
         if not isinstance(synthesis, dict):

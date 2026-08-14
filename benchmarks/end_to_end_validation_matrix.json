@@ -45,6 +45,7 @@
     "frozen_ab_inputs": [
       "source_commit",
       "rtl_source_hashes",
+      "target_clock_periods_ns",
       "boarddb_hash",
       "phase1_emuir_hash",
       "phase3_assignment_hash",

@@ -73,6 +73,7 @@ def _canonical_case_contract(
     boarddb_report_path: Path,
     top: str,
     clocks: Sequence[str],
+    clock_periods: Mapping[str, float],
 ) -> Dict[str, Any]:
     matrix_path = repository_root / "benchmarks/end_to_end_validation_matrix.json"
     matrix, matrix_validation = load_end_to_end_validation_matrix(matrix_path)
@@ -87,6 +88,13 @@ def _canonical_case_contract(
     if top != run_spec["top"] or list(clocks) != run_spec["clocks"]:
         raise ValidationError(
             "canonical experiment top/clocks do not match the matrix run spec"
+        )
+    expected_periods = run_spec.get("clock_periods_ns")
+    if expected_periods is None or {
+        name: float(value) for name, value in expected_periods.items()
+    } != dict(clock_periods):
+        raise ValidationError(
+            "canonical experiment clock periods do not match the matrix run spec"
         )
     source_names = {Path(value).name for value in run_spec["sources"]}
     if rtl.name not in source_names:
@@ -382,6 +390,7 @@ def compile_canonical_experiment_spec(
         boarddb_report_path,
         top,
         clocks,
+        {name: float(periods[name]) for name in clocks},
     )
     workers = _positive_integer(config.get("physical_workers", 8), "physical_workers")
     channel_width = _positive_integer(

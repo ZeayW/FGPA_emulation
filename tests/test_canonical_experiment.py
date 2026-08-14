@@ -273,6 +273,15 @@ class CanonicalExperimentTest(unittest.TestCase):
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
+            config["clock_periods"] = {"clk": 20.0}
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "clock periods"):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "wrong-period.json"
+                )
+
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
             config["top"] = "renamed_DLA"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "top/clocks"):

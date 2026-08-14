@@ -66,6 +66,7 @@ class BenchmarkRunTest(unittest.TestCase):
         spec = BenchmarkRun.load(KOIOS_DLA_MEDIUM_SPEC)
         self.assertEqual(spec.value["top"], "DLA")
         self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
+        self.assertEqual(spec.value["clock_periods_ns"], {"clk": 10.0})
         source_root = (
             ROOT
             / "third_party"
@@ -114,6 +115,12 @@ class BenchmarkRunTest(unittest.TestCase):
         value = json.loads(SERV_SPEC.read_text(encoding="utf-8"))
         value["synthesis"]["policy"] = "unknown"
         with self.assertRaisesRegex(ValidationError, "unsupported value"):
+            BenchmarkRun(value)
+
+    def test_clock_period_contract_must_cover_declared_clocks(self) -> None:
+        value = json.loads(KOIOS_DLA_MEDIUM_SPEC.read_text(encoding="utf-8"))
+        value["clock_periods_ns"] = {"other": 10.0}
+        with self.assertRaisesRegex(ValidationError, "clock_periods_ns"):
             BenchmarkRun(value)
 
 
