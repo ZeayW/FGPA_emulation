@@ -845,6 +845,11 @@ if(EMUFLOW_BUILD_CUDD)
     UPDATE_COMMAND ""
     PATCH_COMMAND ""
     CONFIGURE_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      "ACLOCAL=true"
+      "AUTOCONF=true"
+      "AUTOHEADER=true"
+      "AUTOMAKE=true"
       "<SOURCE_DIR>/configure"
       "--prefix=${EMUFLOW_INSTALL_ROOT}"
       --enable-shared

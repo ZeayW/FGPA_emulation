@@ -696,6 +696,10 @@ headers belonging to the exact `spdlog` package selected by CMake ahead of
 broad dependency include roots and keeps imported includes in their declared
 order; a distro copy of `spdlog` can therefore not be compiled against a
 different selected `spdlog`/`fmt` library ABI.
+The CUDD external build consumes the checked-in Autotools outputs directly and
+disables timestamp-triggered regeneration. A clean clone therefore does not
+silently depend on the historical `aclocal-1.14` executable or modify imported
+source files merely because checkout order changed their mtimes.
 
 The selected Python must be the same interpreter and PyTorch ABI used when
 OpenPARF's C++ operators are compiled; merely being able to import a different
