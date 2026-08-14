@@ -46,6 +46,7 @@
       "source_commit",
       "rtl_source_hashes",
       "target_clock_periods_ns",
+      "frontend_mapping_profile",
       "boarddb_hash",
       "phase1_emuir_hash",
       "phase3_assignment_hash",

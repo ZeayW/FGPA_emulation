@@ -867,6 +867,9 @@ quantum/frame bound, and each independent validator rechecks that chain.
 The workload run spec also fixes the target clock period (10 ns for the
 canonical Koios DLA-medium study); an experiment config with another period is
 rejected rather than producing incomparable WNS/TNS.
+It separately fixes the physical frontend mapping profile
+(`vtr-hard-blocks` here); this is distinct from the run spec's vendor
+logic-only synthesis policy and cannot be changed by the transient config.
 Supplying an arbitrary design or merely renaming a platform therefore cannot
 enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
 per provider, nine physical Phase 7 nodes (three providers by seeds 1, 2, and

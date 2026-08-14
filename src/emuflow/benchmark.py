@@ -15,6 +15,7 @@ from .synthesis import (
 
 BENCHMARK_RUN_SCHEMA = "emuflow.benchmark-run/v1"
 BENCHMARK_REPORT_SCHEMA = "emuflow.benchmark-report/v1"
+VALID_PHYSICAL_MAPPING_PROFILES = {"generic-soft", "vtr-hard-blocks"}
 
 
 def _required_string(value: Mapping[str, Any], key: str, context: str) -> str:
@@ -69,6 +70,14 @@ class BenchmarkRun:
             raise ValidationError(
                 "benchmark.clock_periods_ns: expected one positive finite "
                 "period for every declared clock"
+            )
+        physical_mapping_profile = value.get("physical_mapping_profile")
+        if (
+            physical_mapping_profile is not None
+            and physical_mapping_profile not in VALID_PHYSICAL_MAPPING_PROFILES
+        ):
+            raise ValidationError(
+                "benchmark.physical_mapping_profile: unsupported value"
             )
         _required_string(value, "platform", "benchmark")
         synthesis = value.get("synthesis")

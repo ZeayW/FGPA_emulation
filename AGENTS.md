@@ -244,6 +244,9 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 - Canonical whole-design timing uses the target period recorded in the
   versioned workload run spec. A transient experiment config may not choose or
   relabel that period; changing it is a new benchmark contract, not a rerun.
+- The run spec also fixes the physical frontend mapping profile independently
+  of any vendor-synthesis policy. Canonical compilation must consume that
+  value; it must not silently switch between generic-soft and VTR hard blocks.
 - The primary final QoR is whole-design target-clock WNS and TNS after Phase
   7/7C.  Per-FPGA WNS/TNS, Phase 6 cost, crossings, RUDY, and congestion are
   diagnostics and must not be substituted for the primary metrics.

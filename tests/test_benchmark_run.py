@@ -67,6 +67,9 @@ class BenchmarkRunTest(unittest.TestCase):
         self.assertEqual(spec.value["top"], "DLA")
         self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
         self.assertEqual(spec.value["clock_periods_ns"], {"clk": 10.0})
+        self.assertEqual(
+            spec.value["physical_mapping_profile"], "vtr-hard-blocks"
+        )
         source_root = (
             ROOT
             / "third_party"
@@ -121,6 +124,12 @@ class BenchmarkRunTest(unittest.TestCase):
         value = json.loads(KOIOS_DLA_MEDIUM_SPEC.read_text(encoding="utf-8"))
         value["clock_periods_ns"] = {"other": 10.0}
         with self.assertRaisesRegex(ValidationError, "clock_periods_ns"):
+            BenchmarkRun(value)
+
+    def test_unknown_physical_mapping_profile_is_rejected(self) -> None:
+        value = json.loads(KOIOS_DLA_MEDIUM_SPEC.read_text(encoding="utf-8"))
+        value["physical_mapping_profile"] = "implicit"
+        with self.assertRaisesRegex(ValidationError, "physical_mapping_profile"):
             BenchmarkRun(value)
 
 

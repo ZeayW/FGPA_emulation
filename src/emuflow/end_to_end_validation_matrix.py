@@ -54,6 +54,7 @@ FROZEN_AB_INPUTS = (
     "source_commit",
     "rtl_source_hashes",
     "target_clock_periods_ns",
+    "frontend_mapping_profile",
     "boarddb_hash",
     "phase1_emuir_hash",
     "phase3_assignment_hash",
@@ -238,6 +239,11 @@ def _validate_case(
         raise ValidationError(
             f"end-to-end matrix case {case_id} workload must freeze target "
             "clock_periods_ns in its run spec"
+        )
+    if "physical_mapping_profile" not in run_spec.value:
+        raise ValidationError(
+            f"end-to-end matrix case {case_id} workload must freeze its "
+            "physical_mapping_profile in the run spec"
         )
     run_id = run_spec.value["id"].lower()
     if "x32" in run_id or "replicated" in run_id:

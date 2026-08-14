@@ -174,6 +174,10 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertEqual(nodes["route"]["dependencies"], ["partition", "cut-timing"])
             self.assertEqual(nodes["tdm"]["dependencies"], ["route"])
             self.assertIn("--route-constraints", nodes["partition"]["command"])
+            self.assertEqual(
+                nodes["frontend"]["configuration"]["mapping_profile"],
+                "vtr-hard-blocks",
+            )
             self.assertIn("--hop-refiner", nodes["partition"]["command"])
             self.assertIn("--constraints", nodes["route"]["command"])
             self.assertEqual(nodes["tdm"]["configuration"]["ratio_quantum"], 4)

@@ -162,6 +162,7 @@ def _canonical_case_contract(
         "contest_case_id": contest_case_id,
         "boarddb_report": boarddb_report,
         "route_constraints": normalized_route_constraints,
+        "physical_mapping_profile": run_spec["physical_mapping_profile"],
     }
 
 
@@ -461,7 +462,8 @@ def compile_canonical_experiment_spec(
     frontend_command = [
         executable, "experiment-stage", "frontend-run",
         "--platform", str(platform), "--source", str(rtl), "--top", top,
-        "--mapping-profile", "vtr-hard-blocks", "--yosys", str(tools["yosys"]),
+        "--mapping-profile", contract["physical_mapping_profile"],
+        "--yosys", str(tools["yosys"]),
     ]
     for clock in clocks:
         frontend_command.extend(("--clock", clock))
@@ -471,7 +473,7 @@ def compile_canonical_experiment_spec(
         [executable, "experiment-stage", "frontend-validate", "{artifact_root}", "--platform", str(platform)],
         [_artifact("sources", "source-input"), _artifact("phase1", "consumer-checkpoint"), _artifact("synthesized.json", "consumer-checkpoint"), _artifact("experiment-frontend-report.json", "evidence-critical")],
         inputs=("rtl", "platform", "boarddb_report", "end_to_end_matrix", "benchmark_run_spec", "tool.emuflow", "tool.yosys"),
-        configuration={"case_id": case_id, "contest_case_id": contract["contest_case_id"], "top": top, "clocks": clocks, "mapping_profile": "vtr-hard-blocks", "require_no_fabric_clock": True},
+        configuration={"case_id": case_id, "contest_case_id": contract["contest_case_id"], "top": top, "clocks": clocks, "mapping_profile": contract["physical_mapping_profile"], "require_no_fabric_clock": True},
         peak_gib=16, retained_gib=4,
     )
     period_args = [f"{clock}={float(periods[clock]):.12g}" for clock in clocks]
