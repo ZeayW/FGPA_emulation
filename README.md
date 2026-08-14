@@ -681,6 +681,13 @@ cmake --preset release \
   -DEMUFLOW_OPENPARF_PYTHON=/absolute/path/to/python
 ```
 
+Multiple dependency prefixes may be supplied as a semicolon-separated CMake
+list. The root build preserves that list as one child-CMake argument and
+resolves the exact Bison/Flex executables plus `FlexLexer.h` from those
+prefixes before forwarding them to OpenROAD, OpenSTA, VPR, and OpenPARF.
+OpenROAD and standalone OpenSTA are both configured without Tcl readline so
+their shared source configuration cannot disagree between the two builds.
+
 The selected Python must be the same interpreter and PyTorch ABI used when
 OpenPARF's C++ operators are compiled; merely being able to import a different
 PyTorch installation is insufficient. Set

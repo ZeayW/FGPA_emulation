@@ -709,6 +709,7 @@ payload = b'abc'
                 "nodes": ["hpc1"],
                 "tasks": [{
                     "id": task_id,
+                    "estimated_peak_bytes": 1024,
                     "command": ["{install}/bin/emuflow", "noop", "{run_dir}"],
                 }],
             })
@@ -760,6 +761,7 @@ payload = b'abc'
                 "nodes": ["hpc1"],
                 "tasks": [{
                     "id": task_id,
+                    "estimated_peak_bytes": 1024,
                     "command": ["{install}/bin/emuflow", "noop", "{run_dir}"],
                 }],
             })
@@ -795,6 +797,7 @@ payload = b'abc'
                 "nodes": ["hpc1"],
                 "tasks": [{
                     "id": "fetch-" + suffix,
+                    "estimated_peak_bytes": 1024,
                     "command": ["{install}/bin/emuflow", "noop", "{run_dir}"],
                 }],
             })
@@ -825,6 +828,7 @@ payload = b'abc'
                 "nodes": ["hpc2"],
                 "tasks": [{
                     "id": "import-" + suffix,
+                    "estimated_peak_bytes": 1024,
                     "command": ["{install}/bin/emuflow", "noop", "{run_dir}"],
                 }],
             })
@@ -909,6 +913,7 @@ payload = b'abc'
                     "tasks": [
                         {
                             "id": "fetch-" + suffix,
+                            "estimated_peak_bytes": 1024,
                             "command": [
                                 "{install}/bin/emuflow",
                                 "noop",
@@ -949,6 +954,7 @@ payload = b'abc'
                     "tasks": [
                         {
                             "id": "import-" + suffix,
+                            "estimated_peak_bytes": 1024,
                             "command": [
                                 "{install}/bin/emuflow",
                                 "noop",

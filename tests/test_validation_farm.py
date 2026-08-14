@@ -24,6 +24,31 @@ COMMIT = "1" * 40
 
 
 class ValidationFarmTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Unit tests exercise farm state transitions, not the live account
+        # quota.  Validation hosts intentionally enforce the /research quota,
+        # so isolate ordinary fixtures from ambient quota exhaustion.  The
+        # explicit storage-shortage test below installs its own blocking
+        # result and therefore still covers the production gate.
+        self._storage_preflight = mock.patch(
+            "emuflow.validation_farm.preflight_experiment_storage",
+            return_value={
+                "status": "pass",
+                "estimated_peak_bytes": 0,
+                "reserve_bytes": 0,
+                "required_available_bytes": 0,
+                "root": "/research/d4/gds/ziyiwang21",
+                "filesystem_free_bytes": 1 << 40,
+                "quota_available_bytes": 1 << 40,
+                "available_bytes": 1 << 40,
+                "quota_error": None,
+            },
+        )
+        self._storage_preflight.start()
+
+    def tearDown(self) -> None:
+        self._storage_preflight.stop()
+
     def _fixture(self, root: Path, task_count: int = 3) -> tuple[Path, Path]:
         install = root / "install" / COMMIT
         (install / "bin").mkdir(parents=True)
