@@ -20,6 +20,8 @@ from .experiment_identity import (
     validate_implementation_closure,
 )
 from .io import read_json, write_json
+from .platform import Platform
+from .routing import load_route_constraints
 
 
 CANONICAL_EXPERIMENT_CONFIG_SCHEMA = "emuflow.canonical-experiment-config/v1"
@@ -67,6 +69,7 @@ def _canonical_case_contract(
     case_id: str,
     rtl: Path,
     platform: Path,
+    route_constraints_path: Path,
     boarddb_report_path: Path,
     top: str,
     clocks: Sequence[str],
@@ -115,19 +118,23 @@ def _canonical_case_contract(
     artifacts = boarddb_report.get("artifacts")
     if not isinstance(artifacts, list):
         raise ValidationError("canonical experiment BoardDB artifact seal is missing")
-    boarddb_artifacts = [
-        item
-        for item in artifacts
-        if isinstance(item, dict) and item.get("path") == "boarddb.json"
-    ]
-    if (
-        len(boarddb_artifacts) != 1
-        or boarddb_artifacts[0].get("sha256") != _sha256(platform)
-        or boarddb_artifacts[0].get("bytes") != platform.stat().st_size
+    for relative, path, label in (
+        ("boarddb.json", platform, "platform"),
+        ("route_constraints.json", route_constraints_path, "route constraints"),
     ):
-        raise ValidationError(
-            "canonical experiment platform bytes do not match the BoardDB report"
-        )
+        matches = [
+            item
+            for item in artifacts
+            if isinstance(item, dict) and item.get("path") == relative
+        ]
+        if (
+            len(matches) != 1
+            or matches[0].get("sha256") != _sha256(path)
+            or matches[0].get("bytes") != path.stat().st_size
+        ):
+            raise ValidationError(
+                f"canonical experiment {label} bytes do not match the BoardDB report"
+            )
     platform_document = read_json(platform)
     if (
         platform_document.get("schema") != "emuflow.boarddb/v1"
@@ -137,12 +144,16 @@ def _canonical_case_contract(
         raise ValidationError(
             "canonical experiment platform is not the named contest projection"
         )
+    normalized_route_constraints = load_route_constraints(
+        route_constraints_path, Platform.load(platform)
+    )
     return {
         "matrix_path": matrix_path,
         "matrix_sha256": matrix_validation["matrix_sha256"],
         "run_spec_path": run_spec_path,
         "contest_case_id": contest_case_id,
         "boarddb_report": boarddb_report,
+        "route_constraints": normalized_route_constraints,
     }
 
 
@@ -285,6 +296,9 @@ def compile_canonical_experiment_spec(
     boarddb_report_path = _file(
         config.get("boarddb_report"), "boarddb_report"
     )
+    route_constraints = _file(
+        config.get("route_constraints"), "route_constraints"
+    )
     timing_model = _file(config.get("timing_model"), "timing_model")
     architecture_timing = _file(
         config.get("architecture_timing_db"), "architecture_timing_db"
@@ -300,10 +314,16 @@ def compile_canonical_experiment_spec(
         "yosys",
         "opensta",
         "openroad",
+        "hop_refiner",
         "router",
         "ratio_optimizer",
         "timing_dag_optimizer",
         "slot_optimizer",
+        "pin_planner",
+        "chimew_grouper",
+        "chimew_refiner",
+        "chimew_rudy",
+        "chimew_assigner",
         "vpr",
         "architecture_importer",
         "packed_importer",
@@ -351,6 +371,7 @@ def compile_canonical_experiment_spec(
         case_id,
         rtl,
         platform,
+        route_constraints,
         boarddb_report_path,
         top,
         clocks,
@@ -369,6 +390,7 @@ def compile_canonical_experiment_spec(
         "rtl": _sha256(rtl),
         "platform": _sha256(platform),
         "boarddb_report": _sha256(boarddb_report_path),
+        "route_constraints": _sha256(route_constraints),
         "end_to_end_matrix": contract["matrix_sha256"],
         "benchmark_run_spec": _sha256(contract["run_spec_path"]),
         "timing_model": _sha256(timing_model),
@@ -456,15 +478,15 @@ def compile_canonical_experiment_spec(
     partition_command = [
         executable, "experiment-stage", "partition-run", "--frontend", "{dependency:frontend}",
         "--timing", "{dependency:timing}", "--platform", str(platform),
-        "--provider", "tritonpart", "--seed", str(partition_seed), "--openroad", str(tools["openroad"]),
+        "--provider", "tritonpart", "--seed", str(partition_seed), "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
         "--out", "{output_dir}",
     ]
     node(
         "partition", "partition", ["frontend", "timing"], partition_command,
-        [executable, "experiment-stage", "partition-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--platform", str(platform)],
+        [executable, "experiment-stage", "partition-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--platform", str(platform), "--route-constraints", str(route_constraints), "--provider", "tritonpart", "--seed", str(partition_seed)],
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
-        inputs=("platform", "tool.emuflow", "tool.openroad"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10},
+        inputs=("platform", "route_constraints", "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
+        configuration={"provider": "tritonpart", "seed": partition_seed, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [
@@ -486,20 +508,20 @@ def compile_canonical_experiment_spec(
     )
     node(
         "route", "route", ["partition", "cut-timing"],
-        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--router", str(tools["router"]), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform)],
+        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--router", str(tools["router"]), "--out", "{output_dir}"],
+        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints)],
         [_artifact("routes.json", "consumer-checkpoint"), _artifact("phase4_report.json", "consumer-checkpoint"), _artifact("experiment-route-report.json", "evidence-critical")],
-        inputs=("platform", "tool.emuflow", "tool.router"),
-        configuration={"provider": "route-tdm-timing-cooptimization-v1"},
+        inputs=("platform", "route_constraints", "tool.emuflow", "tool.router"),
+        configuration={"provider": "route-tdm-timing-cooptimization-v1", "route_constraints": contract["route_constraints"]},
         peak_gib=12, retained_gib=3,
     )
     node(
         "tdm", "tdm", ["route"],
-        [executable, "experiment-stage", "tdm-run", "--route", "{dependency:route}", "--platform", str(platform), "--ratio-optimizer", str(tools["ratio_optimizer"]), "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]), "--slot-optimizer", str(tools["slot_optimizer"]), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform)],
+        [executable, "experiment-stage", "tdm-run", "--route", "{dependency:route}", "--platform", str(platform), "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]), "--max-ratio", str(contract["route_constraints"]["frame_slots"]), "--ratio-optimizer", str(tools["ratio_optimizer"]), "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]), "--slot-optimizer", str(tools["slot_optimizer"]), "--out", "{output_dir}"],
+        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints)],
         [_artifact("schedule.json", "consumer-checkpoint"), _artifact("ratio_plan.json", "consumer-checkpoint"), _artifact("phase5_report.json", "consumer-checkpoint"), _artifact("experiment-tdm-report.json", "evidence-critical")],
-        inputs=("platform", "tool.emuflow", "tool.ratio_optimizer", "tool.timing_dag_optimizer", "tool.slot_optimizer"),
-        configuration={"simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": 8, "post_refinement_iterations": 200},
+        inputs=("platform", "route_constraints", "tool.emuflow", "tool.ratio_optimizer", "tool.timing_dag_optimizer", "tool.slot_optimizer"),
+        configuration={"simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200},
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]
@@ -541,12 +563,27 @@ def compile_canonical_experiment_spec(
             if provider == "placement-aware"
             else [_artifact("chimew-pipeline", "consumer-checkpoint")]
         )
+        phase6_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider]
+        phase6_inputs = ["platform", "tool.emuflow"]
+        if provider == "placement-aware":
+            phase6_command.extend(("--pin-planner", str(tools["pin_planner"])))
+            phase6_inputs.append("tool.pin_planner")
+        else:
+            for argument, label in (
+                ("--chimew-grouper", "chimew_grouper"),
+                ("--chimew-refiner", "chimew_refiner"),
+                ("--chimew-rudy", "chimew_rudy"),
+                ("--chimew-assigner", "chimew_assigner"),
+            ):
+                phase6_command.extend((argument, str(tools[label])))
+                phase6_inputs.append(f"tool.{label}")
+        phase6_command.extend(("--out", "{output_dir}"))
         node(
             phase6_id, "phase6", ["shared-phase1-5", "physical-lookahead"],
-            [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, "--out", "{output_dir}"],
+            phase6_command,
             [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider],
             [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical"), *extra_artifacts],
-            inputs=("platform", "tool.emuflow"), configuration={"provider": provider, "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider=provider,
+            inputs=tuple(phase6_inputs), configuration={"provider": provider, "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider=provider,
         )
     for provider in ("baseline", "placement-aware", "chimew"):
         for seed in (1, 2, 3):

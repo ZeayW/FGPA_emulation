@@ -855,14 +855,17 @@ emuflow experiment-cache plan \
 ```
 
 The canonical compiler requires byte-addressed RTL, BoardDB, the corresponding
-`boarddb_report.json`, timing/device models, the physical architecture, the
-versioned OpenPARF manifest, and every external executable used by synthesis,
+`boarddb_report.json` and `route_constraints.json`, timing/device models, the
+physical architecture, the versioned OpenPARF manifest, and every external executable used by synthesis,
 STA, partitioning, routing, scheduling, and physical implementation.  The case
 ID must exist in `benchmarks/end_to_end_validation_matrix.json`; the compiler
 checks the RTL filename/top/clocks against that case's run spec and checks the
-BoardDB bytes, contest-case identity, and contest-matrix digest against its
-materialization report.  Supplying an arbitrary design or merely renaming a
-platform therefore cannot enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
+BoardDB and route-constraint bytes, contest-case identity, and contest-matrix
+digest against its materialization report. The same normalized contest
+constraints feed Phase 3 hop legality, Phase 4 routing, and Phase 5 ratio
+quantum/frame bound, and each independent validator rechecks that chain.
+Supplying an arbitrary design or merely renaming a platform therefore cannot
+enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
 per provider and nine terminal Phase 7 nodes (three providers by seeds 1, 2,
 and 3). Tool bytes and per-stage implementation closures are part of node
 identity, so a router-only change preserves frontend, STA, and partition

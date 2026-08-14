@@ -522,6 +522,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--min-used-fpgas", type=int)
     partition_run.add_argument("--balance-tolerance", type=float)
     partition_run.add_argument("--openroad")
+    partition_run.add_argument("--hop-refiner")
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument("--num-initial-solutions", type=int, default=50)
@@ -534,6 +535,9 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--frontend", type=Path, required=True)
     partition_validate.add_argument("--timing", type=Path, required=True)
     partition_validate.add_argument("--platform", type=Path, required=True)
+    partition_validate.add_argument("--route-constraints", type=Path)
+    partition_validate.add_argument("--provider")
+    partition_validate.add_argument("--seed", type=int)
 
     cut_timing_run = experiment_stage_subparsers.add_parser(
         "cut-timing-run", help="extract and project partition cut timing paths"
@@ -572,6 +576,7 @@ def _build_parser() -> argparse.ArgumentParser:
     route_validate.add_argument("--partition", type=Path, required=True)
     route_validate.add_argument("--cut-timing", type=Path, required=True)
     route_validate.add_argument("--platform", type=Path, required=True)
+    route_validate.add_argument("--constraints", type=Path)
 
     tdm_run = experiment_stage_subparsers.add_parser(
         "tdm-run", help="run one reusable timing-aware Phase 5 checkpoint"
@@ -595,6 +600,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tdm_validate.add_argument("root", type=Path)
     tdm_validate.add_argument("--route", type=Path, required=True)
     tdm_validate.add_argument("--platform", type=Path, required=True)
+    tdm_validate.add_argument("--constraints", type=Path)
 
     shared_materialize = experiment_stage_subparsers.add_parser(
         "shared-materialize", help="materialize a hard-linked validated Phase 1-5 view"
@@ -659,6 +665,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase6_run.add_argument("--equivalence-cycles", type=int, default=16)
     phase6_run.add_argument("--equivalence-seed", type=int, default=20260727)
+    phase6_run.add_argument("--pin-planner")
+    phase6_run.add_argument("--chimew-grouper")
+    phase6_run.add_argument("--chimew-refiner")
+    phase6_run.add_argument("--chimew-rudy")
+    phase6_run.add_argument("--chimew-assigner")
     phase6_run.add_argument("--out", type=Path, required=True)
     phase6_validate = experiment_stage_subparsers.add_parser(
         "phase6-validate", help="independently validate a Phase 6 checkpoint"
@@ -2912,6 +2923,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 min_used_fpgas=args.min_used_fpgas,
                 balance_tolerance=args.balance_tolerance,
                 openroad=args.openroad,
+                hop_refiner=args.hop_refiner,
                 timeout_seconds=args.timeout_seconds,
                 seed_attempts=args.seed_attempts,
                 num_initial_solutions=args.num_initial_solutions,
@@ -2919,7 +2931,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.experiment_stage_command == "partition-validate":
             report = validate_partition_checkpoint(
-                args.frontend, args.timing, args.platform, args.root
+                args.frontend,
+                args.timing,
+                args.platform,
+                args.root,
+                route_constraints_path=args.route_constraints,
+                expected_provider=args.provider,
+                expected_seed=args.seed,
             )
         elif args.experiment_stage_command == "cut-timing-run":
             report = run_cut_timing_checkpoint(
@@ -2950,7 +2968,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.experiment_stage_command == "route-validate":
             report = validate_route_checkpoint(
-                args.partition, args.cut_timing, args.platform, args.root
+                args.partition,
+                args.cut_timing,
+                args.platform,
+                args.root,
+                constraints_path=args.constraints,
             )
         elif args.experiment_stage_command == "tdm-run":
             report = run_tdm_checkpoint(
@@ -2969,7 +2991,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 slot_optimizer=args.slot_optimizer,
             )
         elif args.experiment_stage_command == "tdm-validate":
-            report = validate_tdm_checkpoint(args.route, args.platform, args.root)
+            report = validate_tdm_checkpoint(
+                args.route,
+                args.platform,
+                args.root,
+                constraints_path=args.constraints,
+            )
         elif args.experiment_stage_command == "shared-materialize":
             report = materialize_shared_phase1_5(
                 args.frontend,
@@ -3026,6 +3053,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 provider=args.provider,
                 equivalence_cycles=args.equivalence_cycles,
                 equivalence_seed=args.equivalence_seed,
+                pin_planner=args.pin_planner,
+                chimew_grouper=args.chimew_grouper,
+                chimew_refiner=args.chimew_refiner,
+                chimew_rudy=args.chimew_rudy,
+                chimew_assigner=args.chimew_assigner,
             )
         elif args.experiment_stage_command == "phase6-validate":
             report = validate_phase6_checkpoint(

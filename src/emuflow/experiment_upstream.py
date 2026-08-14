@@ -27,7 +27,9 @@ from .phase1 import analyze_clock_topology, run_phase1
 from .phase3 import run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
+from .partition_hops import validate_assignment_hop_constraints
 from .platform import Platform
+from .routing import load_route_constraints
 from .sta import (
     derive_partition_net_weights,
     project_sta_path_database,
@@ -379,6 +381,7 @@ def run_partition_checkpoint(
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
     openroad: Optional[str] = None,
+    hop_refiner: Optional[str] = None,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     num_initial_solutions: int = 50,
@@ -404,6 +407,7 @@ def run_partition_checkpoint(
         tritonpart_num_best_initial_solutions=num_best_initial_solutions,
         net_weights_path=weights_path,
         route_constraints_path=route_constraints_path,
+        hop_refiner=hop_refiner,
     )
     report = {
         "schema": EXPERIMENT_PARTITION_SCHEMA,
@@ -416,21 +420,50 @@ def run_partition_checkpoint(
         "assignment_sha256": _sha256(output_dir / "assignment.json"),
         "clusters_sha256": _sha256(output_dir / "clusters.json"),
         "phase3_report_sha256": _sha256(output_dir / "phase3_report.json"),
+        "route_constraints_sha256": (
+            _sha256(route_constraints_path.resolve())
+            if route_constraints_path is not None
+            else None
+        ),
         "phase3": phase3,
     }
     write_json(output_dir / "experiment-partition-report.json", report)
-    validate_partition_checkpoint(frontend_root, timing_root, platform_path, output_dir)
+    validate_partition_checkpoint(
+        frontend_root,
+        timing_root,
+        platform_path,
+        output_dir,
+        route_constraints_path=route_constraints_path,
+        expected_provider=provider,
+        expected_seed=seed,
+    )
     return report
 
 
 def validate_partition_checkpoint(
-    frontend_root: Path, timing_root: Path, platform_path: Path, root: Path
+    frontend_root: Path,
+    timing_root: Path,
+    platform_path: Path,
+    root: Path,
+    *,
+    route_constraints_path: Path | None = None,
+    expected_provider: str | None = None,
+    expected_seed: int | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
     report = read_json(_require(root, "experiment-partition-report.json"))
     if report.get("schema") != EXPERIMENT_PARTITION_SCHEMA or report.get("status") != "pass":
         raise ValidationError("partition checkpoint report is invalid")
+    if expected_provider is not None and report.get("provider") != expected_provider:
+        raise ValidationError("partition provider contract disagrees")
+    if expected_seed is not None and report.get("seed") != expected_seed:
+        raise ValidationError("partition seed contract disagrees")
+    if route_constraints_path is not None:
+        if report.get("route_constraints_sha256") != _sha256(
+            route_constraints_path.resolve()
+        ):
+            raise ValidationError("partition route-constraints seal is broken")
     seals = {
         "emuir_sha256": ir_path,
         "platform_sha256": platform_path.resolve(),
@@ -443,7 +476,19 @@ def validate_partition_checkpoint(
         if report.get(label) != _sha256(path):
             raise ValidationError(f"partition checkpoint {label} seal is broken")
     checked = validate_phase3(ir_path, platform_path, seals["clusters_sha256"], seals["assignment_sha256"])
-    return {"status": "pass", "provider": report["provider"], **checked}
+    hop_audit = (
+        validate_assignment_hop_constraints(
+            seals["assignment_sha256"], platform_path, route_constraints_path
+        )
+        if route_constraints_path is not None
+        else {"status": "not-requested", "max_route_hops": None}
+    )
+    return {
+        "status": "pass",
+        "provider": report["provider"],
+        "hop_audit": hop_audit,
+        **checked,
+    }
 
 
 def run_cut_timing_checkpoint(
@@ -569,12 +614,23 @@ def run_route_checkpoint(
         "phase4": phase4,
     }
     write_json(output_dir / "experiment-route-report.json", report)
-    validate_route_checkpoint(partition_root, cut_timing_root, platform_path, output_dir)
+    validate_route_checkpoint(
+        partition_root,
+        cut_timing_root,
+        platform_path,
+        output_dir,
+        constraints_path=constraints_path,
+    )
     return report
 
 
 def validate_route_checkpoint(
-    partition_root: Path, cut_timing_root: Path, platform_path: Path, root: Path
+    partition_root: Path,
+    cut_timing_root: Path,
+    platform_path: Path,
+    root: Path,
+    *,
+    constraints_path: Path | None = None,
 ) -> Dict[str, Any]:
     assignment = _require(partition_root, "assignment.json")
     timing_paths = _require(cut_timing_root, "cut-timing-paths.json")
@@ -591,6 +647,14 @@ def validate_route_checkpoint(
     }.items():
         if report.get(label) != _sha256(path):
             raise ValidationError(f"route checkpoint {label} seal is broken")
+    if constraints_path is not None:
+        expected_constraints = load_route_constraints(
+            constraints_path, Platform.load(platform_path)
+        )
+        if read_json(_require(root, "route_constraints.normalized.json")) != (
+            expected_constraints
+        ) or read_json(routes).get("constraints") != expected_constraints:
+            raise ValidationError("route checkpoint constraints contract disagrees")
     return {"status": "pass", **validate_phase4(assignment, platform_path, routes, timing_paths_path=timing_paths)}
 
 
@@ -641,13 +705,34 @@ def run_tdm_checkpoint(
     return report
 
 
-def validate_tdm_checkpoint(route_root: Path, platform_path: Path, root: Path) -> Dict[str, Any]:
+def validate_tdm_checkpoint(
+    route_root: Path,
+    platform_path: Path,
+    root: Path,
+    *,
+    constraints_path: Path | None = None,
+) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
     schedule = _require(root, "schedule.json")
     ratio_plan = root / "ratio_plan.json"
     report = read_json(_require(root, "experiment-tdm-report.json"))
     if report.get("schema") != EXPERIMENT_TDM_SCHEMA or report.get("status") != "pass":
         raise ValidationError("TDM checkpoint report is invalid")
+    if constraints_path is not None:
+        constraints = load_route_constraints(
+            constraints_path, Platform.load(platform_path)
+        )
+        if read_json(routes).get("constraints") != constraints:
+            raise ValidationError("TDM route-constraints contract disagrees")
+        if not ratio_plan.is_file():
+            raise ValidationError("TDM contest constraints require a ratio plan")
+        configuration = read_json(ratio_plan).get("configuration", {})
+        if (
+            configuration.get("ratio_quantum")
+            != constraints["tdm_ratio_quantum"]
+            or configuration.get("max_ratio") != constraints["frame_slots"]
+        ):
+            raise ValidationError("TDM ratio constraints contract disagrees")
     for label, path in {
         "routes_sha256": routes,
         "platform_sha256": platform_path.resolve(),

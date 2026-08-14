@@ -415,6 +415,11 @@ def run_phase6_checkpoint(
     provider: str,
     equivalence_cycles: int = 16,
     equivalence_seed: int = 20260727,
+    pin_planner: str | None = None,
+    chimew_grouper: str | None = None,
+    chimew_refiner: str | None = None,
+    chimew_rudy: str | None = None,
+    chimew_assigner: str | None = None,
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
         raise ValidationError("experiment Phase 6 provider is invalid")
@@ -454,6 +459,7 @@ def run_phase6_checkpoint(
             read_json(schedule_path),
             Platform.load(platform_path),
             positions,
+            executable=pin_planner,
         )
         pin_plan_path = output_dir / "placement-aware-pin-plan.json"
         write_json(pin_plan_path, plan)
@@ -478,6 +484,10 @@ def run_phase6_checkpoint(
                 "architecture": sources / "architecture.json",
                 "package_pins": sources / "package-pins.json",
             },
+            grouper=chimew_grouper,
+            refiner=chimew_refiner,
+            rudy=chimew_rudy,
+            assigner=chimew_assigner,
             region_count=int(
                 read_json(lookahead_root / "experiment-lookahead-report.json")[
                     "region_count"

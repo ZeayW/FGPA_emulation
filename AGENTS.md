@@ -259,8 +259,10 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   Generate the provider/seed DAG with `benchmark-experiment-compile`; do not
   hand-collapse Phase 1--5 into a monolithic command. The compiler must bind
   its case to the checked-in end-to-end matrix and must verify the run-spec
-  RTL/top/clocks plus the contest BoardDB materialization report; an arbitrary
-  platform with a canonical-looking name is not acceptable. Materialize physical
+  RTL/top/clocks plus the contest BoardDB and route-constraints materialization
+  report. Route/hop/TDM limits from that report must feed and be independently
+  checked at Phase 3, Phase 4, and Phase 5; an arbitrary platform or default
+  ratio quantum is not acceptable. Materialize physical
   lookahead once at a declared
   seed, derive both placement-aware and Chimew inputs from that same frozen
   placement, and reuse the lookahead itself as baseline Phase 7 at the matching

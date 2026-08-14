@@ -39,10 +39,16 @@ class CanonicalExperimentTest(unittest.TestCase):
             "yosys",
             "opensta",
             "openroad",
+            "hop_refiner",
             "router",
             "ratio_optimizer",
             "timing_dag_optimizer",
             "slot_optimizer",
+            "pin_planner",
+            "chimew_grouper",
+            "chimew_refiner",
+            "chimew_rudy",
+            "chimew_assigner",
             "vpr",
             "architecture_importer",
             "packed_importer",
@@ -57,6 +63,19 @@ class CanonicalExperimentTest(unittest.TestCase):
         )
         platform_value["platform"]["name"] = "eda2023-case6-rtl"
         platform.write_text(json.dumps(platform_value), encoding="utf-8")
+        route_constraints = root / "route_constraints.json"
+        route_constraints.write_text(
+            json.dumps(
+                {
+                    "schema": "emuflow.system-route-constraints/v1",
+                    "frame_slots": 32,
+                    "max_route_hops": 2,
+                    "tdm_ratio_quantum": 4,
+                    "tdm_min_ratio": 4,
+                }
+            ),
+            encoding="utf-8",
+        )
         from emuflow.contest_validation_matrix import load_contest_validation_matrix
         import hashlib
 
@@ -81,7 +100,14 @@ class CanonicalExperimentTest(unittest.TestCase):
                             "path": "boarddb.json",
                             "bytes": platform.stat().st_size,
                             "sha256": hashlib.sha256(platform.read_bytes()).hexdigest(),
-                        }
+                        },
+                        {
+                            "path": "route_constraints.json",
+                            "bytes": route_constraints.stat().st_size,
+                            "sha256": hashlib.sha256(
+                                route_constraints.read_bytes()
+                            ).hexdigest(),
+                        },
                     ],
                     "phase3_status": "not-run",
                 }
@@ -95,6 +121,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             "rtl_source": str(rtl),
             "platform": str(platform),
             "boarddb_report": str(boarddb_report),
+            "route_constraints": str(route_constraints),
             "timing_model": str(
                 REPOSITORY / "resources/timing/ultrascaleplus-softlogic-v1.json"
             ),
@@ -145,6 +172,21 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertEqual(nodes["route"]["dependencies"], ["partition", "cut-timing"])
             self.assertEqual(nodes["tdm"]["dependencies"], ["route"])
+            self.assertIn("--route-constraints", nodes["partition"]["command"])
+            self.assertIn("--hop-refiner", nodes["partition"]["command"])
+            self.assertIn("--constraints", nodes["route"]["command"])
+            self.assertEqual(nodes["tdm"]["configuration"]["ratio_quantum"], 4)
+            self.assertEqual(nodes["tdm"]["configuration"]["max_ratio"], 32)
+            self.assertIn(
+                "--pin-planner", nodes["phase6-placement-aware"]["command"]
+            )
+            for argument in (
+                "--chimew-grouper",
+                "--chimew-refiner",
+                "--chimew-rudy",
+                "--chimew-assigner",
+            ):
+                self.assertIn(argument, nodes["phase6-chimew"]["command"])
             terminals = [item for item in spec["nodes"] if item["stage"] == "phase7"]
             self.assertEqual(
                 {(item["provider"], item["physical_seed"]) for item in terminals},
@@ -210,6 +252,17 @@ class CanonicalExperimentTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "platform bytes"):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "wrong-platform.json"
+                )
+
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            Path(config["route_constraints"]).write_text(
+                Path(config["route_constraints"]).read_text() + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "route constraints bytes"):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "wrong-route-constraints.json"
                 )
 
 

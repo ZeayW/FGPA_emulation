@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
+from .io import read_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
@@ -98,6 +99,30 @@ def audit_assignment_hops(
         "violations": violations[:64],
         "violations_truncated": max(0, len(violations) - 64),
     }
+
+
+def validate_assignment_hop_constraints(
+    assignment_path: Path,
+    platform_path: Path,
+    route_constraints_path: Path,
+) -> Dict[str, Any]:
+    """Independently recheck Phase 3 reachability and maximum-hop legality."""
+
+    platform = Platform.load(platform_path)
+    constraints = load_route_constraints(route_constraints_path, platform)
+    hop_limit = constraints.get("max_route_hops")
+    if hop_limit is None:
+        return {"status": "not-requested", "max_route_hops": None}
+    audit = audit_assignment_hops(
+        read_json(assignment_path),
+        _shortest_hop_distances(platform, constraints),
+        hop_limit,
+    )
+    if audit["status"] != "pass":
+        raise ValidationError(
+            "partition assignment violates route reachability/max-hop constraints"
+        )
+    return audit
 
 
 def _primary_net_records(
