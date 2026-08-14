@@ -91,6 +91,10 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   dependency keys.  Concurrent tasks require isolated output directories and
   immutable source/tool identities.  Parallelism changes scheduling, not the
   evidence contract, unless the worker count is explicitly part of identity.
+  If the whole ready frontier exceeds quota or desired concurrency, use the
+  farm compiler's explicit experiment-node subset; never edit a plan or task
+  command by hand. Deferred ready nodes retain the same identity for a later
+  batch.
 - Farm workers use leases and heartbeats.  A silent or expired task is not
   automatically dead: reconciliation must probe its recorded PID on its pinned
   node.  Only an expired lease plus a confirmed-absent process can become

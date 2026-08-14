@@ -415,6 +415,55 @@ class ExperimentDagTest(unittest.TestCase):
             self.assertEqual([task["id"] for task in farm["tasks"]], ["shared-phase1-5"])
             self.assertIn("--expected-plan-sha256", farm["tasks"][0]["command"])
 
+    def test_farm_spec_can_submit_a_bounded_ready_subset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install = root / "install" / COMMIT
+            install.mkdir(parents=True)
+            value = self._v2_spec()
+            value["nodes"][1]["dependencies"] = []
+            value["nodes"][1]["inputs"] = {"fixture": "b" * 64}
+            value["nodes"][1]["command"] = [
+                sys.executable,
+                "-c",
+                "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('phase2')",
+                "{output_dir}/phase2.json",
+            ]
+            value["nodes"][1]["validator"] = [
+                sys.executable,
+                "-c",
+                "import pathlib,sys; assert pathlib.Path(sys.argv[1]).is_file()",
+                "{artifact_root}/phase2.json",
+            ]
+            value["nodes"][2]["dependencies"] = ["phase1", "phase2"]
+            spec = self._write_spec(root, value)
+            plan_path = root / "plan.json"
+            plan_experiment(spec, root / "cache", plan_path)
+            farm_path = root / "farm.json"
+            report = build_experiment_farm_spec(
+                plan_path,
+                install,
+                ["hpc1", "hpc2"],
+                "bounded-frontier",
+                farm_path,
+                ["phase2"],
+            )
+            self.assertEqual(report["ready_tasks"], 1)
+            self.assertEqual(report["deferred_ready_tasks"], 1)
+            self.assertEqual(
+                [item["id"] for item in read_json(farm_path)["tasks"]],
+                ["phase2"],
+            )
+            with self.assertRaisesRegex(ValidationError, "not ready"):
+                build_experiment_farm_spec(
+                    plan_path,
+                    install,
+                    ["hpc1"],
+                    "invalid-subset",
+                    root / "invalid.json",
+                    ["phase3"],
+                )
+
     def test_invalid_dependencies_provider_seed_and_placeholders_are_rejected(self) -> None:
         invalid = self._spec()
         invalid["nodes"][4]["provider"] = "chimew"

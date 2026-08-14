@@ -442,6 +442,12 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_farm.add_argument("--plan", type=Path, required=True)
     experiment_farm.add_argument("--install-dir", type=Path, required=True)
     experiment_farm.add_argument("--node", action="append", default=[])
+    experiment_farm.add_argument(
+        "--experiment-node",
+        action="append",
+        default=[],
+        help="submit only this ready/revalidate experiment node; repeatable",
+    )
     experiment_farm.add_argument("--farm-id", required=True)
     experiment_farm.add_argument("--out", type=Path, required=True)
     experiment_run = experiment_subparsers.add_parser(
@@ -3095,6 +3101,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.node,
                 args.farm_id,
                 args.out,
+                args.experiment_node,
             )
         else:
             report = run_experiment_node(

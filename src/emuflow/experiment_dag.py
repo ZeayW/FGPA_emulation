@@ -1131,6 +1131,7 @@ def build_experiment_farm_spec(
     nodes: list[str],
     farm_id: str,
     output_path: Path,
+    experiment_nodes: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     plan = _load_plan(plan_path)
     ready = [
@@ -1140,6 +1141,20 @@ def build_experiment_farm_spec(
     ]
     if not ready:
         raise EmuFlowError("experiment plan has no ready nodes; replan or finish dependencies")
+    if experiment_nodes:
+        if len(experiment_nodes) != len(set(experiment_nodes)):
+            raise ValidationError(
+                "experiment farm selected experiment nodes must be unique"
+            )
+        ready_by_id = {item["id"]: item for item in ready}
+        unavailable = [item for item in experiment_nodes if item not in ready_by_id]
+        if unavailable:
+            raise ValidationError(
+                "experiment farm selected nodes are not ready/revalidate: "
+                + ", ".join(unavailable)
+            )
+        selected = set(experiment_nodes)
+        ready = [item for item in ready if item["id"] in selected]
     if not nodes:
         raise ValidationError("experiment farm requires at least one HPC node")
     for node in nodes:
@@ -1187,6 +1202,10 @@ def build_experiment_farm_spec(
         ),
         "reused_tasks": plan["counts"]["reuse"],
         "waiting_tasks": plan["counts"]["waiting"],
+        "deferred_ready_tasks": sum(
+            item["state"] in {"ready", "revalidate"} for item in plan["nodes"]
+        )
+        - len(ready),
         "plan_sha256": plan_sha256,
         "farm_spec": str(output_path),
     }

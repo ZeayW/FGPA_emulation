@@ -892,10 +892,19 @@ Compile only the current cache-miss frontier into the existing HPC farm:
 emuflow experiment-cache farm-spec \
   --plan /research/d4/gds/ziyiwang21/experiments/koios-case6.plan.json \
   --install-dir /research/d4/gds/ziyiwang21/emuflow/install/$COMMIT \
+  --experiment-node phase7-baseline-seed1 \
+  --experiment-node phase7-placement-aware-seed1 \
   --node hpc1 --node hpc2 --node hpc3 --node hpc4 \
   --farm-id koios-case6-frontier1 \
   --out /research/d4/gds/ziyiwang21/experiments/koios-case6.frontier1.farm.json
 ```
+
+Omit `--experiment-node` to submit the complete ready/revalidate frontier.
+Repeat it to submit a storage-bounded subset of that same sealed frontier; a
+waiting, reused, unknown, or duplicate selection is rejected.  This is the
+normal way to batch large Phase 7 arms when the sum of every ready task's peak
+estimate would exceed the shared quota. Deferred ready nodes remain unchanged
+and are selected from the next plan/farm invocation; they are not recomputed.
 
 After the farm passes, run `experiment-cache plan` again.  The completed
 frontier becomes `reuse` and only newly unblocked nodes become `ready`.  Thus a
