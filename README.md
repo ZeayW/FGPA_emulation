@@ -228,8 +228,9 @@ Local Phase 7 physical timing and Phase 7C answer different questions. The
 former reports each implemented FPGA's endpoint-complete physical WNS/TNS
 under local DUT/fabric constraints. Its minimum WNS and summed TNS are
 per-FPGA physical aggregates, not the default whole-design timing result.
-Phase 7C forms the exact union of every original TimingPathDB member.  It uses
-the post-route endpoint path for members local to one FPGA, and composes routed
+Phase 7C forms the exact union of every original TimingPathDB member. It uses
+the selected post-route path when its atom-pin chain is unambiguous, otherwise
+an explicitly labelled conservative endpoint-longest bound, and composes routed
 logic, TDM, and board-link delays for members that cross FPGAs in the
 pausible-clock system contract.  WNS/TNS over that complete, disjoint union are
 the primary final QoR metrics. A valid end-to-end comparison also reports the
@@ -238,7 +239,7 @@ labelled per-FPGA diagnostics, but never substitutes them for global timing.
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
-| Fully open physical route | Implemented through whole-design physical/TDM timing; a source-backed 528,104-instance Koios GEMM A/B now proves exact all-original-path global WNS/TNS, while Koios DLA is the active independent-design replication gate |
+| Fully open physical route | Implemented through whole-design physical/TDM timing; a source-backed 528,104-instance Koios GEMM A/B proves complete all-original-path coverage with conservative local-delay bounds, while Koios DLA is the active selected-chain exactness and independent-design replication gate |
 | Vivado physical route | Implemented for routed DUT logic segments and stable RAMB endpoint recovery; its former large Koios evidence is likewise a cross-FPGA subset until same-FPGA original-path timing is exported |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
@@ -314,11 +315,14 @@ After both physical arms finish, the in-tree comparison gate independently
 rehashes and validates both complete flows, requires identical EmuIR,
 assignment, TimingPathDB, and partition weights, checks the frozen provider
 pair, and reconstructs whole-design Phase 7 WNS/TNS and closure deltas.  The
-default WNS/TNS terminology means the exact union of every original
+default WNS/TNS terminology means the exact population union of every original
 TimingPathDB path: routed same-FPGA paths plus routed intra-FPGA/boundary
 stages and concrete Phase 5 slot wait/board-link delay for cross-FPGA paths.
 Optimizer-compressed representatives are expanded before global TNS is
-summed. Per-FPGA backend WNS/TNS and cross-FPGA-only WNS/TNS remain separately
+summed. Each result separately reports whether its physical logic delay is an
+exact selected-chain sum or a conservative cone bound; population completeness
+must never be presented as physical-delay exactness. Per-FPGA backend WNS/TNS
+and cross-FPGA-only WNS/TNS remain separately
 labelled diagnostic/subset data and are not the default global result:
 
 ```bash
@@ -436,10 +440,13 @@ reduction: for a negative baseline, compare the reduction in `-WNS` or `-TNS`;
 if the baseline already closes, the percentage is `N/A` and a closure
 transition is reported separately. Phase 6 crossing, grouping, RUDY, position,
 wirelength, and pin-distance metrics remain diagnostic explanations.
-The versioned `emuflow.system-route-tdm-ab/v5` comparison artifact records
+The versioned `emuflow.system-route-tdm-ab/v6` comparison artifact records
 those percentages and closure transitions for target-clock and virtual-runtime
 global WNS/TNS, and independently recomputes them when the bundle is validated;
-signed slack values are never divided to manufacture a percentage.  The same
+signed slack values are never divided to manufacture a percentage. It also
+seals exact selected-chain, conservative cone-bound, and unmeasured fallback
+path counts, requires those populations to match across both arms, and rejects
+a conservative physical model mislabeled as exact. The same
 gate now also freezes the normalized BoardDB, Phase-3 and Phase-4 constraints,
 and compares the Phase-7 backend descriptor, architecture SHA-256, FPGA order,
 worker configuration, VPR pack/place seed, route channel width, and hashes of
@@ -447,7 +454,7 @@ the external executables recorded by the physical reports.  Newly generated
 top-level flow reports seal those inputs directly.  A pre-v5 flow can still be
 compared only when its formerly unlisted BoardDB and normalized constraints
 are present at their canonical checked locations below the flow root; this
-keeps already-running physical jobs usable without weakening the v5 evidence.
+keeps already-running physical jobs usable without weakening the v6 evidence.
 
 The open VPR route now provides this endpoint-complete contract and binds its
 machine-readable WNS, TNS, logical failing endpoints, and failing endpoint
@@ -1418,10 +1425,12 @@ therefore an end-to-end contract and topology-sensitivity acceptance test,
 not evidence of improvement across independent real applications.  Both arms
 cover the same 22,272 original paths
 (21,711 same-FPGA and 561 cross-FPGA paths) with the same canonical path-set
-SHA. The frozen default routing/TDM arm reports target-clock WNS/TNS of
+SHA. Under the legacy endpoint-longest local-delay model, the frozen default
+routing/TDM arm reports conservative target-clock WNS/TNS bounds of
 `-40.314765708 ns` / `-21137.255055545 ns`; the global-candidate routing plus
 timing-DAG TDM arm reports `-39.988960548 ns` / `-21062.004768017 ns`.
-Therefore the candidate improves whole-design WNS by `0.325805160 ns` and TNS
+Therefore the candidate improves this coverage-complete conservative
+whole-design comparison's WNS by `0.325805160 ns` and TNS
 by `75.250287528 ns`. These are not per-FPGA endpoint aggregates or a
 cross-FPGA-only subset. Both arms also close the 640-ns virtual runtime clock
 with zero negative-slack paths. This is academic-architecture physical
@@ -1434,10 +1443,12 @@ physical arms cover the identical set of all 178,366 original timing paths:
 128,106 same-FPGA paths and 50,260 cross-FPGA paths, with canonical path-set
 SHA-256
 `434570616ed92f8a503a57c884a84be8372db834edfde43df7dc14d000a6e312`.
-The frozen default Phase 4/5 arm reports target-clock WNS/TNS of
+Using the legacy endpoint-longest local-delay model, the frozen default Phase
+4/5 arm reports conservative target-clock WNS/TNS bounds of
 `-4951.4633630111 ns` / `-76195549.1968224 ns`; global candidate-tree routing
 plus timing-DAG TDM reports `-2595.959268017 ns` /
-`-39857513.89737587 ns`. Thus the upgrade improves global WNS by
+`-39857513.89737587 ns`. Thus the upgrade improves this coverage-complete
+conservative comparison's WNS by
 `2355.5040949941 ns` and TNS by `36338035.29944653 ns`, reducing their
 negative deficits by 47.57% and 47.69%, respectively. Both arms close the
 8,192-ns virtual runtime clock. Negative target-slack paths increase slightly
@@ -1456,12 +1467,15 @@ ratio already a multiple of 8), while the recorded four positive-saving
 promotion steps prove that the new no-candidate round-boundary fallback was
 not exercised. The current in-tree A/B validator independently rehashes the
 frozen sources and routes, traverses all 178,366 paths, and rechecks the
-physical, legality, coverage, and QoR claims before accepting this result.
+physical, legality, coverage, and QoR claims before accepting this result. It
+does not promote the upgraded provider by itself: the selected-chain VPR rerun
+must additionally publish the exact-versus-bound count and repeat the
+conclusion on an independent design.
 
 The same frozen design on the two-FPGA point-to-point BoardDB is a useful
 negative control. Both complete Phase 7 arms cover all 22,272 source paths
-(22,053 local and 219 cross-FPGA) and report identical 4-ns target-clock
-WNS/TNS: `-15.227118790 ns` / `-17784.330743091 ns`. Thus the measured
+(22,053 local and 219 cross-FPGA) and report identical conservative 4-ns
+target-clock WNS/TNS bounds: `-15.227118790 ns` / `-17784.330743091 ns`. Thus the measured
 whole-design delta is exactly zero on this topology even though the Phase 4
 route and Phase 5 schedule artifacts differ. Both arms close the 128-ns
 runtime clock with zero negative-slack paths. This result is retained because

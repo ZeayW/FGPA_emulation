@@ -319,13 +319,29 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                         "tns_bound_ns": 0.0,
                         "negative_slack_paths": 0,
                     },
+                    "path_exactness": {
+                        "physical_logic_segments": True,
+                        "physical_logic_segment_bounds": True,
+                        "endpoint_exact_logic_paths": 2,
+                        "cone_bound_logic_paths": 0,
+                        "fallback_logic_paths": 0,
+                    },
                     "paths": [
                         {
                             "path": member,
                             "target_clock_slack_bound_ns": global_slack,
                             "runtime_clock_slack_bound_ns": 10.0 + value,
+                            "physical_logic_segments_exact": True,
+                            "physical_logic_segments_cone_bound": False,
+                            "physical_logic_model": model,
                         }
-                        for member in ("member-a", "member-b")
+                        for member, model in (
+                            (
+                                "member-a",
+                                "routed-selected-path-chain-exact",
+                            ),
+                            ("member-b", "routed-staging-chain-exact"),
+                        )
                     ],
                 }
             },
@@ -368,11 +384,62 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                 ]["closure_transition"],
                 "remained-open",
             )
+            self.assertEqual(
+                result["arms"]["baseline"]["global_timing"][
+                    "physical_logic_exact_paths"
+                ],
+                2,
+            )
             self.assertTrue(output.is_file())
             tampered = copy.deepcopy(result)
             tampered["physical_delta_upgrade_minus_baseline"]["worst_wns_ns"] = 99
             with self.assertRaises(ValidationError):
                 validate_system_route_tdm_ab_comparison(tampered)
+            tampered = copy.deepcopy(result)
+            tampered["arms"]["upgrade"]["global_timing"][
+                "physical_logic_exact_paths"
+            ] = 1
+            with self.assertRaisesRegex(
+                ValidationError, "physical logic exactness"
+            ):
+                validate_system_route_tdm_ab_comparison(tampered)
+
+    def test_rejects_mislabeled_conservative_local_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            upgrade = root / "upgrade"
+            baseline.mkdir()
+            upgrade.mkdir()
+            base_report = self._report(
+                baseline, ROUTE_TDM_PROVIDER, TDM_BASELINE_PROVIDER, -1.0
+            )
+            up_report = self._report(
+                upgrade,
+                GLOBAL_CANDIDATE_PROVIDER,
+                TDM_ACADEMIC_SCHEDULE_PROVIDER,
+                -0.25,
+            )
+            for report in (base_report, up_report):
+                local = report["runtime"]["system_timing"]["paths"][0]
+                local["physical_logic_model"] = (
+                    "routed-endpoint-longest-path-conservative"
+                )
+                # This was the legacy bug: a conservative endpoint traversal
+                # was incorrectly presented as an exact selected path.
+                self.assertTrue(local["physical_logic_segments_exact"])
+            write_json(baseline / "multi-fpga-flow-report.json", base_report)
+            write_json(upgrade / "multi-fpga-flow-report.json", up_report)
+            with patch(
+                "emuflow.routing_tdm_comparison.validate_multi_fpga_flow_report",
+                return_value={"status": "pass"},
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "physical logic exactness is inconsistent"
+                ):
+                    build_system_route_tdm_ab_comparison(
+                        baseline, upgrade, root / "comparison.json"
+                    )
 
     def test_reports_closure_and_na_percentage_for_closed_baseline(self):
         with tempfile.TemporaryDirectory() as temporary:

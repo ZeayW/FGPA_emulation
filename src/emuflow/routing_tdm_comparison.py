@@ -23,7 +23,7 @@ from .tdm import TDM_ACADEMIC_SCHEDULE_PROVIDER, TDM_BASELINE_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER, ROUTE_TDM_PROVIDER
 
 
-SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v5"
+SYSTEM_ROUTE_TDM_AB_SCHEMA = "emuflow.system-route-tdm-ab/v6"
 SYSTEM_ROUTE_TDM_SCALE_SCHEMA = "emuflow.system-route-tdm-scale-ab/v2"
 _FROZEN_ARTIFACTS = (
     "platform",
@@ -61,6 +61,9 @@ _GLOBAL_TIMING_METRICS = (
     "original_cross_fpga_paths",
     "compressed_representative_paths",
     "original_path_coverage",
+    "physical_logic_exact_paths",
+    "physical_logic_cone_bound_paths",
+    "physical_logic_fallback_paths",
 )
 _BASELINE_PHASE6_PROVIDER = "deterministic-cut-shadow-split-v1"
 _SCALE_METRIC_FIELDS = (
@@ -545,6 +548,55 @@ def _global_timing_metrics(
         != summary.get("original_path_ids_sha256")
     ):
         raise ValidationError("routing/TDM A/B global timing coverage is incomplete")
+    exact_paths = 0
+    cone_bound_paths = 0
+    fallback_paths = 0
+    exact_models = {
+        "routed-selected-path-chain-exact",
+        "routed-staging-chain-exact",
+    }
+    cone_bound_models = {
+        "routed-endpoint-longest-path-conservative",
+        "routed-staging-chain-cone-upper-bound",
+    }
+    for path in paths:
+        exact = path.get("physical_logic_segments_exact")
+        cone_bound = path.get("physical_logic_segments_cone_bound")
+        model = path.get("physical_logic_model")
+        if (
+            not isinstance(exact, bool)
+            or not isinstance(cone_bound, bool)
+            or exact and cone_bound
+            or not isinstance(model, str)
+            or exact and model not in exact_models
+            or cone_bound and model not in cone_bound_models
+            or not exact and not cone_bound and model in exact_models
+            or not exact and not cone_bound and model in cone_bound_models
+        ):
+            raise ValidationError(
+                "routing/TDM A/B physical logic exactness is inconsistent"
+            )
+        if exact:
+            exact_paths += 1
+        elif cone_bound:
+            cone_bound_paths += 1
+        else:
+            fallback_paths += 1
+    exactness = timing.get("path_exactness")
+    if (
+        not isinstance(exactness, dict)
+        or exactness.get("endpoint_exact_logic_paths") != exact_paths
+        or exactness.get("cone_bound_logic_paths") != cone_bound_paths
+        or exactness.get("fallback_logic_paths") != fallback_paths
+        or exact_paths + cone_bound_paths + fallback_paths != original
+        or exactness.get("physical_logic_segments")
+        != (exact_paths == original)
+        or exactness.get("physical_logic_segment_bounds")
+        != (exact_paths + cone_bound_paths == original)
+    ):
+        raise ValidationError(
+            "routing/TDM A/B physical logic exactness summary disagrees"
+        )
     result = {
         "target_global_wns_ns": min(target),
         "target_global_tns_ns": sum(min(0.0, value) for value in target),
@@ -557,6 +609,9 @@ def _global_timing_metrics(
         "original_cross_fpga_paths": crossing,
         "compressed_representative_paths": representatives,
         "original_path_coverage": float(coverage),
+        "physical_logic_exact_paths": exact_paths,
+        "physical_logic_cone_bound_paths": cone_bound_paths,
+        "physical_logic_fallback_paths": fallback_paths,
     }
     for clock, prefix in (("target_clock", "target"), ("runtime_clock", "runtime")):
         clock_report = timing.get(clock)
@@ -630,6 +685,23 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
         if global_timing["original_path_coverage"] != 1.0:
             raise ValidationError(
                 f"routing/TDM A/B {label} global path coverage is incomplete"
+            )
+        exactness_counts = (
+            global_timing["physical_logic_exact_paths"],
+            global_timing["physical_logic_cone_bound_paths"],
+            global_timing["physical_logic_fallback_paths"],
+        )
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                for value in exactness_counts
+            )
+            or sum(exactness_counts) != global_timing["original_paths"]
+        ):
+            raise ValidationError(
+                f"routing/TDM A/B {label} physical logic exactness is invalid"
             )
         if physical["unrouted_nets"] != 0 or physical["drc_violations"] != 0:
             raise ValidationError(f"routing/TDM A/B {label} physical arm did not close")
@@ -726,10 +798,25 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
             "original_cross_fpga_paths",
             "compressed_representative_paths",
             "original_path_coverage",
+            "physical_logic_exact_paths",
+            "physical_logic_cone_bound_paths",
+            "physical_logic_fallback_paths",
         }
     }
     if report.get("global_timing_delta_upgrade_minus_baseline") != expected_global:
         raise ValidationError("routing/TDM A/B global timing delta disagrees")
+    for field in (
+        "physical_logic_exact_paths",
+        "physical_logic_cone_bound_paths",
+        "physical_logic_fallback_paths",
+    ):
+        if (
+            arms["baseline"]["global_timing"][field]
+            != arms["upgrade"]["global_timing"][field]
+        ):
+            raise ValidationError(
+                "routing/TDM A/B physical logic exactness populations differ"
+            )
     expected_improvements = {
         field: _negative_slack_improvement(
             float(arms["baseline"]["global_timing"][field]),
@@ -892,6 +979,9 @@ def build_system_route_tdm_ab_comparison(
                 "original_cross_fpga_paths",
                 "compressed_representative_paths",
                 "original_path_coverage",
+                "physical_logic_exact_paths",
+                "physical_logic_cone_bound_paths",
+                "physical_logic_fallback_paths",
             }
         },
         "global_timing_improvement": {
