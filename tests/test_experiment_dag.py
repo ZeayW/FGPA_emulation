@@ -11,6 +11,7 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.experiment_dag import (
     EXPERIMENT_PLAN_SCHEMA,
     EXPERIMENT_SPEC_SCHEMA,
+    EXPERIMENT_SPEC_V2_SCHEMA,
     build_experiment_farm_spec,
     import_experiment_checkpoint,
     plan_experiment,
@@ -169,6 +170,103 @@ class ExperimentDagTest(unittest.TestCase):
         path = root / "spec.json"
         write_json(path, value or self._spec())
         return path
+
+    def _v2_spec(self, *, commit: str = COMMIT) -> dict:
+        def closure(label: str) -> dict:
+            digest = _digest(label)
+            files = [{"path": f"{label}.py", "bytes": 1, "sha256": digest}]
+            identity = {
+                "schema": "emuflow.experiment-implementation-identity/v1",
+                "files": files,
+            }
+            return {
+                "schema": "emuflow.experiment-implementation-closure/v1",
+                "status": "pass",
+                "components": [f"{label}.py"],
+                "files": files,
+                "implementation_sha256": hashlib.sha256(
+                    json.dumps(
+                        identity,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+
+        def node(
+            node_id: str,
+            stage: str,
+            payload: str,
+            dependencies: list[str],
+            implementation: str,
+            validator: str,
+            *,
+            inputs: Optional[dict] = None,
+        ) -> dict:
+            artifact = f"{stage}.json"
+            return {
+                "id": node_id,
+                "stage": stage,
+                "dependencies": dependencies,
+                "inputs": inputs or {},
+                "configuration": {},
+                "implementation": closure(implementation),
+                "command": _writer(
+                    payload,
+                    artifact,
+                    *(f"{{dependency:{item}}}" for item in dependencies),
+                ),
+                "validator_implementation": closure(validator),
+                "validator": _validator(
+                    artifact,
+                    *(f"{{dependency:{item}}}" for item in dependencies),
+                ),
+                "environment": {},
+                "storage_estimate": {
+                    "peak_bytes": 1024,
+                    "retained_bytes": 128,
+                },
+                "artifacts": [
+                    {
+                        "path": artifact,
+                        "role": "consumer-checkpoint",
+                    }
+                ],
+            }
+
+        return {
+            "schema": EXPERIMENT_SPEC_V2_SCHEMA,
+            "experiment_id": "generic-flow",
+            "source_commit": commit,
+            "nodes": [
+                node(
+                    "phase1",
+                    "phase1",
+                    "one",
+                    [],
+                    "phase1-implementation",
+                    "phase1-validator",
+                    inputs={"rtl": _digest("rtl")},
+                ),
+                node(
+                    "phase2",
+                    "phase2",
+                    "two",
+                    ["phase1"],
+                    "phase2-implementation",
+                    "phase2-validator",
+                ),
+                node(
+                    "phase3",
+                    "phase3",
+                    "three",
+                    ["phase2"],
+                    "phase3-implementation",
+                    "phase3-validator",
+                ),
+            ],
+        }
 
     def test_frontiers_reuse_shared_and_provider_checkpoints(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -337,6 +435,86 @@ class ExperimentDagTest(unittest.TestCase):
         invalid = self._spec()
         invalid["nodes"][0]["validator"] = ["check-without-artifact-root"]
         with self.assertRaisesRegex(ValidationError, "artifact_root"):
+            validate_experiment_spec(invalid)
+
+    def test_v2_commit_is_provenance_and_stage_implementation_controls_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec = self._write_spec(root, self._v2_spec())
+            plan1_path = root / "plan1.json"
+            plan_experiment(spec, cache, plan1_path)
+            run_experiment_node(plan1_path, "phase1", root / "run1")
+
+            changed_commit = self._v2_spec(commit="2" * 40)
+            changed_path = self._write_spec(root, changed_commit)
+            replanned = plan_experiment(changed_path, cache, root / "commit.json")
+            states = {item["id"]: item["state"] for item in replanned["nodes"]}
+            self.assertEqual(states, {"phase1": "reuse", "phase2": "ready", "phase3": "waiting"})
+
+            changed_phase2 = self._v2_spec(commit="2" * 40)
+            changed_phase2["nodes"][1]["implementation"] = self._v2_spec()[
+                "nodes"
+            ][0]["implementation"]
+            changed_phase2_path = self._write_spec(root, changed_phase2)
+            changed_plan = plan_experiment(
+                changed_phase2_path, cache, root / "phase2-change.json"
+            )
+            states = {item["id"]: item["state"] for item in changed_plan["nodes"]}
+            self.assertEqual(states, {"phase1": "reuse", "phase2": "ready", "phase3": "waiting"})
+
+    def test_v2_validator_change_revalidates_without_rerunning_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            original = self._v2_spec()
+            spec = self._write_spec(root, original)
+            plan1_path = root / "plan1.json"
+            plan1 = plan_experiment(spec, cache, plan1_path)
+            run_experiment_node(plan1_path, "phase1", root / "run1")
+            artifact = Path(plan1["nodes"][0]["output_dir"]) / "phase1.json"
+            original_mtime = artifact.stat().st_mtime_ns
+
+            changed = self._v2_spec(commit="2" * 40)
+            changed["nodes"][0]["validator_implementation"] = self._v2_spec()[
+                "nodes"
+            ][1]["validator_implementation"]
+            changed_path = self._write_spec(root, changed)
+            plan2_path = root / "plan2.json"
+            plan2 = plan_experiment(changed_path, cache, plan2_path)
+            self.assertEqual(plan2["nodes"][0]["state"], "revalidate")
+            report = run_experiment_node(plan2_path, "phase1", root / "revalidate")
+            self.assertEqual(report["status"], "revalidated")
+            self.assertEqual(artifact.stat().st_mtime_ns, original_mtime)
+            plan3 = plan_experiment(changed_path, cache, root / "plan3.json")
+            self.assertEqual(plan3["nodes"][0]["state"], "reuse")
+
+    def test_managed_checkpoint_output_is_published_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec = self._write_spec(root, self._v2_spec())
+            plan_path = root / "plan.json"
+            plan = plan_experiment(spec, cache, plan_path)
+            report = run_experiment_node(plan_path, "phase1", root / "attempt")
+            self.assertEqual(report["status"], "pass")
+            output = Path(plan["nodes"][0]["output_dir"])
+            self.assertEqual(output.stat().st_mode & 0o222, 0)
+            self.assertEqual((output / "phase1.json").stat().st_mode & 0o222, 0)
+            self.assertTrue(report["checkpoint"]["output_immutable"])
+
+    def test_v2_artifact_roles_are_validated(self) -> None:
+        invalid = self._v2_spec()
+        invalid["nodes"][0]["artifacts"][0]["role"] = "large-file"
+        with self.assertRaisesRegex(ValidationError, "artifact role"):
+            validate_experiment_spec(invalid)
+        invalid = self._v2_spec()
+        invalid["nodes"][0]["artifacts"][0]["retention"] = "prunable"
+        with self.assertRaisesRegex(ValidationError, "retention disagrees"):
+            validate_experiment_spec(invalid)
+        invalid = self._v2_spec()
+        invalid["nodes"][0]["storage_estimate"]["retained_bytes"] = 2048
+        with self.assertRaisesRegex(ValidationError, "storage_estimate"):
             validate_experiment_spec(invalid)
 
 

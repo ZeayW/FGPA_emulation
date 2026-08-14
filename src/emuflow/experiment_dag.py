@@ -7,12 +7,18 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .errors import EmuFlowError, ValidationError
+from .experiment_identity import validate_implementation_closure
+from .experiment_storage import (
+    prepare_experiment_scratch,
+    validate_experiment_write_path,
+)
 from .io import read_json, write_json
 from .validation_farm import FARM_SPEC_SCHEMA
 
@@ -20,11 +26,23 @@ from .validation_farm import FARM_SPEC_SCHEMA
 EXPERIMENT_SPEC_SCHEMA = "emuflow.experiment-dag-spec/v1"
 EXPERIMENT_PLAN_SCHEMA = "emuflow.experiment-dag-plan/v1"
 EXPERIMENT_CHECKPOINT_SCHEMA = "emuflow.experiment-checkpoint/v1"
+EXPERIMENT_SPEC_V2_SCHEMA = "emuflow.experiment-dag-spec/v2"
+EXPERIMENT_PLAN_V2_SCHEMA = "emuflow.experiment-dag-plan/v2"
+EXPERIMENT_CHECKPOINT_V2_SCHEMA = "emuflow.experiment-checkpoint/v2"
+EXPERIMENT_VALIDATION_SCHEMA = "emuflow.experiment-validation/v1"
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*")
 _PROVIDERS = ("baseline", "placement-aware", "chimew")
+_ARTIFACT_RETENTION = {
+    "consumer-checkpoint": "required",
+    "evidence-critical": "required",
+    "source-input": "required",
+    "diagnostic": "optional",
+    "failure-diagnostic": "optional",
+    "regenerable-scratch": "prunable",
+}
 _TOKEN_RE = re.compile(
     r"\{(output_dir|artifact_root|dependency:([a-z0-9_.-]+))\}"
 )
@@ -294,9 +312,193 @@ def _validate_node(raw: Any, seen: Mapping[str, Mapping[str, Any]]) -> Dict[str,
     return result
 
 
+def _validate_artifact_records(raw: Any, node_id: str) -> list[Dict[str, str]]:
+    if not isinstance(raw, list) or not raw:
+        raise ValidationError(f"experiment node {node_id} requires artifacts")
+    records = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValidationError(
+                f"experiment node {node_id} artifact {index} must be an object"
+            )
+        path = _safe_relative(item.get("path"), f"node {node_id} artifact path")
+        role = _string(item.get("role"), f"node {node_id} artifact role")
+        if role not in _ARTIFACT_RETENTION:
+            raise ValidationError(
+                f"experiment node {node_id} artifact role is invalid: {role!r}"
+            )
+        retention = item.get("retention", _ARTIFACT_RETENTION[role])
+        if retention != _ARTIFACT_RETENTION[role]:
+            raise ValidationError(
+                f"experiment node {node_id} artifact {path} retention disagrees "
+                f"with role {role}"
+            )
+        records.append({"path": path, "role": role, "retention": retention})
+    paths = [item["path"] for item in records]
+    if len(paths) != len(set(paths)):
+        raise ValidationError(f"experiment node {node_id} artifacts are duplicated")
+    return records
+
+
+def _validate_node_v2(
+    raw: Any, seen: Mapping[str, Mapping[str, Any]]
+) -> Dict[str, Any]:
+    """Validate one generic v2 stage without imposing a Phase 6 study shape."""
+
+    if not isinstance(raw, dict):
+        raise ValidationError("experiment nodes must be objects")
+    node_id = _identifier(raw.get("id"), "node id")
+    stage = _identifier(raw.get("stage"), f"node {node_id} stage")
+    dependencies = raw.get("dependencies", [])
+    if not isinstance(dependencies, list) or not all(
+        isinstance(item, str) and item for item in dependencies
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} dependencies must be a string list"
+        )
+    if len(dependencies) != len(set(dependencies)):
+        raise ValidationError(f"experiment node {node_id} dependencies are duplicated")
+    if any(dependency not in seen for dependency in dependencies):
+        raise ValidationError(
+            f"experiment node {node_id} dependencies must precede the node"
+        )
+
+    provider = raw.get("provider")
+    if provider is not None and provider not in _PROVIDERS:
+        raise ValidationError(f"experiment node {node_id} provider is invalid")
+    seed = raw.get("physical_seed")
+    if seed is not None and (
+        isinstance(seed, bool) or not isinstance(seed, int) or seed < 0
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} physical seed is invalid"
+        )
+
+    inputs = raw.get("inputs", {})
+    if not isinstance(inputs, dict) or not all(
+        isinstance(key, str)
+        and isinstance(value, str)
+        and _DIGEST_RE.fullmatch(value) is not None
+        for key, value in inputs.items()
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} inputs must map labels to SHA-256 values"
+        )
+    if not dependencies and not inputs:
+        raise ValidationError(
+            f"experiment root node {node_id} requires explicit input hashes"
+        )
+    configuration = raw.get("configuration", {})
+    if not isinstance(configuration, dict):
+        raise ValidationError(
+            f"experiment node {node_id} configuration must be an object"
+        )
+    command = raw.get("command")
+    if not isinstance(command, list) or not command or not all(
+        isinstance(item, str) and item for item in command
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} command must be a non-empty argv list"
+        )
+    if not any("{output_dir}" in item for item in command):
+        raise ValidationError(
+            f"experiment node {node_id} command must reference {{output_dir}}"
+        )
+    validator = raw.get("validator")
+    if not isinstance(validator, list) or not validator or not all(
+        isinstance(item, str) and item for item in validator
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} validator must be a non-empty argv list"
+        )
+    if not any("{artifact_root}" in item for item in validator):
+        raise ValidationError(
+            f"experiment node {node_id} validator must reference {{artifact_root}}"
+        )
+    for label, arguments in (("command", command), ("validator", validator)):
+        for argument in arguments:
+            stripped = _TOKEN_RE.sub("", argument)
+            if "{" in stripped or "}" in stripped:
+                raise ValidationError(
+                    f"experiment node {node_id} {label} contains unknown placeholder"
+                )
+            if label == "command" and "{artifact_root}" in argument:
+                raise ValidationError(
+                    f"experiment node {node_id} command cannot use {{artifact_root}}"
+                )
+            if label == "validator" and "{output_dir}" in argument:
+                raise ValidationError(
+                    f"experiment node {node_id} validator cannot use {{output_dir}}"
+                )
+            for _, dependency in _TOKEN_RE.findall(argument):
+                if dependency and dependency not in dependencies:
+                    raise ValidationError(
+                        f"experiment node {node_id} {label} references undeclared dependency"
+                    )
+
+    environment = raw.get("environment", {})
+    if not isinstance(environment, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in environment.items()
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} environment must map strings to strings"
+        )
+    storage_estimate = raw.get("storage_estimate")
+    if not isinstance(storage_estimate, dict):
+        raise ValidationError(
+            f"experiment node {node_id} requires a storage_estimate"
+        )
+    peak_bytes = storage_estimate.get("peak_bytes")
+    retained_bytes = storage_estimate.get("retained_bytes")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (peak_bytes, retained_bytes)
+    ) or retained_bytes > peak_bytes:
+        raise ValidationError(
+            f"experiment node {node_id} storage_estimate is invalid"
+        )
+    result: Dict[str, Any] = {
+        "id": node_id,
+        "stage": stage,
+        "dependencies": list(dependencies),
+        "inputs": dict(sorted(inputs.items())),
+        "configuration": configuration,
+        "implementation": validate_implementation_closure(
+            raw.get("implementation")
+        ),
+        "command": list(command),
+        "validator_implementation": validate_implementation_closure(
+            raw.get("validator_implementation")
+        ),
+        "validator": list(validator),
+        "environment": dict(sorted(environment.items())),
+        "storage_estimate": {
+            "peak_bytes": peak_bytes,
+            "retained_bytes": retained_bytes,
+        },
+        "artifacts": _validate_artifact_records(raw.get("artifacts"), node_id),
+    }
+    if provider is not None:
+        result["provider"] = provider
+    if seed is not None:
+        result["physical_seed"] = seed
+    result["implementation_sha256"] = result["implementation"][
+        "implementation_sha256"
+    ]
+    result["validator_sha256"] = result["validator_implementation"][
+        "implementation_sha256"
+    ]
+    return result
+
+
 def validate_experiment_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
-    if not isinstance(value, dict) or value.get("schema") != EXPERIMENT_SPEC_SCHEMA:
+    if not isinstance(value, dict) or value.get("schema") not in {
+        EXPERIMENT_SPEC_SCHEMA,
+        EXPERIMENT_SPEC_V2_SCHEMA,
+    }:
         raise ValidationError("experiment DAG spec schema is invalid")
+    schema = value["schema"]
     experiment_id = _identifier(value.get("experiment_id"), "experiment_id")
     source_commit = _string(value.get("source_commit"), "source_commit").lower()
     if _COMMIT_RE.fullmatch(source_commit) is None:
@@ -307,20 +509,25 @@ def validate_experiment_spec(value: Mapping[str, Any]) -> Dict[str, Any]:
     normalized: Dict[str, Dict[str, Any]] = {}
     ordered = []
     for raw in nodes:
-        node = _validate_node(raw, normalized)
+        node = (
+            _validate_node_v2(raw, normalized)
+            if schema == EXPERIMENT_SPEC_V2_SCHEMA
+            else _validate_node(raw, normalized)
+        )
         if node["id"] in normalized:
             raise ValidationError("experiment node IDs must be unique")
         normalized[node["id"]] = node
         ordered.append(node)
-    phase6 = [node for node in ordered if node["stage"] == "phase6"]
-    phase7 = [node for node in ordered if node["stage"] == "phase7"]
-    if len({node["provider"] for node in phase6}) != len(phase6):
-        raise ValidationError("experiment has duplicate Phase 6 provider checkpoints")
-    phase7_arms = {(node["provider"], node["physical_seed"]) for node in phase7}
-    if len(phase7_arms) != len(phase7):
-        raise ValidationError("experiment has duplicate Phase 7 provider/seed arms")
+    if schema == EXPERIMENT_SPEC_SCHEMA:
+        phase6 = [node for node in ordered if node["stage"] == "phase6"]
+        phase7 = [node for node in ordered if node["stage"] == "phase7"]
+        if len({node["provider"] for node in phase6}) != len(phase6):
+            raise ValidationError("experiment has duplicate Phase 6 provider checkpoints")
+        phase7_arms = {(node["provider"], node["physical_seed"]) for node in phase7}
+        if len(phase7_arms) != len(phase7):
+            raise ValidationError("experiment has duplicate Phase 7 provider/seed arms")
     return {
-        "schema": EXPERIMENT_SPEC_SCHEMA,
+        "schema": schema,
         "experiment_id": experiment_id,
         "source_commit": source_commit,
         "nodes": ordered,
@@ -341,6 +548,45 @@ def _node_key(
     return _canonical_sha256(identity)
 
 
+def _v2_execution_key(
+    node: Mapping[str, Any], dependency_keys: Mapping[str, str]
+) -> str:
+    identity = {
+        "schema": "emuflow.experiment-execution-identity/v2",
+        "stage": node["stage"],
+        "inputs": node["inputs"],
+        "configuration": node["configuration"],
+        "implementation_sha256": node["implementation_sha256"],
+        "command": node["command"],
+        "environment": node["environment"],
+        "artifacts": node["artifacts"],
+        "dependency_keys": dict(sorted(dependency_keys.items())),
+    }
+    if node.get("provider") is not None:
+        identity["provider"] = node["provider"]
+    if node.get("physical_seed") is not None:
+        identity["physical_seed"] = node["physical_seed"]
+    return _canonical_sha256(identity)
+
+
+def _v2_validation_key(node: Mapping[str, Any], execution_key: str) -> str:
+    return _canonical_sha256(
+        {
+            "schema": "emuflow.experiment-validation-identity/v1",
+            "execution_key": execution_key,
+            "validator_sha256": node["validator_sha256"],
+            "validator": node["validator"],
+        }
+    )
+
+
+def _artifact_paths(node: Mapping[str, Any]) -> list[str]:
+    artifacts = node["artifacts"]
+    if artifacts and isinstance(artifacts[0], dict):
+        return [item["path"] for item in artifacts]
+    return list(artifacts)
+
+
 def _checkpoint_manifest(cache_root: Path, key: str) -> Path:
     return cache_root / "objects" / key / "checkpoint.json"
 
@@ -351,9 +597,11 @@ def validate_experiment_checkpoint(
     expected_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     value = read_json(manifest_path)
-    if value.get("schema") != EXPERIMENT_CHECKPOINT_SCHEMA:
+    schema = value.get("schema")
+    if schema not in {EXPERIMENT_CHECKPOINT_SCHEMA, EXPERIMENT_CHECKPOINT_V2_SCHEMA}:
         raise ValidationError("experiment checkpoint schema is invalid")
-    key = _string(value.get("key"), "checkpoint key")
+    key_field = "execution_key" if schema == EXPERIMENT_CHECKPOINT_V2_SCHEMA else "key"
+    key = _string(value.get(key_field), "checkpoint key")
     if _DIGEST_RE.fullmatch(key) is None or (
         expected_key is not None and key != expected_key
     ):
@@ -362,7 +610,14 @@ def validate_experiment_checkpoint(
     if not output_dir.is_absolute() or output_dir.is_symlink() or not output_dir.is_dir():
         raise ValidationError("experiment checkpoint output directory is invalid")
     artifacts = value.get("artifacts")
-    expected = value.get("expected_artifacts")
+    expected_records = value.get("expected_artifacts")
+    expected = (
+        [item.get("path") for item in expected_records]
+        if schema == EXPERIMENT_CHECKPOINT_V2_SCHEMA
+        and isinstance(expected_records, list)
+        and all(isinstance(item, dict) for item in expected_records)
+        else expected_records
+    )
     if not isinstance(artifacts, dict) or not isinstance(expected, list):
         raise ValidationError("experiment checkpoint artifact table is invalid")
     if sorted(artifacts) != sorted(expected):
@@ -379,6 +634,34 @@ def validate_experiment_checkpoint(
             )
     if value.get("status") != "pass":
         raise ValidationError("experiment checkpoint did not pass")
+    if value.get("storage") == "managed" and (
+        schema == EXPERIMENT_CHECKPOINT_V2_SCHEMA
+        or value.get("output_immutable") is True
+    ):
+        if value.get("output_immutable") is not True:
+            raise ValidationError("managed checkpoint lacks immutable-output seal")
+        _validate_tree_immutable(output_dir)
+    return value
+
+
+def _validation_manifest(cache_root: Path, key: str, validation_key: str) -> Path:
+    return cache_root / "objects" / key / "validations" / f"{validation_key}.json"
+
+
+def _validated_certificate(
+    cache_root: Path, key: str, validation_key: str
+) -> Optional[Dict[str, Any]]:
+    path = _validation_manifest(cache_root, key, validation_key)
+    if not path.is_file():
+        return None
+    value = read_json(path)
+    if value != {
+        "schema": EXPERIMENT_VALIDATION_SCHEMA,
+        "execution_key": key,
+        "validation_key": validation_key,
+        "status": "pass",
+    }:
+        raise ValidationError("experiment validation certificate is invalid")
     return value
 
 
@@ -394,17 +677,30 @@ def plan_experiment(
 ) -> Dict[str, Any]:
     spec_raw = read_json(spec_path)
     spec = validate_experiment_spec(spec_raw)
-    cache_root = cache_root.expanduser().resolve()
+    cache_root = validate_experiment_write_path(cache_root)
     keys: Dict[str, str] = {}
+    validation_keys: Dict[str, str] = {}
     states: Dict[str, str] = {}
     records = []
     for node in spec["nodes"]:
         dependency_keys = {dependency: keys[dependency] for dependency in node["dependencies"]}
-        key = _node_key(spec["source_commit"], node, dependency_keys)
+        v2 = spec["schema"] == EXPERIMENT_SPEC_V2_SCHEMA
+        key = (
+            _v2_execution_key(node, dependency_keys)
+            if v2
+            else _node_key(spec["source_commit"], node, dependency_keys)
+        )
+        validation_key = _v2_validation_key(node, key) if v2 else None
         keys[node["id"]] = key
+        if validation_key is not None:
+            validation_keys[node["id"]] = validation_key
         cached = _cached_checkpoint(cache_root, key)
         if cached is not None:
-            state = "reuse"
+            state = (
+                "reuse"
+                if not v2 or _validated_certificate(cache_root, key, validation_key) is not None
+                else "revalidate"
+            )
             output_dir = cached["output_dir"]
         elif all(states[dependency] == "reuse" for dependency in node["dependencies"]):
             state = "ready"
@@ -417,13 +713,28 @@ def plan_experiment(
             {
                 **node,
                 "key": key,
+                **({"execution_key": key, "validation_key": validation_key} if v2 else {}),
                 "dependency_keys": dependency_keys,
+                **(
+                    {
+                        "dependency_validation_keys": {
+                            dependency: validation_keys[dependency]
+                            for dependency in node["dependencies"]
+                        }
+                    }
+                    if v2
+                    else {}
+                ),
                 "state": state,
                 "output_dir": output_dir,
             }
         )
     plan = {
-        "schema": EXPERIMENT_PLAN_SCHEMA,
+        "schema": (
+            EXPERIMENT_PLAN_V2_SCHEMA
+            if spec["schema"] == EXPERIMENT_SPEC_V2_SCHEMA
+            else EXPERIMENT_PLAN_SCHEMA
+        ),
         "experiment_id": spec["experiment_id"],
         "source_commit": spec["source_commit"],
         "spec_sha256": _canonical_sha256(spec_raw),
@@ -431,7 +742,8 @@ def plan_experiment(
         "nodes": records,
         "counts": {
             state: sum(item["state"] == state for item in records)
-            for state in ("reuse", "ready", "waiting")
+            for state in ("reuse", "revalidate", "ready", "waiting")
+            if spec["schema"] == EXPERIMENT_SPEC_V2_SCHEMA or state != "revalidate"
         },
     }
     write_json(output_path, plan)
@@ -443,7 +755,7 @@ def _load_plan(path: Path, expected_sha256: Optional[str] = None) -> Dict[str, A
         if _DIGEST_RE.fullmatch(expected_sha256) is None or _sha256(path) != expected_sha256:
             raise ValidationError("experiment plan seal is broken")
     value = read_json(path)
-    if value.get("schema") != EXPERIMENT_PLAN_SCHEMA:
+    if value.get("schema") not in {EXPERIMENT_PLAN_SCHEMA, EXPERIMENT_PLAN_V2_SCHEMA}:
         raise ValidationError("experiment plan schema is invalid")
     cache_root = Path(_string(value.get("cache_root"), "plan cache_root"))
     if not cache_root.is_absolute():
@@ -461,30 +773,81 @@ def _seal_checkpoint(
     *,
     storage: str,
 ) -> Dict[str, Any]:
+    object_root = cache_root / "objects" / node["key"]
+    object_root.mkdir(parents=True, exist_ok=True)
+    manifest = _checkpoint_value(
+        node,
+        output_dir,
+        output_dir,
+        storage=storage,
+    )
+    write_json(object_root / "checkpoint.json", manifest)
+    return validate_experiment_checkpoint(
+        object_root / "checkpoint.json", expected_key=node["key"]
+    )
+
+
+def _checkpoint_value(
+    node: Mapping[str, Any],
+    digest_root: Path,
+    declared_output_dir: Path,
+    *,
+    storage: str,
+) -> Dict[str, Any]:
     artifacts: Dict[str, Any] = {}
-    for relative in node["artifacts"]:
-        kind, digest, size = _artifact_digest(_safe_artifact(output_dir, relative))
+    for relative in _artifact_paths(node):
+        kind, digest, size = _artifact_digest(_safe_artifact(digest_root, relative))
         artifacts[relative] = {"kind": kind, "sha256": digest, "bytes": size}
-    manifest = {
-        "schema": EXPERIMENT_CHECKPOINT_SCHEMA,
-        "key": node["key"],
+    v2 = "validation_key" in node
+    manifest: Dict[str, Any] = {
+        "schema": (
+            EXPERIMENT_CHECKPOINT_V2_SCHEMA if v2 else EXPERIMENT_CHECKPOINT_SCHEMA
+        ),
         "node_id": node["id"],
         "stage": node["stage"],
         "provider": node.get("provider"),
         "physical_seed": node.get("physical_seed"),
         "dependency_keys": node["dependency_keys"],
         "storage": storage,
-        "output_dir": str(output_dir.resolve()),
+        "output_dir": str(declared_output_dir.resolve()),
+        "output_immutable": storage == "managed",
         "expected_artifacts": node["artifacts"],
         "artifacts": artifacts,
         "status": "pass",
     }
-    object_root = cache_root / "objects" / node["key"]
-    object_root.mkdir(parents=True, exist_ok=True)
-    write_json(object_root / "checkpoint.json", manifest)
-    return validate_experiment_checkpoint(
-        object_root / "checkpoint.json", expected_key=node["key"]
-    )
+    manifest["execution_key" if v2 else "key"] = node["key"]
+    return manifest
+
+
+def _make_tree_immutable(root: Path) -> None:
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_symlink():
+            raise ValidationError("managed checkpoint output contains a symlink")
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    root.chmod(0o555)
+
+
+def _validate_tree_immutable(root: Path) -> None:
+    for path in [root, *root.rglob("*")]:
+        if path.stat().st_mode & 0o222:
+            raise ValidationError(
+                f"managed checkpoint output is writable: {path}"
+            )
+
+
+def _seal_validation(cache_root: Path, node: Mapping[str, Any]) -> Dict[str, Any]:
+    value = {
+        "schema": EXPERIMENT_VALIDATION_SCHEMA,
+        "execution_key": node["key"],
+        "validation_key": node["validation_key"],
+        "status": "pass",
+    }
+    path = _validation_manifest(cache_root, node["key"], node["validation_key"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, value)
+    return _validated_certificate(
+        cache_root, node["key"], node["validation_key"]
+    ) or value
 
 
 def _dependency_outputs(
@@ -496,6 +859,13 @@ def _dependency_outputs(
         if checkpoint is None:
             raise ValidationError(
                 f"experiment node {node['id']} dependency {dependency} is not cached"
+            )
+        validation_key = node.get("dependency_validation_keys", {}).get(dependency)
+        if validation_key is not None and _validated_certificate(
+            cache_root, key, validation_key
+        ) is None:
+            raise ValidationError(
+                f"experiment node {node['id']} dependency {dependency} is not validated"
             )
         result[dependency] = checkpoint["output_dir"]
     return result
@@ -533,13 +903,24 @@ def _run_validator(
     command = _expand_argv(
         node["validator"], dependencies, artifact_root=artifact_root
     )
-    return subprocess.run(
-        command,
-        cwd=artifact_root,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    scratch_root = cache_root / "scratch" / (
+        f"validator-{node['key']}-{os.getpid()}-{time.monotonic_ns()}"
     )
+    _, scratch_environment = prepare_experiment_scratch(scratch_root)
+    environment = os.environ.copy()
+    environment.update(node["environment"])
+    environment.update(scratch_environment)
+    try:
+        return subprocess.run(
+            command,
+            cwd=artifact_root,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
 
 
 def import_experiment_checkpoint(
@@ -554,10 +935,25 @@ def import_experiment_checkpoint(
     if node_id not in nodes:
         raise ValidationError(f"experiment plan has no node {node_id!r}")
     node = nodes[node_id]
-    cache_root = Path(plan["cache_root"])
+    cache_root = validate_experiment_write_path(Path(plan["cache_root"]))
     existing = _cached_checkpoint(cache_root, node["key"])
     if existing is not None:
-        return {"status": "reused", "checkpoint": existing}
+        if "validation_key" not in node or _validated_certificate(
+            cache_root, node["key"], node["validation_key"]
+        ) is not None:
+            return {"status": "reused", "checkpoint": existing}
+        validation = _run_validator(node, cache_root, Path(existing["output_dir"]))
+        if validation.returncode != 0:
+            raise ValidationError(
+                f"experiment node {node_id} independent validator failed: "
+                f"{validation.stderr.decode('utf-8', errors='replace')[-2048:]}"
+            )
+        certificate = _seal_validation(cache_root, node)
+        return {
+            "status": "revalidated",
+            "checkpoint": existing,
+            "validation": certificate,
+        }
     for dependency, key in node["dependency_keys"].items():
         if _cached_checkpoint(cache_root, key) is None:
             raise ValidationError(
@@ -573,7 +969,10 @@ def import_experiment_checkpoint(
     checkpoint = _seal_checkpoint(
         cache_root, node, artifact_root, storage="external-validated"
     )
-    return {"status": "imported", "checkpoint": checkpoint}
+    result = {"status": "imported", "checkpoint": checkpoint}
+    if "validation_key" in node:
+        result["validation"] = _seal_validation(cache_root, node)
+    return result
 
 
 def _expand_command(
@@ -598,7 +997,8 @@ def run_experiment_node(
     if node_id not in nodes:
         raise ValidationError(f"experiment plan has no node {node_id!r}")
     node = nodes[node_id]
-    cache_root = Path(plan["cache_root"])
+    cache_root = validate_experiment_write_path(Path(plan["cache_root"]))
+    run_dir = validate_experiment_write_path(run_dir)
     cache_root.mkdir(parents=True, exist_ok=True)
     (cache_root / "locks").mkdir(exist_ok=True)
     lock = (cache_root / "locks" / f"{node['key']}.lock").open("a+")
@@ -606,6 +1006,34 @@ def run_experiment_node(
     try:
         existing = _cached_checkpoint(cache_root, node["key"])
         if existing is not None:
+            if "validation_key" in node and _validated_certificate(
+                cache_root, node["key"], node["validation_key"]
+            ) is None:
+                validation = _run_validator(
+                    node, cache_root, Path(existing["output_dir"])
+                )
+                if validation.returncode != 0:
+                    report = {
+                        "status": "failed",
+                        "node_id": node_id,
+                        "exit_code": validation.returncode,
+                        "failure_stage": "independent-revalidation",
+                    }
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    (run_dir / "validator.stdout.log").write_bytes(validation.stdout)
+                    (run_dir / "validator.stderr.log").write_bytes(validation.stderr)
+                    write_json(run_dir / "experiment-node-report.json", report)
+                    return report
+                certificate = _seal_validation(cache_root, node)
+                report = {
+                    "status": "revalidated",
+                    "node_id": node_id,
+                    "checkpoint": existing,
+                    "validation": certificate,
+                }
+                run_dir.mkdir(parents=True, exist_ok=True)
+                write_json(run_dir / "experiment-node-report.json", report)
+                return report
             report = {"status": "reused", "node_id": node_id, "checkpoint": existing}
             run_dir.mkdir(parents=True, exist_ok=True)
             write_json(run_dir / "experiment-node-report.json", report)
@@ -620,9 +1048,11 @@ def run_experiment_node(
         output_dir = staging / "output"
         output_dir.mkdir()
         run_dir.mkdir(parents=True, exist_ok=True)
+        _, scratch_environment = prepare_experiment_scratch(run_dir)
         command = _expand_command(node, cache_root, output_dir)
         environment = os.environ.copy()
         environment.update(node["environment"])
+        environment.update(scratch_environment)
         started = time.monotonic()
         with (run_dir / "command.stdout.log").open("wb") as stdout, (
             run_dir / "command.stderr.log"
@@ -667,9 +1097,18 @@ def run_experiment_node(
             return report
         final_root = cache_root / "objects" / node["key"]
         final_root.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_value = _checkpoint_value(
+            node,
+            output_dir,
+            final_root / "output",
+            storage="managed",
+        )
+        write_json(staging / "checkpoint.json", checkpoint_value)
+        _make_tree_immutable(output_dir)
+        (staging / "checkpoint.json").chmod(0o444)
         staging.rename(final_root)
-        checkpoint = _seal_checkpoint(
-            cache_root, node, final_root / "output", storage="managed"
+        checkpoint = validate_experiment_checkpoint(
+            final_root / "checkpoint.json", expected_key=node["key"]
         )
         report = {
             "status": "pass",
@@ -677,6 +1116,8 @@ def run_experiment_node(
             "elapsed_seconds": time.monotonic() - started,
             "checkpoint": checkpoint,
         }
+        if "validation_key" in node:
+            report["validation"] = _seal_validation(cache_root, node)
         write_json(run_dir / "experiment-node-report.json", report)
         return report
     finally:
@@ -692,7 +1133,11 @@ def build_experiment_farm_spec(
     output_path: Path,
 ) -> Dict[str, Any]:
     plan = _load_plan(plan_path)
-    ready = [item for item in plan["nodes"] if item["state"] == "ready"]
+    ready = [
+        item
+        for item in plan["nodes"]
+        if item["state"] in {"ready", "revalidate"}
+    ]
     if not ready:
         raise EmuFlowError("experiment plan has no ready nodes; replan or finish dependencies")
     if not nodes:
@@ -726,6 +1171,9 @@ def build_experiment_farm_spec(
                     "--run-dir",
                     "{run_dir}",
                 ],
+                "estimated_peak_bytes": item.get("storage_estimate", {}).get(
+                    "peak_bytes", 0
+                ),
             }
             for item in ready
         ],
@@ -734,6 +1182,9 @@ def build_experiment_farm_spec(
     return {
         "status": "pass",
         "ready_tasks": len(ready),
+        "revalidation_tasks": sum(
+            item["state"] == "revalidate" for item in ready
+        ),
         "reused_tasks": plan["counts"]["reuse"],
         "waiting_tasks": plan["counts"]["waiting"],
         "plan_sha256": plan_sha256,

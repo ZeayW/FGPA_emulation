@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +13,7 @@ from emuflow.validation_farm import (
     FARM_SPEC_SCHEMA,
     launch_validation_farm,
     prepare_validation_farm,
+    reconcile_validation_farm,
     run_validation_farm_task,
     validation_farm_status,
     validate_validation_farm,
@@ -34,6 +36,7 @@ class ValidationFarmTest(unittest.TestCase):
             tasks.append(
                 {
                     "id": f"task-{index}",
+                    "estimated_peak_bytes": 1024,
                     "command": [
                         sys.executable,
                         "-c",
@@ -56,6 +59,7 @@ class ValidationFarmTest(unittest.TestCase):
                 "install_dir": str(install),
                 "nodes": ["node-a", "node-b"],
                 "slots_per_node": 2,
+                "storage_reserve_bytes": 0,
                 "tasks": tasks,
             },
         )
@@ -170,7 +174,14 @@ class ValidationFarmTest(unittest.TestCase):
             self.assertEqual(result["source_commit"], COMMIT)
             self.assertEqual(result["install_dir"], str(install.resolve()))
             self.assertEqual(
-                read_json(farm / "runs" / "task-0" / "done")["status"],
+                read_json(
+                    farm
+                    / "runs"
+                    / "task-0"
+                    / "attempts"
+                    / "attempt-0001"
+                    / "done"
+                )["status"],
                 "ok",
             )
             status = validation_farm_status(farm)
@@ -224,6 +235,90 @@ class ValidationFarmTest(unittest.TestCase):
             self.assertEqual(first["submit_failed"], 1)
             self.assertEqual(second["submitted"], 1)
             self.assertEqual(second["submit_failed"], 0)
+
+    def test_storage_shortage_blocks_submission_without_ssh(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            farm = root / "farm"
+            blocked = {
+                "status": "blocked_storage",
+                "estimated_peak_bytes": 1024,
+                "reserve_bytes": 0,
+                "required_available_bytes": 1024,
+                "root": str(root),
+                "filesystem_free_bytes": 512,
+                "quota_available_bytes": 512,
+                "available_bytes": 512,
+                "quota_error": None,
+            }
+            with mock.patch(
+                "emuflow.validation_farm.preflight_experiment_storage",
+                return_value=blocked,
+            ):
+                prepared = prepare_validation_farm(spec, farm)
+                self.assertEqual(prepared["status"], "valid")
+                self.assertEqual(
+                    read_json(farm / "tasks/task-0/state.json")["status"],
+                    "blocked_storage",
+                )
+                with mock.patch(
+                    "emuflow.validation_farm.subprocess.run"
+                ) as runner:
+                    launched = launch_validation_farm(farm)
+                self.assertEqual(launched["status"], "blocked_storage")
+                runner.assert_not_called()
+
+    def test_expired_lease_requires_dead_process_probe_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            farm = root / "farm"
+            prepare_validation_farm(spec, farm)
+            state_path = farm / "tasks/task-0/state.json"
+            expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+            state = read_json(state_path)
+            state.update(
+                {
+                    "status": "running",
+                    "pid": 1234,
+                    "attempt": 1,
+                    "lease_expires_at": expired,
+                }
+            )
+            write_json(state_path, state)
+            dead = subprocess.CompletedProcess([], 1, "", "no process")
+            with mock.patch(
+                "emuflow.validation_farm.subprocess.run", return_value=dead
+            ) as probe:
+                report = reconcile_validation_farm(farm)
+            self.assertEqual(report["retryable"], 1)
+            self.assertEqual(read_json(state_path)["status"], "retryable")
+            self.assertIn("kill -0 1234", probe.call_args.args[0])
+
+    def test_retry_uses_a_new_attempt_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            farm = root / "farm"
+            prepare_validation_farm(spec, farm)
+            task_path = farm / "tasks/task-0/task.json"
+            with mock.patch.object(socket, "gethostname", return_value="node-a"):
+                first = run_validation_farm_task(task_path)
+            self.assertEqual(first["attempt"], 1)
+            state_path = farm / "tasks/task-0/state.json"
+            state = read_json(state_path)
+            state["status"] = "retryable"
+            write_json(state_path, state)
+            with mock.patch.object(socket, "gethostname", return_value="node-a"):
+                second = run_validation_farm_task(task_path)
+            self.assertEqual(second["attempt"], 2)
+            self.assertTrue(
+                (farm / "runs/task-0/attempts/attempt-0001/done").is_file()
+            )
+            self.assertTrue(
+                (farm / "runs/task-0/attempts/attempt-0002/done").is_file()
+            )
 
 
 if __name__ == "__main__":

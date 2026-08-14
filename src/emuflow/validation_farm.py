@@ -9,13 +9,21 @@ import re
 import shlex
 import socket
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .errors import EmuFlowError, ValidationError
+from .experiment_storage import (
+    DEFAULT_STORAGE_RESERVE_BYTES,
+    preflight_experiment_storage,
+    prepare_experiment_scratch,
+    validate_experiment_write_path,
+    validation_storage_required,
+)
 from .io import read_json, write_json
 
 
@@ -32,6 +40,10 @@ _TERMINAL_STATES = {"pass", "failed", "submit_failed"}
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _future(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
 
 def _sha256(path: Path) -> str:
@@ -181,6 +193,13 @@ def prepare_validation_farm(
         raise ValidationError(
             "validation farm slots_per_node must be a positive integer"
         )
+    lease_seconds = spec.get("lease_seconds", 900)
+    if (
+        isinstance(lease_seconds, bool)
+        or not isinstance(lease_seconds, int)
+        or lease_seconds < 30
+    ):
+        raise ValidationError("validation farm lease_seconds must be at least 30")
     ssh = spec.get("ssh", {})
     if not isinstance(ssh, dict):
         raise ValidationError("validation farm ssh configuration must be an object")
@@ -228,7 +247,34 @@ def prepare_validation_farm(
         raise ValidationError("validation farm task IDs must be unique")
     assigned_nodes = _balanced_nodes(tasks, nodes)
 
-    output_dir = output_dir.expanduser().resolve()
+    output_dir = validate_experiment_write_path(output_dir)
+    storage_reserve_bytes = spec.get(
+        "storage_reserve_bytes",
+        DEFAULT_STORAGE_RESERVE_BYTES if validation_storage_required() else 0,
+    )
+    if (
+        isinstance(storage_reserve_bytes, bool)
+        or not isinstance(storage_reserve_bytes, int)
+        or storage_reserve_bytes < 0
+    ):
+        raise ValidationError("validation farm storage reserve is invalid")
+    task_peak_bytes = []
+    for raw_task, task_id in zip(tasks, task_ids):
+        peak = raw_task.get("estimated_peak_bytes")
+        if peak is None and not validation_storage_required():
+            # Local legacy fixtures remain readable. Validation-server farms
+            # never receive this compatibility default.
+            peak = 0
+        if isinstance(peak, bool) or not isinstance(peak, int) or peak < 0:
+            raise ValidationError(
+                f"validation farm task {task_id!r} requires estimated_peak_bytes"
+            )
+        task_peak_bytes.append(peak)
+    storage = preflight_experiment_storage(
+        output_dir.parent,
+        sum(task_peak_bytes),
+        reserve_bytes=storage_reserve_bytes,
+    )
     try:
         output_dir.mkdir(parents=True, exist_ok=False)
     except FileExistsError as error:
@@ -244,7 +290,9 @@ def prepare_validation_farm(
         for node in nodes:
             (output_dir / "locks" / node).mkdir()
 
-        for raw_task, task_id, node in zip(tasks, task_ids, assigned_nodes):
+        for raw_task, task_id, node, peak_bytes in zip(
+            tasks, task_ids, assigned_nodes, task_peak_bytes
+        ):
             task_dir = output_dir / "tasks" / task_id
             run_dir = output_dir / "runs" / task_id
             task_dir.mkdir()
@@ -306,12 +354,17 @@ def prepare_validation_farm(
                 "install_dir": str(install),
                 "node": node,
                 "slots_per_node": slots,
+                "lease_seconds": lease_seconds,
                 "slot_lock_dir": str(output_dir / "locks" / node),
                 "run_dir": str(run_dir),
                 "task_dir": str(task_dir),
                 "cwd": str(cwd),
                 "command": command,
                 "environment": environment,
+                "command_template": raw_command,
+                "environment_template": dict(sorted(raw_environment.items())),
+                "cwd_template": raw_cwd,
+                "estimated_peak_bytes": peak_bytes,
                 "created_at": _now(),
             }
             write_json(task_path, task_record)
@@ -322,7 +375,11 @@ def prepare_validation_farm(
                     "farm_id": farm_id,
                     "task_id": task_id,
                     "node": node,
-                    "status": "prepared",
+                    "status": (
+                        "prepared"
+                        if storage["status"] == "pass"
+                        else "blocked_storage"
+                    ),
                     "updated_at": _now(),
                 },
             )
@@ -358,8 +415,11 @@ def prepare_validation_farm(
             "install_dir": str(install),
             "nodes": nodes,
             "slots_per_node": slots,
+            "lease_seconds": lease_seconds,
             "ssh": ssh_manifest,
             "worker_argv": worker,
+            "storage_reserve_bytes": storage_reserve_bytes,
+            "storage_preflight": storage,
             "tasks": task_records,
             "created_at": _now(),
         }
@@ -438,6 +498,20 @@ def validate_validation_farm(farm_dir: Path) -> Dict[str, Any]:
             raise ValidationError(
                 f"validation farm task {task_id!r} install differs from farm"
             )
+        peak = task.get("estimated_peak_bytes")
+        if isinstance(peak, bool) or not isinstance(peak, int) or peak < 0:
+            raise ValidationError(
+                f"validation farm task {task_id!r} storage estimate is invalid"
+            )
+        lease_seconds = task.get("lease_seconds")
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or lease_seconds < 30
+        ):
+            raise ValidationError(
+                f"validation farm task {task_id!r} lease is invalid"
+            )
         expected_run = (farm_dir / "runs" / task_id).resolve()
         task_run = Path(
             _require_string(task.get("run_dir"), "task run_dir")
@@ -477,6 +551,57 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
     validate_validation_farm(farm_dir)
     manifest = read_json(farm_dir / "farm-manifest.json")
     ssh = manifest["ssh"]
+    storage = preflight_experiment_storage(
+        farm_dir,
+        sum(
+            read_json(Path(record["task"]))["estimated_peak_bytes"]
+            for record in manifest["tasks"]
+        ),
+        reserve_bytes=manifest.get("storage_reserve_bytes", 0),
+    )
+    if storage["status"] != "pass":
+        for record in manifest["tasks"]:
+            state_path = Path(record["state"])
+            state = read_json(state_path)
+            if state.get("status") in {"prepared", "submit_failed", "blocked_storage"}:
+                write_json(
+                    state_path,
+                    {
+                        "schema": FARM_STATE_SCHEMA,
+                        "farm_id": manifest["farm_id"],
+                        "task_id": record["id"],
+                        "node": record["node"],
+                        "status": "blocked_storage",
+                        "storage": storage,
+                        "updated_at": _now(),
+                    },
+                )
+        return {
+            "schema": "emuflow.validation-farm-submission/v1",
+            "farm_id": manifest["farm_id"],
+            "source_commit": manifest["source_commit"],
+            "submitted": 0,
+            "skipped": 0,
+            "submit_failed": 0,
+            "tasks": [],
+            "storage": storage,
+            "status": "blocked_storage",
+        }
+    for record in manifest["tasks"]:
+        state_path = Path(record["state"])
+        state = read_json(state_path)
+        if state.get("status") == "blocked_storage":
+            write_json(
+                state_path,
+                {
+                    "schema": FARM_STATE_SCHEMA,
+                    "farm_id": manifest["farm_id"],
+                    "task_id": record["id"],
+                    "node": record["node"],
+                    "status": "prepared",
+                    "updated_at": _now(),
+                },
+            )
 
     launch_lock = (farm_dir / "launch.lock").open("a+", encoding="utf-8")
     try:
@@ -492,14 +617,14 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
         task_dir = task_path.parent
         previous = read_json(task_dir / "state.json")
         previous_status = previous.get("status")
-        if previous_status not in {"prepared", "submit_failed"}:
+        if previous_status not in {"prepared", "submit_failed", "retryable"}:
             return {
                 "task_id": record["id"],
                 "node": record["node"],
                 "status": "skipped",
                 "task_status": previous_status,
             }
-        if previous_status == "submit_failed":
+        if previous_status in {"submit_failed", "retryable"}:
             (task_dir / "submission.claim").unlink(missing_ok=True)
         _claim_submission(task_dir)
         write_json(
@@ -510,6 +635,12 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
                 "task_id": record["id"],
                 "node": record["node"],
                 "status": "submitting",
+                **(
+                    {"attempt": previous["attempt"]}
+                    if isinstance(previous.get("attempt"), int)
+                    and not isinstance(previous.get("attempt"), bool)
+                    else {}
+                ),
                 "updated_at": _now(),
             },
         )
@@ -602,6 +733,43 @@ def run_validation_farm_task(task_path: Path) -> Dict[str, Any]:
         )
     task_dir = task_path.parent
     state_path = task_dir / "state.json"
+    previous = read_json(state_path)
+    if previous.get("status") not in {"prepared", "submitting", "retryable"}:
+        raise EmuFlowError(
+            f"validation farm task {task_id!r} cannot run from state "
+            f"{previous.get('status')!r}"
+        )
+    previous_attempt = previous.get("attempt", 0)
+    if (
+        isinstance(previous_attempt, bool)
+        or not isinstance(previous_attempt, int)
+        or previous_attempt < 0
+    ):
+        raise ValidationError("validation farm previous attempt is invalid")
+    attempt = previous_attempt + 1
+    run_root = Path(task["run_dir"])
+    attempt_dir = run_root / "attempts" / f"attempt-{attempt:04d}"
+    attempt_dir.mkdir(parents=True, exist_ok=False)
+    replacements = {
+        "install": str(install),
+        "run_dir": str(attempt_dir),
+        "task_dir": str(task_dir),
+        "task_id": task_id,
+        "node": expected_node,
+    }
+    command = [
+        _format_value(argument, replacements, f"task {task_id} command")
+        for argument in task["command_template"]
+    ]
+    task_environment = {
+        key: _format_value(value, replacements, f"task {task_id} environment")
+        for key, value in task["environment_template"].items()
+    }
+    cwd = Path(
+        _format_value(task["cwd_template"], replacements, f"task {task_id} cwd")
+    )
+    cwd.mkdir(parents=True, exist_ok=True)
+    lease_seconds = task["lease_seconds"]
     write_json(
         state_path,
         {
@@ -610,8 +778,11 @@ def run_validation_farm_task(task_path: Path) -> Dict[str, Any]:
             "task_id": task_id,
             "node": expected_node,
             "status": "waiting_for_slot",
+            "attempt": attempt,
+            "attempt_dir": str(attempt_dir),
             "pid": os.getpid(),
             "session_id": os.getsid(0),
+            "lease_expires_at": _future(lease_seconds),
             "updated_at": _now(),
         },
     )
@@ -626,34 +797,72 @@ def run_validation_farm_task(task_path: Path) -> Dict[str, Any]:
             "task_id": task_id,
             "node": expected_node,
             "status": "running",
+            "attempt": attempt,
+            "attempt_dir": str(attempt_dir),
             "slot": slot,
             "pid": os.getpid(),
             "session_id": os.getsid(0),
             "source_commit": commit,
             "install_dir": str(install),
             "started_at": started_at,
+            "heartbeat_at": _now(),
+            "lease_expires_at": _future(lease_seconds),
             "updated_at": _now(),
         },
     )
     environment = os.environ.copy()
-    environment.update(task["environment"])
+    environment.update(task_environment)
+    _, scratch_environment = prepare_experiment_scratch(attempt_dir)
+    environment.update(scratch_environment)
     environment["EMUFLOW_FARM_ID"] = task["farm_id"]
     environment["EMUFLOW_FARM_TASK_ID"] = task_id
     environment["EMUFLOW_FARM_RUN_DIR"] = task["run_dir"]
+    environment["EMUFLOW_FARM_ATTEMPT_DIR"] = str(attempt_dir)
     environment["EMUFLOW_INSTALL"] = str(install)
     environment["EMUFLOW_SOURCE_COMMIT"] = commit
+    stop_heartbeat = threading.Event()
+
+    def heartbeat() -> None:
+        interval = max(10, min(60, lease_seconds // 3))
+        while not stop_heartbeat.wait(interval):
+            write_json(
+                state_path,
+                {
+                    "schema": FARM_STATE_SCHEMA,
+                    "farm_id": task["farm_id"],
+                    "task_id": task_id,
+                    "node": expected_node,
+                    "status": "running",
+                    "attempt": attempt,
+                    "attempt_dir": str(attempt_dir),
+                    "slot": slot,
+                    "pid": os.getpid(),
+                    "session_id": os.getsid(0),
+                    "source_commit": commit,
+                    "install_dir": str(install),
+                    "started_at": started_at,
+                    "heartbeat_at": _now(),
+                    "lease_expires_at": _future(lease_seconds),
+                    "updated_at": _now(),
+                },
+            )
+
+    heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+    heartbeat_thread.start()
     try:
-        with (task_dir / "stdout.log").open("wb") as stdout, (
-            task_dir / "stderr.log"
+        with (attempt_dir / "stdout.log").open("wb") as stdout, (
+            attempt_dir / "stderr.log"
         ).open("wb") as stderr:
             completed = subprocess.run(
-                task["command"],
-                cwd=task["cwd"],
+                command,
+                cwd=cwd,
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
             )
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=5)
         status = "pass" if completed.returncode == 0 else "failed"
         result = {
             "schema": FARM_STATE_SCHEMA,
@@ -661,6 +870,8 @@ def run_validation_farm_task(task_path: Path) -> Dict[str, Any]:
             "task_id": task_id,
             "node": expected_node,
             "status": status,
+            "attempt": attempt,
+            "attempt_dir": str(attempt_dir),
             "slot": slot,
             "pid": os.getpid(),
             "session_id": os.getsid(0),
@@ -675,6 +886,8 @@ def run_validation_farm_task(task_path: Path) -> Dict[str, Any]:
         write_json(state_path, result)
         return result
     finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=5)
         fcntl.flock(slot_stream.fileno(), fcntl.LOCK_UN)
         slot_stream.close()
 
@@ -767,4 +980,90 @@ def validation_farm_status(farm_dir: Path) -> Dict[str, Any]:
         "complete": complete,
         "tasks": states,
         "status": "failed" if failed else ("pass" if complete else "active"),
+    }
+
+
+def reconcile_validation_farm(
+    farm_dir: Path, *, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Probe expired workers and make only confirmed-dead attempts retryable."""
+
+    farm_dir = farm_dir.resolve()
+    validate_validation_farm(farm_dir)
+    manifest = read_json(farm_dir / "farm-manifest.json")
+    ssh = manifest["ssh"]
+    current = now or datetime.now(timezone.utc)
+    records = []
+    for record in manifest["tasks"]:
+        state_path = Path(record["state"])
+        state = read_json(state_path)
+        if state.get("status") not in {"running", "waiting_for_slot"}:
+            records.append(
+                {
+                    "task_id": record["id"],
+                    "status": "unchanged",
+                    "task_status": state.get("status"),
+                }
+            )
+            continue
+        try:
+            expiry = datetime.fromisoformat(state.get("lease_expires_at"))
+        except (TypeError, ValueError) as error:
+            raise ValidationError(
+                f"validation farm task {record['id']!r} lease is invalid"
+            ) from error
+        if expiry.tzinfo is None:
+            raise ValidationError("validation farm lease must include a timezone")
+        if expiry > current:
+            records.append({"task_id": record["id"], "status": "lease-valid"})
+            continue
+        pid = state.get("pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+            raise ValidationError(
+                f"validation farm task {record['id']!r} PID is invalid"
+            )
+        completed = subprocess.run(
+            [
+                ssh["executable"],
+                *ssh["arguments"],
+                record["node"],
+                f"kill -0 {pid}",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if completed.returncode == 0:
+            records.append(
+                {
+                    "task_id": record["id"],
+                    "status": "expired-but-alive",
+                    "pid": pid,
+                }
+            )
+            continue
+        write_json(
+            state_path,
+            {
+                **state,
+                "status": "retryable",
+                "reconciled_at": _now(),
+                "reconcile_reason": "lease-expired-and-worker-absent",
+                "probe_exit_code": completed.returncode,
+                "updated_at": _now(),
+            },
+        )
+        records.append(
+            {"task_id": record["id"], "status": "retryable", "pid": pid}
+        )
+    return {
+        "schema": "emuflow.validation-farm-reconcile/v1",
+        "farm_id": manifest["farm_id"],
+        "status": "pass",
+        "tasks": records,
+        "retryable": sum(item["status"] == "retryable" for item in records),
+        "alive": sum(
+            item["status"] == "expired-but-alive" for item in records
+        ),
     }

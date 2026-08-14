@@ -98,13 +98,9 @@ class ValidationArchiveTest(unittest.TestCase):
                 validate_validation_archive(archive)["flow"]["instances"], 8
             )
 
-            receipt = cleanup_validation_source(archive, flow)
-            self.assertEqual(receipt["status"], "removed")
-            self.assertFalse(flow.exists())
-            self.assertTrue((archive / "cleanup-receipt.json").is_file())
-            self.assertEqual(
-                validate_validation_archive(archive)["status"], "pass"
-            )
+            with self.assertRaisesRegex(ValidationError, "non-replayable"):
+                cleanup_validation_source(archive, flow)
+            self.assertTrue(flow.exists())
 
     def test_tampering_blocks_validation_and_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -671,10 +671,11 @@ The versioned `archive-manifest.json` records the run ID, EmuFlow revision and
 dirty state, complete CLI configuration, host/runtime identity, optional
 `--archive-tool-version NAME=VERSION` entries, final flow summary, external RTL
 source hashes, and every retained artifact's path, size, role, and SHA-256.
-Reports and small key artifacts are copied. Files larger than 64 MiB are kept
-as size/SHA-256 records by default; change the threshold with
-`--archive-max-copy-bytes`. The complete top-level flow report is always
-copied regardless of that threshold. Intermediates deliberately pruned by a
+Every regular run file is inventoried. Files larger than 64 MiB are kept as
+size/SHA-256 records by default; change the threshold with
+`--archive-max-copy-bytes`. This legacy threshold is a copy policy, not a
+replay guarantee. The complete top-level flow report is always copied
+regardless of that threshold. Intermediates deliberately pruned by a
 stage, such as a VPR RR graph, remain explicit `intentionally-pruned` records
 with their original size and SHA-256 rather than silently disappearing.
 
@@ -691,8 +692,13 @@ emuflow archive cleanup /data/emuflow-archives/design-r1 \
 `archive cleanup` revalidates the sealed manifest, every copied archive file,
 the source flow report, and every recorded source artifact before removal. A
 path mismatch, changed file, broken hash, missing report, symlink, or nested
-archive/run layout blocks deletion. Successful cleanup leaves a hash-bound
-`cleanup-receipt.json` in the archive. Validation archives are experiment
+archive/run layout blocks deletion. Any hash-only file also blocks cleanup, so
+the historical 64 MiB default cannot delete a run whose large EmuIR,
+placement, route, checkpoint, or tool artifact may be needed for replay.
+Successful cleanup leaves a hash-bound `cleanup-receipt.json` in the archive.
+New experiments should prefer the role-aware `experiment-cache
+evidence-create` bundle below: it retains every required replay artifact
+regardless of size and omits only explicitly prunable scratch. Validation archives are experiment
 outputs and remain outside this source repository.
 
 ### Parallel validation farm
@@ -700,8 +706,12 @@ outputs and remain outside this source repository.
 Independent validations can be distributed across shared-filesystem compute
 nodes with the versioned `validation-farm` interface. A farm pins an immutable
 install directory whose basename is the full source commit, assigns every task
-to a node, creates a unique run directory per task, and rejects mutable
-`install/current` aliases and duplicate submissions. For example:
+to a node, creates a unique `attempt-NNNN` directory for every execution, and
+rejects mutable `install/current` aliases and duplicate submissions.  Workers
+publish heartbeats and expiring leases. `validation-farm reconcile` probes an
+expired worker PID on its assigned node; only a confirmed-absent process
+becomes retryable, and its next execution cannot overwrite the earlier
+attempt. For example:
 
 ```json
 {
@@ -732,6 +742,7 @@ emuflow validation-farm prepare --spec farm.json --out /shared/runs/farm-001
 emuflow validation-farm validate /shared/runs/farm-001
 emuflow validation-farm launch /shared/runs/farm-001
 emuflow validation-farm status /shared/runs/farm-001
+emuflow validation-farm reconcile /shared/runs/farm-001
 ```
 
 Remote workers detach into their own sessions, acquire a per-node slot lock,
@@ -763,19 +774,27 @@ enough space has been reclaimed through evidence-aware retention or archive
 cleanup.  Tool scratch such as `TMPDIR` must likewise point to an isolated
 directory under the required `/research` root.
 
-A full-flow Phase 6 provider comparison is one concrete example:
+A full-flow Phase 6 provider comparison is one concrete example.  The reusable
+ancestor is a chain, not a monolithic `shared Phase 1--5` directory:
 
 ```text
-shared Phase 1--5
-  +-- baseline Phase 6 --+-- fixed physical lookahead
-                         +-- placement-aware Phase 6 -+-- Phase 7 seed 1/2/3
-                         +-- Chimew Phase 6 ----------+-- Phase 7 seed 1/2/3
-                         +-- baseline Phase 6 --------+-- Phase 7 seed 1/2/3
+frontend/synthesis -> timing preparation -> partition -> system route -> TDM
+                                                                  |
+                                                  baseline Phase 6 split
+                                                    |             |
+                                      fixed physical lookahead    +-> Phase 7 seed 1/2/3
+                                           |              |
+                              placement-aware Phase 6   Chimew Phase 6
+                                           |              |
+                                      Phase 7 seeds 1/2/3 each
 ```
 
 The checked-in `experiment-stage` commands implement these semantic
-boundaries. `shared-validate` checks a frozen Phase 1--5 flow root;
-`lookahead-run` performs one fixed-seed open physical prepass and materializes
+boundaries. `shared-validate` remains a compatibility validator for a frozen
+Phase 1--5 flow root, but v2 DAGs model its frontend/timing/partition/route/TDM
+components separately. `phase6-run --provider baseline` consumes Phase 5
+directly and needs no lookahead. `lookahead-run --baseline-phase6 ...`
+performs one fixed-seed open physical prepass and materializes
 the source-bound placement/congestion inputs; `phase6-run` accepts
 `baseline`, `placement-aware`, or `chimew`; and `phase7-run` executes exactly
 one provider/physical-seed terminal plus Phase 7C. Every run command has a
@@ -785,10 +804,10 @@ stage commands intentionally accept while rejecting any non-empty output.
 For the lookahead seed, baseline Phase 7 reuses the frozen prepass rather than
 running physical implementation again.
 
-Phase 1--5 is therefore built and independently validated once for a frozen
-RTL/BoardDB/partition/routing/schedule configuration.  Each Phase 6 provider
-has one checkpoint independent of physical seed.  Only Phase 7 expands across
-provider and seed.  When an algorithm needs placement/congestion lookahead,
+Each unchanged frontend/timing/partition/routing/scheduling node is therefore
+built and independently validated once. A change invalidates only the affected
+node and descendants. Each Phase 6 provider has one checkpoint independent of
+physical seed. Only Phase 7 expands across provider and seed. When an algorithm needs placement/congestion lookahead,
 that prepass is a separate fixed-seed checkpoint shared by every applicable
 provider; it is not silently regenerated for each final physical seed.
 Experiment DAG stages are not limited to the Phase 1--7 names, and a node may
@@ -797,12 +816,20 @@ them.  Repeating a planner invocation validates every cached
 artifact and reports each node as:
 
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
+- `revalidate`: execution output is reusable but the independent validator
+  implementation changed and must certify it again;
 - `ready`: every dependency is cached and this node must run;
 - `waiting`: an exact dependency checkpoint is not yet available.
 
-The node key binds the full source commit, explicit input SHA-256 values,
-configuration, argv/environment contract, dependency keys, algorithm/provider,
-seed, backend options, and worker count supplied by the experiment spec.
+In v2, the Git commit is recorded as provenance rather than used as a global
+invalidation hammer. The execution key binds explicit input SHA-256 values,
+configuration, argv/environment contract, dependency execution keys,
+algorithm/provider, seed/backend/worker settings, artifact contract, and a
+portable implementation closure listing the exact source, scripts, and
+binaries used by that stage. The validation key independently binds the
+validator's own closure and argv. Thus a Phase 4 implementation change does
+not invalidate Phase 1--3, and a validator-only change produces `revalidate`
+without recomputing output.
 Changing any node input invalidates only that node and its descendants.  For
 example, a Chimew parameter invalidates only Chimew Phase 6 and its Phase 7
 descendants, while changing RTL or BoardDB invalidates the shared Phase 1--5
@@ -818,12 +845,14 @@ emuflow experiment-cache plan \
   --out /shared/experiments/koios-case6.plan.json
 ```
 
-An experiment spec uses `emuflow.experiment-dag-spec/v1`; a deliberately
+New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
+only for migration compatibility. A deliberately
 non-runnable schema example is installed from
 `benchmarks/experiment_dag.schema.example.json`.  Every node declares
-its stage, dependencies, content hashes, configuration, argv, environment,
-independent validator argv, and the artifact files/directories that prove
-completion. Commands write only to
+its stage, dependencies, content hashes, implementation and validator
+closures, configuration, argv, environment, peak/retained storage estimate,
+independent validator argv, and role-labelled artifact files/directories that
+prove completion. Commands write only to
 `{output_dir}` and may read a dependency through
 `{dependency:<node-id>}`.  This makes the dependency path itself irrelevant to
 identity while the dependency's content key remains sealed.
@@ -868,6 +897,62 @@ repository, while reusable policy and canonical registries stay checked in.
 Force-runs are exceptional (for example, deliberate nondeterminism or noise
 replication), must record their reason, and must use a distinct declared
 identity instead of overwriting or bypassing a valid checkpoint.
+
+Build and verify the portable implementation closure used by a v2 node:
+
+```bash
+emuflow experiment-cache implementation-closure \
+  --root /path/to/versioned/source \
+  --component src/emuflow/phase4.py \
+  --component install/bin/emuflow-system-router \
+  --out /shared/experiments/phase4-implementation.json
+emuflow experiment-cache implementation-validate \
+  /shared/experiments/phase4-implementation.json \
+  --root /path/to/versioned/source
+```
+
+Managed checkpoints are published atomically and their output tree becomes
+read-only. Attempts, including failure logs and per-tool scratch, live outside
+the object. Required retention is role-based: `consumer-checkpoint`,
+`source-input`, and `evidence-critical` survive; diagnostics are optional; only
+`regenerable-scratch` is prunable. The exact replay footprint is therefore the
+sum of required artifact bytes in `experiment-cache inventory`, not a global
+file-size cutoff. Existing medium open-flow checkpoints observed during this
+migration require roughly 292--374 MiB for the complete frontend-through-split
+chain; the large NVDLA frontend plus partition checkpoint is roughly 1.9 GiB.
+These are measured examples, not universal limits; the per-node estimate and
+inventory are authoritative for a new design.
+
+```bash
+emuflow experiment-cache inventory --cache /shared/emuflow/checkpoints \
+  --out /shared/experiments/cache-inventory.json
+emuflow experiment-cache evidence-create --plan experiment.plan.json \
+  --terminal phase7-chimew-seed3 --out /shared/emuflow/evidence/run-001
+emuflow experiment-cache evidence-validate /shared/emuflow/evidence/run-001
+```
+
+An evidence bundle recursively materializes every required artifact for its
+terminal nodes and ancestors and validates without the source cache. Cache
+reclamation is a separate two-step operation. `gc-plan` roots active plans,
+records every candidate's current content digest, and performs no mutation;
+`gc-apply` requires the exact plan-file SHA-256 and aborts if an object changed
+or became referenced. Legacy `runs` first receive a read-only migration plan:
+
+```bash
+emuflow experiment-cache migration-plan --root /shared/emuflow/runs \
+  --out /shared/experiments/legacy-migration.json
+emuflow experiment-cache gc-plan --cache /shared/emuflow/checkpoints \
+  --root-plan experiment.plan.json --out /shared/experiments/gc.json
+emuflow experiment-cache gc-apply --plan /shared/experiments/gc.json \
+  --expected-plan-sha256 "$GC_PLAN_SHA256"
+```
+
+On linux10/hpc1--hpc8 all controlled writes and temporary files are
+code-enforced below `/research/d4/gds/ziyiwang21`. Every v2 node supplies a peak
+storage estimate. The farm checks shared filesystem free space and user quota,
+adds a reserve, rewrites `TMPDIR`, `TMP`, `TEMP`, and `XDG_CACHE_HOME` below the
+attempt, and reports `blocked_storage` without submitting SSH work when space
+is insufficient.
 
 ### Public contest compatibility
 

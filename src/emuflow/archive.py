@@ -245,11 +245,13 @@ def _candidate_files(
     result.setdefault(Path("multi-fpga-flow-report.json"), set()).add(
         "flow_report"
     )
-    for path in flow_root.rglob("*.json"):
-        if path.is_symlink() or not path.is_file() or not _is_report_like(path):
+    for path in flow_root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(flow_root)
-        result.setdefault(relative, set()).add("discovered_record")
+        result.setdefault(relative, set()).add(
+            "discovered_record" if _is_report_like(path) else "unclassified-run-artifact"
+        )
     return result
 
 
@@ -411,6 +413,7 @@ def create_validation_archive(
                 "max_copy_bytes": max_copy_bytes,
                 "large_artifacts": "sha256-and-size-only",
                 "symbolic_links": "rejected",
+                "source_cleanup_requires_zero_hash_only_files": True,
             },
             "files": files,
             "validation": {
@@ -537,6 +540,15 @@ def cleanup_validation_source(
     archive_dir = archive_dir.resolve()
     validation = validate_validation_archive(archive_dir)
     manifest = read_json(archive_dir / "archive-manifest.json")
+    hash_only = [
+        record for record in manifest.get("files", [])
+        if record.get("retention") == "hash-only"
+    ]
+    if hash_only:
+        raise ValidationError(
+            "cleanup refuses a non-replayable archive with hash-only files; "
+            "retain the source run or create a role-complete experiment evidence bundle"
+        )
     expected_root = Path(manifest["source"]["flow_root"])
     flow_root = flow_root.resolve()
     if flow_root != expected_root:

@@ -110,6 +110,41 @@ class ExperimentStagesTest(unittest.TestCase):
         self.assertEqual(args.seed, 3)
         self.assertEqual(args.workers, 8)
 
+    def test_baseline_phase6_does_not_require_lookahead(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "experiment-stage",
+                "phase6-run",
+                "--shared",
+                "shared",
+                "--platform",
+                "boarddb.json",
+                "--provider",
+                "baseline",
+                "--out",
+                "out",
+            ]
+        )
+        self.assertIsNone(args.lookahead)
+        self.assertEqual(args.provider, "baseline")
+
+    def test_lookahead_can_bind_a_baseline_phase6_checkpoint(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "experiment-stage",
+                "lookahead-run",
+                "--shared",
+                "shared",
+                "--baseline-phase6",
+                "baseline-phase6",
+                "--platform",
+                "boarddb.json",
+                "--out",
+                "out",
+            ]
+        )
+        self.assertEqual(args.baseline_phase6, Path("baseline-phase6"))
+
 
 if __name__ == "__main__":
     unittest.main()

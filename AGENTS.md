@@ -36,12 +36,18 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   run, express it as a content-addressed DAG through `experiment-cache`.  A
   cheap one-off diagnostic may run outside the DAG only when it will not be
   used as benchmark, qualification, completion, performance, or QoR evidence.
-- Decompose the DAG at real reusable boundaries.  Each node must represent one
-  deterministic stage and declare its exact dependencies, input SHA-256
-  values, source commit, configuration, command and environment contract,
-  tools, seed, worker count where relevant, expected artifacts, and an
-  independent semantic validator.  Do not create artificial boundaries merely
-  to fit a particular experiment name.
+- Decompose the DAG at real reusable boundaries.  Phase 1--5 is not a universal
+  cache node: frontend/synthesis, timing preparation, partitioning, system
+  routing, and TDM scheduling are separate nodes whenever their implementations
+  or inputs can change independently.  Each node must declare exact dependency
+  keys, input SHA-256 values, configuration, command/environment contract,
+  seed/worker count where relevant, expected artifacts, a measured peak and
+  retained-byte estimate, and an independent semantic validator.
+- A Git commit is provenance, not cache identity.  Every v2 node must carry a
+  portable implementation closure containing the exact source, script, and
+  binary files used by execution, and a separate closure for its validator.
+  An implementation change invalidates that node and descendants; a validator-
+  only change triggers independent revalidation without recomputing output.
 - The DAG implementation and experiment spec must support arbitrary named
   stages and multiple dependencies; it must not hard-code one current flow's
   phase sequence.  Physical lookahead, source preparation, qualification, and
@@ -70,11 +76,25 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   re-plan from the last valid checkpoint.  Do not overwrite another attempt's
   artifacts, silently turn a failed attempt into a fresh run directory, or
   publish a partial checkpoint as complete.
+- Keep three storage classes physically separate: immutable content-addressed
+  checkpoints, append-only per-execution attempts, and self-contained final
+  evidence bundles.  Each retry gets a new `attempt-NNNN` directory.  Logs,
+  scratch, and failed partial output never become checkpoint artifacts merely
+  because they share a parent directory.
+- Every declared artifact has a semantic role.  `consumer-checkpoint`,
+  `source-input`, and `evidence-critical` are required retention;
+  `diagnostic` and `failure-diagnostic` are optional evidence; only
+  `regenerable-scratch` is prunable.  File size alone never decides retention.
+  In particular, 64 MiB is not a replay limit.
 - HPC farms may submit only `ready` cache misses.  Re-plan after every completed
   frontier; skip `reuse` nodes and keep `waiting` nodes blocked on their exact
   dependency keys.  Concurrent tasks require isolated output directories and
   immutable source/tool identities.  Parallelism changes scheduling, not the
   evidence contract, unless the worker count is explicitly part of identity.
+- Farm workers use leases and heartbeats.  A silent or expired task is not
+  automatically dead: reconciliation must probe its recorded PID on its pinned
+  node.  Only an expired lease plus a confirmed-absent process can become
+  `retryable`, and the retry must use a new attempt directory.
 - A cached checkpoint proves only that one node completed its declared gate.
   It does not by itself prove an end-to-end claim.  Report completion or QoR
   only when every required terminal node and claim-specific validator exists;
@@ -86,6 +106,16 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   explicit reason (for example, nondeterminism replication or measurement
   noise study) and give the repeated run a distinct declared identity; never
   make force-rerun the default behavior of an automation or validation task.
+- Cache reclamation is mark-and-sweep, never age/name-based deletion.  Root all
+  active v2 plans and explicit pins, inventory and validate objects, then
+  generate a sealed GC plan.  Apply it only by the exact approved plan SHA-256;
+  abort if any candidate changed or became referenced.  Legacy runs first get
+  a read-only migration inventory, then independent validation/import or an
+  explicit diagnostic-retention decision.
+- A final evidence bundle recursively contains every required artifact for its
+  terminal nodes and ancestors and must validate after the source cache is
+  unavailable.  A legacy archive containing any hash-only run file is not
+  replay-complete and must never authorize deletion of its source run.
 
 ## Mandatory experiment storage boundary
 
@@ -206,11 +236,13 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   benchmark-catalog entries or as evidence for provider promotion and final
   WNS/TNS claims. Use a naturally connected upstream RTL design for those
   decisions.
-- Applying the universal experiment policy to a provider comparison means one
-  shared Phase 1--5 checkpoint, one Phase 6 checkpoint per provider, and Phase
-  7 checkpoints keyed by provider and physical seed.  Reuse the frozen Phase 5
-  and canonical Phase 6 checkpoints; do not rerun Phase 1--5 merely to reach
-  Phase 7.  However, never coerce an incompatible communication-only artifact
+- Applying the universal experiment policy to a provider comparison means a
+  reusable Phase 1→timing→Phase 3→Phase 4→Phase 5 chain, one Phase 6 checkpoint
+  per provider, and Phase 7 checkpoints keyed by provider and physical seed.
+  Baseline Phase 6 consumes Phase 5 directly.  The fixed physical lookahead
+  consumes baseline Phase 6; placement-aware and Chimew consume Phase 5 plus
+  that lookahead.  Reuse every valid ancestor; do not rerun Phase 1--5 merely
+  to reach Phase 7.  Never coerce an incompatible communication-only artifact
   into a fake physical netlist.
 - Use the checked-in `experiment-stage` run/validate pairs for the canonical
   Phase 6 provider matrix.  Materialize physical lookahead once at a declared

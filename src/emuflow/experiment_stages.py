@@ -15,7 +15,7 @@ from .chimew_pipeline import (
 )
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
-from .multi_fpga_flow import validate_multi_fpga_flow_report
+from .ir import EmuIR
 from .multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
@@ -64,9 +64,6 @@ def _shared_paths(root: Path) -> Dict[str, Path]:
         "phase4_report": _require_file(root, "system-route/phase4_report.json"),
         "schedule": _require_file(root, "tdm/schedule.json"),
         "phase5_report": _require_file(root, "tdm/phase5_report.json"),
-        "split": root / "split",
-        "phase6_report": _require_file(root, "split/phase6_report.json"),
-        "flow_report": _require_file(root, "multi-fpga-flow-report.json"),
     }
 
 
@@ -187,18 +184,12 @@ def validate_shared_phase1_5(root: Path, platform_path: Path) -> Dict[str, Any]:
         paths["schedule"],
         ratio_plan_path=ratio_plan if ratio_plan.is_file() else None,
     )
-    validate_phase6(
-        paths["ir"],
-        paths["assignment"],
-        paths["schedule"],
-        platform_path,
-        paths["split"] / "manifest.json",
-    )
-    summary = validate_multi_fpga_flow_report(read_json(paths["flow_report"]))
+    ir = EmuIR.load(paths["ir"])
+    platform = Platform.load(platform_path)
     return {
         "status": "pass",
-        "design": summary["design"],
-        "platform": summary["platform"],
+        "design": ir.value["design"]["name"],
+        "platform": platform.name,
         "phase1_5_sha256": {
             label: _sha256(paths[label])
             for label in ("ir", "assignment", "routes", "schedule")
@@ -208,6 +199,7 @@ def validate_shared_phase1_5(root: Path, platform_path: Path) -> Dict[str, Any]:
 
 def run_physical_lookahead(
     shared_root: Path,
+    baseline_phase6_root: Path | None,
     platform_path: Path,
     output_dir: Path,
     *,
@@ -217,9 +209,20 @@ def run_physical_lookahead(
 ) -> Dict[str, Any]:
     shared = validate_shared_phase1_5(shared_root, platform_path)
     paths = _shared_paths(shared_root)
+    split_root = (
+        baseline_phase6_root / "split"
+        if baseline_phase6_root is not None
+        else shared_root / "split"
+    )
+    if baseline_phase6_root is not None:
+        baseline = validate_phase6_checkpoint(
+            baseline_phase6_root, shared_root, None, platform_path
+        )
+        if baseline["provider"] != "baseline":
+            raise ValidationError("physical lookahead requires baseline Phase 6")
     output_dir = _prepare_empty_output(output_dir, "physical-lookahead")
     physical = run_multi_fpga_physical_flow(
-        paths["split"],
+        split_root,
         platform_path,
         paths["schedule"],
         output_dir / "physical",
@@ -252,6 +255,7 @@ def run_physical_lookahead(
         "workers": workers,
         "region_count": region_count,
         "shared": shared,
+        "baseline_phase6_manifest_sha256": _sha256(split_root / "manifest.json"),
         "physical_summary_sha256": _sha256(
             output_dir / "physical/physical-summary.json"
         ),
@@ -261,14 +265,30 @@ def run_physical_lookahead(
         "metrics": lookahead["metrics"],
     }
     write_json(output_dir / "experiment-lookahead-report.json", report)
-    validate_physical_lookahead(output_dir, shared_root, platform_path)
+    validate_physical_lookahead(
+        output_dir, shared_root, baseline_phase6_root, platform_path
+    )
     return report
 
 
 def validate_physical_lookahead(
-    root: Path, shared_root: Path, platform_path: Path
+    root: Path,
+    shared_root: Path,
+    baseline_phase6_root: Path | None,
+    platform_path: Path,
 ) -> Dict[str, Any]:
     validate_shared_phase1_5(shared_root, platform_path)
+    split_root = (
+        baseline_phase6_root / "split"
+        if baseline_phase6_root is not None
+        else shared_root / "split"
+    )
+    if baseline_phase6_root is not None:
+        baseline = validate_phase6_checkpoint(
+            baseline_phase6_root, shared_root, None, platform_path
+        )
+        if baseline["provider"] != "baseline":
+            raise ValidationError("physical lookahead requires baseline Phase 6")
     report = read_json(_require_file(root, "experiment-lookahead-report.json"))
     if report.get("schema") != EXPERIMENT_LOOKAHEAD_SCHEMA or report.get("status") != "pass":
         raise ValidationError("experiment physical-lookahead report is invalid")
@@ -278,6 +298,19 @@ def validate_physical_lookahead(
         _require_file(root, "physical/physical-summary.json")
     ):
         raise ValidationError("experiment physical-lookahead summary seal is broken")
+    baseline_digest = report.get("baseline_phase6_manifest_sha256")
+    split_manifest = split_root / "manifest.json"
+    if split_manifest.is_file():
+        if baseline_digest != _sha256(split_manifest):
+            raise ValidationError(
+                "experiment physical-lookahead Phase 6 seal is broken"
+            )
+    elif not isinstance(baseline_digest, str) or len(baseline_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in baseline_digest
+    ):
+        raise ValidationError(
+            "experiment physical-lookahead Phase 6 digest is invalid"
+        )
     lookahead_report = _require_file(
         root, "lookahead/academic-chimew-lookahead-report.json"
     )
@@ -302,7 +335,7 @@ def validate_physical_lookahead(
 
 def run_phase6_checkpoint(
     shared_root: Path,
-    lookahead_root: Path,
+    lookahead_root: Path | None,
     platform_path: Path,
     output_dir: Path,
     *,
@@ -313,7 +346,16 @@ def run_phase6_checkpoint(
     if provider not in _PROVIDERS:
         raise ValidationError("experiment Phase 6 provider is invalid")
     shared = validate_shared_phase1_5(shared_root, platform_path)
-    lookahead = validate_physical_lookahead(lookahead_root, shared_root, platform_path)
+    if provider == "baseline":
+        lookahead = None
+    else:
+        if lookahead_root is None:
+            raise ValidationError(
+                f"experiment Phase 6 provider {provider} requires physical lookahead"
+            )
+        lookahead = validate_physical_lookahead(
+            lookahead_root, shared_root, None, platform_path
+        )
     paths = _shared_paths(shared_root)
     output_dir = _prepare_empty_output(output_dir, "Phase 6 checkpoint")
     schedule_path = paths["schedule"]
@@ -321,6 +363,7 @@ def run_phase6_checkpoint(
     position_hints_path = None
     electrical_binding_path = None
     if provider == "placement-aware":
+        assert lookahead_root is not None
         region_count = int(
             read_json(lookahead_root / "experiment-lookahead-report.json")[
                 "region_count"
@@ -342,6 +385,7 @@ def run_phase6_checkpoint(
         pin_plan_path = output_dir / "placement-aware-pin-plan.json"
         write_json(pin_plan_path, plan)
     elif provider == "chimew":
+        assert lookahead_root is not None
         inputs = lookahead_root / "lookahead/inputs"
         sources = lookahead_root / "lookahead/sources"
         pipeline_root = output_dir / "chimew-pipeline"
@@ -403,14 +447,27 @@ def run_phase6_checkpoint(
 
 
 def validate_phase6_checkpoint(
-    root: Path, shared_root: Path, lookahead_root: Path, platform_path: Path
+    root: Path,
+    shared_root: Path,
+    lookahead_root: Path | None,
+    platform_path: Path,
 ) -> Dict[str, Any]:
     validate_shared_phase1_5(shared_root, platform_path)
-    validate_physical_lookahead(lookahead_root, shared_root, platform_path)
     report = read_json(_require_file(root, "experiment-phase6-report.json"))
     provider = report.get("provider")
     if report.get("schema") != EXPERIMENT_PHASE6_SCHEMA or provider not in _PROVIDERS:
         raise ValidationError("experiment Phase 6 checkpoint report is invalid")
+    if provider == "baseline":
+        if report.get("lookahead") is not None:
+            raise ValidationError("baseline Phase 6 must not depend on lookahead")
+    else:
+        if lookahead_root is None:
+            raise ValidationError(
+                f"experiment Phase 6 provider {provider} requires physical lookahead"
+            )
+        validate_physical_lookahead(
+            lookahead_root, shared_root, None, platform_path
+        )
     paths = _shared_paths(shared_root)
     manifest = _require_file(root, "split/manifest.json")
     validate_phase6(

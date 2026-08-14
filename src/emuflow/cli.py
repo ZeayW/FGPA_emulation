@@ -79,6 +79,18 @@ from .experiment_dag import (
     plan_experiment,
     run_experiment_node,
 )
+from .experiment_identity import (
+    build_implementation_closure,
+    validate_implementation_closure,
+)
+from .experiment_store import (
+    apply_experiment_gc,
+    create_experiment_evidence_bundle,
+    inventory_experiment_store,
+    plan_experiment_gc,
+    plan_legacy_run_migration,
+    validate_experiment_evidence_bundle,
+)
 from .experiment_stages import (
     run_phase6_checkpoint,
     run_phase7_checkpoint,
@@ -187,6 +199,7 @@ from .validation_farm import (
     detach_validation_farm_task,
     launch_validation_farm,
     prepare_validation_farm,
+    reconcile_validation_farm,
     run_validation_farm_task,
     validation_farm_status,
     validate_validation_farm,
@@ -306,6 +319,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "status", help="summarize task states from the shared filesystem"
     )
     farm_status.add_argument("farm", type=Path)
+    farm_reconcile = farm_subparsers.add_parser(
+        "reconcile", help="probe expired leases and mark confirmed-dead attempts retryable"
+    )
+    farm_reconcile.add_argument("farm", type=Path)
     farm_worker = farm_subparsers.add_parser(
         "worker", help=argparse.SUPPRESS
     )
@@ -319,6 +336,59 @@ def _build_parser() -> argparse.ArgumentParser:
     experiment_subparsers = experiment.add_subparsers(
         dest="experiment_command", required=True
     )
+    experiment_closure = experiment_subparsers.add_parser(
+        "implementation-closure",
+        help="seal the exact source/tool files implementing one DAG stage",
+    )
+    experiment_closure.add_argument("--root", type=Path, required=True)
+    experiment_closure.add_argument(
+        "--component", action="append", default=[], required=True
+    )
+    experiment_closure.add_argument("--out", type=Path, required=True)
+    experiment_closure_validate = experiment_subparsers.add_parser(
+        "implementation-validate",
+        help="validate a stage implementation closure and optionally its files",
+    )
+    experiment_closure_validate.add_argument("manifest", type=Path)
+    experiment_closure_validate.add_argument("--root", type=Path)
+    experiment_inventory = experiment_subparsers.add_parser(
+        "inventory", help="inventory valid, invalid, transient, and role bytes"
+    )
+    experiment_inventory.add_argument("--cache", type=Path, required=True)
+    experiment_inventory.add_argument("--out", type=Path)
+    experiment_evidence = experiment_subparsers.add_parser(
+        "evidence-create",
+        help="create a self-contained evidence bundle for terminal DAG nodes",
+    )
+    experiment_evidence.add_argument("--plan", type=Path, required=True)
+    experiment_evidence.add_argument(
+        "--terminal", action="append", default=[], required=True
+    )
+    experiment_evidence.add_argument("--out", type=Path, required=True)
+    experiment_evidence_validate = experiment_subparsers.add_parser(
+        "evidence-validate", help="validate evidence without its source cache"
+    )
+    experiment_evidence_validate.add_argument("bundle", type=Path)
+    experiment_gc_plan = experiment_subparsers.add_parser(
+        "gc-plan", help="plan reference-aware cache reclamation without deleting"
+    )
+    experiment_gc_plan.add_argument("--cache", type=Path, required=True)
+    experiment_gc_plan.add_argument("--root-plan", type=Path, action="append", default=[])
+    experiment_gc_plan.add_argument(
+        "--minimum-age-seconds", type=int, default=7 * 24 * 3600
+    )
+    experiment_gc_plan.add_argument("--out", type=Path, required=True)
+    experiment_gc_apply = experiment_subparsers.add_parser(
+        "gc-apply", help="apply an unchanged GC plan by its exact SHA-256"
+    )
+    experiment_gc_apply.add_argument("--plan", type=Path, required=True)
+    experiment_gc_apply.add_argument("--expected-plan-sha256", required=True)
+    experiment_migration = experiment_subparsers.add_parser(
+        "migration-plan",
+        help="inventory legacy run trees and recommend validation/import actions",
+    )
+    experiment_migration.add_argument("--root", type=Path, required=True)
+    experiment_migration.add_argument("--out", type=Path, required=True)
     experiment_plan = experiment_subparsers.add_parser(
         "plan", help="resolve cache hits and the next runnable DAG frontier"
     )
@@ -364,6 +434,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "lookahead-run", help="run one reusable physical-lookahead checkpoint"
     )
     lookahead_run.add_argument("--shared", type=Path, required=True)
+    lookahead_run.add_argument("--baseline-phase6", type=Path)
     lookahead_run.add_argument("--platform", type=Path, required=True)
     lookahead_run.add_argument("--seed", type=int, default=1)
     lookahead_run.add_argument("--workers", type=int, default=8)
@@ -374,12 +445,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     lookahead_validate.add_argument("root", type=Path)
     lookahead_validate.add_argument("--shared", type=Path, required=True)
+    lookahead_validate.add_argument("--baseline-phase6", type=Path)
     lookahead_validate.add_argument("--platform", type=Path, required=True)
     phase6_run = experiment_stage_subparsers.add_parser(
         "phase6-run", help="run one reusable Phase 6 provider checkpoint"
     )
     phase6_run.add_argument("--shared", type=Path, required=True)
-    phase6_run.add_argument("--lookahead", type=Path, required=True)
+    phase6_run.add_argument("--lookahead", type=Path)
     phase6_run.add_argument("--platform", type=Path, required=True)
     phase6_run.add_argument(
         "--provider",
@@ -394,7 +466,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase6_validate.add_argument("root", type=Path)
     phase6_validate.add_argument("--shared", type=Path, required=True)
-    phase6_validate.add_argument("--lookahead", type=Path, required=True)
+    phase6_validate.add_argument("--lookahead", type=Path)
     phase6_validate.add_argument("--platform", type=Path, required=True)
     phase7_run = experiment_stage_subparsers.add_parser(
         "phase7-run", help="run one provider/seed physical terminal checkpoint"
@@ -2584,6 +2656,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         elif args.experiment_stage_command == "lookahead-run":
             report = run_physical_lookahead(
                 args.shared,
+                args.baseline_phase6,
                 args.platform,
                 args.out,
                 seed=args.seed,
@@ -2592,7 +2665,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.experiment_stage_command == "lookahead-validate":
             report = validate_physical_lookahead(
-                args.root, args.shared, args.platform
+                args.root, args.shared, args.baseline_phase6, args.platform
             )
         elif args.experiment_stage_command == "phase6-run":
             report = run_phase6_checkpoint(
@@ -2630,7 +2703,37 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "experiment-cache":
-        if args.experiment_command == "plan":
+        if args.experiment_command == "implementation-closure":
+            report = build_implementation_closure(args.root, args.component)
+            write_json(args.out, report)
+        elif args.experiment_command == "implementation-validate":
+            report = validate_implementation_closure(
+                read_json(args.manifest), root=args.root
+            )
+        elif args.experiment_command == "inventory":
+            report = inventory_experiment_store(args.cache)
+            if args.out is not None:
+                write_json(args.out, report)
+        elif args.experiment_command == "evidence-create":
+            report = create_experiment_evidence_bundle(
+                args.plan, args.terminal, args.out
+            )
+        elif args.experiment_command == "evidence-validate":
+            report = validate_experiment_evidence_bundle(args.bundle)
+        elif args.experiment_command == "gc-plan":
+            report = plan_experiment_gc(
+                args.cache,
+                args.root_plan,
+                args.out,
+                minimum_age_seconds=args.minimum_age_seconds,
+            )
+        elif args.experiment_command == "gc-apply":
+            report = apply_experiment_gc(
+                args.plan, args.expected_plan_sha256
+            )
+        elif args.experiment_command == "migration-plan":
+            report = plan_legacy_run_migration(args.root, args.out)
+        elif args.experiment_command == "plan":
             report = plan_experiment(args.spec, args.cache, args.out)
         elif args.experiment_command == "import":
             report = import_experiment_checkpoint(
@@ -2691,6 +2794,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.farm_command == "status":
             report = validation_farm_status(args.farm)
+        elif args.farm_command == "reconcile":
+            report = reconcile_validation_farm(args.farm)
         elif args.detach:
             report = detach_validation_farm_task(args.task)
         else:
