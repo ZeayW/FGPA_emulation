@@ -718,17 +718,17 @@ attempt. For example:
   "schema": "emuflow.validation-farm-spec/v1",
   "farm_id": "routing-ablation",
   "source_commit": "0123456789abcdef0123456789abcdef01234567",
-  "install_dir": "/shared/emuflow/install/0123456789abcdef0123456789abcdef01234567",
+  "install_dir": "/research/d4/gds/ziyiwang21/emuflow/install/0123456789abcdef0123456789abcdef01234567",
   "nodes": ["compute1", "compute2"],
   "slots_per_node": 1,
   "tasks": [
     {
       "id": "baseline",
-      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/shared/platforms/board.json", "--partition-provider", "tritonpart", "--out", "{run_dir}"]
+      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/research/d4/gds/ziyiwang21/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/research/d4/gds/ziyiwang21/platforms/board.json", "--partition-provider", "tritonpart", "--out", "{run_dir}"]
     },
     {
       "id": "candidate",
-      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/shared/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/shared/platforms/board.json", "--partition-provider", "mfspart", "--out", "{run_dir}"]
+      "command": ["{install}/bin/emuflow", "multi-fpga", "compile", "/research/d4/gds/ziyiwang21/designs/top.v", "--top", "top", "--clock", "clk", "--platform", "/research/d4/gds/ziyiwang21/platforms/board.json", "--partition-provider", "mfspart", "--out", "{run_dir}"]
     }
   ]
 }
@@ -738,11 +738,11 @@ Prepare and inspect the collision-free plan before launching it from a host
 that can SSH directly to the listed nodes:
 
 ```bash
-emuflow validation-farm prepare --spec farm.json --out /shared/runs/farm-001
-emuflow validation-farm validate /shared/runs/farm-001
-emuflow validation-farm launch /shared/runs/farm-001
-emuflow validation-farm status /shared/runs/farm-001
-emuflow validation-farm reconcile /shared/runs/farm-001
+emuflow validation-farm prepare --spec farm.json --out /research/d4/gds/ziyiwang21/runs/farm-001
+emuflow validation-farm validate /research/d4/gds/ziyiwang21/runs/farm-001
+emuflow validation-farm launch /research/d4/gds/ziyiwang21/runs/farm-001
+emuflow validation-farm status /research/d4/gds/ziyiwang21/runs/farm-001
+emuflow validation-farm reconcile /research/d4/gds/ziyiwang21/runs/farm-001
 ```
 
 Remote workers detach into their own sessions, acquire a per-node slot lock,
@@ -845,13 +845,13 @@ Plan the first frontier:
 
 ```bash
 emuflow benchmark-experiment-compile \
-  --config /shared/experiments/koios-case6.config.json \
-  --repository-root /shared/emuflow/source/$COMMIT \
-  --out /shared/experiments/koios-case6.json
+  --config /research/d4/gds/ziyiwang21/experiments/koios-case6.config.json \
+  --repository-root /research/d4/gds/ziyiwang21/emuflow/source/$COMMIT \
+  --out /research/d4/gds/ziyiwang21/experiments/koios-case6.json
 emuflow experiment-cache plan \
-  --spec /shared/experiments/koios-case6.json \
-  --cache /shared/emuflow/checkpoints \
-  --out /shared/experiments/koios-case6.plan.json
+  --spec /research/d4/gds/ziyiwang21/experiments/koios-case6.json \
+  --cache /research/d4/gds/ziyiwang21/emuflow/checkpoints \
+  --out /research/d4/gds/ziyiwang21/experiments/koios-case6.plan.json
 ```
 
 The canonical compiler requires byte-addressed RTL, BoardDB, the corresponding
@@ -884,11 +884,11 @@ Compile only the current cache-miss frontier into the existing HPC farm:
 
 ```bash
 emuflow experiment-cache farm-spec \
-  --plan /shared/experiments/koios-case6.plan.json \
-  --install-dir /shared/emuflow/install/$COMMIT \
+  --plan /research/d4/gds/ziyiwang21/experiments/koios-case6.plan.json \
+  --install-dir /research/d4/gds/ziyiwang21/emuflow/install/$COMMIT \
   --node hpc1 --node hpc2 --node hpc3 --node hpc4 \
   --farm-id koios-case6-frontier1 \
-  --out /shared/experiments/koios-case6.frontier1.farm.json
+  --out /research/d4/gds/ziyiwang21/experiments/koios-case6.frontier1.farm.json
 ```
 
 After the farm passes, run `experiment-cache plan` again.  The completed
@@ -905,9 +905,9 @@ keys:
 
 ```bash
 emuflow experiment-cache import \
-  --plan /shared/experiments/koios-case6.plan.json \
+  --plan /research/d4/gds/ziyiwang21/experiments/koios-case6.plan.json \
   --node phase7-baseline-seed1 \
-  --artifact-root /shared/archives/old-baseline-seed1
+  --artifact-root /research/d4/gds/ziyiwang21/archives/old-baseline-seed1
 ```
 
 Import first runs the same independent semantic validator used after a new
@@ -928,9 +928,9 @@ emuflow experiment-cache implementation-closure \
   --root /path/to/versioned/source \
   --component src/emuflow/phase4.py \
   --component install/bin/emuflow-system-router \
-  --out /shared/experiments/phase4-implementation.json
+  --out /research/d4/gds/ziyiwang21/experiments/phase4-implementation.json
 emuflow experiment-cache implementation-validate \
-  /shared/experiments/phase4-implementation.json \
+  /research/d4/gds/ziyiwang21/experiments/phase4-implementation.json \
   --root /path/to/versioned/source
 ```
 
@@ -947,11 +947,11 @@ These are measured examples, not universal limits; the per-node estimate and
 inventory are authoritative for a new design.
 
 ```bash
-emuflow experiment-cache inventory --cache /shared/emuflow/checkpoints \
-  --out /shared/experiments/cache-inventory.json
+emuflow experiment-cache inventory --cache /research/d4/gds/ziyiwang21/emuflow/checkpoints \
+  --out /research/d4/gds/ziyiwang21/experiments/cache-inventory.json
 emuflow experiment-cache evidence-create --plan experiment.plan.json \
-  --terminal phase7-chimew-seed3 --out /shared/emuflow/evidence/run-001
-emuflow experiment-cache evidence-validate /shared/emuflow/evidence/run-001
+  --terminal phase7-chimew-seed3 --out /research/d4/gds/ziyiwang21/emuflow/evidence/run-001
+emuflow experiment-cache evidence-validate /research/d4/gds/ziyiwang21/emuflow/evidence/run-001
 ```
 
 An evidence bundle recursively materializes every required artifact for its
@@ -962,19 +962,19 @@ records every candidate's current content digest, and performs no mutation;
 or became referenced. Legacy `runs` first receive a read-only migration plan:
 
 ```bash
-emuflow experiment-cache migration-plan --root /shared/emuflow/runs \
-  --out /shared/experiments/legacy-migration.json
+emuflow experiment-cache migration-plan --root /research/d4/gds/ziyiwang21/emuflow/runs \
+  --out /research/d4/gds/ziyiwang21/experiments/legacy-migration.json
 emuflow experiment-cache retirement-plan \
-  --migration-plan /shared/experiments/legacy-migration.json \
+  --migration-plan /research/d4/gds/ziyiwang21/experiments/legacy-migration.json \
   --name retired-noncanonical-run --reason "retired synthetic regression" \
-  --out /shared/experiments/retirement.json
+  --out /research/d4/gds/ziyiwang21/experiments/retirement.json
 emuflow experiment-cache retirement-apply \
-  --plan /shared/experiments/retirement.json \
+  --plan /research/d4/gds/ziyiwang21/experiments/retirement.json \
   --expected-plan-sha256 "$RETIREMENT_PLAN_SHA256" \
-  --receipt-root /shared/experiments/retirement-receipt
-emuflow experiment-cache gc-plan --cache /shared/emuflow/checkpoints \
-  --root-plan experiment.plan.json --out /shared/experiments/gc.json
-emuflow experiment-cache gc-apply --plan /shared/experiments/gc.json \
+  --receipt-root /research/d4/gds/ziyiwang21/experiments/retirement-receipt
+emuflow experiment-cache gc-plan --cache /research/d4/gds/ziyiwang21/emuflow/checkpoints \
+  --root-plan experiment.plan.json --out /research/d4/gds/ziyiwang21/experiments/gc.json
+emuflow experiment-cache gc-apply --plan /research/d4/gds/ziyiwang21/experiments/gc.json \
   --expected-plan-sha256 "$GC_PLAN_SHA256"
 ```
 
@@ -1237,22 +1237,22 @@ count before emitting `fetch_report.json`:
 emuflow contest matrix-fetch-farm-spec \
   benchmarks/contest_validation_matrix.json \
   --source-commit "$COMMIT" \
-  --install-dir "/shared/emuflow/install/$COMMIT" \
+  --install-dir "/research/d4/gds/ziyiwang21/emuflow/install/$COMMIT" \
   --node hpc1 --node hpc2 --tier smoke \
   --farm-id public-contest-smoke --output farm.json
 
-emuflow validation-farm prepare --spec farm.json --out /shared/runs/public-smoke
-emuflow validation-farm launch /shared/runs/public-smoke
+emuflow validation-farm prepare --spec farm.json --out /research/d4/gds/ziyiwang21/runs/public-smoke
+emuflow validation-farm launch /research/d4/gds/ziyiwang21/runs/public-smoke
 ```
 
 On coordinators without a persistent default SSH trust store, pass a reviewed
-shared file with `validation-farm prepare --ssh-known-hosts /shared/runtime/known_hosts`.
+shared file with `validation-farm prepare --ssh-known-hosts /research/d4/gds/ziyiwang21/runtime/known_hosts`.
 The farm seals its SHA-256, forces strict host-key checking, and revalidates the
 file before launch and each submission. This avoids both interactive prompts
 and an insecure `StrictHostKeyChecking=no` fallback.
 
 Minimal containers may not include a usable system CA store. In that case pass
-an absolute, shared CA bundle with `--ssl-cert-file /shared/runtime/ca.crt` when
+an absolute, shared CA bundle with `--ssl-cert-file /research/d4/gds/ziyiwang21/runtime/ca.crt` when
 compiling the fetch farm. The compiler seals both its path and SHA-256 into each
 task environment, and `fetch-public` rechecks the bytes before any network
 request. Ordinary host `SSL_CERT_FILE` use remains unchanged when this explicit
@@ -1265,9 +1265,9 @@ and content digests, and gives every importer a new isolated run directory:
 ```bash
 emuflow contest matrix-import-farm-spec \
   benchmarks/contest_validation_matrix.json \
-  --fetch-farm /shared/runs/public-smoke \
+  --fetch-farm /research/d4/gds/ziyiwang21/runs/public-smoke \
   --source-commit "$COMMIT" \
-  --install-dir "/shared/emuflow/install/$COMMIT" \
+  --install-dir "/research/d4/gds/ziyiwang21/emuflow/install/$COMMIT" \
   --node hpc1 --node hpc2 --tier smoke \
   --farm-id public-contest-import-smoke --output import-farm.json
 ```
