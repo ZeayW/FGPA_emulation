@@ -140,6 +140,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             "top": "DLA",
             "clocks": ["clk"],
             "clock_periods": {"clk": 10.0},
+            "partition_seed_attempts": 6,
             "physical_workers": 8,
         }
         path = root / "config.json"
@@ -181,6 +182,15 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "vtr-hard-blocks",
             )
             self.assertIn("--hop-refiner", nodes["partition"]["command"])
+            self.assertEqual(
+                nodes["partition"]["configuration"]["seed_attempts"], 6
+            )
+            self.assertEqual(
+                nodes["partition"]["command"][
+                    nodes["partition"]["command"].index("--seed-attempts") + 1
+                ],
+                "6",
+            )
             self.assertIn("--constraints", nodes["route"]["command"])
             self.assertEqual(
                 nodes["route"]["configuration"]["provider"],
@@ -331,6 +341,20 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 "3",
             )
+
+    def test_partition_seed_attempts_must_be_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["partition_seed_attempts"] = 0
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "partition_seed_attempts"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "spec.json"
+                )
 
     def test_matrix_and_boarddb_materialization_contract_is_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

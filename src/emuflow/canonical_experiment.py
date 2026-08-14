@@ -417,6 +417,10 @@ def compile_canonical_experiment_spec(
     partition_seed = config.get("partition_seed", 0)
     if isinstance(partition_seed, bool) or not isinstance(partition_seed, int) or partition_seed < 0:
         raise ValidationError("canonical experiment partition_seed is invalid")
+    partition_seed_attempts = _positive_integer(
+        config.get("partition_seed_attempts", 1),
+        "partition_seed_attempts",
+    )
     executable = str(tools["emuflow"])
     base_inputs = {
         "rtl": _sha256(rtl),
@@ -511,7 +515,9 @@ def compile_canonical_experiment_spec(
     partition_command = [
         executable, "experiment-stage", "partition-run", "--frontend", "{dependency:frontend}",
         "--timing", "{dependency:timing}", "--platform", str(platform),
-        "--provider", "tritonpart", "--seed", str(partition_seed), "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
+        "--provider", "tritonpart", "--seed", str(partition_seed),
+        "--seed-attempts", str(partition_seed_attempts),
+        "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
         "--out", "{output_dir}",
     ]
     node(
@@ -519,7 +525,7 @@ def compile_canonical_experiment_spec(
         [executable, "experiment-stage", "partition-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--platform", str(platform), "--route-constraints", str(route_constraints), "--provider", "tritonpart", "--seed", str(partition_seed)],
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10},
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [
