@@ -866,7 +866,10 @@ platform therefore cannot enter the canonical QoR matrix. It emits exactly one r
 per provider and nine terminal Phase 7 nodes (three providers by seeds 1, 2,
 and 3). Tool bytes and per-stage implementation closures are part of node
 identity, so a router-only change preserves frontend, STA, and partition
-checkpoints while invalidating routing and its descendants.
+checkpoints while invalidating routing and its descendants.  The OpenPARF
+manifest is itself an `experiment-implementation-closure/v1` rooted at the
+explicit OpenPARF package directory and must cover both `openparf.py` and the
+complete `openparf/` package; a label-only or empty manifest is rejected.
 
 New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
 only for migration compatibility. A deliberately

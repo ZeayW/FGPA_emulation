@@ -10,6 +10,8 @@ from emuflow.canonical_experiment import (
 )
 from emuflow.experiment_dag import validate_experiment_spec
 from emuflow.errors import ValidationError
+from emuflow.experiment_identity import build_implementation_closure
+from emuflow.io import write_json
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -17,8 +19,21 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 
 class CanonicalExperimentTest(unittest.TestCase):
     def _config(self, root: Path) -> Path:
+        openparf_install = root / "openparf-install"
+        (openparf_install / "openparf").mkdir(parents=True, exist_ok=True)
+        (openparf_install / "openparf.py").write_text(
+            "# fixture loader\n", encoding="utf-8"
+        )
+        (openparf_install / "openparf/__init__.py").write_text(
+            "# fixture package\n", encoding="utf-8"
+        )
         manifest = root / "openparf-manifest.json"
-        manifest.write_text("{}\n", encoding="utf-8")
+        write_json(
+            manifest,
+            build_implementation_closure(
+                openparf_install, ["openparf.py", "openparf"]
+            ),
+        )
         tool_names = (
             "emuflow",
             "yosys",
@@ -91,7 +106,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 REPOSITORY / "examples/architecture/vtr_k6_heterogeneous_fixture.xml"
             ),
             "tools": {name: sys.executable for name in tool_names},
-            "openparf_install": str(root),
+            "openparf_install": str(openparf_install),
             "openparf_manifest": str(manifest),
             "top": "DLA",
             "clocks": ["clk"],

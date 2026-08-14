@@ -15,7 +15,10 @@ from .experiment_dag import (
     EXPERIMENT_SPEC_V2_SCHEMA,
     validate_experiment_spec,
 )
-from .experiment_identity import build_implementation_closure
+from .experiment_identity import (
+    build_implementation_closure,
+    validate_implementation_closure,
+)
 from .io import read_json, write_json
 
 
@@ -313,6 +316,14 @@ def compile_canonical_experiment_spec(
     tools = {label: _file(value, f"tool {label}") for label, value in tools_raw.items()}
     openparf_install = _directory(config.get("openparf_install"), "openparf_install")
     openparf_manifest = _file(config.get("openparf_manifest"), "openparf_manifest")
+    openparf_closure = validate_implementation_closure(
+        read_json(openparf_manifest), root=openparf_install
+    )
+    if openparf_closure["components"] != ["openparf", "openparf.py"]:
+        raise ValidationError(
+            "canonical experiment OpenPARF manifest must seal openparf.py and "
+            "the complete openparf package"
+        )
     top = config.get("top")
     if not isinstance(top, str) or not top:
         raise ValidationError("canonical experiment top is invalid")
@@ -363,6 +374,7 @@ def compile_canonical_experiment_spec(
         "architecture_timing_db": _sha256(architecture_timing),
         "physical_architecture": _sha256(physical_architecture),
         "openparf_manifest": _sha256(openparf_manifest),
+        "openparf_implementation": openparf_closure["implementation_sha256"],
         **{f"tool.{label}": _sha256(path) for label, path in sorted(tools.items())},
     }
     closures = {stage: _closure(repository_root, stage) for stage in _COMPONENTS}
@@ -518,7 +530,7 @@ def compile_canonical_experiment_spec(
         "physical-lookahead", "lookahead", ["shared-phase1-5", "phase6-baseline"], lookahead_command,
         [executable, "experiment-stage", "lookahead-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--baseline-phase6", "{dependency:phase6-baseline}", "--platform", str(platform)],
         [_artifact("physical", "consumer-checkpoint"), _artifact("lookahead", "consumer-checkpoint"), _artifact("experiment-lookahead-report.json", "evidence-critical")],
-        inputs=("platform", "physical_architecture", "openparf_manifest", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
+        inputs=("platform", "physical_architecture", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
         configuration={"physical_seed": 1, "physical_workers": workers, "region_count": region_count, "route_channel_width": channel_width}, peak_gib=48, retained_gib=10,
     )
     for provider in ("placement-aware", "chimew"):
@@ -544,7 +556,7 @@ def compile_canonical_experiment_spec(
                 [executable, "experiment-stage", "phase7-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--yosys", str(tools["yosys"]), "--vpr", str(tools["vpr"]), "--architecture-importer", str(tools["architecture_importer"]), "--packed-importer", str(tools["packed_importer"]), "--route-checker", str(tools["route_checker"]), "--openparf-install", str(openparf_install), "--openparf-python", str(tools["openparf_python"]), "--route-channel-width", str(channel_width), "--out", "{output_dir}"],
                 [executable, "experiment-stage", "phase7-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--platform", str(platform)],
                 [_artifact("runtime", "evidence-critical"), _artifact("experiment-phase7-report.json", "evidence-critical"), _artifact("physical", "diagnostic")],
-                inputs=("platform", "openparf_manifest", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
+                inputs=("platform", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
                 configuration={"physical_backend": "open", "physical_workers": workers, "physical_seed": seed, "route_channel_width": channel_width},
                 peak_gib=48, retained_gib=8, provider=provider, physical_seed=seed,
             )
