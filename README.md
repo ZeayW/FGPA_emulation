@@ -693,8 +693,9 @@ its generated configuration header into each binary tree rather than the
 shared imported source tree, so concurrent standalone and OpenROAD builds
 cannot race or contaminate a clean checkout. OpenROAD likewise promotes the
 headers belonging to the exact `spdlog` package selected by CMake ahead of
-broad dependency include roots; a distro copy of `spdlog` can therefore not be
-compiled against a different selected `spdlog`/`fmt` library ABI.
+broad dependency include roots and keeps imported includes in their declared
+order; a distro copy of `spdlog` can therefore not be compiled against a
+different selected `spdlog`/`fmt` library ABI.
 
 The selected Python must be the same interpreter and PyTorch ABI used when
 OpenPARF's C++ operators are compiled; merely being able to import a different
