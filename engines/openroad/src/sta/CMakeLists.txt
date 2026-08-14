@@ -416,9 +416,15 @@ if("${SSTA}" STREQUAL "")
 endif()
 message(STATUS "SSTA: ${SSTA}")
 
-# configure a header file to pass some of the CMake settings
+# Configure build-specific settings in the binary tree.  OpenSTA is built both
+# standalone and as part of OpenROAD, and those builds can intentionally use
+# different options (for example USE_TCL_READLINE).  Writing this header into
+# the shared source tree makes the two ExternalProject builds race and lets one
+# build silently compile with the other's configuration.
+set(STA_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
+file(MAKE_DIRECTORY "${STA_GENERATED_INCLUDE_DIR}/sta")
 configure_file(${STA_HOME}/util/StaConfig.hh.cmake
-  ${STA_HOME}/include/sta/StaConfig.hh
+  ${STA_GENERATED_INCLUDE_DIR}/sta/StaConfig.hh
   )
 
 ###########################################################
@@ -488,6 +494,7 @@ target_link_libraries(sta_swig
 # result build/CMakeFiles/sta_swig.dir/StaAppTCL_wrap.cxx
 target_include_directories(sta_swig
   PUBLIC
+  ${STA_GENERATED_INCLUDE_DIR}/sta
   include/sta
 
   PRIVATE
@@ -547,10 +554,12 @@ endif()
 
 target_include_directories(OpenSTA
   PUBLIC
+  ${STA_GENERATED_INCLUDE_DIR}
   include
   ${TCL_INCLUDE_PATH}
 
   PRIVATE
+  ${STA_GENERATED_INCLUDE_DIR}/sta
   include/sta
   ${STA_HOME}
   ${CUDD_INCLUDE}
@@ -613,6 +622,8 @@ install(TARGETS OpenSTA DESTINATION lib)
 
 # include
 install(DIRECTORY include/sta  DESTINATION include)
+install(FILES ${STA_GENERATED_INCLUDE_DIR}/sta/StaConfig.hh
+  DESTINATION include/sta)
 
 ################################################################
 

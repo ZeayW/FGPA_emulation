@@ -688,7 +688,13 @@ prefixes before forwarding them to OpenROAD, OpenSTA, VPR, and OpenPARF. The
 matching relocatable Bison data directory is also fixed in every parser-build
 environment instead of relying on a system `/usr/share/bison` path.
 OpenROAD and standalone OpenSTA are both configured without Tcl readline so
-their shared source configuration cannot disagree between the two builds.
+their configuration cannot disagree between the two builds. OpenSTA writes
+its generated configuration header into each binary tree rather than the
+shared imported source tree, so concurrent standalone and OpenROAD builds
+cannot race or contaminate a clean checkout. OpenROAD likewise promotes the
+headers belonging to the exact `spdlog` package selected by CMake ahead of
+broad dependency include roots; a distro copy of `spdlog` can therefore not be
+compiled against a different selected `spdlog`/`fmt` library ABI.
 
 The selected Python must be the same interpreter and PyTorch ABI used when
 OpenPARF's C++ operators are compiled; merely being able to import a different

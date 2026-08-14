@@ -267,6 +267,19 @@ if (${SPDLOG_FMT_EXTERNAL})
   message(WARNING "spdlog: SPDLOG_FMT_EXTERNAL=${SPDLOG_FMT_EXTERNAL}")
 endif()
 
+# Some source-complete build roots also contain an older distro spdlog below a
+# broad dependency include directory (for example a Boost prefix).  Imported
+# target includes are normally emitted as system includes, which lets that
+# unrelated header win even though find_package selected a different spdlog
+# library.  Promote the selected target's include roots ahead of broad include
+# prefixes so headers and the linked spdlog/fmt ABI always come from the same
+# package.
+get_target_property(OPENROAD_SPDLOG_INCLUDE_DIRS
+  spdlog::spdlog INTERFACE_INCLUDE_DIRECTORIES)
+if(OPENROAD_SPDLOG_INCLUDE_DIRS)
+  include_directories(BEFORE ${OPENROAD_SPDLOG_INCLUDE_DIRS})
+endif()
+
 find_package(Threads REQUIRED)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 
