@@ -22,6 +22,8 @@ from .experiment_identity import (
 from .io import read_json, write_json
 from .platform import Platform
 from .routing import load_route_constraints
+from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
+from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 
 
 CANONICAL_EXPERIMENT_CONFIG_SCHEMA = "emuflow.canonical-experiment-config/v1"
@@ -206,6 +208,10 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/phase4.py",
         "src/emuflow/routing.py",
         "src/emuflow/timing_routing.py",
+        "src/emuflow/routing_candidates.py",
+        "src/emuflow/routing_batches.py",
+        "src/emuflow/tdm_feedback.py",
+        "src/emuflow/physical_route_feedback.py",
         "src/native/tlr_router.cpp",
     ),
     "tdm": (
@@ -215,6 +221,9 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/tdm_ratio.py",
         "src/emuflow/tdm_timing_dag.py",
         "src/emuflow/tdm_slot.py",
+        "src/emuflow/tdm_compatibility.py",
+        "src/emuflow/tdm_cp_sat.py",
+        "src/emuflow/tdm_feedback.py",
         "src/native/tdm_ratio_optimizer.cpp",
         "src/native/tdm_timing_dag_optimizer.cpp",
         "src/native/tdm_slot_optimizer.cpp",
@@ -264,6 +273,8 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/packed_placement.py",
         "src/emuflow/phase7c.py",
         "src/emuflow/system_timing.py",
+        "src/emuflow/local_path_timing.py",
+        "src/emuflow/logic_segment_timing.py",
         "src/emuflow/vpr.py",
         "scripts/openparf",
         "src/native/vtr_architecture_importer.cpp",
@@ -394,6 +405,10 @@ def compile_canonical_experiment_spec(
         {name: float(periods[name]) for name in clocks},
     )
     workers = _positive_integer(config.get("physical_workers", 8), "physical_workers")
+    route_candidate_workers = _positive_integer(
+        config.get("route_candidate_workers", workers),
+        "route_candidate_workers",
+    )
     channel_width = _positive_integer(
         config.get("physical_route_channel_width", 300),
         "physical_route_channel_width",
@@ -526,20 +541,20 @@ def compile_canonical_experiment_spec(
     )
     node(
         "route", "route", ["partition", "cut-timing"],
-        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--router", str(tools["router"]), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints)],
+        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", GLOBAL_CANDIDATE_PROVIDER, "--candidate-workers", str(route_candidate_workers), "--router", str(tools["router"]), "--out", "{output_dir}"],
+        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", GLOBAL_CANDIDATE_PROVIDER, "--candidate-workers", str(route_candidate_workers)],
         [_artifact("routes.json", "consumer-checkpoint"), _artifact("phase4_report.json", "consumer-checkpoint"), _artifact("experiment-route-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.router"),
-        configuration={"provider": "route-tdm-timing-cooptimization-v1", "route_constraints": contract["route_constraints"]},
+        configuration={"provider": GLOBAL_CANDIDATE_PROVIDER, "candidate_workers": route_candidate_workers, "route_constraints": contract["route_constraints"]},
         peak_gib=12, retained_gib=3,
     )
     node(
         "tdm", "tdm", ["route"],
-        [executable, "experiment-stage", "tdm-run", "--route", "{dependency:route}", "--platform", str(platform), "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]), "--max-ratio", str(contract["route_constraints"]["frame_slots"]), "--ratio-optimizer", str(tools["ratio_optimizer"]), "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]), "--slot-optimizer", str(tools["slot_optimizer"]), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints)],
+        [executable, "experiment-stage", "tdm-run", "--route", "{dependency:route}", "--platform", str(platform), "--provider", TDM_TIMING_DAG_RATIO_PROVIDER, "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]), "--max-ratio", str(contract["route_constraints"]["frame_slots"]), "--ratio-optimizer", str(tools["ratio_optimizer"]), "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]), "--slot-optimizer", str(tools["slot_optimizer"]), "--out", "{output_dir}"],
+        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", TDM_TIMING_DAG_RATIO_PROVIDER],
         [_artifact("schedule.json", "consumer-checkpoint"), _artifact("ratio_plan.json", "consumer-checkpoint"), _artifact("phase5_report.json", "consumer-checkpoint"), _artifact("experiment-tdm-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.ratio_optimizer", "tool.timing_dag_optimizer", "tool.slot_optimizer"),
-        configuration={"simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200},
+        configuration={"provider": TDM_TIMING_DAG_RATIO_PROVIDER, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200},
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]

@@ -994,6 +994,14 @@ BoardDB and route-constraint bytes, contest-case identity, and contest-matrix
 digest against its materialization report. The same normalized contest
 constraints feed Phase 3 hop legality, Phase 4 routing, and Phase 5 ratio
 quantum/frame bound, and each independent validator rechecks that chain.
+Canonical timing-enabled experiments explicitly bind Phase 4 to
+`timing-aware-global-candidate-v1` and Phase 5 to
+`aspdac26-timing-dag-lagrangian-v1`; they do not rely on mutable CLI defaults.
+`route_candidate_workers` defaults to `physical_workers`, is recorded in the
+route node configuration and command, and is independently checked against the
+Phase 4 candidate-generation certificate. Changing either provider or worker
+count therefore changes the route checkpoint identity and every descendant,
+without invalidating frontend, timing, or partition checkpoints.
 The workload run spec also fixes the target clock period (10 ns for the
 canonical Koios DLA-medium study); an experiment config with another period is
 rejected rather than producing incomparable WNS/TNS.

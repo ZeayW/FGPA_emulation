@@ -580,6 +580,8 @@ def _build_parser() -> argparse.ArgumentParser:
     route_run.add_argument("--constraints", type=Path)
     route_run.add_argument("--frame-slots", type=int)
     route_run.add_argument("--max-iterations", type=int)
+    route_run.add_argument("--provider")
+    route_run.add_argument("--candidate-workers", type=int, default=1)
     route_run.add_argument("--router")
     route_run.add_argument("--out", type=Path, required=True)
     route_validate = experiment_stage_subparsers.add_parser(
@@ -590,6 +592,8 @@ def _build_parser() -> argparse.ArgumentParser:
     route_validate.add_argument("--cut-timing", type=Path, required=True)
     route_validate.add_argument("--platform", type=Path, required=True)
     route_validate.add_argument("--constraints", type=Path)
+    route_validate.add_argument("--provider")
+    route_validate.add_argument("--candidate-workers", type=int)
 
     tdm_run = experiment_stage_subparsers.add_parser(
         "tdm-run", help="run one reusable timing-aware Phase 5 checkpoint"
@@ -614,6 +618,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tdm_validate.add_argument("--route", type=Path, required=True)
     tdm_validate.add_argument("--platform", type=Path, required=True)
     tdm_validate.add_argument("--constraints", type=Path)
+    tdm_validate.add_argument("--provider")
 
     shared_materialize = experiment_stage_subparsers.add_parser(
         "shared-materialize", help="materialize a hard-linked validated Phase 1-5 view"
@@ -3146,6 +3151,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 constraints_path=args.constraints,
                 frame_slots=args.frame_slots,
                 max_iterations=args.max_iterations,
+                provider=args.provider,
+                candidate_workers=args.candidate_workers,
                 router=args.router,
             )
         elif args.experiment_stage_command == "route-validate":
@@ -3155,6 +3162,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.platform,
                 args.root,
                 constraints_path=args.constraints,
+                expected_provider=args.provider,
+                expected_candidate_workers=args.candidate_workers,
             )
         elif args.experiment_stage_command == "tdm-run":
             report = run_tdm_checkpoint(
@@ -3178,6 +3187,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.platform,
                 args.root,
                 constraints_path=args.constraints,
+                expected_provider=args.provider,
             )
         elif args.experiment_stage_command == "shared-materialize":
             report = materialize_shared_phase1_5(

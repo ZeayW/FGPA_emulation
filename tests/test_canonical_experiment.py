@@ -12,6 +12,8 @@ from emuflow.experiment_dag import validate_experiment_spec
 from emuflow.errors import ValidationError
 from emuflow.experiment_identity import build_implementation_closure
 from emuflow.io import write_json
+from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -180,6 +182,39 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertIn("--hop-refiner", nodes["partition"]["command"])
             self.assertIn("--constraints", nodes["route"]["command"])
+            self.assertEqual(
+                nodes["route"]["configuration"]["provider"],
+                GLOBAL_CANDIDATE_PROVIDER,
+            )
+            self.assertEqual(nodes["route"]["configuration"]["candidate_workers"], 8)
+            self.assertEqual(
+                nodes["route"]["command"][
+                    nodes["route"]["command"].index("--provider") + 1
+                ],
+                GLOBAL_CANDIDATE_PROVIDER,
+            )
+            self.assertEqual(
+                nodes["route"]["validator"][
+                    nodes["route"]["validator"].index("--candidate-workers") + 1
+                ],
+                "8",
+            )
+            self.assertEqual(
+                nodes["tdm"]["configuration"]["provider"],
+                TDM_TIMING_DAG_RATIO_PROVIDER,
+            )
+            self.assertEqual(
+                nodes["tdm"]["command"][
+                    nodes["tdm"]["command"].index("--provider") + 1
+                ],
+                TDM_TIMING_DAG_RATIO_PROVIDER,
+            )
+            self.assertEqual(
+                nodes["tdm"]["validator"][
+                    nodes["tdm"]["validator"].index("--provider") + 1
+                ],
+                TDM_TIMING_DAG_RATIO_PROVIDER,
+            )
             self.assertEqual(nodes["tdm"]["configuration"]["ratio_quantum"], 4)
             self.assertEqual(nodes["tdm"]["configuration"]["max_ratio"], 32)
             self.assertIn(
@@ -270,6 +305,31 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertEqual(
                 first_nodes["frontend"]["inputs"], second_nodes["frontend"]["inputs"]
+            )
+
+    def test_route_candidate_workers_are_explicitly_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["route_candidate_workers"] = 3
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item for item in json.loads(output.read_text())["nodes"]
+            }
+            route = nodes["route"]
+            self.assertEqual(route["configuration"]["candidate_workers"], 3)
+            self.assertEqual(
+                route["command"][route["command"].index("--candidate-workers") + 1],
+                "3",
+            )
+            self.assertEqual(
+                route["validator"][
+                    route["validator"].index("--candidate-workers") + 1
+                ],
+                "3",
             )
 
     def test_matrix_and_boarddb_materialization_contract_is_enforced(self) -> None:

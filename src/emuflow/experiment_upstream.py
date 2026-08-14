@@ -588,6 +588,8 @@ def run_route_checkpoint(
     constraints_path: Optional[Path] = None,
     frame_slots: Optional[int] = None,
     max_iterations: Optional[int] = None,
+    provider: Optional[str] = None,
+    candidate_workers: int = 1,
     router: Optional[str] = None,
 ) -> Dict[str, Any]:
     assignment = _require(partition_root, "assignment.json")
@@ -600,8 +602,10 @@ def run_route_checkpoint(
         constraints_path=constraints_path,
         frame_slots=frame_slots,
         max_iterations=max_iterations,
+        provider=provider,
         timing_paths_path=timing_paths,
         router=router,
+        candidate_workers=candidate_workers,
     )
     report = {
         "schema": EXPERIMENT_ROUTE_SCHEMA,
@@ -631,6 +635,8 @@ def validate_route_checkpoint(
     root: Path,
     *,
     constraints_path: Path | None = None,
+    expected_provider: str | None = None,
+    expected_candidate_workers: int | None = None,
 ) -> Dict[str, Any]:
     assignment = _require(partition_root, "assignment.json")
     timing_paths = _require(cut_timing_root, "cut-timing-paths.json")
@@ -638,15 +644,34 @@ def validate_route_checkpoint(
     report = read_json(_require(root, "experiment-route-report.json"))
     if report.get("schema") != EXPERIMENT_ROUTE_SCHEMA or report.get("status") != "pass":
         raise ValidationError("route checkpoint report is invalid")
+    phase4_report = _require(root, "phase4_report.json")
     for label, path in {
         "assignment_sha256": assignment,
         "timing_paths_sha256": timing_paths,
         "platform_sha256": platform_path.resolve(),
         "routes_sha256": routes,
-        "phase4_report_sha256": _require(root, "phase4_report.json"),
+        "phase4_report_sha256": phase4_report,
     }.items():
         if report.get(label) != _sha256(path):
             raise ValidationError(f"route checkpoint {label} seal is broken")
+    phase4 = read_json(phase4_report)
+    if report.get("phase4") != phase4:
+        raise ValidationError("route checkpoint embedded Phase 4 report disagrees")
+    if expected_provider is not None and (
+        read_json(routes).get("provider") != expected_provider
+        or phase4.get("provider") != expected_provider
+    ):
+        raise ValidationError("route checkpoint provider contract disagrees")
+    if expected_candidate_workers is not None:
+        candidate_generation = phase4.get("candidate_generation")
+        if (
+            not isinstance(candidate_generation, dict)
+            or candidate_generation.get("requested_workers")
+            != expected_candidate_workers
+        ):
+            raise ValidationError(
+                "route checkpoint candidate-worker contract disagrees"
+            )
     if constraints_path is not None:
         expected_constraints = load_route_constraints(
             constraints_path, Platform.load(platform_path)
@@ -711,6 +736,7 @@ def validate_tdm_checkpoint(
     root: Path,
     *,
     constraints_path: Path | None = None,
+    expected_provider: str | None = None,
 ) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
     schedule = _require(root, "schedule.json")
@@ -733,14 +759,20 @@ def validate_tdm_checkpoint(
             or configuration.get("max_ratio") != constraints["frame_slots"]
         ):
             raise ValidationError("TDM ratio constraints contract disagrees")
+    phase5_report = _require(root, "phase5_report.json")
     for label, path in {
         "routes_sha256": routes,
         "platform_sha256": platform_path.resolve(),
         "schedule_sha256": schedule,
-        "phase5_report_sha256": _require(root, "phase5_report.json"),
+        "phase5_report_sha256": phase5_report,
     }.items():
         if report.get(label) != _sha256(path):
             raise ValidationError(f"TDM checkpoint {label} seal is broken")
+    phase5 = read_json(phase5_report)
+    if report.get("phase5") != phase5:
+        raise ValidationError("TDM checkpoint embedded Phase 5 report disagrees")
+    if expected_provider is not None and phase5.get("provider") != expected_provider:
+        raise ValidationError("TDM checkpoint provider contract disagrees")
     checked = validate_phase5(
         routes, platform_path, schedule, ratio_plan_path=ratio_plan if ratio_plan.is_file() else None
     )
