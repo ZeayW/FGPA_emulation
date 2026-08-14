@@ -302,6 +302,12 @@ def validate_physical_lookahead(
     shared_root: Path,
     baseline_phase6_root: Path | None,
     platform_path: Path,
+    *,
+    expected_seed: int | None = None,
+    expected_workers: int | None = None,
+    expected_region_count: int | None = None,
+    expected_architecture: Path | None = None,
+    expected_route_channel_width: int | None = None,
 ) -> Dict[str, Any]:
     validate_shared_phase1_5(shared_root, platform_path)
     split_root = (
@@ -319,7 +325,48 @@ def validate_physical_lookahead(
     if report.get("schema") != EXPERIMENT_LOOKAHEAD_SCHEMA or report.get("status") != "pass":
         raise ValidationError("experiment physical-lookahead report is invalid")
     physical_path = _require_file(root, "physical/multi-fpga-physical-flow-report.json")
-    validate_multi_fpga_physical_report(read_json(physical_path))
+    physical_report = read_json(physical_path)
+    validate_multi_fpga_physical_report(physical_report)
+    expected = {
+        "seed": expected_seed,
+        "workers": expected_workers,
+        "region_count": expected_region_count,
+        "route_channel_width": expected_route_channel_width,
+    }
+    for field, value in expected.items():
+        if value is not None and report.get(field) != value:
+            raise ValidationError(
+                f"experiment physical-lookahead {field} contract disagrees"
+            )
+    if expected_architecture is not None and report.get(
+        "architecture_sha256"
+    ) != _sha256(expected_architecture.resolve()):
+        raise ValidationError(
+            "experiment physical-lookahead architecture contract disagrees"
+        )
+    if expected_workers is not None and physical_report.get("execution", {}).get(
+        "requested_workers"
+    ) != expected_workers:
+        raise ValidationError(
+            "experiment physical-lookahead physical worker count disagrees"
+        )
+    if expected_seed is not None or expected_route_channel_width is not None:
+        for fpga in physical_report.get("fpgas", []):
+            stages = fpga.get("stages", {})
+            if expected_seed is not None and stages.get(
+                "vpr_pack_place", {}
+            ).get("configuration", {}).get("seed") != expected_seed:
+                raise ValidationError(
+                    "experiment physical-lookahead VPR seed disagrees"
+                )
+            if expected_route_channel_width is not None and stages.get(
+                "vpr_route", {}
+            ).get("configuration", {}).get(
+                "route_channel_width"
+            ) != expected_route_channel_width:
+                raise ValidationError(
+                    "experiment physical-lookahead VPR channel width disagrees"
+                )
     if report.get("physical_summary_sha256") != _sha256(
         _require_file(root, "physical/physical-summary.json")
     ):
@@ -477,12 +524,16 @@ def validate_phase6_checkpoint(
     shared_root: Path,
     lookahead_root: Path | None,
     platform_path: Path,
+    *,
+    expected_provider: str | None = None,
 ) -> Dict[str, Any]:
     validate_shared_phase1_5(shared_root, platform_path)
     report = read_json(_require_file(root, "experiment-phase6-report.json"))
     provider = report.get("provider")
     if report.get("schema") != EXPERIMENT_PHASE6_SCHEMA or provider not in _PROVIDERS:
         raise ValidationError("experiment Phase 6 checkpoint report is invalid")
+    if expected_provider is not None and provider != expected_provider:
+        raise ValidationError("experiment Phase 6 provider contract disagrees")
     if provider == "baseline":
         if report.get("lookahead") is not None:
             raise ValidationError("baseline Phase 6 must not depend on lookahead")
@@ -603,6 +654,10 @@ def validate_phase7_checkpoint(
     lookahead_root: Path,
     phase6_root: Path,
     platform_path: Path,
+    *,
+    expected_seed: int | None = None,
+    expected_workers: int | None = None,
+    expected_route_channel_width: int | None = None,
 ) -> Dict[str, Any]:
     phase6 = validate_phase6_checkpoint(
         phase6_root, shared_root, lookahead_root, platform_path
@@ -614,10 +669,35 @@ def validate_phase7_checkpoint(
         or report.get("provider") != phase6["provider"]
     ):
         raise ValidationError("experiment Phase 7 checkpoint report is invalid")
+    if expected_seed is not None and report.get("physical_seed") != expected_seed:
+        raise ValidationError("experiment Phase 7 seed contract disagrees")
+    if expected_workers is not None and report.get("workers") != expected_workers:
+        raise ValidationError("experiment Phase 7 worker contract disagrees")
+    if expected_route_channel_width is not None and report.get(
+        "route_channel_width"
+    ) != expected_route_channel_width:
+        raise ValidationError("experiment Phase 7 channel-width contract disagrees")
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
     validate_multi_fpga_physical_report(physical_report)
+    if expected_workers is not None and physical_report.get("execution", {}).get(
+        "requested_workers"
+    ) != expected_workers:
+        raise ValidationError("experiment Phase 7 physical worker count disagrees")
+    if expected_seed is not None or expected_route_channel_width is not None:
+        for fpga in physical_report.get("fpgas", []):
+            stages = fpga.get("stages", {})
+            if expected_seed is not None and stages.get(
+                "vpr_pack_place", {}
+            ).get("configuration", {}).get("seed") != expected_seed:
+                raise ValidationError("experiment Phase 7 VPR seed disagrees")
+            if expected_route_channel_width is not None and stages.get(
+                "vpr_route", {}
+            ).get("configuration", {}).get(
+                "route_channel_width"
+            ) != expected_route_channel_width:
+                raise ValidationError("experiment Phase 7 VPR channel width disagrees")
     if report.get("physical_summary_sha256") != _sha256(
         root / "physical/physical-summary.json"
     ) or report.get("qor_sha256") != _sha256(root / "runtime/qor_report.json"):

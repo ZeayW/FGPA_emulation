@@ -873,6 +873,13 @@ complete `openparf/` package; a label-only or empty manifest is rejected.
 The frontend checkpoint copies every supplied RTL/Yosys input into a sealed
 `source-input` artifact directory, so final evidence retains the exact source
 bytes rather than only an external path and digest.
+The lookahead, Phase 6, and Phase 7 independent validators also receive the
+declared architecture/provider/seed/worker/channel-width contract and compare
+it with the physical reports (including per-FPGA VPR configuration); a valid
+physical result from a different arm cannot be relabelled and imported.
+An explicitly supplied VTR architecture is copied into the immutable
+lookahead physical checkpoint.  Later Phase 7 seeds consume that sealed copy,
+so deleting or changing the original fetch directory cannot break replay.
 
 New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
 only for migration compatibility. A deliberately

@@ -151,6 +151,20 @@ class CanonicalExperimentTest(unittest.TestCase):
                 {(provider, seed) for provider in ("baseline", "placement-aware", "chimew") for seed in (1, 2, 3)},
             )
             self.assertTrue(all(item["configuration"]["physical_workers"] == 8 for item in terminals))
+            self.assertTrue(
+                all(
+                    item["validator"][-6:]
+                    == [
+                        "--seed",
+                        str(item["physical_seed"]),
+                        "--workers",
+                        "8",
+                        "--route-channel-width",
+                        "300",
+                    ]
+                    for item in terminals
+                )
+            )
 
     def test_external_tool_bytes_are_part_of_execution_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

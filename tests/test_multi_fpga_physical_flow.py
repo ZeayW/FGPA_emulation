@@ -351,6 +351,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     architecture=architecture,
                     workers=2,
                 )
+                self.assertEqual(
+                    (root / "physical/architecture/vtr-flagship.xml").read_bytes(),
+                    architecture.read_bytes(),
+                )
+                self.assertEqual(
+                    Path(report["architecture"]["path"]).resolve(),
+                    (root / "physical/architecture/vtr-flagship.xml").resolve(),
+                )
                 for item in report["fpgas"]:
                     runtime_sdc = Path(item["stages"]["runtime_sdc"]["path"])
                     self.assertNotIn(

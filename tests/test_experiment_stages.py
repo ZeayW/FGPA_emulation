@@ -158,6 +158,31 @@ class ExperimentStagesTest(unittest.TestCase):
         )
         self.assertEqual(args.seed, 3)
         self.assertEqual(args.workers, 8)
+        validated = _build_parser().parse_args(
+            [
+                "experiment-stage",
+                "phase7-validate",
+                "result",
+                "--shared",
+                "shared",
+                "--lookahead",
+                "lookahead",
+                "--phase6",
+                "phase6",
+                "--platform",
+                "boarddb.json",
+                "--seed",
+                "3",
+                "--workers",
+                "8",
+                "--route-channel-width",
+                "300",
+            ]
+        )
+        self.assertEqual(
+            (validated.seed, validated.workers, validated.route_channel_width),
+            (3, 8, 300),
+        )
 
     def test_cli_exposes_fine_grained_phase1_5_commands(self) -> None:
         parser = _build_parser()

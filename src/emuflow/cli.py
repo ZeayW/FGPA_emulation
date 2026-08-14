@@ -641,6 +641,11 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_validate.add_argument("--shared", type=Path, required=True)
     lookahead_validate.add_argument("--baseline-phase6", type=Path)
     lookahead_validate.add_argument("--platform", type=Path, required=True)
+    lookahead_validate.add_argument("--seed", type=int)
+    lookahead_validate.add_argument("--workers", type=int)
+    lookahead_validate.add_argument("--region-count", type=int)
+    lookahead_validate.add_argument("--architecture", type=Path)
+    lookahead_validate.add_argument("--route-channel-width", type=int)
     phase6_run = experiment_stage_subparsers.add_parser(
         "phase6-run", help="run one reusable Phase 6 provider checkpoint"
     )
@@ -662,6 +667,9 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6_validate.add_argument("--shared", type=Path, required=True)
     phase6_validate.add_argument("--lookahead", type=Path)
     phase6_validate.add_argument("--platform", type=Path, required=True)
+    phase6_validate.add_argument(
+        "--provider", choices=("baseline", "placement-aware", "chimew")
+    )
     phase7_run = experiment_stage_subparsers.add_parser(
         "phase7-run", help="run one provider/seed physical terminal checkpoint"
     )
@@ -688,6 +696,9 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7_validate.add_argument("--lookahead", type=Path, required=True)
     phase7_validate.add_argument("--phase6", type=Path, required=True)
     phase7_validate.add_argument("--platform", type=Path, required=True)
+    phase7_validate.add_argument("--seed", type=int)
+    phase7_validate.add_argument("--workers", type=int)
+    phase7_validate.add_argument("--route-channel-width", type=int)
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
     platform_subparsers = platform_parser.add_subparsers(
@@ -2996,7 +3007,15 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.experiment_stage_command == "lookahead-validate":
             report = validate_physical_lookahead(
-                args.root, args.shared, args.baseline_phase6, args.platform
+                args.root,
+                args.shared,
+                args.baseline_phase6,
+                args.platform,
+                expected_seed=args.seed,
+                expected_workers=args.workers,
+                expected_region_count=args.region_count,
+                expected_architecture=args.architecture,
+                expected_route_channel_width=args.route_channel_width,
             )
         elif args.experiment_stage_command == "phase6-run":
             report = run_phase6_checkpoint(
@@ -3010,7 +3029,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.experiment_stage_command == "phase6-validate":
             report = validate_phase6_checkpoint(
-                args.root, args.shared, args.lookahead, args.platform
+                args.root,
+                args.shared,
+                args.lookahead,
+                args.platform,
+                expected_provider=args.provider,
             )
         elif args.experiment_stage_command == "phase7-run":
             report = run_phase7_checkpoint(
@@ -3037,6 +3060,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.lookahead,
                 args.phase6,
                 args.platform,
+                expected_seed=args.seed,
+                expected_workers=args.workers,
+                expected_route_channel_width=args.route_channel_width,
             )
         _print_json(report)
         return 0

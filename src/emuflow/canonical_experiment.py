@@ -514,7 +514,7 @@ def compile_canonical_experiment_spec(
     baseline_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline", "--out", "{output_dir}"]
     node(
         "phase6-baseline", "phase6", ["shared-phase1-5"], baseline_command,
-        [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform)],
+        [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--platform", str(platform), "--provider", "baseline"],
         [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical")],
         inputs=("platform", "tool.emuflow"), configuration={"provider": "baseline", "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider="baseline",
     )
@@ -529,7 +529,7 @@ def compile_canonical_experiment_spec(
     ]
     node(
         "physical-lookahead", "lookahead", ["shared-phase1-5", "phase6-baseline"], lookahead_command,
-        [executable, "experiment-stage", "lookahead-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--baseline-phase6", "{dependency:phase6-baseline}", "--platform", str(platform)],
+        [executable, "experiment-stage", "lookahead-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--baseline-phase6", "{dependency:phase6-baseline}", "--platform", str(platform), "--seed", "1", "--workers", str(workers), "--region-count", str(region_count), "--architecture", str(physical_architecture), "--route-channel-width", str(channel_width)],
         [_artifact("physical", "consumer-checkpoint"), _artifact("lookahead", "consumer-checkpoint"), _artifact("experiment-lookahead-report.json", "evidence-critical")],
         inputs=("platform", "physical_architecture", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
         configuration={"physical_seed": 1, "physical_workers": workers, "region_count": region_count, "route_channel_width": channel_width}, peak_gib=48, retained_gib=10,
@@ -544,7 +544,7 @@ def compile_canonical_experiment_spec(
         node(
             phase6_id, "phase6", ["shared-phase1-5", "physical-lookahead"],
             [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, "--out", "{output_dir}"],
-            [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform)],
+            [executable, "experiment-stage", "phase6-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider],
             [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical"), *extra_artifacts],
             inputs=("platform", "tool.emuflow"), configuration={"provider": provider, "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider=provider,
         )
@@ -555,7 +555,7 @@ def compile_canonical_experiment_spec(
             node(
                 phase7_id, "phase7", ["shared-phase1-5", "physical-lookahead", phase6_id],
                 [executable, "experiment-stage", "phase7-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--yosys", str(tools["yosys"]), "--vpr", str(tools["vpr"]), "--architecture-importer", str(tools["architecture_importer"]), "--packed-importer", str(tools["packed_importer"]), "--route-checker", str(tools["route_checker"]), "--openparf-install", str(openparf_install), "--openparf-python", str(tools["openparf_python"]), "--route-channel-width", str(channel_width), "--out", "{output_dir}"],
-                [executable, "experiment-stage", "phase7-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--platform", str(platform)],
+                [executable, "experiment-stage", "phase7-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--phase6", f"{{dependency:{phase6_id}}}", "--platform", str(platform), "--seed", str(seed), "--workers", str(workers), "--route-channel-width", str(channel_width)],
                 [_artifact("runtime", "evidence-critical"), _artifact("experiment-phase7-report.json", "evidence-critical"), _artifact("physical", "diagnostic")],
                 inputs=("platform", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
                 configuration={"physical_backend": "open", "physical_workers": workers, "physical_seed": seed, "route_channel_width": channel_width},

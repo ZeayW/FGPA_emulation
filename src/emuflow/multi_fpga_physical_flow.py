@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -452,16 +453,19 @@ def run_multi_fpga_physical_flow(
                 architecture_path
             )
         else:
-            architecture_path = architecture.resolve()
-            if not architecture_path.is_file():
+            architecture_input = architecture.resolve()
+            if not architecture_input.is_file():
                 raise EmuFlowError(
-                    f"VTR architecture does not exist: {architecture_path}"
+                    f"VTR architecture does not exist: {architecture_input}"
                 )
+            architecture_path = architecture_root / "vtr-flagship.xml"
+            shutil.copy2(architecture_input, architecture_path)
             architecture_source = {
                 "status": "pass",
                 "mode": "provided",
                 "path": str(architecture_path),
                 "sha256": _sha256(architecture_path),
+                "input_path": str(architecture_input),
             }
     else:
         if architecture is not None:
