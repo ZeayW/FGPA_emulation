@@ -12,7 +12,7 @@ from emuflow.experiment_upstream import (
     run_frontend_checkpoint,
     validate_frontend_checkpoint,
 )
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 
 
@@ -30,6 +30,10 @@ class ExperimentStagesTest(unittest.TestCase):
                 clocks=["clk"],
             )
             self.assertEqual(report["status"], "pass")
+            self.assertEqual(len(report["source_artifacts"]), 1)
+            self.assertTrue(
+                (output / report["source_artifacts"][0]["artifact"]).is_file()
+            )
             self.assertEqual(
                 validate_frontend_checkpoint(output, platform)["status"], "pass"
             )
@@ -49,6 +53,25 @@ class ExperimentStagesTest(unittest.TestCase):
             (output / "artifact").write_text("present", encoding="utf-8")
             with self.assertRaisesRegex(EmuFlowError, "must be an empty"):
                 _prepare_empty_output(output, "checkpoint")
+
+    def test_frontend_source_artifact_cannot_escape_checkpoint(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        platform = repository / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "frontend"
+            run_frontend_checkpoint(
+                platform,
+                output,
+                yosys_json=repository / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+            )
+            report_path = output / "experiment-frontend-report.json"
+            report = read_json(report_path)
+            report["source_artifacts"][0]["artifact"] = "sources/../../outside"
+            write_json(report_path, report)
+            with self.assertRaisesRegex(Exception, "path is invalid"):
+                validate_frontend_checkpoint(output, platform)
 
     def test_placement_aware_positions_reuse_frozen_open_placement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

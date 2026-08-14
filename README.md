@@ -870,6 +870,9 @@ checkpoints while invalidating routing and its descendants.  The OpenPARF
 manifest is itself an `experiment-implementation-closure/v1` rooted at the
 explicit OpenPARF package directory and must cover both `openparf.py` and the
 complete `openparf/` package; a label-only or empty manifest is rejected.
+The frontend checkpoint copies every supplied RTL/Yosys input into a sealed
+`source-input` artifact directory, so final evidence retains the exact source
+bytes rather than only an external path and digest.
 
 New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
 only for migration compatibility. A deliberately

@@ -260,6 +260,7 @@ def _closure(repository_root: Path, stage: str) -> Dict[str, Any]:
 def _artifact(path: str, role: str) -> Dict[str, str]:
     retention = {
         "consumer-checkpoint": "required",
+        "source-input": "required",
         "evidence-critical": "required",
         "diagnostic": "optional",
     }[role]
@@ -430,7 +431,7 @@ def compile_canonical_experiment_spec(
     node(
         "frontend", "frontend", [], frontend_command,
         [executable, "experiment-stage", "frontend-validate", "{artifact_root}", "--platform", str(platform)],
-        [_artifact("phase1", "consumer-checkpoint"), _artifact("synthesized.json", "consumer-checkpoint"), _artifact("experiment-frontend-report.json", "evidence-critical")],
+        [_artifact("sources", "source-input"), _artifact("phase1", "consumer-checkpoint"), _artifact("synthesized.json", "consumer-checkpoint"), _artifact("experiment-frontend-report.json", "evidence-critical")],
         inputs=("rtl", "platform", "boarddb_report", "end_to_end_matrix", "benchmark_run_spec", "tool.emuflow", "tool.yosys"),
         configuration={"case_id": case_id, "contest_case_id": contract["contest_case_id"], "top": top, "clocks": clocks, "mapping_profile": "vtr-hard-blocks", "require_no_fabric_clock": True},
         peak_gib=16, retained_gib=4,

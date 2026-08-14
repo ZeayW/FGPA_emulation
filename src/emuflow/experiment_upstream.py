@@ -80,6 +80,23 @@ def run_frontend_checkpoint(
 ) -> Dict[str, Any]:
     output_dir = _prepare_empty_output(output_dir, "frontend checkpoint")
     sources = [path.resolve() for path in sources]
+    source_records = []
+    source_root = output_dir / "sources"
+    source_root.mkdir()
+    for index, path in enumerate(sources):
+        if not path.is_file() or path.is_symlink():
+            raise EmuFlowError(f"frontend RTL source is not a regular file: {path}")
+        relative = f"{index:04d}-{path.name}"
+        copied = source_root / relative
+        shutil.copy2(path, copied)
+        source_records.append(
+            {
+                "original_path": str(path),
+                "artifact": f"sources/{relative}",
+                "bytes": copied.stat().st_size,
+                "sha256": _sha256(copied),
+            }
+        )
     synthesized = output_dir / "synthesized.json"
     synthesis_report: Dict[str, Any] | None = None
     normalization_report: Dict[str, Any] | None = None
@@ -90,6 +107,16 @@ def run_frontend_checkpoint(
         if not source_json.is_file():
             raise EmuFlowError(f"Yosys JSON does not exist: {source_json}")
         shutil.copy2(source_json, synthesized)
+        copied = source_root / "0000-provided-yosys.json"
+        shutil.copy2(source_json, copied)
+        source_records.append(
+            {
+                "original_path": str(source_json),
+                "artifact": "sources/0000-provided-yosys.json",
+                "bytes": copied.stat().st_size,
+                "sha256": _sha256(copied),
+            }
+        )
         mode = "provided-yosys-json"
     else:
         if not sources or top is None:
@@ -140,7 +167,11 @@ def run_frontend_checkpoint(
         "top": top,
         "clocks": sorted(set(clocks)),
         "require_no_fabric_clock": require_no_fabric_clock,
-        "source_sha256": {str(path): _sha256(path) for path in sources},
+        "source_sha256": {
+            record["original_path"]: record["sha256"]
+            for record in source_records
+        },
+        "source_artifacts": source_records,
         "synthesized_sha256": _sha256(synthesized),
         "emuir_sha256": _sha256(output_dir / "phase1/design.emuir.json"),
         "platform_sha256": _sha256(platform_path.resolve()),
@@ -166,6 +197,39 @@ def validate_frontend_checkpoint(root: Path, platform_path: Path) -> Dict[str, A
     ir_path = _require(root, "phase1/design.emuir.json")
     phase1_path = _require(root, "phase1/phase1_report.json")
     normalized_platform = _require(root, "phase1/platform.normalized.json")
+    source_records = report.get("source_artifacts")
+    if not isinstance(source_records, list) or not source_records:
+        raise ValidationError("frontend source artifacts are missing")
+    seen_sources = set()
+    for record in source_records:
+        if not isinstance(record, dict):
+            raise ValidationError("frontend source artifact record is invalid")
+        relative = record.get("artifact")
+        relative_path = Path(relative) if isinstance(relative, str) else None
+        original_path = record.get("original_path")
+        if (
+            relative_path is None
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or len(relative_path.parts) != 2
+            or relative_path.parts[0] != "sources"
+            or relative in seen_sources
+        ):
+            raise ValidationError("frontend source artifact path is invalid")
+        if not isinstance(original_path, str) or not original_path:
+            raise ValidationError("frontend source provenance path is invalid")
+        seen_sources.add(relative)
+        copied = _require(root, relative)
+        if (
+            record.get("bytes") != copied.stat().st_size
+            or record.get("sha256") != _sha256(copied)
+        ):
+            raise ValidationError("frontend source artifact seal is broken")
+    if report.get("source_sha256") != {
+        record.get("original_path"): record.get("sha256")
+        for record in source_records
+    }:
+        raise ValidationError("frontend source provenance is inconsistent")
     if report.get("synthesized_sha256") != _sha256(synthesized):
         raise ValidationError("frontend synthesized JSON seal is broken")
     if report.get("emuir_sha256") != _sha256(ir_path):
