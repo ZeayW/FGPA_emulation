@@ -2013,8 +2013,9 @@ the compact candidate product, and regression coverage includes a case whose
 global optimum mixes shortest-path and nearest-terminal Steiner trees across
 different demands. This provider remains opt-in: large-public-case scale
 checks are separate algorithm evidence, while the completed real-RTL Phase 7
-comparison above now demonstrates a whole-design WNS/TNS improvement on one
-independently sealed physical A/B. Promotion to the default still requires
+comparison above demonstrates a coverage-complete conservative whole-design
+timing-bound improvement on one independently sealed physical A/B. Promotion
+to the default still requires
 the same whole-design Phase 7 gate on a broader design/platform set; a
 cross-FPGA-only proxy is not sufficient evidence.
 

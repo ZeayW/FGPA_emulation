@@ -190,8 +190,8 @@ def _explicit_vpr_path_pins(
 
     ``path_nets`` names the ordered OpenSTA path, but a net may feed several
     pins of the same cell.  In that case the net sequence does not identify a
-    unique primitive arc, so return an empty chain and retain the exact
-    endpoint-longest-path fallback.  Never guess a pin or silently shorten a
+    unique primitive arc, so return an empty chain and retain the conservative
+    endpoint-longest-path fallback. Never guess a pin or silently shorten a
     path.
     """
 

@@ -33,6 +33,10 @@ class VprBoundaryTimingTest(unittest.TestCase):
             "endpoint\\tkind\\tstart_pin\\tend_pin\\tpath_pins", source
         )
         self.assertIn("matches != 1", source)
+        self.assertIn("node_clock_launch_edge", source)
+        self.assertIn("result += relax_delay(launch_edge)", source)
+        self.assertIn("node_clock_capture_edge", source)
+        self.assertIn("result += setup", source)
 
     def test_query_maps_emuir_objects_to_vpr_atom_pins(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

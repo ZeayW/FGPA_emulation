@@ -317,10 +317,16 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
         }
         double result = results[index];
         // A same-FPGA original path is a complete setup path, rather than one
-        // segment of a boundary composition. Include the sequential capture
-        // setup arc when present. Launch clock-to-Q is already included as a
-        // PRIMITIVE_CLOCK_LAUNCH edge in the routed data traversal above.
+        // segment of a boundary composition. The data traversal starts at the
+        // external sequential output tnode, so add its incoming clock-launch
+        // edge explicitly; likewise add the capture setup constraint.
         if (query_class == 2) {
+            const tatum::EdgeId launch_edge =
+                timing_graph.node_clock_launch_edge(
+                    queries[index].start_node);
+            if (launch_edge) {
+                result += relax_delay(launch_edge);
+            }
             const tatum::EdgeId capture_edge =
                 timing_graph.node_clock_capture_edge(
                     queries[index].end_node);
