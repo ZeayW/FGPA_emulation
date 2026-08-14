@@ -133,20 +133,22 @@ def storage_budget(root: Path, *, query_quota: bool = True) -> dict[str, Any]:
                 text=True,
                 timeout=15,
             )
-            if completed.returncode == 0 and filesystem is not None:
+            # Some NFS quota clients return status 1 when *any* listed mount is
+            # over quota even though stdout still contains authoritative rows
+            # for every filesystem.  The selected /research filesystem row is
+            # therefore the success criterion, not the aggregate exit status.
+            if filesystem is not None:
                 quota_available = _quota_available_bytes(
                     completed.stdout, filesystem=filesystem
                 )
                 if quota_available is None:
+                    detail = completed.stderr.strip()[-1024:]
                     quota_error = (
                         f"quota output has no row for filesystem {filesystem}"
+                        + (f": {detail}" if detail else "")
                     )
             else:
-                quota_error = (
-                    completed.stderr.strip()[-1024:]
-                    if completed.returncode != 0
-                    else "df did not identify the storage filesystem"
-                )
+                quota_error = "df did not identify the storage filesystem"
         except (FileNotFoundError, subprocess.TimeoutExpired) as error:
             quota_error = type(error).__name__
     available = min(

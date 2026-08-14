@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from emuflow.errors import ValidationError
@@ -8,6 +9,7 @@ from emuflow.experiment_storage import (
     _quota_available_bytes,
     preflight_experiment_storage,
     prepare_experiment_scratch,
+    storage_budget,
     validate_experiment_write_path,
 )
 
@@ -63,6 +65,35 @@ rdata8:/s1/d4 937823428 1000000000 1000000000 - 1 0 0
             _quota_available_bytes(output, filesystem="rdata8:/s1/d4"),
             (1_000_000_000 - 937_823_428) * 1024,
         )
+
+    def test_storage_budget_accepts_selected_row_when_other_mount_is_over_quota(self) -> None:
+        quota_output = """
+Disk quotas for user test:
+Filesystem blocks quota limit grace files quota limit grace
+uranus:/d0/data 2764824* 2500000 2505000 none 1 0 0
+rdata8:/s1/d4 938188088 1000000000 1000000000 - 1 0 0
+"""
+        calls = [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                    "rdata8:/s1/d4 1 1 1 1% /research/d4\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=1, stdout=quota_output, stderr=""),
+        ]
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "emuflow.experiment_storage.subprocess.run", side_effect=calls
+        ):
+            result = storage_budget(Path(temporary))
+        self.assertEqual(result["quota_filesystem"], "rdata8:/s1/d4")
+        self.assertEqual(
+            result["quota_available_bytes"],
+            (1_000_000_000 - 938_188_088) * 1024,
+        )
+        self.assertIsNone(result["quota_error"])
 
     def test_storage_boundary_rejects_internal_symlink_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
