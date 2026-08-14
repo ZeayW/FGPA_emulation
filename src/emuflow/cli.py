@@ -538,6 +538,14 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--hop-refiner")
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
+    partition_run.add_argument(
+        "--repair-balance",
+        action="store_true",
+        help=(
+            "deterministically legalize a TritonPart candidate against "
+            "the independently checked multi-resource upper bounds"
+        ),
+    )
     partition_run.add_argument("--num-initial-solutions", type=int, default=50)
     partition_run.add_argument("--num-best-initial-solutions", type=int, default=10)
     partition_run.add_argument("--out", type=Path, required=True)
@@ -551,6 +559,12 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--route-constraints", type=Path)
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--seed", type=int)
+    partition_validate.add_argument("--seed-attempts", type=int)
+    partition_validate.add_argument(
+        "--repair-balance",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
 
     cut_timing_run = experiment_stage_subparsers.add_parser(
         "cut-timing-run", help="extract and project partition cut timing paths"
@@ -3113,6 +3127,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 hop_refiner=args.hop_refiner,
                 timeout_seconds=args.timeout_seconds,
                 seed_attempts=args.seed_attempts,
+                repair_balance=args.repair_balance,
                 num_initial_solutions=args.num_initial_solutions,
                 num_best_initial_solutions=args.num_best_initial_solutions,
             )
@@ -3125,6 +3140,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 route_constraints_path=args.route_constraints,
                 expected_provider=args.provider,
                 expected_seed=args.seed,
+                expected_seed_attempts=args.seed_attempts,
+                expected_repair_balance=args.repair_balance,
             )
         elif args.experiment_stage_command == "cut-timing-run":
             report = run_cut_timing_checkpoint(

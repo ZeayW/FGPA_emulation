@@ -421,6 +421,13 @@ def compile_canonical_experiment_spec(
         config.get("partition_seed_attempts", 1),
         "partition_seed_attempts",
     )
+    partition_repair_balance = config.get(
+        "partition_repair_balance", False
+    )
+    if not isinstance(partition_repair_balance, bool):
+        raise ValidationError(
+            "canonical experiment partition_repair_balance must be boolean"
+        )
     executable = str(tools["emuflow"])
     base_inputs = {
         "rtl": _sha256(rtl),
@@ -520,12 +527,26 @@ def compile_canonical_experiment_spec(
         "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
         "--out", "{output_dir}",
     ]
+    partition_validator = [
+        executable, "experiment-stage", "partition-validate", "{artifact_root}",
+        "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}",
+        "--platform", str(platform), "--route-constraints", str(route_constraints),
+        "--provider", "tritonpart", "--seed", str(partition_seed),
+        "--seed-attempts", str(partition_seed_attempts),
+    ]
+    if partition_repair_balance:
+        partition_command.insert(-2, "--repair-balance")
+    partition_validator.append(
+        "--repair-balance"
+        if partition_repair_balance
+        else "--no-repair-balance"
+    )
     node(
         "partition", "partition", ["frontend", "timing"], partition_command,
-        [executable, "experiment-stage", "partition-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--platform", str(platform), "--route-constraints", str(route_constraints), "--provider", "tritonpart", "--seed", str(partition_seed)],
+        partition_validator,
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10},
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [

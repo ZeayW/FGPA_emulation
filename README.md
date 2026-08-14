@@ -1013,10 +1013,15 @@ quantum/frame bound, and each independent validator rechecks that chain.
 Canonical timing-enabled experiments explicitly bind Phase 4 to
 `timing-aware-global-candidate-v1` and Phase 5 to
 `aspdac26-timing-dag-lagrangian-v1`; they do not rely on mutable CLI defaults.
-They also bind `partition_seed_attempts` into the Phase 3 command and checkpoint
-identity.  A multi-seed TritonPart sweep therefore searches for an independently
-legal multi-resource-balanced assignment without weakening the balance gate,
-while leaving unchanged frontend and timing checkpoints reusable.
+They also bind `partition_seed_attempts` and the explicit
+`partition_repair_balance` policy into both the Phase 3 producer and independent
+validator identities. A multi-seed TritonPart sweep therefore searches for an
+independently legal multi-resource-balanced assignment without weakening the
+balance gate. When repair is enabled, a deterministic cut-delta-ranked pass
+moves only the atomic clusters required to remove provider balance violations;
+the ordinary independent Phase 3 validator still enforces the original
+per-resource bounds. Changing either policy invalidates Phase 3 and its
+descendants while leaving unchanged frontend and timing checkpoints reusable.
 `route_candidate_workers` defaults to `physical_workers`, is recorded in the
 route node configuration and command, and is independently checked against the
 Phase 4 candidate-generation certificate. Changing either provider or worker
