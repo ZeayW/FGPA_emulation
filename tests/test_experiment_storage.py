@@ -52,6 +52,18 @@ Filesystem blocks quota limit grace files quota limit grace
 """
         self.assertEqual(_quota_available_bytes(output), 50_000 * 1024)
 
+    def test_quota_parser_selects_only_the_storage_filesystem(self) -> None:
+        output = """
+Disk quotas for user test:
+Filesystem blocks quota limit grace files quota limit grace
+uranus:/d0/data 2764824* 2500000 2505000 none 1 0 0
+rdata8:/s1/d4 937823428 1000000000 1000000000 - 1 0 0
+"""
+        self.assertEqual(
+            _quota_available_bytes(output, filesystem="rdata8:/s1/d4"),
+            (1_000_000_000 - 937_823_428) * 1024,
+        )
+
     def test_storage_boundary_rejects_internal_symlink_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -72,6 +84,7 @@ Filesystem blocks quota limit grace files quota limit grace
                 "root": str(root),
                 "filesystem_free_bytes": 10**12,
                 "quota_available_bytes": None,
+                "quota_filesystem": "test:/research",
                 "available_bytes": 10**12,
                 "quota_error": "quota command failed",
             }

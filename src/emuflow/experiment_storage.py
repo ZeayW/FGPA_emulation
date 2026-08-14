@@ -72,15 +72,18 @@ def validate_experiment_write_path(
     return resolved
 
 
-def _quota_available_bytes(output: str) -> int | None:
+def _quota_available_bytes(
+    output: str, *, filesystem: str | None = None
+) -> int | None:
     """Parse POSIX quota -v output; numeric block values are KiB."""
 
     available: list[int] = []
     for raw_line in output.splitlines():
         fields = raw_line.split()
-        if len(fields) < 4 or not (
-            fields[0].startswith("/") or fields[0].startswith("server")
-        ):
+        if len(fields) < 4:
+            continue
+        device = fields[0]
+        if filesystem is not None and device != filesystem:
             continue
         numeric = []
         for field in fields[1:4]:
@@ -103,8 +106,25 @@ def storage_budget(root: Path, *, query_quota: bool = True) -> dict[str, Any]:
     usage = shutil.disk_usage(root)
     quota_available = None
     quota_error = None
+    filesystem = None
     if query_quota:
         try:
+            filesystem_result = subprocess.run(
+                ["df", "-P", str(root)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+            )
+            if filesystem_result.returncode == 0:
+                rows = [
+                    line.split()
+                    for line in filesystem_result.stdout.splitlines()[1:]
+                    if line.split()
+                ]
+                if rows:
+                    filesystem = rows[-1][0]
             completed = subprocess.run(
                 ["quota", "-v", "-w"],
                 stdin=subprocess.DEVNULL,
@@ -113,10 +133,20 @@ def storage_budget(root: Path, *, query_quota: bool = True) -> dict[str, Any]:
                 text=True,
                 timeout=15,
             )
-            if completed.returncode == 0:
-                quota_available = _quota_available_bytes(completed.stdout)
+            if completed.returncode == 0 and filesystem is not None:
+                quota_available = _quota_available_bytes(
+                    completed.stdout, filesystem=filesystem
+                )
+                if quota_available is None:
+                    quota_error = (
+                        f"quota output has no row for filesystem {filesystem}"
+                    )
             else:
-                quota_error = completed.stderr.strip()[-1024:]
+                quota_error = (
+                    completed.stderr.strip()[-1024:]
+                    if completed.returncode != 0
+                    else "df did not identify the storage filesystem"
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired) as error:
             quota_error = type(error).__name__
     available = min(
@@ -130,6 +160,7 @@ def storage_budget(root: Path, *, query_quota: bool = True) -> dict[str, Any]:
         "root": str(root),
         "filesystem_free_bytes": usage.free,
         "quota_available_bytes": quota_available,
+        "quota_filesystem": filesystem,
         "available_bytes": available,
         "quota_error": quota_error,
     }
