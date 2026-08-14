@@ -753,6 +753,16 @@ and run only the smallest missing DAG frontier.  Renaming an experiment,
 starting a new comparison, changing a report, or moving to another branch does
 not justify recomputing an unchanged checkpoint.
 
+On the project validation servers, every EmuFlow-controlled writable path must
+reside below `/research/d4/gds/ziyiwang21`.  Run roots, cache objects, staging,
+temporary files, farm state, logs, build scratch, physical work directories,
+and archives must not use `/dev/shm`, `/tmp`, `/var/tmp`, `/uac`, or another
+node-local filesystem.  There is no automatic alternate-filesystem fallback:
+the launcher must preflight the user quota and leave a frontier blocked until
+enough space has been reclaimed through evidence-aware retention or archive
+cleanup.  Tool scratch such as `TMPDIR` must likewise point to an isolated
+directory under the required `/research` root.
+
 A full-flow Phase 6 provider comparison is one concrete example:
 
 ```text

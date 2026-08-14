@@ -87,6 +87,31 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   noise study) and give the repeated run a distinct declared identity; never
   make force-rerun the default behavior of an automation or validation task.
 
+## Mandatory experiment storage boundary
+
+- Every EmuFlow-controlled writable path on the validation servers must be
+  located below `/research/d4/gds/ziyiwang21`.  This includes run directories,
+  content-addressed caches, staging areas, temporary directories, farm state,
+  logs, build scratch, extracted inputs, checkpoints, archives, reports, and
+  tool-generated physical work directories.
+- Do not use node-local or alternate storage for EmuFlow work.  In particular,
+  `/dev/shm`, `/tmp`, `/var/tmp`, `/uac`, home-directory scratch, and any path
+  outside `/research/d4/gds/ziyiwang21` are prohibited for experiment outputs
+  or temporary artifacts, even as a quota workaround or performance
+  optimization.  Set `TMPDIR` and tool-specific scratch variables to a unique
+  directory under the required `/research` root when needed.
+- Never silently fall back to another filesystem.  Before launching an
+  expensive DAG frontier, check the user quota and estimate the frontier's
+  peak retained plus temporary footprint.  If the available quota is
+  insufficient, keep the frontier blocked, report the storage requirement,
+  and reclaim space only through the validated archive/retention process.
+- Storage cleanup must remain evidence-aware.  Preserve sealed final reports,
+  manifests, hashes, placement/route artifacts required for replay, and the
+  minimal valid checkpoints.  Classify and obtain an explicit safe cleanup
+  set before removing regenerable physical scratch, duplicated ancestors,
+  obsolete failed staging, or redundant captures; never delete unrelated
+  tasks or unvalidated evidence merely to make a run fit.
+
 ## End-to-end acceptance is mandatory
 
 - A Phase 6 algorithm, provider, optimization, or default-selection change is
