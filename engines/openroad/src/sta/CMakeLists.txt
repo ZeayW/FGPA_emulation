@@ -555,11 +555,11 @@ endif()
 target_include_directories(OpenSTA
   PUBLIC
   ${STA_GENERATED_INCLUDE_DIR}
+  ${STA_GENERATED_INCLUDE_DIR}/sta
   include
   ${TCL_INCLUDE_PATH}
 
   PRIVATE
-  ${STA_GENERATED_INCLUDE_DIR}/sta
   include/sta
   ${STA_HOME}
   ${CUDD_INCLUDE}
