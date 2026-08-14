@@ -208,10 +208,14 @@ def _local_path_database(
             )
             if measurement == "explicit-routed-path-chain":
                 physical_logic_model = "routed-selected-path-chain-exact"
+                physical_logic_exact = True
+                physical_logic_cone_bound = False
             elif measurement == "endpoint-longest-path-fallback":
                 physical_logic_model = (
                     "routed-endpoint-longest-path-conservative"
                 )
+                physical_logic_exact = False
+                physical_logic_cone_bound = True
             else:
                 raise ValidationError(
                     "physical local path measurement is invalid"
@@ -241,8 +245,10 @@ def _local_path_database(
                     "target_clock_slack_bound_ns": period - delay,
                     "runtime_clock_slack_bound_ns": virtual_period - delay,
                     "partition_chain_exact": True,
-                    "physical_logic_segments_exact": True,
-                    "physical_logic_segments_cone_bound": False,
+                    "physical_logic_segments_exact": physical_logic_exact,
+                    "physical_logic_segments_cone_bound": (
+                        physical_logic_cone_bound
+                    ),
                 }
             )
     records.sort(key=lambda item: item["path"])
@@ -519,6 +525,19 @@ def build_system_timing(
     system_paths = sorted(
         [*local_paths, *cross_paths], key=lambda item: item["path"]
     )
+    local_exact_logic_paths = sum(
+        bool(path["physical_logic_segments_exact"]) for path in local_paths
+    )
+    local_cone_bound_logic_paths = sum(
+        bool(path["physical_logic_segments_cone_bound"])
+        for path in local_paths
+    )
+    whole_exact_logic_paths = exact_logic_paths + local_exact_logic_paths
+    whole_measured_logic_paths = measured_logic_paths + len(local_paths)
+    whole_cone_bound_logic_paths = (
+        cone_bound_logic_paths + local_cone_bound_logic_paths
+    )
+    whole_logic_paths = len(system_paths)
     system_ids = [path["path"] for path in system_paths]
     if len(system_ids) != len(set(system_ids)):
         raise ValidationError(
@@ -567,14 +586,14 @@ def build_system_timing(
         "platform": platform.name,
         "qualification": (
             "staging-aware-physical-plus-concrete-link-tdm"
-            if exact_logic_paths == len(cross_paths)
+            if whole_exact_logic_paths == whole_logic_paths
             else (
                 "staging-aware-routed-physical-bounds-plus-concrete-link-tdm"
-                if measured_logic_paths == len(cross_paths)
+                if whole_measured_logic_paths == whole_logic_paths
                 else (
                     "hybrid-staging-aware-and-partition-maxima-plus-concrete-"
                     "link-tdm"
-                    if measured_logic_paths > 0
+                    if whole_measured_logic_paths > 0
                     else (
                         "partition-logic-maxima-plus-endpoint-exact-interface-"
                         "plus-concrete-link-tdm"
@@ -592,31 +611,38 @@ def build_system_timing(
             "scheduled_link_tdm": True,
             "physical_boundary_endpoints": endpoint_delays is not None,
             "physical_logic_segments": (
-                exact_logic_paths == len(cross_paths)
+                whole_exact_logic_paths == whole_logic_paths
             ),
             "physical_logic_segment_bounds": (
-                measured_logic_paths == len(cross_paths)
+                whole_measured_logic_paths == whole_logic_paths
             ),
             "physical_logic_segments_endpoint_exact": (
-                exact_logic_paths == len(cross_paths)
+                whole_exact_logic_paths == whole_logic_paths
             ),
             "physical_model": (
                 "routed-staging-chain-exact"
-                if exact_logic_paths == len(cross_paths)
+                if whole_exact_logic_paths == whole_logic_paths
                 else (
                     "routed-staging-chain-upper-bounds"
-                    if measured_logic_paths == len(cross_paths)
+                    if whole_measured_logic_paths == whole_logic_paths
                     else (
                         "hybrid-routed-staging-chain-and-partition-maxima"
-                        if measured_logic_paths > 0
+                        if whole_measured_logic_paths > 0
                         else "per-partition-and-interface-maxima-upper-bound"
                     )
                 )
             ),
-            "endpoint_exact_logic_paths": exact_logic_paths,
-            "cone_bound_logic_paths": cone_bound_logic_paths,
-            "fallback_logic_paths": len(cross_paths) - measured_logic_paths,
-            "local_original_paths_endpoint_exact": len(local_paths),
+            "endpoint_exact_logic_paths": whole_exact_logic_paths,
+            "cone_bound_logic_paths": whole_cone_bound_logic_paths,
+            "fallback_logic_paths": (
+                whole_logic_paths - whole_measured_logic_paths
+            ),
+            "local_original_paths_endpoint_exact": (
+                local_exact_logic_paths
+            ),
+            "local_original_paths_cone_bound": (
+                local_cone_bound_logic_paths
+            ),
             "discontinuous_compressed_paths": discontinuous_paths,
         },
         "physical_source": {

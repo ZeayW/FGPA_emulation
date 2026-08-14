@@ -566,6 +566,50 @@ class Phase7CTest(unittest.TestCase):
             {item["path_scope"] for item in timing["paths"]},
             {"same-fpga-local", "cross-fpga"},
         )
+        local_path = next(
+            item
+            for item in timing["paths"]
+            if item["path_scope"] == "same-fpga-local"
+        )
+        self.assertFalse(local_path["physical_logic_segments_exact"])
+        self.assertTrue(local_path["physical_logic_segments_cone_bound"])
+        exactness = timing["path_exactness"]
+        self.assertFalse(exactness["physical_logic_segments"])
+        self.assertFalse(exactness["physical_logic_segment_bounds"])
+        self.assertEqual(exactness["endpoint_exact_logic_paths"], 0)
+        self.assertEqual(exactness["cone_bound_logic_paths"], 1)
+        self.assertEqual(exactness["fallback_logic_paths"], 1)
+        self.assertEqual(exactness["local_original_paths_endpoint_exact"], 0)
+        self.assertEqual(exactness["local_original_paths_cone_bound"], 1)
+
+        selected = copy.deepcopy(physical)
+        selected["local_path_timing"]["fpga0"]["identity_schema"] = (
+            "emuflow.local-path-identity/v2"
+        )
+        selected["local_path_timing"]["fpga1"]["identity_schema"] = (
+            "emuflow.local-path-identity/v2"
+        )
+        selected_path = selected["local_path_timing"]["fpga0"]["paths"][0]
+        selected_path["measurement"] = "explicit-routed-path-chain"
+        selected_path["path_pins"] = ["i0.Q[0]", "i1.D[0]"]
+        selected_qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            self.reports["phase5"],
+            self.reports["phase6"],
+            selected,
+            self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
+        )
+        selected_exactness = selected_qor["timing"]["path_exactness"]
+        self.assertEqual(
+            selected_exactness["local_original_paths_endpoint_exact"], 1
+        )
+        self.assertEqual(
+            selected_exactness["local_original_paths_cone_bound"], 0
+        )
 
         broken = copy.deepcopy(physical)
         broken["local_path_timing"]["fpga0"]["paths"][0]["id"] = "other"

@@ -1403,8 +1403,11 @@ retains the conservative endpoint-longest-path traversal. The identity bundle
 records the selected pin chain or fallback for every path, and the independent
 checker rejects changed endpoints, chains, coverage, or source hashes. This
 keeps complete large-design local timing proportional to the selected path
-edges plus a small number of exact fallbacks rather than to the product of the
-path population and the complete FPGA timing graph.
+edges plus a small number of explicitly reported conservative fallbacks rather
+than to the product of the path population and the complete FPGA timing graph.
+Selected-chain measurements are exact routed-edge sums; fallback measurements
+remain coverage-complete but are reported as cone bounds and are never counted
+as exact physical logic segments.
 
 A completed open-backend Phase 7 A/B on the 67,674-instance
 `picorv32_x32_ring_top` design and the four-FPGA academic mesh exercises this
