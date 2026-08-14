@@ -230,7 +230,7 @@ file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 # the source tree, but their runtime libraries are recorded in local products.
 set(
   EMUFLOW_RUNTIME_RPATH
-  "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_LIBDIR}"
+  "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
 )
 foreach(EMUFLOW_DEPENDENCY_PREFIX IN LISTS EMUFLOW_CMAKE_PREFIX_PATH)
   list(
@@ -238,6 +238,18 @@ foreach(EMUFLOW_DEPENDENCY_PREFIX IN LISTS EMUFLOW_CMAKE_PREFIX_PATH)
     "${EMUFLOW_DEPENDENCY_PREFIX}/lib"
     "${EMUFLOW_DEPENDENCY_PREFIX}/lib64"
   )
+  # Debian-family dependency prefixes keep target libraries below a
+  # multiarch subdirectory (for example lib/x86_64-linux-gnu).  CMake's
+  # find_library() searches that directory automatically, but it is not
+  # implied by an explicit install RPATH.  Record it as well so installed
+  # OpenROAD/OpenSTA binaries can load the exact libraries they linked
+  # without relying on a mutable LD_LIBRARY_PATH.
+  if(CMAKE_LIBRARY_ARCHITECTURE)
+    list(
+      APPEND EMUFLOW_RUNTIME_RPATH
+      "${EMUFLOW_DEPENDENCY_PREFIX}/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
+    )
+  endif()
 endforeach()
 list(REMOVE_DUPLICATES EMUFLOW_RUNTIME_RPATH)
 string(REPLACE ";" "|" EMUFLOW_RUNTIME_RPATH_ARG "${EMUFLOW_RUNTIME_RPATH}")
