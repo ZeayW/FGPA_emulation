@@ -684,7 +684,9 @@ cmake --preset release \
 Multiple dependency prefixes may be supplied as a semicolon-separated CMake
 list. The root build preserves that list as one child-CMake argument and
 resolves the exact Bison/Flex executables plus `FlexLexer.h` from those
-prefixes before forwarding them to OpenROAD, OpenSTA, VPR, and OpenPARF.
+prefixes before forwarding them to OpenROAD, OpenSTA, VPR, and OpenPARF. The
+matching relocatable Bison data directory is also fixed in every parser-build
+environment instead of relying on a system `/usr/share/bison` path.
 OpenROAD and standalone OpenSTA are both configured without Tcl readline so
 their shared source configuration cannot disagree between the two builds.
 

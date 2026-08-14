@@ -124,11 +124,16 @@ string(
 )
 set(EMUFLOW_DEPENDENCY_BIN_HINTS "")
 set(EMUFLOW_DEPENDENCY_INCLUDE_HINTS "")
+set(EMUFLOW_BISON_DATA_HINTS "")
 foreach(EMUFLOW_DEPENDENCY_PREFIX IN LISTS EMUFLOW_CMAKE_PREFIX_PATH)
   list(APPEND EMUFLOW_DEPENDENCY_BIN_HINTS "${EMUFLOW_DEPENDENCY_PREFIX}/bin")
   list(
     APPEND EMUFLOW_DEPENDENCY_INCLUDE_HINTS
     "${EMUFLOW_DEPENDENCY_PREFIX}/include"
+  )
+  list(
+    APPEND EMUFLOW_BISON_DATA_HINTS
+    "${EMUFLOW_DEPENDENCY_PREFIX}/share/bison"
   )
 endforeach()
 find_program(
@@ -149,7 +154,14 @@ find_path(
   HINTS ${EMUFLOW_DEPENDENCY_INCLUDE_HINTS}
   DOC "Flex include directory forwarded to source-built native components"
 )
+find_path(
+  EMUFLOW_BISON_PKGDATADIR
+  NAMES m4sugar/m4sugar.m4
+  HINTS ${EMUFLOW_BISON_DATA_HINTS}
+  DOC "Relocatable Bison data directory used by source-built native components"
+)
 set(EMUFLOW_PARSER_CMAKE_ARGS "")
+set(EMUFLOW_EXTERNAL_BUILD_ENV "")
 if(EMUFLOW_BISON_EXECUTABLE)
   list(
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
@@ -166,6 +178,12 @@ if(EMUFLOW_FLEX_INCLUDE_DIR)
   list(
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
     "-DFLEX_INCLUDE_DIR=${EMUFLOW_FLEX_INCLUDE_DIR}"
+  )
+endif()
+if(EMUFLOW_BISON_PKGDATADIR)
+  list(
+    APPEND EMUFLOW_EXTERNAL_BUILD_ENV
+    "BISON_PKGDATADIR=${EMUFLOW_BISON_PKGDATADIR}"
   )
 endif()
 set(
@@ -799,6 +817,8 @@ if(EMUFLOW_BUILD_YOSYS)
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
     BUILD_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      ${EMUFLOW_EXTERNAL_BUILD_ENV}
       "${EMUFLOW_MAKE_EXECUTABLE}" -C "<BINARY_DIR>"
       -f "<SOURCE_DIR>/Makefile"
       -j "${EMUFLOW_EXTERNAL_JOBS}"
@@ -856,39 +876,32 @@ if(EMUFLOW_BUILD_OPENROAD)
       "-DSWIG_EXECUTABLE=${EMUFLOW_SWIG_EXECUTABLE}"
     )
   endif()
+  set(EMUFLOW_OPENROAD_BUILD_ENV ${EMUFLOW_EXTERNAL_BUILD_ENV})
   if(EMUFLOW_SWIG_DIR)
     list(
       APPEND EMUFLOW_OPENROAD_CMAKE_ARGS
       "-DSWIG_DIR=${EMUFLOW_SWIG_DIR}"
     )
-    set(
-      EMUFLOW_OPENROAD_BUILD_COMMAND
-      "${CMAKE_COMMAND}" -E env
+    list(
+      APPEND EMUFLOW_OPENROAD_BUILD_ENV
       "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    )
-    set(
-      EMUFLOW_OPENROAD_INSTALL_COMMAND
-      "${CMAKE_COMMAND}" -E env
-      "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --target install
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    )
-  else()
-    set(
-      EMUFLOW_OPENROAD_BUILD_COMMAND
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    )
-    set(
-      EMUFLOW_OPENROAD_INSTALL_COMMAND
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --target install
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
     )
   endif()
+  set(
+    EMUFLOW_OPENROAD_BUILD_COMMAND
+    "${CMAKE_COMMAND}" -E env
+    ${EMUFLOW_OPENROAD_BUILD_ENV}
+    "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+    --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+  )
+  set(
+    EMUFLOW_OPENROAD_INSTALL_COMMAND
+    "${CMAKE_COMMAND}" -E env
+    ${EMUFLOW_OPENROAD_BUILD_ENV}
+    "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+    --target install
+    --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+  )
   ExternalProject_Add(
     openroad_native
     SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/openroad"
@@ -922,39 +935,32 @@ if(EMUFLOW_BUILD_OPENSTA)
       "-DSWIG_EXECUTABLE=${EMUFLOW_SWIG_EXECUTABLE}"
     )
   endif()
+  set(EMUFLOW_OPENSTA_BUILD_ENV ${EMUFLOW_EXTERNAL_BUILD_ENV})
   if(EMUFLOW_SWIG_DIR)
     list(
       APPEND EMUFLOW_OPENSTA_CMAKE_ARGS
       "-DSWIG_DIR=${EMUFLOW_SWIG_DIR}"
     )
-    set(
-      EMUFLOW_OPENSTA_BUILD_COMMAND
-      "${CMAKE_COMMAND}" -E env
+    list(
+      APPEND EMUFLOW_OPENSTA_BUILD_ENV
       "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    )
-    set(
-      EMUFLOW_OPENSTA_INSTALL_COMMAND
-      "${CMAKE_COMMAND}" -E env
-      "SWIG_LIB=${EMUFLOW_SWIG_DIR}"
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --target install
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    )
-  else()
-    set(
-      EMUFLOW_OPENSTA_BUILD_COMMAND
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    )
-    set(
-      EMUFLOW_OPENSTA_INSTALL_COMMAND
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --target install
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
     )
   endif()
+  set(
+    EMUFLOW_OPENSTA_BUILD_COMMAND
+    "${CMAKE_COMMAND}" -E env
+    ${EMUFLOW_OPENSTA_BUILD_ENV}
+    "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+    --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+  )
+  set(
+    EMUFLOW_OPENSTA_INSTALL_COMMAND
+    "${CMAKE_COMMAND}" -E env
+    ${EMUFLOW_OPENSTA_BUILD_ENV}
+    "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
+    --target install
+    --parallel "${EMUFLOW_EXTERNAL_JOBS}"
+  )
   ExternalProject_Add(
     opensta_native
     SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/openroad/src/sta"
@@ -1016,6 +1022,8 @@ if(EMUFLOW_BUILD_VPR)
     LIST_SEPARATOR "|"
     CMAKE_ARGS ${EMUFLOW_VPR_CMAKE_ARGS}
     BUILD_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      ${EMUFLOW_EXTERNAL_BUILD_ENV}
       "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
       --target vpr
       --parallel "${EMUFLOW_EXTERNAL_JOBS}"
@@ -1055,9 +1063,13 @@ if(EMUFLOW_BUILD_OPENPARF)
       "-DLEMON_ENABLE_SOPLEX=NO"
       ${EMUFLOW_PARSER_CMAKE_ARGS}
     BUILD_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      ${EMUFLOW_EXTERNAL_BUILD_ENV}
       "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
       --parallel "${EMUFLOW_EXTERNAL_JOBS}"
     INSTALL_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      ${EMUFLOW_EXTERNAL_BUILD_ENV}
       "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
       --target install
       --parallel "${EMUFLOW_EXTERNAL_JOBS}"
