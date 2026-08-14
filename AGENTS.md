@@ -111,7 +111,12 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   generate a sealed GC plan.  Apply it only by the exact approved plan SHA-256;
   abort if any candidate changed or became referenced.  Legacy runs first get
   a read-only migration inventory, then independent validation/import or an
-  explicit diagnostic-retention decision.
+  explicit diagnostic-retention decision.  When a noncanonical legacy case is
+  deliberately retired, use `retirement-plan` followed by `retirement-apply`:
+  the apply step requires the exact plan SHA-256, rehashes every selected tree
+  before any mutation, refuses evidence/archive candidates, and preserves
+  marker tombstones plus a non-evidence receipt outside `runs`.  Direct
+  age/name/glob-based deletion remains forbidden.
 - A final evidence bundle recursively contains every required artifact for its
   terminal nodes and ancestors and must validate after the source cache is
   unavailable.  A legacy archive containing any hash-only run file is not

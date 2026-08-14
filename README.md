@@ -941,11 +941,25 @@ or became referenced. Legacy `runs` first receive a read-only migration plan:
 ```bash
 emuflow experiment-cache migration-plan --root /shared/emuflow/runs \
   --out /shared/experiments/legacy-migration.json
+emuflow experiment-cache retirement-plan \
+  --migration-plan /shared/experiments/legacy-migration.json \
+  --name retired-noncanonical-run --reason "retired synthetic regression" \
+  --out /shared/experiments/retirement.json
+emuflow experiment-cache retirement-apply \
+  --plan /shared/experiments/retirement.json \
+  --expected-plan-sha256 "$RETIREMENT_PLAN_SHA256" \
+  --receipt-root /shared/experiments/retirement-receipt
 emuflow experiment-cache gc-plan --cache /shared/emuflow/checkpoints \
   --root-plan experiment.plan.json --out /shared/experiments/gc.json
 emuflow experiment-cache gc-apply --plan /shared/experiments/gc.json \
   --expected-plan-sha256 "$GC_PLAN_SHA256"
 ```
+
+Retirement is only for an explicitly selected noncanonical legacy tree.  It
+content-seals the complete tree, revalidates all candidates before deleting the
+first byte, rejects evidence/archive candidates, and retains marker tombstones
+with a receipt labelled as non-evidence.  It is not a substitute for importing
+reusable checkpoints or building replay-complete evidence.
 
 On linux10/hpc1--hpc8 all controlled writes and temporary files are
 code-enforced below `/research/d4/gds/ziyiwang21`. Every v2 node supplies a peak

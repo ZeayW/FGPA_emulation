@@ -84,11 +84,13 @@ from .experiment_identity import (
     validate_implementation_closure,
 )
 from .experiment_store import (
+    apply_legacy_run_retirement,
     apply_experiment_gc,
     create_experiment_evidence_bundle,
     inventory_experiment_store,
     plan_experiment_gc,
     plan_legacy_run_migration,
+    plan_legacy_run_retirement,
     validate_experiment_evidence_bundle,
 )
 from .experiment_stages import (
@@ -389,6 +391,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     experiment_migration.add_argument("--root", type=Path, required=True)
     experiment_migration.add_argument("--out", type=Path, required=True)
+    experiment_retire_plan = experiment_subparsers.add_parser(
+        "retirement-plan",
+        help="content-seal explicitly retired legacy run trees without deleting",
+    )
+    experiment_retire_plan.add_argument("--migration-plan", type=Path, required=True)
+    experiment_retire_plan.add_argument("--name", action="append", default=[], required=True)
+    experiment_retire_plan.add_argument("--reason", required=True)
+    experiment_retire_plan.add_argument("--out", type=Path, required=True)
+    experiment_retire_apply = experiment_subparsers.add_parser(
+        "retirement-apply",
+        help="apply an unchanged legacy retirement plan and retain tombstones",
+    )
+    experiment_retire_apply.add_argument("--plan", type=Path, required=True)
+    experiment_retire_apply.add_argument("--expected-plan-sha256", required=True)
+    experiment_retire_apply.add_argument("--receipt-root", type=Path, required=True)
     experiment_plan = experiment_subparsers.add_parser(
         "plan", help="resolve cache hits and the next runnable DAG frontier"
     )
@@ -2733,6 +2750,19 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.experiment_command == "migration-plan":
             report = plan_legacy_run_migration(args.root, args.out)
+        elif args.experiment_command == "retirement-plan":
+            report = plan_legacy_run_retirement(
+                args.migration_plan,
+                args.name,
+                args.out,
+                reason=args.reason,
+            )
+        elif args.experiment_command == "retirement-apply":
+            report = apply_legacy_run_retirement(
+                args.plan,
+                args.expected_plan_sha256,
+                args.receipt_root,
+            )
         elif args.experiment_command == "plan":
             report = plan_experiment(args.spec, args.cache, args.out)
         elif args.experiment_command == "import":

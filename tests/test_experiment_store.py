@@ -9,11 +9,13 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.experiment_dag import plan_experiment, run_experiment_node
 from emuflow.experiment_store import (
+    apply_legacy_run_retirement,
     apply_experiment_gc,
     create_experiment_evidence_bundle,
     inventory_experiment_store,
     plan_experiment_gc,
     plan_legacy_run_migration,
+    plan_legacy_run_retirement,
     validate_experiment_evidence_bundle,
 )
 from emuflow.io import write_json
@@ -180,6 +182,95 @@ class ExperimentStoreTest(unittest.TestCase):
                 report["totals"]["allocated_bytes_before_hardlink_dedup"],
             )
             self.assertTrue(marker.is_file())
+
+    def test_legacy_retirement_requires_exact_content_and_keeps_marker_tombstone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            retired = runs / "synthetic-old"
+            retired.mkdir(parents=True)
+            marker = retired / "multi-fpga-flow-report.json"
+            marker.write_text('{"status":"pass"}', encoding="utf-8")
+            (retired / "scratch.bin").write_bytes(b"scratch")
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan = plan_legacy_run_retirement(
+                migration_path,
+                ["synthetic-old"],
+                plan_path,
+                reason="retired synthetic regression",
+            )
+            self.assertEqual(plan["candidates"][0]["classification"], "full-flow-candidate")
+            with self.assertRaisesRegex(ValidationError, "approval seal"):
+                apply_legacy_run_retirement(plan_path, "0" * 64, root / "receipt")
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            receipt = apply_legacy_run_retirement(
+                plan_path, approved, root / "receipt"
+            )
+            self.assertEqual(receipt["status"], "pass")
+            self.assertFalse(retired.exists())
+            tombstone = (
+                root
+                / "receipt/marker-tombstones/synthetic-old/multi-fpga-flow-report.json"
+            )
+            self.assertEqual(tombstone.read_text(encoding="utf-8"), '{"status":"pass"}')
+
+    def test_legacy_retirement_rejects_candidate_changed_after_planning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            candidate = runs / "partial-old"
+            candidate.mkdir(parents=True)
+            payload = candidate / "payload.bin"
+            payload.write_bytes(b"before")
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["partial-old"],
+                plan_path,
+                reason="obsolete failed attempt",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            payload.write_bytes(b"after")
+            with self.assertRaisesRegex(ValidationError, "candidate changed"):
+                apply_legacy_run_retirement(
+                    plan_path, approved, root / "receipt"
+                )
+            self.assertTrue(candidate.is_dir())
+            self.assertFalse((root / "receipt").exists())
+
+    def test_legacy_retirement_rejects_symlink_swap_even_with_identical_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            candidate = runs / "partial-old"
+            twin = runs / "identical-twin"
+            candidate.mkdir(parents=True)
+            twin.mkdir(parents=True)
+            (candidate / "payload.bin").write_bytes(b"same")
+            (twin / "payload.bin").write_bytes(b"same")
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["partial-old"],
+                plan_path,
+                reason="obsolete failed attempt",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            import shutil
+
+            shutil.rmtree(candidate)
+            candidate.symlink_to(twin, target_is_directory=True)
+            with self.assertRaisesRegex(ValidationError, "candidate changed"):
+                apply_legacy_run_retirement(
+                    plan_path, approved, root / "receipt"
+                )
+            self.assertTrue(twin.is_dir())
 
 
 if __name__ == "__main__":

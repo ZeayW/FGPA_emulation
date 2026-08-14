@@ -32,6 +32,8 @@ EXPERIMENT_EVIDENCE_SEAL_SCHEMA = "emuflow.experiment-evidence-seal/v1"
 EXPERIMENT_GC_PLAN_SCHEMA = "emuflow.experiment-gc-plan/v1"
 EXPERIMENT_GC_RECEIPT_SCHEMA = "emuflow.experiment-gc-receipt/v1"
 EXPERIMENT_MIGRATION_PLAN_SCHEMA = "emuflow.experiment-migration-plan/v1"
+EXPERIMENT_RETIREMENT_PLAN_SCHEMA = "emuflow.experiment-retirement-plan/v1"
+EXPERIMENT_RETIREMENT_RECEIPT_SCHEMA = "emuflow.experiment-retirement-receipt/v1"
 _MIGRATION_MARKERS = {
     "multi-fpga-flow-report.json",
     "experiment-phase6-report.json",
@@ -612,3 +614,177 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
     }
     write_json(output_path, plan)
     return plan
+
+
+def plan_legacy_run_retirement(
+    migration_plan_path: Path,
+    names: list[str],
+    output_path: Path,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Content-seal explicitly selected noncanonical legacy run trees.
+
+    This is intentionally separate from migration inventory: a marker or a
+    directory name never authorizes deletion.  The resulting plan still needs
+    its exact SHA-256 at apply time.
+    """
+
+    migration_plan_path = migration_plan_path.expanduser().resolve()
+    migration = read_json(migration_plan_path)
+    if (
+        migration.get("schema") != EXPERIMENT_MIGRATION_PLAN_SCHEMA
+        or migration.get("status") != "planned"
+    ):
+        raise ValidationError("legacy migration plan is invalid")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValidationError("legacy retirement reason is required")
+    if not names or len(names) != len(set(names)):
+        raise ValidationError("legacy retirement names must be nonempty and unique")
+    for name in names:
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise ValidationError("legacy retirement name is unsafe")
+    root = Path(migration["root"]).resolve()
+    entries = {entry["name"]: entry for entry in migration.get("entries", [])}
+    candidates = []
+    for name in sorted(names):
+        if name not in entries:
+            raise ValidationError(f"legacy retirement name is not inventoried: {name}")
+        entry = entries[name]
+        if entry.get("classification") in {
+            "evidence-bundle-candidate",
+            "validation-archive-candidate",
+            "unsafe-symlink",
+        }:
+            raise ValidationError(
+                f"legacy retirement refuses protected candidate: {name}"
+            )
+        lexical_path = root / name
+        if lexical_path.is_symlink():
+            raise ValidationError(f"legacy retirement candidate is unsafe: {name}")
+        path = lexical_path.resolve()
+        if path.parent != root or not path.is_dir():
+            raise ValidationError(f"legacy retirement candidate is unsafe: {name}")
+        kind, digest, size = _artifact_digest(path)
+        if kind != "directory":
+            raise ValidationError("legacy retirement candidate must be a directory")
+        candidates.append(
+            {
+                "name": name,
+                "classification": entry.get("classification"),
+                "kind": kind,
+                "sha256": digest,
+                "bytes": size,
+                "markers": entry.get("markers", []),
+            }
+        )
+    output_path = validate_experiment_write_path(output_path)
+    plan = {
+        "schema": EXPERIMENT_RETIREMENT_PLAN_SCHEMA,
+        "status": "planned",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason.strip(),
+        "root": str(root),
+        "migration_plan": {
+            "path": str(migration_plan_path),
+            "sha256": _sha256(migration_plan_path),
+        },
+        "candidates": candidates,
+        "candidate_bytes": sum(item["bytes"] for item in candidates),
+        "safety": {
+            "exact_plan_sha256_required": True,
+            "all_candidates_prevalidated_before_mutation": True,
+            "marker_tombstones_retained": True,
+            "canonical_evidence_or_archive_candidates_refused": True,
+        },
+    }
+    write_json(output_path, plan)
+    return plan
+
+
+def apply_legacy_run_retirement(
+    plan_path: Path,
+    expected_sha256: str,
+    receipt_root: Path,
+) -> dict[str, Any]:
+    """Apply an unchanged retirement plan and retain a non-evidence receipt."""
+
+    plan_path = plan_path.expanduser().resolve()
+    if len(expected_sha256) != 64 or _sha256(plan_path) != expected_sha256:
+        raise ValidationError("legacy retirement plan approval seal is broken")
+    plan = read_json(plan_path)
+    if (
+        plan.get("schema") != EXPERIMENT_RETIREMENT_PLAN_SCHEMA
+        or plan.get("status") != "planned"
+    ):
+        raise ValidationError("legacy retirement plan is invalid")
+    migration_source = plan.get("migration_plan", {})
+    migration_path = Path(migration_source.get("path", "")).resolve()
+    if (
+        not migration_path.is_file()
+        or _sha256(migration_path) != migration_source.get("sha256")
+    ):
+        raise ValidationError("legacy migration inventory changed after retirement planning")
+    root = Path(plan["root"]).resolve()
+    receipt_root = validate_experiment_write_path(receipt_root)
+    if receipt_root == root or root in receipt_root.parents or receipt_root in root.parents:
+        raise ValidationError("legacy retirement receipt must be outside the run tree")
+    if receipt_root.exists():
+        raise ValidationError("legacy retirement receipt already exists")
+
+    # Validate the complete set before deleting the first byte.
+    validated: list[tuple[dict[str, Any], Path]] = []
+    for candidate in plan.get("candidates", []):
+        name = candidate.get("name")
+        if not isinstance(name, str) or Path(name).name != name:
+            raise ValidationError("legacy retirement candidate path is unsafe")
+        lexical_path = root / name
+        if lexical_path.is_symlink():
+            raise ValidationError(f"legacy retirement candidate changed: {name}")
+        path = lexical_path.resolve()
+        if path.parent != root or not path.is_dir():
+            raise ValidationError(f"legacy retirement candidate changed: {name}")
+        kind, digest, size = _artifact_digest(path)
+        if (kind, digest, size) != (
+            candidate.get("kind"),
+            candidate.get("sha256"),
+            candidate.get("bytes"),
+        ):
+            raise ValidationError(f"legacy retirement candidate changed: {name}")
+        for marker in candidate.get("markers", []):
+            marker_path = _safe_artifact(path, marker["path"])
+            if not marker_path.is_file() or _sha256(marker_path) != marker["sha256"]:
+                raise ValidationError(f"legacy retirement marker changed: {name}")
+        validated.append((candidate, path))
+
+    receipt_root.mkdir(parents=True)
+    shutil.copy2(plan_path, receipt_root / "retirement-plan.json")
+    marker_root = receipt_root / "marker-tombstones"
+    for candidate, path in validated:
+        for marker in candidate.get("markers", []):
+            source = _safe_artifact(path, marker["path"])
+            destination = marker_root / candidate["name"] / marker["path"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    receipt_path = receipt_root / "retirement-receipt.json"
+    receipt = {
+        "schema": EXPERIMENT_RETIREMENT_RECEIPT_SCHEMA,
+        "status": "in-progress",
+        "plan_sha256": expected_sha256,
+        "reason": plan["reason"],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "removed": [],
+        "removed_bytes": 0,
+        "claim_boundary": "retired noncanonical material; not validation evidence",
+    }
+    write_json(receipt_path, receipt)
+    for candidate, path in validated:
+        _make_writable(path)
+        shutil.rmtree(path)
+        receipt["removed"].append(candidate)
+        receipt["removed_bytes"] += candidate["bytes"]
+        write_json(receipt_path, receipt)
+    receipt["status"] = "pass"
+    receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
+    write_json(receipt_path, receipt)
+    return receipt
