@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -68,6 +69,94 @@ class YosysImportTest(unittest.TestCase):
             ir.resource_totals().to_dict(include_zeros=False),
             {"ff": 4, "lut": 4},
         )
+
+    def test_synchronous_controls_are_transport_safe_but_async_controls_are_not(self) -> None:
+        source = {
+            "creator": "test",
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "clk": {"direction": "input", "bits": [2]},
+                        "control": {"direction": "input", "bits": [3]},
+                    },
+                    "cells": {
+                        "control_lut": {
+                            "type": "LUT1",
+                            "parameters": {"INIT": "2"},
+                            "attributes": {},
+                            "port_directions": {"I0": "input", "O": "output"},
+                            "connections": {"I0": [3], "O": [4]},
+                        },
+                        "sync_reset_ff": {
+                            "type": "FDRE",
+                            "parameters": {},
+                            "attributes": {},
+                            "port_directions": {
+                                "C": "input", "CE": "input", "D": "input",
+                                "Q": "output", "R": "input",
+                            },
+                            "connections": {"C": [2], "D": ["0"], "Q": [5], "R": [4]},
+                        },
+                        "sync_set_ff": {
+                            "type": "FDSE",
+                            "parameters": {},
+                            "attributes": {},
+                            "port_directions": {
+                                "C": "input", "CE": "input", "D": "input",
+                                "Q": "output", "S": "input",
+                            },
+                            "connections": {"C": [2], "D": ["0"], "Q": [6], "S": [4]},
+                        },
+                        "async_clear_ff": {
+                            "type": "FDCE",
+                            "parameters": {},
+                            "attributes": {},
+                            "port_directions": {
+                                "C": "input", "CE": "input", "CLR": "input",
+                                "D": "input", "Q": "output",
+                            },
+                            "connections": {"C": [2], "CLR": [7], "D": ["0"], "Q": [8]},
+                        },
+                        "async_preset_ff": {
+                            "type": "FDPE",
+                            "parameters": {},
+                            "attributes": {},
+                            "port_directions": {
+                                "C": "input", "CE": "input", "PRE": "input",
+                                "D": "input", "Q": "output",
+                            },
+                            "connections": {"C": [2], "PRE": [7], "D": ["0"], "Q": [9]},
+                        },
+                        "async_control_lut": {
+                            "type": "LUT1",
+                            "parameters": {"INIT": "2"},
+                            "attributes": {},
+                            "port_directions": {"I0": "input", "O": "output"},
+                            "connections": {"I0": [3], "O": [7]},
+                        },
+                    },
+                    "netnames": {
+                        "clk": {"hide_name": 0, "bits": [2]},
+                        "control": {"hide_name": 0, "bits": [3]},
+                        "sync_control": {"hide_name": 0, "bits": [4]},
+                        "q_reset": {"hide_name": 0, "bits": [5]},
+                        "q_set": {"hide_name": 0, "bits": [6]},
+                        "async_control": {"hide_name": 0, "bits": [7]},
+                        "q_clear": {"hide_name": 0, "bits": [8]},
+                        "q_preset": {"hide_name": 0, "bits": [9]},
+                    },
+                }
+            },
+        }
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "controls.json"
+            path.write_text(json.dumps(source), encoding="utf-8")
+            ir = import_yosys_json(path, top="top", clocks=["clk"])
+
+        classes = {net["id"]: net["cut_class"] for net in ir.value["nets"]}
+        self.assertEqual(classes["sync_control"], "register_input")
+        self.assertEqual(classes["async_control"], "combinational")
 
 
 if __name__ == "__main__":

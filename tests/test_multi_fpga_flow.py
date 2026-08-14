@@ -11,14 +11,17 @@ from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
+    finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
     validate_multi_fpga_flow_report,
 )
 from emuflow.platform import Platform
 from emuflow.tdm import reconstruct_tdm_schedule_timing_paths
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import (
     tdm_partition_feedback,
     tdm_ratio_optimizer,
+    tdm_timing_dag_optimizer,
     tlr_router,
 )
 
@@ -30,6 +33,119 @@ PLATFORM = (
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "multi"
+            report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=root,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                router=str(tlr_router()),
+                frame_slots=32,
+                equivalence_cycles=2,
+            )
+            physical_root = root / "physical-resumed"
+            physical_root.mkdir()
+            physical_report = {
+                "status": "pass",
+                "design": report["stages"]["frontend"]["design"],
+                "platform": report["stages"]["frontend"]["platform"],
+            }
+            write_json(
+                physical_root / "multi-fpga-physical-flow-report.json",
+                physical_report,
+            )
+            write_json(
+                physical_root / "physical-summary.json",
+                {"status": "pass"},
+            )
+
+            def fake_phase7c(*args, **kwargs):
+                runtime = args[6]
+                runtime.mkdir(parents=True)
+                write_json(runtime / "runtime_contract.json", {})
+                write_json(runtime / "qor_report.json", {})
+                return {"status": "pass"}
+
+            with (
+                patch(
+                    "emuflow.multi_fpga_flow.validate_multi_fpga_physical_report",
+                    return_value={"status": "pass"},
+                ),
+                patch(
+                    "emuflow.multi_fpga_flow.validate_multi_fpga_flow_report",
+                    return_value={"status": "pass"},
+                ),
+                patch(
+                    "emuflow.multi_fpga_flow.run_phase7c",
+                    side_effect=fake_phase7c,
+                ),
+            ):
+                finalized = finalize_multi_fpga_physical_checkpoint(
+                    root, physical_root
+                )
+            self.assertEqual(finalized["summary"]["status"], "pass")
+            self.assertEqual(
+                finalized["artifacts"]["physical_flow_report"]["path"],
+                "physical-resumed/multi-fpga-physical-flow-report.json",
+            )
+            with self.assertRaisesRegex(ValidationError, "runtime directory"):
+                finalize_multi_fpga_physical_checkpoint(
+                    root, physical_root, runtime_directory="../escape"
+                )
+
+    def test_complete_flow_selects_parallel_global_route_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            output = root / "global-route"
+            timing_paths = root / "paths.json"
+            write_json(
+                timing_paths,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": "counter",
+                    "paths": [
+                        {
+                            "id": "counter-cut",
+                            "clock_domain": "clk",
+                            "clock_period_ns": 20.0,
+                            "slack_ns": 1.0,
+                            "fixed_delay_ns": 0.0,
+                            "cut_nets": ["q[0]", "q[2]"],
+                        }
+                    ],
+                },
+            )
+            report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=output,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                router=str(tlr_router()),
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
+                route_candidate_workers=2,
+                timing_paths=timing_paths,
+                frame_slots=32,
+                tdm_provider=(
+                    "deterministic-round-barrier-earliest-slot-v2"
+                ),
+                equivalence_cycles=2,
+            )
+            phase4 = report["stages"]["system_route"]
+            self.assertEqual(phase4["provider"], GLOBAL_CANDIDATE_PROVIDER)
+            self.assertEqual(
+                phase4["candidate_generation"]["requested_workers"], 2
+            )
+            self.assertEqual(
+                phase4["candidate_generation"]["ordering"],
+                "demand-index-then-generator-index",
+            )
+
     def test_checked_board_independent_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "multi"
@@ -146,6 +262,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 opensta=str(fake_sta),
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 frame_slots=32,
                 optimize_frame_slots=True,
                 cross_stage_iterations=1,
@@ -212,6 +329,19 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                     "projected_paths"
                 ],
                 0,
+            )
+            self.assertEqual(
+                Path(
+                    report["timing"]["cut_path_projection"]["output"]
+                ).read_text(encoding="utf-8"),
+                (output / "timing/cut-timing-paths.json").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            projected = read_json(output / "timing/cut-timing-paths.json")
+            self.assertEqual(
+                Path(projected["source"]["input"]).resolve(),
+                (output / "timing/path-database.json").resolve(),
             )
             self.assertIn(
                 "timing_validation", report["stages"]["tdm"]
@@ -289,6 +419,43 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 "runtime/runtime_contract.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)
+
+            direct_output = root / "multi-direct"
+            direct_report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=direct_output,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                timing_driven=True,
+                board_link_timing_db=link_timing_path,
+                clock_periods={"clk": 10.0},
+                opensta=str(fake_sta),
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                cross_stage_iterations=0,
+                equivalence_cycles=2,
+            )
+            direct_projection = direct_report["timing"][
+                "cut_path_projection"
+            ]
+            self.assertEqual(
+                Path(direct_projection["output"]).read_text(
+                    encoding="utf-8"
+                ),
+                (direct_output / "timing/cut-timing-paths.json").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            direct_projected = read_json(
+                direct_output / "timing/cut-timing-paths.json"
+            )
+            self.assertEqual(
+                Path(direct_projected["source"]["input"]).resolve(),
+                (direct_output / "timing/path-database.json").resolve(),
+            )
 
     def test_nonempty_output_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

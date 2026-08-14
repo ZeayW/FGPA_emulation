@@ -50,8 +50,11 @@ from .sta import (
     project_sta_path_database,
 )
 from .tdm import validate_tdm_schedule
-from .tdm_ratio import TDM_RATIO_PROVIDER, validate_tdm_ratio_plan
-from .timing_routing import ROUTE_TDM_PROVIDER
+from .tdm_ratio import (
+    TDM_TIMING_DAG_RATIO_PROVIDER,
+    validate_tdm_ratio_plan,
+)
+from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 
 
 CROSS_STAGE_CANDIDATE_SCHEMA = "emuflow.cross-stage-candidate/v2"
@@ -850,6 +853,8 @@ def _run_candidate_flow(
     optimize_frame_slots: bool,
     route_max_iterations: Optional[int],
     router: Optional[str],
+    route_provider: Optional[str],
+    route_candidate_workers: int,
     simulation_frames: int,
     tdm_provider: Optional[str],
     ratio_optimizer: Optional[str],
@@ -888,6 +893,8 @@ def _run_candidate_flow(
             route_constraints=route_constraints_path,
             route_max_iterations=route_max_iterations,
             router=router,
+            route_provider=route_provider,
+            candidate_workers=route_candidate_workers,
             tdm_provider=tdm_provider,
             ratio_optimizer=ratio_optimizer,
             timing_dag_optimizer=timing_dag_optimizer,
@@ -910,16 +917,17 @@ def _run_candidate_flow(
             constraints_path=route_constraints_path,
             frame_slots=frame_slots,
             max_iterations=route_max_iterations,
-            provider=ROUTE_TDM_PROVIDER,
+            provider=route_provider or GLOBAL_CANDIDATE_PROVIDER,
             timing_paths_path=timing_path,
             router=router,
+            candidate_workers=route_candidate_workers,
         )
         phase5 = run_phase5(
             phase4_root / "routes.json",
             platform_path,
             phase5_root,
             simulation_frames=simulation_frames,
-            provider=tdm_provider or TDM_RATIO_PROVIDER,
+            provider=tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER,
             ratio_optimizer=ratio_optimizer,
             timing_dag_optimizer=timing_dag_optimizer,
             slot_optimizer=slot_optimizer,
@@ -989,6 +997,8 @@ def run_cross_stage_optimization(
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
     router: Optional[str] = None,
+    route_provider: Optional[str] = None,
+    route_candidate_workers: int = 1,
     frame_slots: Optional[int] = None,
     optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
@@ -1162,6 +1172,8 @@ def run_cross_stage_optimization(
         optimize_frame_slots=optimize_frame_slots,
         route_max_iterations=route_max_iterations,
         router=router,
+        route_provider=route_provider,
+        route_candidate_workers=route_candidate_workers,
         simulation_frames=simulation_frames,
         tdm_provider=tdm_provider,
         ratio_optimizer=ratio_optimizer,
@@ -1282,6 +1294,8 @@ def run_cross_stage_optimization(
                     optimize_frame_slots=optimize_frame_slots,
                     route_max_iterations=route_max_iterations,
                     router=router,
+                    route_provider=route_provider,
+                    route_candidate_workers=route_candidate_workers,
                     simulation_frames=simulation_frames,
                     tdm_provider=tdm_provider,
                     ratio_optimizer=ratio_optimizer,
@@ -1421,7 +1435,13 @@ def run_cross_stage_optimization(
             "partition_repair_balance": partition_repair_balance,
             "frame_slots": frame_slots,
             "optimize_frame_slots": optimize_frame_slots,
-            "tdm_provider": tdm_provider,
+            "route_provider": (
+                route_provider or GLOBAL_CANDIDATE_PROVIDER
+            ),
+            "route_candidate_workers": route_candidate_workers,
+            "tdm_provider": (
+                tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER
+            ),
             "feedback_steps": list(steps),
             "feedback_interpolation": (
                 "exp(step_size*log(raw_weight))"

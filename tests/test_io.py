@@ -7,6 +7,17 @@ from emuflow.io import read_json, write_json
 
 
 class JsonIoTest(unittest.TestCase):
+    def test_compact_json_is_deterministic_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "compact.json"
+            value = {"z": [3, 2, 1], "a": {"spaced": "value"}}
+            write_json(output, value, compact=True)
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                '{"a":{"spaced":"value"},"z":[3,2,1]}\n',
+            )
+            self.assertEqual(read_json(output), value)
+
     def test_write_json_replaces_only_after_complete_serialization(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

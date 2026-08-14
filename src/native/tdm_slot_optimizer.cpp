@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -26,6 +28,7 @@ struct Hop {
   int priority = -1;
   double base_ns = 0.0;
   double beta_ns = 0.0;
+  int lane_resource = -1;
 };
 
 struct Sink {
@@ -53,6 +56,7 @@ struct Model {
   std::vector<Hop> hops;
   std::vector<Sink> sinks;
   std::vector<TimingPath> paths;
+  int lane_resource_count = 0;
 };
 
 struct Schedule {
@@ -170,6 +174,23 @@ Model read_model(const std::string& path) {
   if (model.hops.empty() || model.sinks.empty() || model.paths.empty()) {
     throw std::runtime_error("input model is empty");
   }
+  // Domain and lane identifiers are stable external IDs and may be sparse.
+  // Compact only the actually used pairs once; allocating
+  // max(domain)*max(lane)*frame_slots made large public cases consume tens of
+  // gigabytes despite having only a small number of physical lane resources.
+  std::set<std::pair<int, int>> lane_resources;
+  for (const auto& hop : model.hops) {
+    lane_resources.emplace(hop.domain, hop.lane);
+  }
+  std::map<std::pair<int, int>, int> lane_resource_index;
+  for (const auto& resource : lane_resources) {
+    lane_resource_index.emplace(
+        resource, static_cast<int>(lane_resource_index.size()));
+  }
+  for (auto& hop : model.hops) {
+    hop.lane_resource = lane_resource_index.at({hop.domain, hop.lane});
+  }
+  model.lane_resource_count = static_cast<int>(lane_resource_index.size());
   return model;
 }
 
@@ -185,13 +206,9 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
   Schedule result;
   const int hop_count = static_cast<int>(model.hops.size());
   int maximum_round = 0;
-  int maximum_domain = 0;
-  int maximum_lane = 0;
   int maximum_route = 0;
   for (const auto& hop : model.hops) {
     maximum_round = std::max(maximum_round, hop.round);
-    maximum_domain = std::max(maximum_domain, hop.domain);
-    maximum_lane = std::max(maximum_lane, hop.lane);
   }
   for (const auto& sink : model.sinks) {
     maximum_route = std::max(maximum_route, sink.route);
@@ -204,10 +221,40 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
   for (const auto& hop : model.hops) {
     if (hop.parent >= 0) children[hop.parent].push_back(hop.index);
   }
-  const int lane_stride = maximum_lane + 1;
-  const int lane_domains = (maximum_domain + 1) * lane_stride;
-  std::vector<std::vector<unsigned char>> occupied(
-      lane_domains, std::vector<unsigned char>(model.frame_slots, 0));
+  // The external resource identifiers are sparse, and even the compacted
+  // resource_count * frame_slots product can be enormous.  Only one cell per
+  // scheduled hop is occupied, so keep a deterministic open-addressed set of
+  // those cells.  Its storage is O(hops), independent of identifier ranges and
+  // frame length, and build_schedule can be called repeatedly by LNS without
+  // retaining hundreds of thousands of small allocations.
+  std::size_t occupancy_capacity = 2;
+  while (occupancy_capacity < static_cast<std::size_t>(hop_count) * 2) {
+    occupancy_capacity <<= 1;
+  }
+  constexpr std::uint64_t empty_occupancy =
+      std::numeric_limits<std::uint64_t>::max();
+  std::vector<std::uint64_t> occupied(occupancy_capacity, empty_occupancy);
+  const std::size_t occupancy_mask = occupancy_capacity - 1;
+  auto occupancy_index = [&](std::uint64_t key) {
+    return static_cast<std::size_t>(key * 11400714819323198485ull) &
+           occupancy_mask;
+  };
+  auto is_occupied = [&](std::uint64_t key) {
+    std::size_t position = occupancy_index(key);
+    while (occupied[position] != empty_occupancy) {
+      if (occupied[position] == key) return true;
+      position = (position + 1) & occupancy_mask;
+    }
+    return false;
+  };
+  auto occupy = [&](std::uint64_t key) {
+    std::size_t position = occupancy_index(key);
+    while (occupied[position] != empty_occupancy &&
+           occupied[position] != key) {
+      position = (position + 1) & occupancy_mask;
+    }
+    occupied[position] = key;
+  };
 
   for (int round = 0; round <= maximum_round; ++round) {
     int source_ready = 0;
@@ -252,11 +299,15 @@ Schedule build_schedule(const Model& model, const std::vector<int>& priority) {
       const int latest = std::min(
           ready + hop.ratio,
           model.frame_slots - model.runtime_barrier_slots - hop.latency);
-      const int lane_domain = hop.domain * lane_stride + hop.lane;
       int slot = ready;
-      while (slot < latest && occupied[lane_domain][slot]) ++slot;
+      auto occupancy_key = [&](int candidate_slot) {
+        return static_cast<std::uint64_t>(hop.lane_resource) *
+                   static_cast<std::uint64_t>(model.frame_slots) +
+               static_cast<std::uint64_t>(candidate_slot);
+      };
+      while (slot < latest && is_occupied(occupancy_key(slot))) ++slot;
       if (slot >= latest) return result;
-      occupied[lane_domain][slot] = 1;
+      occupy(occupancy_key(slot));
       result.slots[index] = slot;
       result.ready[index] = ready;
       ++scheduled;
@@ -320,6 +371,8 @@ struct OptimizationResult {
   int iterations = 0;
   int accepted_moves = 0;
   int evaluated_moves = 0;
+  int lns_neighborhoods = 0;
+  int lns_evaluated_orders = 0;
 };
 
 OptimizationResult optimize(const Model& model) {
@@ -358,19 +411,76 @@ OptimizationResult optimize(const Model& model) {
       if (nearest >= 0) candidates.insert(std::minmax(critical, nearest));
     }
     Schedule best = result.schedule;
-    std::pair<int, int> best_move{-1, -1};
+    std::vector<int> best_priority;
     for (const auto& move : candidates) {
       std::swap(priority[move.first], priority[move.second]);
       Schedule candidate = build_schedule(model, priority);
       ++result.evaluated_moves;
-      std::swap(priority[move.first], priority[move.second]);
       if (candidate.feasible && better(candidate, best)) {
         best = std::move(candidate);
-        best_move = move;
+        best_priority = priority;
       }
+      std::swap(priority[move.first], priority[move.second]);
     }
-    if (best_move.first < 0) break;
-    std::swap(priority[best_move.first], priority[best_move.second]);
+    // Deterministic LNS: for every delayed hop on the current worst path,
+    // exactly re-optimize the relative order of that hop and up to three
+    // preceding blockers on the same physical lane. The rest of the schedule
+    // remains fixed, so the neighborhood is bounded by 4! orders even on
+    // million-hop inputs.
+    for (int critical : worst.hops) {
+      if (result.schedule.slots[critical] <= result.schedule.ready[critical]) {
+        continue;
+      }
+      const auto& critical_hop = model.hops[critical];
+      std::vector<std::pair<int, int>> blockers;
+      for (const auto& other : model.hops) {
+        if (other.index == critical || other.round != critical_hop.round ||
+            other.domain != critical_hop.domain ||
+            other.lane != critical_hop.lane ||
+            result.schedule.slots[other.index] >=
+                result.schedule.slots[critical]) {
+          continue;
+        }
+        blockers.emplace_back(result.schedule.slots[other.index], other.index);
+      }
+      std::sort(blockers.begin(), blockers.end());
+      std::vector<int> neighborhood{critical};
+      const int first = std::max(0, static_cast<int>(blockers.size()) - 3);
+      for (int index = first; index < static_cast<int>(blockers.size());
+           ++index) {
+        neighborhood.push_back(blockers[index].second);
+      }
+      if (neighborhood.size() < 2) continue;
+      std::sort(neighborhood.begin(), neighborhood.end());
+      std::vector<int> ranks;
+      for (int hop : neighborhood) ranks.push_back(priority[hop]);
+      std::sort(ranks.begin(), ranks.end());
+      std::vector<int> permutation = neighborhood;
+      ++result.lns_neighborhoods;
+      do {
+        bool unchanged = true;
+        for (int index = 0; index < static_cast<int>(permutation.size());
+             ++index) {
+          if (priority[permutation[index]] != ranks[index]) unchanged = false;
+        }
+        if (unchanged) continue;
+        std::vector<int> candidate_priority = priority;
+        for (int index = 0; index < static_cast<int>(permutation.size());
+             ++index) {
+          candidate_priority[permutation[index]] = ranks[index];
+        }
+        Schedule candidate = build_schedule(model, candidate_priority);
+        ++result.evaluated_moves;
+        ++result.lns_evaluated_orders;
+        if (candidate.feasible && better(candidate, best)) {
+          best = std::move(candidate);
+          best_priority = std::move(candidate_priority);
+        }
+      } while (std::next_permutation(
+          permutation.begin(), permutation.end()));
+    }
+    if (best_priority.empty()) break;
+    priority = std::move(best_priority);
     result.schedule = std::move(best);
     ++result.accepted_moves;
   }
@@ -389,6 +499,9 @@ void write_result(const std::string& path, const OptimizationResult& result) {
   output << "METRIC iterations " << result.iterations << '\n';
   output << "METRIC accepted_moves " << result.accepted_moves << '\n';
   output << "METRIC evaluated_moves " << result.evaluated_moves << '\n';
+  output << "METRIC lns_neighborhoods " << result.lns_neighborhoods << '\n';
+  output << "METRIC lns_evaluated_orders "
+         << result.lns_evaluated_orders << '\n';
   output << std::setprecision(17);
   output << "METRIC worst_normalized_slack "
          << result.schedule.worst_normalized_slack << '\n';
@@ -400,7 +513,7 @@ void write_result(const std::string& path, const OptimizationResult& result) {
 
 void print_help() {
   std::cout << "Usage: emuflow_tdm_slot_optimizer INPUT OUTPUT\n"
-            << "Timing-path-guided local search for a fixed TDM ratio/lane "
+            << "Timing-path-guided deterministic LNS for a fixed TDM ratio/lane "
                "plan.\n";
 }
 

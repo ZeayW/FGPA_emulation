@@ -19,6 +19,10 @@ from .routing import (
     route_link_delay_ns,
 )
 from .tdm import RUNTIME_BARRIER_SLOTS
+from .tdm_compatibility import (
+    derive_tdm_compatibility,
+    validate_tdm_compatibility,
+)
 
 
 TDM_RATIO_PLAN_SCHEMA = "emuflow.tdm-ratio-plan/v1"
@@ -142,6 +146,17 @@ def _prepare_model(
                 f"duplicate route net {route['net']!r}"
             )
         route_by_net[route["net"]] = route
+        compatibility_domain = route.get(
+            "tdm_compatibility", "global-frame-cdc"
+        )
+        if (
+            not isinstance(compatibility_domain, str)
+            or not compatibility_domain
+        ):
+            raise ValidationError(
+                f"route {route['id']!r}.tdm_compatibility: "
+                "expected a non-empty string"
+            )
         route_hop_keys[route["id"]] = []
         for depth, edge in _route_edges_in_tree_order(route):
             key = _hop_key(
@@ -162,6 +177,7 @@ def _prepare_model(
                     "demand": route["id"],
                     "net": route["net"],
                     "transport_round": route.get("transport_round", 0),
+                    "compatibility_domain": compatibility_domain,
                     "link": edge["link"],
                     "from": edge["from"],
                     "to": edge["to"],
@@ -209,6 +225,11 @@ def _prepare_model(
                 ],
             }
         )
+
+    provisional_model = {
+        "hops": hops,
+        "timing_paths": [],
+    }
 
     domains = []
     for capacity_key in capacity_keys:
@@ -347,6 +368,15 @@ def _prepare_model(
             }
         )
 
+    provisional_model["timing_paths"] = timing_paths
+    compatibility = derive_tdm_compatibility(provisional_model)
+    compatibility_by_hop = {
+        record["hop"]: record["compatibility"]
+        for record in compatibility["hops"]
+    }
+    for hop in hops:
+        hop["compatibility"] = compatibility_by_hop[hop["index"]]
+
     return {
         "constraints": constraints,
         "normalization": {
@@ -360,6 +390,7 @@ def _prepare_model(
         "domains": domains,
         "hops": hops,
         "timing_paths": timing_paths,
+        "compatibility": compatibility,
     }
 
 
@@ -370,21 +401,19 @@ def _write_native_input(
     max_iterations: int,
     max_ratio: int,
     ratio_quantum: int,
+    min_ratio: int,
     post_refinement_iterations: int,
     exact_domain_limit: int,
     convergence: float,
     continuous_seed: Optional[Sequence[float]] = None,
 ) -> None:
     normalization = model["normalization"]
-    header = (
-        "EMUFLOW_TDM_RATIO_INPUT_V4"
-        if continuous_seed is not None
-        else "EMUFLOW_TDM_RATIO_INPUT_V2"
-    )
+    header = "EMUFLOW_TDM_RATIO_INPUT_V7"
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(header + "\n")
         stream.write(
             f"PARAM {max_iterations} {max_ratio} {ratio_quantum} "
+            f"{min_ratio} "
             f"{post_refinement_iterations} {exact_domain_limit} "
             f"{convergence:.17g} "
             f"{normalization['positive_slack_scale_ns']:.17g} "
@@ -397,6 +426,7 @@ def _write_native_input(
         )
         stream.writelines(
             f"HOP {hop['index']} {hop['domain']} {hop['direction']} "
+            f"{hop['compatibility']} "
             f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g}\n"
             for hop in model["hops"]
         )
@@ -897,6 +927,7 @@ def _round_barrier_legalize(
             key=lambda index: current_timing[index]["normalized_slack"],
         )
         candidates = []
+        boundary_migration_candidates = []
         for key in sorted(current_buckets):
             domain, direction, ratio = key
             if domain not in failing_domains or ratio >= max_ratio:
@@ -968,8 +999,6 @@ def _round_barrier_legalize(
                     )
                 )
                 saving = before - after
-                if saving <= 0:
-                    continue
                 candidate_worst = unaffected_worst
                 ratio_delta = target - ratio
                 for path_position, beta in path_impacts:
@@ -985,23 +1014,55 @@ def _round_barrier_legalize(
                         ),
                     )
                 loss = max(0.0, current_worst - candidate_worst)
-                candidates.append(
-                    (
-                        loss / saving,
-                        loss,
-                        -saving,
-                        target - ratio,
-                        len(current_buckets[key]),
-                        key,
-                        target,
+                if saving > 0:
+                    candidates.append(
+                        (
+                            loss / saving,
+                            loss,
+                            -saving,
+                            target - ratio,
+                            len(current_buckets[key]),
+                            key,
+                            target,
+                        )
                     )
-                )
-        if not candidates:
+                else:
+                    candidate_counts = {
+                        bucket_key: Counter(bucket_count)
+                        for bucket_key, bucket_count in current_counts.items()
+                        if bucket_key != key and bucket_key != target_key
+                    }
+                    candidate_counts[target_key] = merged_count
+                    candidate_boundary = boundary_score(candidate_counts)[0]
+                    boundary_migration_candidates.append(
+                        (
+                            candidate_boundary,
+                            loss,
+                            target - ratio,
+                            len(current_buckets[key]),
+                            key,
+                            target,
+                        )
+                    )
+        if candidates:
+            *_, selected_key, selected_target = min(candidates)
+        elif boundary_migration_candidates:
+            # A fixed round boundary can hide a legal ratio promotion.  In
+            # particular, a promotion may only become useful after the best
+            # boundary moves away from the frame midpoint.  Re-evaluate the
+            # complete boundary objective for every monotone merge and take
+            # the least damaging monotone step.  Repeated merges are
+            # complete: ratios only increase through a finite legal set, and
+            # the all-max-ratio state is reached before infeasibility is
+            # reported.
+            *_, selected_key, selected_target = min(
+                boundary_migration_candidates
+            )
+        else:
             raise ValidationError(
                 "TDM round-barrier legalization cannot reduce lane "
                 "fragmentation to a feasible solution"
             )
-        *_, selected_key, selected_target = min(candidates)
         for hop in current_buckets[selected_key]:
             hop["discrete_ratio"] = selected_target
             promoted_indices.add(hop["index"])
@@ -1109,7 +1170,7 @@ def build_tdm_ratio_plan(
     executable: Optional[str] = None,
     max_iterations: int = 500,
     max_ratio: Optional[int] = None,
-    ratio_quantum: int = 8,
+    ratio_quantum: Optional[int] = None,
     post_refinement_iterations: int = 200,
     exact_domain_limit: int = DEFAULT_EXACT_DOMAIN_LIMIT,
     convergence: float = 1.0e-9,
@@ -1123,6 +1184,11 @@ def build_tdm_ratio_plan(
         if prepared_model is not None
         else _prepare_model(routes, platform)
     )
+    min_ratio = int(model["constraints"].get("tdm_min_ratio", 1))
+    if ratio_quantum is None:
+        ratio_quantum = int(
+            model["constraints"].get("tdm_ratio_quantum", 8)
+        )
     if max_ratio is None:
         link_by_id = {link.id: link for link in platform.links}
         usable_slots = min(
@@ -1163,6 +1229,12 @@ def build_tdm_ratio_plan(
         raise ValidationError(
             "TDM ratio max_ratio must be 1 or a multiple of ratio_quantum"
         )
+    if min_ratio != 1 and min_ratio % ratio_quantum != 0:
+        raise ValidationError(
+            "TDM ratio min_ratio must be 1 or a multiple of ratio_quantum"
+        )
+    if min_ratio > max_ratio:
+        raise ValidationError("TDM ratio min_ratio cannot exceed max_ratio")
     if (
         isinstance(convergence, bool)
         or not isinstance(convergence, (int, float))
@@ -1188,7 +1260,7 @@ def build_tdm_ratio_plan(
                 isinstance(ratio, bool)
                 or not isinstance(ratio, (int, float))
                 or not math.isfinite(float(ratio))
-                or not 1.0 <= float(ratio) <= max_ratio
+                or not float(min_ratio) <= float(ratio) <= max_ratio
             ):
                 raise ValidationError(
                     "TDM ratio continuous seed contains an invalid ratio"
@@ -1207,6 +1279,7 @@ def build_tdm_ratio_plan(
             max_iterations=max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
+            min_ratio=min_ratio,
             post_refinement_iterations=post_refinement_iterations,
             exact_domain_limit=exact_domain_limit,
             convergence=float(convergence),
@@ -1254,6 +1327,7 @@ def build_tdm_ratio_plan(
             "max_iterations": max_iterations,
             "max_ratio": max_ratio,
             "ratio_quantum": ratio_quantum,
+            "min_ratio": min_ratio,
             "post_refinement_iterations": post_refinement_iterations,
             "exact_domain_limit": exact_domain_limit,
             "convergence": float(convergence),
@@ -1261,6 +1335,7 @@ def build_tdm_ratio_plan(
         "normalization": model["normalization"],
         "round_barrier_legalization": barrier_legalization,
         "domains": model["domains"],
+        "compatibility": model["compatibility"],
         "hops": hop_records,
         "timing_paths": timing_records,
         "metrics": {
@@ -1360,11 +1435,17 @@ def validate_tdm_ratio_plan(
         raise ValidationError(
             "ratio plan.domains do not match routed capacity domains"
         )
+    if plan.get("compatibility") != model["compatibility"]:
+        raise ValidationError(
+            "ratio plan compatibility does not match routed timing domains"
+        )
+    validate_tdm_compatibility(model, plan["compatibility"])
     configuration = plan.get("configuration")
     if not isinstance(configuration, dict):
         raise ValidationError("ratio plan.configuration: expected an object")
     max_ratio = configuration.get("max_ratio")
     ratio_quantum = configuration.get("ratio_quantum")
+    min_ratio = configuration.get("min_ratio", 1)
     exact_domain_limit = configuration.get("exact_domain_limit")
     convergence = configuration.get("convergence")
     if (
@@ -1374,6 +1455,10 @@ def validate_tdm_ratio_plan(
         or isinstance(ratio_quantum, bool)
         or not isinstance(ratio_quantum, int)
         or ratio_quantum <= 0
+        or isinstance(min_ratio, bool)
+        or not isinstance(min_ratio, int)
+        or min_ratio <= 0
+        or min_ratio > max_ratio
         or isinstance(exact_domain_limit, bool)
         or not isinstance(exact_domain_limit, int)
         or exact_domain_limit < 0
@@ -1382,8 +1467,21 @@ def validate_tdm_ratio_plan(
         or float(convergence) <= 0.0
     ):
         raise ValidationError("ratio plan.configuration is invalid")
-    allowed_ratios = {1} | set(
-        range(ratio_quantum, max_ratio + 1, ratio_quantum)
+    if min_ratio != 1 and min_ratio % ratio_quantum != 0:
+        raise ValidationError("ratio plan.configuration min_ratio is invalid")
+    if min_ratio != int(model["constraints"].get("tdm_min_ratio", 1)):
+        raise ValidationError(
+            "ratio plan.configuration min_ratio differs from routes"
+        )
+    allowed_ratios = (
+        ({1} if min_ratio == 1 else set())
+        | set(
+            range(
+                ratio_quantum if min_ratio == 1 else min_ratio,
+                max_ratio + 1,
+                ratio_quantum,
+            )
+        )
     )
 
     raw_hops = plan.get("hops")
@@ -1414,7 +1512,7 @@ def validate_tdm_ratio_plan(
             isinstance(continuous, bool)
             or not isinstance(continuous, (int, float))
             or not math.isfinite(float(continuous))
-            or float(continuous) < 1.0 - 1.0e-9
+            or float(continuous) < float(min_ratio) - 1.0e-9
             or float(continuous) > max_ratio + 1.0e-9
         ):
             raise ValidationError(
@@ -1446,12 +1544,14 @@ def validate_tdm_ratio_plan(
             group_key,
             {
                 "direction": expected["direction"],
+                "compatibility": expected["compatibility"],
                 "ratio": discrete,
                 "hops": 0,
             },
         )
         if (
             group["direction"] != expected["direction"]
+            or group["compatibility"] != expected["compatibility"]
             or group["ratio"] != discrete
         ):
             raise ValidationError(

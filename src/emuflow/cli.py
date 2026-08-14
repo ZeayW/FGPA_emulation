@@ -133,7 +133,10 @@ from .fpga_interchange import (
 from .io import read_json, write_json
 from .ir import EmuIR
 from .lowering import run_placement_ir_lowering
-from .multi_fpga_flow import run_multi_fpga_flow
+from .multi_fpga_flow import (
+    finalize_multi_fpga_physical_checkpoint,
+    run_multi_fpga_flow,
+)
 from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
 from .multi_fpga_physical_flow import run_multi_fpga_physical_flow
 from .opensta import (
@@ -174,6 +177,10 @@ from .pin_planning import (
 )
 from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
+from .routing_tdm_comparison import (
+    build_system_route_tdm_ab_comparison,
+    build_system_route_tdm_scale_comparison,
+)
 from .runtime_sync import (
     run_runtime_sync_materialization,
     validate_runtime_sync_provider,
@@ -199,6 +206,7 @@ from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
     ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
@@ -1347,6 +1355,45 @@ def _build_parser() -> argparse.ArgumentParser:
             "and per-FPGA split generation"
         ),
     )
+    multi_fpga_compare = multi_fpga_subparsers.add_parser(
+        "compare-routing-tdm",
+        help=(
+            "revalidate and compare frozen baseline/upgrade complete "
+            "Phase-7 routing/TDM flows"
+        ),
+    )
+    multi_fpga_compare.add_argument("--baseline", type=Path, required=True)
+    multi_fpga_compare.add_argument("--upgrade", type=Path, required=True)
+    multi_fpga_compare.add_argument("--output", type=Path, required=True)
+    multi_fpga_scale_compare = multi_fpga_subparsers.add_parser(
+        "compare-routing-tdm-scale",
+        help="independently replay and compare frozen large Phase 4/5 arms",
+    )
+    for name in (
+        "assignment", "platform", "route-constraints", "timing-paths", "baseline-route",
+        "baseline-tdm", "upgrade-route", "upgrade-tdm", "output",
+    ):
+        multi_fpga_scale_compare.add_argument(
+            f"--{name}", type=Path, required=True
+        )
+    multi_fpga_scale_compare.add_argument(
+        "--baseline-runtime-seconds", type=float, required=True
+    )
+    multi_fpga_scale_compare.add_argument(
+        "--upgrade-runtime-seconds", type=float, required=True
+    )
+    multi_fpga_finalize = multi_fpga_subparsers.add_parser(
+        "finalize-physical",
+        help=(
+            "finish Phase 7C and seal a complete flow from a checked "
+            "independently resumed physical checkpoint"
+        ),
+    )
+    multi_fpga_finalize.add_argument("--flow", type=Path, required=True)
+    multi_fpga_finalize.add_argument("--physical", type=Path, required=True)
+    multi_fpga_finalize.add_argument(
+        "--runtime-directory", default="runtime-final"
+    )
     multi_fpga_compile.add_argument("sources", nargs="*", type=Path)
     multi_fpga_compile.add_argument("--top")
     multi_fpga_compile.add_argument("--clock", action="append", default=[])
@@ -1491,6 +1538,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--timing-paths", type=Path)
     multi_fpga_compile.add_argument("--router")
+    multi_fpga_compile.add_argument(
+        "--route-provider",
+        choices=(
+            NATIVE_ROUTER_PROVIDER,
+            TLR_PROVIDER,
+            ROUTE_TDM_PROVIDER,
+            GLOBAL_CANDIDATE_PROVIDER,
+        ),
+        help=(
+            f"explicit Phase 4 provider; timing-enabled flows default to "
+            f"{GLOBAL_CANDIDATE_PROVIDER}"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--route-candidate-workers",
+        type=int,
+        default=1,
+        help="parallel deterministic candidate generators for global routing",
+    )
     multi_fpga_compile.add_argument("--frame-slots", type=int)
     multi_fpga_compile.add_argument(
         "--optimize-frame-slots",
@@ -1507,6 +1573,10 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
+        ),
+        help=(
+            f"explicit Phase 5 provider; timing-enabled flows default to "
+            f"{TDM_TIMING_DAG_RATIO_PROVIDER}"
         ),
     )
     multi_fpga_compile.add_argument("--ratio-optimizer")
@@ -1687,6 +1757,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="run independent per-FPGA physical backends concurrently",
+    )
+    multi_fpga_physical.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "reuse only independently hash-validated VPR pack/place "
+            "checkpoints before continuing OpenPARF and detailed routing"
+        ),
     )
     multi_fpga_bsp = multi_fpga_subparsers.add_parser(
         "bsp",
@@ -2286,15 +2364,63 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument("--frame-slots", type=int)
     phase4.add_argument("--max-iterations", type=int)
     phase4.add_argument(
+        "--candidate-workers",
+        type=int,
+        default=1,
+        help="parallel global-candidate generators (default: 1)",
+    )
+    phase4.add_argument(
+        "--tdm-feedback",
+        type=Path,
+        help=(
+            "checked Phase 5 tdm-feedback/v1 used only by the global "
+            "candidate provider"
+        ),
+    )
+    phase4.add_argument(
+        "--tdm-feedback-routes",
+        type=Path,
+        help="source routes used to independently reconstruct feedback",
+    )
+    phase4.add_argument(
+        "--tdm-feedback-schedule",
+        type=Path,
+        help="source schedule used to independently reconstruct feedback",
+    )
+    phase4.add_argument(
+        "--tdm-feedback-ratio-plan",
+        type=Path,
+        help="optional source ratio plan used by the feedback schedule",
+    )
+    phase4.add_argument(
+        "--physical-feedback",
+        type=Path,
+        help="checked Phase 7 boundary-domain feedback to add to TDM prices",
+    )
+    phase4.add_argument(
+        "--physical-feedback-runtime",
+        type=Path,
+        help="source runtime used to independently validate physical feedback",
+    )
+    phase4.add_argument(
+        "--physical-feedback-summary",
+        type=Path,
+        help="source Phase 7 physical summary with boundary timing",
+    )
+    phase4.add_argument(
+        "--physical-feedback-weight", type=float, default=1.0
+    )
+    phase4.add_argument(
         "--provider",
         choices=[
             NATIVE_ROUTER_PROVIDER,
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
+            GLOBAL_CANDIDATE_PROVIDER,
         ],
         default=None,
         help=(
-            f"defaults to {ROUTE_TDM_PROVIDER} when --timing-paths is "
+            f"defaults to {GLOBAL_CANDIDATE_PROVIDER} when --timing-paths is "
             f"supplied, otherwise {NATIVE_ROUTER_PROVIDER}"
         ),
     )
@@ -2341,8 +2467,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         default=None,
         help=(
-            "defaults to the academic provider when routes contain timing, "
-            "otherwise the deterministic baseline"
+            f"defaults to {TDM_TIMING_DAG_RATIO_PROVIDER} when routes "
+            "contain timing, otherwise the deterministic baseline"
         ),
     )
     phase5.add_argument(
@@ -2368,7 +2494,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     phase5.add_argument("--max-ratio", type=int)
-    phase5.add_argument("--ratio-quantum", type=int, default=8)
+    phase5.add_argument(
+        "--ratio-quantum",
+        type=int,
+        help=(
+            "explicit comparison override; defaults to the frozen Phase 4 "
+            "route constraint"
+        ),
+    )
     phase5.add_argument(
         "--post-refinement-iterations", type=int, default=200
     )
@@ -2517,6 +2650,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--partition-repair-balance", action="store_true"
     )
     cross_stage_optimize.add_argument("--router")
+    cross_stage_optimize.add_argument(
+        "--route-provider",
+        choices=(
+            TLR_PROVIDER,
+            ROUTE_TDM_PROVIDER,
+            GLOBAL_CANDIDATE_PROVIDER,
+        ),
+        help=(
+            f"defaults to {GLOBAL_CANDIDATE_PROVIDER}; the historical "
+            f"{ROUTE_TDM_PROVIDER} remains available for rollback"
+        ),
+    )
+    cross_stage_optimize.add_argument(
+        "--route-candidate-workers",
+        type=int,
+        default=1,
+        help="parallel deterministic candidate generators for global routing",
+    )
     cross_stage_optimize.add_argument("--frame-slots", type=int)
     cross_stage_optimize.add_argument(
         "--optimize-frame-slots",
@@ -3909,6 +4060,38 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "compare-routing-tdm-scale":
+            report = build_system_route_tdm_scale_comparison(
+                args.assignment,
+                args.platform,
+                args.route_constraints,
+                args.timing_paths,
+                args.baseline_route,
+                args.baseline_tdm,
+                args.upgrade_route,
+                args.upgrade_tdm,
+                args.output,
+                baseline_runtime_seconds=args.baseline_runtime_seconds,
+                upgrade_runtime_seconds=args.upgrade_runtime_seconds,
+            )
+            _print_json(report["validation"])
+            return 0
+        if args.multi_fpga_command == "finalize-physical":
+            report = finalize_multi_fpga_physical_checkpoint(
+                args.flow,
+                args.physical,
+                runtime_directory=args.runtime_directory,
+            )
+            _print_json(report["summary"])
+            return 0
+        if args.multi_fpga_command == "compare-routing-tdm":
+            report = build_system_route_tdm_ab_comparison(
+                args.baseline,
+                args.upgrade,
+                args.output,
+            )
+            _print_json(report["validation"])
+            return 0
         if args.multi_fpga_command == "board-validate":
             _print_json(validate_vivado_board_flow_bundle(args.board))
             return 0
@@ -3983,6 +4166,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 routes_path=args.routes,
                 path_database_path=args.path_database,
                 workers=args.workers,
+                resume=args.resume,
             )
             _print_json(report["summary"])
             return 0
@@ -4036,6 +4220,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             board_link_timing_db=args.board_link_timing_db,
             timing_paths=args.timing_paths,
             router=args.router,
+            route_provider=args.route_provider,
+            route_candidate_workers=args.route_candidate_workers,
             frame_slots=args.frame_slots,
             optimize_frame_slots=args.optimize_frame_slots,
             route_max_iterations=args.route_max_iterations,
@@ -4249,6 +4435,21 @@ def _dispatch(args: argparse.Namespace) -> int:
             provider=args.provider,
             timing_paths_path=args.timing_paths,
             router=args.router,
+            tdm_feedback_path=args.tdm_feedback,
+            tdm_feedback_routes_path=args.tdm_feedback_routes,
+            tdm_feedback_schedule_path=args.tdm_feedback_schedule,
+            tdm_feedback_ratio_plan_path=(
+                args.tdm_feedback_ratio_plan
+            ),
+            physical_feedback_path=args.physical_feedback,
+            physical_feedback_runtime_path=(
+                args.physical_feedback_runtime
+            ),
+            physical_feedback_summary_path=(
+                args.physical_feedback_summary
+            ),
+            physical_feedback_weight=args.physical_feedback_weight,
+            candidate_workers=args.candidate_workers,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
@@ -4357,6 +4558,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.partition_repair_balance
                 ),
                 router=args.router,
+                route_provider=args.route_provider,
+                route_candidate_workers=args.route_candidate_workers,
                 frame_slots=args.frame_slots,
                 optimize_frame_slots=args.optimize_frame_slots,
                 route_max_iterations=args.route_max_iterations,

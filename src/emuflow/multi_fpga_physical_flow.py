@@ -22,6 +22,11 @@ from .logic_segment_timing import (
     write_vivado_logic_segment_query,
     write_vpr_logic_segment_query,
 )
+from .local_path_timing import (
+    import_vpr_local_path_timing,
+    validate_local_path_timing,
+    write_vpr_local_path_query,
+)
 from .lowering import run_placement_ir_lowering
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
@@ -393,10 +398,17 @@ def run_multi_fpga_physical_flow(
     assignment_path: Optional[Path] = None,
     routes_path: Optional[Path] = None,
     path_database_path: Optional[Path] = None,
+    logic_path_database_path: Optional[Path] = None,
     workers: int = 1,
+    resume: bool = False,
 ) -> Dict[str, Any]:
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
+    if logic_path_database_path is not None and path_database_path is None:
+        raise ValidationError(
+            "physical logic timing database requires the complete original "
+            "STA path database"
+        )
     split_root = split_root.resolve()
     manifest_path = split_root / "manifest.json"
     manifest = read_json(manifest_path)
@@ -431,14 +443,21 @@ def run_multi_fpga_physical_flow(
             "physical logic timing requires original IR, assignment, routes, "
             "and STA path database together"
         )
+    effective_logic_path_database_path = (
+        logic_path_database_path
+        if logic_path_database_path is not None
+        else path_database_path
+    )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
         raise ValidationError("split manifest does not cover the BoardDB FPGAs")
 
     output_dir = output_dir.resolve()
-    if output_dir.exists() and (
-        not output_dir.is_dir() or any(output_dir.iterdir())
-    ):
+    if output_dir.exists() and not output_dir.is_dir():
+        raise EmuFlowError(
+            f"multi-FPGA physical output must be an empty directory: {output_dir}"
+        )
+    if output_dir.exists() and any(output_dir.iterdir()) and not resume:
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
@@ -561,6 +580,7 @@ def run_multi_fpga_physical_flow(
                 fpga_root / "vpr-pack-place",
                 executable=vpr,
                 seed=seed,
+                resume=resume,
             )
             packed_netlist = Path(
                 pack_report["artifacts"]["packed_netlist"]["path"]
@@ -704,13 +724,17 @@ def run_multi_fpga_physical_flow(
             logic_identity_path = None
             logic_query_path = None
             logic_raw_path = None
+            local_query_report = None
+            local_identity_path = None
+            local_query_path = None
+            local_raw_path = None
             if all(path is not None for path in logic_context):
                 logic_identity_path = fpga_root / "logic-segment-identity.json"
                 logic_query_path = fpga_root / "vpr-logic-segment-query.tsv"
                 logic_query_report = write_vpr_logic_segment_query(
                     original_ir_path,
                     assignment_path,
-                    path_database_path,
+                    effective_logic_path_database_path,
                     routes_path,
                     schedule_path,
                     platform,
@@ -723,6 +747,21 @@ def run_multi_fpga_physical_flow(
                 )
                 logic_raw_path = (
                     fpga_root / "vpr-route" / "logic-segment-timing.tsv"
+                )
+                local_identity_path = fpga_root / "local-path-identity.json"
+                local_query_path = fpga_root / "vpr-local-path-query.tsv"
+                local_query_report = write_vpr_local_path_query(
+                    original_ir_path,
+                    assignment_path,
+                    path_database_path,
+                    routes_path,
+                    merged_ir,
+                    fpga_id,
+                    local_query_path,
+                    local_identity_path,
+                )
+                local_raw_path = (
+                    fpga_root / "vpr-route" / "local-path-timing.tsv"
                 )
             route_report = run_vpr_route_packed(
                 architecture_path,
@@ -738,6 +777,8 @@ def run_multi_fpga_physical_flow(
                 boundary_output=boundary_raw_path,
                 logic_query=logic_query_path,
                 logic_output=logic_raw_path,
+                local_path_query=local_query_path,
+                local_path_output=local_raw_path,
                 sdc_file=runtime_sdc,
             )
             boundary_timing_path = fpga_root / "boundary-timing.json"
@@ -763,6 +804,23 @@ def run_multi_fpga_physical_flow(
                     "status": "pass",
                     "query": logic_query_report,
                     "import": logic_import_report,
+                }
+            local_timing_stage = None
+            if (
+                local_query_report is not None
+                and local_identity_path is not None
+                and local_raw_path is not None
+            ):
+                local_timing_path = fpga_root / "local-path-timing.json"
+                local_import_report = import_vpr_local_path_timing(
+                    local_raw_path,
+                    local_identity_path,
+                    local_timing_path,
+                )
+                local_timing_stage = {
+                    "status": "pass",
+                    "query": local_query_report,
+                    "import": local_import_report,
                 }
             physical_delays = _physical_clock_delays(
                 route_report, eblif_report
@@ -845,6 +903,11 @@ def run_multi_fpga_physical_flow(
                         if logic_timing_stage is not None
                         else {}
                     ),
+                    **(
+                        {"local_path_timing": local_timing_stage}
+                        if local_timing_stage is not None
+                        else {}
+                    ),
                 }
             )
             provider_fields["array"] = {"width": width, "height": height}
@@ -863,7 +926,7 @@ def run_multi_fpga_physical_flow(
                 logic_query_report = write_vivado_logic_segment_query(
                     original_ir_path,
                     assignment_path,
-                    path_database_path,
+                    effective_logic_path_database_path,
                     routes_path,
                     schedule_path,
                     platform,
@@ -1033,6 +1096,19 @@ def run_multi_fpga_physical_flow(
         }
         for database in physical_summary["logic_segment_timing"].values():
             validate_logic_segment_timing(database)
+        if backend == "open":
+            physical_summary["local_path_timing"] = {
+                item["fpga"]: read_json(
+                    Path(
+                        item["stages"]["local_path_timing"]["import"][
+                            "output"
+                        ]
+                    )
+                )
+                for item in records
+            }
+            for database in physical_summary["local_path_timing"].values():
+                validate_local_path_timing(database)
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )
@@ -1053,6 +1129,7 @@ def run_multi_fpga_physical_flow(
             "requested_workers": workers,
             "effective_workers": effective_workers,
             "ordering": "boarddb-fpga-order",
+            "pack_place_resume": resume,
         },
         "expected_fpgas": expected_fpgas,
         "fpgas": records,

@@ -29,6 +29,7 @@ struct EmuFlowBoundaryQuery {
     std::string end_pin;
     tatum::NodeId start_node;
     tatum::NodeId end_node;
+    std::vector<tatum::NodeId> selected_path_nodes;
 };
 
 std::vector<std::string> split_tabs(const std::string& line) {
@@ -45,7 +46,7 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                                    const char* query_environment,
                                    const char* output_environment,
                                    const char* report_name,
-                                   bool logic_segments) {
+                                   int query_class) {
     const char* query_env = std::getenv(query_environment);
     const char* output_env = std::getenv(output_environment);
     if (query_env == nullptr && output_env == nullptr) {
@@ -63,8 +64,15 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                   "Cannot open EmuFlow %s timing query '%s'", report_name, query_env);
     }
     std::string line;
-    if (!std::getline(input, line)
-        || line != "endpoint\tkind\tstart_pin\tend_pin") {
+    if (!std::getline(input, line)) {
+        VPR_THROW(VPR_ERROR_TIMING,
+                  "Invalid EmuFlow %s timing query header", report_name);
+    }
+    const bool selected_path_query =
+        query_class == 2
+        && line == "endpoint\tkind\tstart_pin\tend_pin\tpath_pins";
+    if (!selected_path_query
+        && line != "endpoint\tkind\tstart_pin\tend_pin") {
         VPR_THROW(VPR_ERROR_TIMING,
                   "Invalid EmuFlow %s timing query header", report_name);
     }
@@ -73,6 +81,28 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
     const auto& atom_netlist = atom_ctx.netlist();
     const auto& atom_lookup = atom_ctx.lookup();
     const auto& timing_graph = *g_vpr_ctx.timing().graph;
+    // Netlist::find_pin(string) performs a linear scan over every atom pin.
+    // A complete original-path query can contain hundreds of thousands of pin
+    // names, so using it for every endpoint and selected-chain member turns
+    // query import into O(query_pins * netlist_pins).  Build one independent
+    // exact-name index instead and keep the complete-path analysis linear in
+    // the query plus timing-graph size.
+    std::unordered_map<std::string, AtomPinId> pin_by_name;
+    pin_by_name.reserve(atom_netlist.pins().size());
+    for (AtomPinId pin : atom_netlist.pins()) {
+        const std::string name = atom_netlist.pin_name(pin);
+        const auto inserted = pin_by_name.emplace(name, pin);
+        if (!inserted.second) {
+            VPR_THROW(VPR_ERROR_TIMING,
+                      "EmuFlow timing pin index contains duplicate atom pin '%s'",
+                      name.c_str());
+        }
+    }
+    const auto find_query_pin = [&](const std::string& name) {
+        const auto found = pin_by_name.find(name);
+        return found == pin_by_name.end() ? AtomPinId::INVALID()
+                                          : found->second;
+    };
     std::vector<EmuFlowBoundaryQuery> queries;
     using QueryGroups =
         std::unordered_map<std::size_t, std::vector<std::size_t>>;
@@ -85,21 +115,24 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
             continue;
         }
         auto fields = split_tabs(line);
-        const bool kind_valid = logic_segments
-                                    ? (fields.size() == 4
-                                       && (fields[1] == "launch"
-                                           || fields[1] == "transition"
-                                           || fields[1] == "capture"))
-                                    : (fields.size() == 4
-                                       && (fields[1] == "tx"
-                                           || fields[1] == "rx"));
+        const bool field_count_valid =
+            fields.size() == (selected_path_query ? 5 : 4);
+        const bool kind_valid =
+            field_count_valid
+            && ((query_class == 0
+                 && (fields[1] == "tx" || fields[1] == "rx"))
+                || (query_class == 1
+                    && (fields[1] == "launch"
+                        || fields[1] == "transition"
+                        || fields[1] == "capture"))
+                || (query_class == 2 && fields[1] == "local"));
         if (!kind_valid || fields[0].empty()
             || fields[2].empty() || fields[3].empty()) {
             VPR_THROW(VPR_ERROR_TIMING,
                       "Malformed EmuFlow boundary query line %zu", line_number);
         }
-        AtomPinId start_pin = atom_netlist.find_pin(fields[2]);
-        AtomPinId end_pin = atom_netlist.find_pin(fields[3]);
+        AtomPinId start_pin = find_query_pin(fields[2]);
+        AtomPinId end_pin = find_query_pin(fields[3]);
         if (!start_pin || !end_pin) {
             VPR_THROW(VPR_ERROR_TIMING,
                       "EmuFlow boundary query line %zu references absent pin '%s' or '%s'",
@@ -112,13 +145,46 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                       "EmuFlow boundary query line %zu has no timing node",
                       line_number);
         }
+        std::vector<tatum::NodeId> selected_nodes;
+        if (selected_path_query && fields[4] != "-") {
+            std::stringstream pins(fields[4]);
+            std::string pin_name;
+            while (std::getline(pins, pin_name, ',')) {
+                AtomPinId pin = find_query_pin(pin_name);
+                if (!pin) {
+                    VPR_THROW(
+                        VPR_ERROR_TIMING,
+                        "EmuFlow local path query line %zu references absent selected pin '%s'",
+                        line_number,
+                        pin_name.c_str());
+                }
+                tatum::NodeId node = atom_lookup.atom_pin_tnode(pin);
+                if (!node) {
+                    VPR_THROW(
+                        VPR_ERROR_TIMING,
+                        "EmuFlow local path query line %zu selected pin has no timing node",
+                        line_number);
+                }
+                selected_nodes.push_back(node);
+            }
+            if (selected_nodes.size() < 2
+                || selected_nodes.front() != start_node
+                || selected_nodes.back() != end_node) {
+                VPR_THROW(
+                    VPR_ERROR_TIMING,
+                    "EmuFlow local path query line %zu selected chain endpoints disagree",
+                    line_number);
+            }
+        }
         const std::size_t index = queries.size();
         const std::size_t kind_index =
             (fields[1] == "rx" || fields[1] == "capture") ? 1 : 0;
         queries.push_back({fields[0], fields[1], fields[2], fields[3],
-                           start_node, end_node});
-        by_start[kind_index][std::size_t(start_node)].push_back(index);
-        by_end[kind_index][std::size_t(end_node)].push_back(index);
+                           start_node, end_node, std::move(selected_nodes)});
+        if (queries.back().selected_path_nodes.empty()) {
+            by_start[kind_index][std::size_t(start_node)].push_back(index);
+            by_end[kind_index][std::size_t(end_node)].push_back(index);
+        }
     }
 
     const float negative_infinity = -std::numeric_limits<float>::infinity();
@@ -141,6 +207,40 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
     };
     std::vector<tatum::LevelId> levels(timing_graph.levels().begin(),
                                        timing_graph.levels().end());
+    std::size_t selected_path_evaluations = 0;
+    for (std::size_t index = 0; index < queries.size(); ++index) {
+        const auto& nodes = queries[index].selected_path_nodes;
+        if (nodes.empty()) {
+            continue;
+        }
+        float total = 0.f;
+        for (std::size_t node_index = 1; node_index < nodes.size();
+             ++node_index) {
+            const tatum::NodeId source = nodes[node_index - 1];
+            const tatum::NodeId sink = nodes[node_index];
+            float selected_delay = 0.f;
+            std::size_t matches = 0;
+            for (tatum::EdgeId edge : timing_graph.node_out_edges(source)) {
+                if (!timing_graph.edge_disabled(edge)
+                    && is_data_delay_edge(edge)
+                    && timing_graph.edge_sink_node(edge) == sink) {
+                    selected_delay = relax_delay(edge);
+                    ++matches;
+                }
+            }
+            if (matches != 1) {
+                VPR_THROW(
+                    VPR_ERROR_TIMING,
+                    "EmuFlow local path '%s' selected chain edge %zu has %zu routed timing matches",
+                    queries[index].endpoint.c_str(),
+                    node_index - 1,
+                    matches);
+            }
+            total += selected_delay;
+        }
+        results[index] = total;
+        ++selected_path_evaluations;
+    }
     std::size_t forward_traversals = 0;
     std::size_t reverse_traversals = 0;
     for (std::size_t kind_index = 0; kind_index < by_start.size();
@@ -237,13 +337,49 @@ void write_emuflow_endpoint_timing(const AnalysisDelayCalculator& delay_calc,
                       "No routed timing path for EmuFlow endpoint '%s'",
                       queries[index].endpoint.c_str());
         }
+        double result = results[index];
+        // A same-FPGA original path is a complete setup path.  A cross-FPGA
+        // original path is composed from one launch logic segment, zero or
+        // more transition segments, and one capture segment.  Their routed
+        // data traversals start at Q and stop at D, so add the sequential arcs
+        // exactly once at the corresponding ends of either representation.
+        const bool include_launch =
+            query_class == 2
+            || (query_class == 1 && queries[index].kind == "launch");
+        const bool include_capture =
+            query_class == 2
+            || (query_class == 1 && queries[index].kind == "capture");
+        if (include_launch) {
+            const tatum::EdgeId launch_edge =
+                timing_graph.node_clock_launch_edge(
+                    queries[index].start_node);
+            if (launch_edge) {
+                result += relax_delay(launch_edge);
+            }
+        }
+        if (include_capture) {
+            const tatum::EdgeId capture_edge =
+                timing_graph.node_clock_capture_edge(
+                    queries[index].end_node);
+            if (capture_edge) {
+                const float setup =
+                    delay_calc.setup_time(timing_graph, capture_edge).value();
+                if (!std::isfinite(setup) || setup < 0.f) {
+                    VPR_THROW(VPR_ERROR_TIMING,
+                              "Invalid setup time for EmuFlow local path '%s'",
+                              queries[index].endpoint.c_str());
+                }
+                result += setup;
+            }
+        }
         output << queries[index].endpoint << '\t' << queries[index].kind << '\t'
-               << results[index] * seconds_to_nanoseconds << '\t'
+               << result * seconds_to_nanoseconds << '\t'
                << queries[index].start_pin << '\t'
                << queries[index].end_pin << '\n';
     }
-    VTR_LOG("EmuFlow %s timing: %zu endpoints, %zu forward and %zu reverse grouped traversals\n",
-            report_name, queries.size(), forward_traversals, reverse_traversals);
+    VTR_LOG("EmuFlow %s timing: %zu endpoints, %zu explicit path evaluations, %zu forward and %zu reverse grouped traversals\n",
+            report_name, queries.size(), selected_path_evaluations,
+            forward_traversals, reverse_traversals);
 }
 
 } // namespace
@@ -382,12 +518,17 @@ void generate_setup_timing_stats(const std::string& prefix,
                                   "EMUFLOW_VPR_BOUNDARY_QUERY",
                                   "EMUFLOW_VPR_BOUNDARY_OUTPUT",
                                   "boundary",
-                                  false);
+                                  0);
     write_emuflow_endpoint_timing(delay_calc,
                                   "EMUFLOW_VPR_LOGIC_QUERY",
                                   "EMUFLOW_VPR_LOGIC_OUTPUT",
                                   "logic segment",
-                                  true);
+                                  1);
+    write_emuflow_endpoint_timing(delay_calc,
+                                  "EMUFLOW_VPR_LOCAL_PATH_QUERY",
+                                  "EMUFLOW_VPR_LOCAL_PATH_OUTPUT",
+                                  "original local path",
+                                  2);
 
     if (analysis_opts.timing_report_skew) {
         timing_reporter.report_skew_setup(prefix + "report_skew.setup.rpt", *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);

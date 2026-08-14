@@ -9,24 +9,32 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
+from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
-from emuflow.phase5 import run_phase5
+from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import (
     build_tdm_schedule,
     reconstruct_tdm_schedule_timing,
+    reconstruct_tdm_schedule_timing_paths,
+    reconstruct_tdm_schedule_timing_paths_from_routes,
     schedule_to_systemverilog_testbench,
     simulate_tdm_schedule,
     validate_tdm_schedule,
 )
 from emuflow.tdm_ratio import (
+    TDM_TIMING_DAG_RATIO_PROVIDER,
     _prepare_model,
+    _round_barrier_legalize,
     build_tdm_ratio_plan,
     validate_tdm_ratio_plan,
 )
 from emuflow.tdm_slot import refine_tdm_schedule_native
+from emuflow.tdm_cp_sat import (
+    solve_cp_sat_slot_schedule,
+    validate_cp_sat_slot_schedule,
+)
 from emuflow.tdm_timing_dag import (
     _build_dag,
     build_timing_dag_ratio_plan,
@@ -122,6 +130,189 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_native_slot_optimizer_compacts_sparse_lane_ids(self) -> None:
+        source = (
+            ROOT / "src" / "native" / "tdm_slot_optimizer.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("lane_resource_count", source)
+        self.assertIn("lane_resource_index", source)
+        self.assertIn("occupancy_capacity", source)
+        self.assertNotIn(
+            "static_cast<std::size_t>(model.lane_resource_count) *\n"
+            "          model.frame_slots",
+            source,
+        )
+        self.assertNotIn(
+            "const int lane_domains = (maximum_domain + 1) * lane_stride",
+            source,
+        )
+
+    def test_cp_sat_medium_oracle_matches_exhaustive_oracle(self) -> None:
+        try:
+            from ortools.sat.python import cp_model  # noqa: F401
+        except ImportError:
+            self.skipTest("optional OR-Tools CP-SAT dependency is absent")
+        platform = Platform.from_dict(
+            _platform_value(
+                "cp_sat",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=2, latency=1),
+                    _link("bc", "b", "c", lanes=2, latency=1),
+                ],
+            )
+        )
+        routes = _routes(
+            platform,
+            [
+                ("ab0", "a", ["b"]),
+                ("ab1", "a", ["b"]),
+                ("bc0", "b", ["c"]),
+                ("bc1", "b", ["c"]),
+            ],
+            frame_slots=10,
+        )
+        routes["timing"] = {
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 40.0,
+            },
+            "paths": [
+                {
+                    "path": "p0",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 40.0,
+                    "fixed_delay_ns": 2.0,
+                    "cut_nets": ["ab1", "bc0"],
+                    "cut_transitions": [
+                        {"net": "ab1", "from": "a", "to": "b"},
+                        {"net": "bc0", "from": "b", "to": "c"},
+                    ],
+                },
+                {
+                    "path": "p1",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 40.0,
+                    "fixed_delay_ns": 5.0,
+                    "cut_nets": ["ab0", "bc1"],
+                    "cut_transitions": [
+                        {"net": "ab0", "from": "a", "to": "b"},
+                        {"net": "bc1", "from": "b", "to": "c"},
+                    ],
+                },
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=4,
+            ratio_quantum=2,
+        )
+        exhaustive = exact_multi_round_slot_schedule(
+            routes, platform, plan, max_hops=6
+        )
+        cp_sat = solve_cp_sat_slot_schedule(
+            routes, platform, plan, max_hops=32
+        )
+        self.assertEqual(
+            validate_cp_sat_slot_schedule(
+                routes, platform, plan, cp_sat
+            )["status"],
+            "pass",
+        )
+        self.assertAlmostEqual(
+            cp_sat["worst_normalized_slack"],
+            exhaustive["worst_normalized_slack"],
+        )
+        self.assertEqual(
+            cp_sat["completion_slot"], exhaustive["completion_slot"]
+        )
+        self.assertEqual(
+            cp_sat["total_wait_slots"], exhaustive["total_wait_slots"]
+        )
+        tampered = copy.deepcopy(cp_sat)
+        first = min(tampered["slot_by_hop"])
+        tampered["slot_by_hop"][first] += 1
+        with self.assertRaises(ValidationError):
+            validate_cp_sat_slot_schedule(
+                routes, platform, plan, tampered
+            )
+
+    def test_clock_protocol_compatibility_separates_lane_groups(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "compatibility",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [("n0", "a", ["b"]), ("n1", "a", ["b"])],
+            frame_slots=8,
+        )
+        for route, domain in zip(
+            sorted(routes["routes"], key=lambda item: item["net"]),
+            ("source-synchronous", "global-frame-cdc"),
+        ):
+            route["tdm_compatibility"] = domain
+        routes["timing"] = {
+            "normalization": {
+                "positive_slack_scale_ns": 20.0,
+                "negative_slack_scale_ns": 20.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "paths": [
+                {
+                    "path": f"p{index}",
+                    "clock_domain": clock,
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 0.0,
+                    "cut_nets": [f"n{index}"],
+                    "cut_transitions": [
+                        {"net": f"n{index}", "from": "a", "to": "b"}
+                    ],
+                }
+                for index, clock in enumerate(("clk0", "clk1"))
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=8,
+        )
+        self.assertEqual(
+            validate_tdm_ratio_plan(routes, platform, plan)["status"],
+            "pass",
+        )
+        self.assertEqual(len(plan["compatibility"]["classes"]), 2)
+        self.assertEqual(len({hop["lane"] for hop in plan["hops"]}), 2)
+
+        tampered = copy.deepcopy(plan)
+        tampered["compatibility"]["hops"][0]["compatibility"] += 2
+        with self.assertRaisesRegex(ValidationError, "compatibility"):
+            validate_tdm_ratio_plan(routes, platform, tampered)
+
+        one_lane = Platform.from_dict(
+            _platform_value(
+                "compatibility",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=1)],
+            )
+        )
+        with self.assertRaisesRegex(
+            EmuFlowError, "groups cannot fit domain lane budget"
+        ):
+            build_tdm_ratio_plan(
+                routes,
+                one_lane,
+                executable=str(tdm_ratio_optimizer()),
+                max_ratio=8,
+            )
+
     def _timing_dag_fixture(self):
         platform = Platform.from_dict(
             _platform_value(
@@ -335,6 +526,70 @@ class Phase5Test(unittest.TestCase):
             "pass",
         )
 
+    def test_phase5_inherits_nonunit_ratio_domain_from_routes(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        routes["constraints"]["tdm_min_ratio"] = 4
+        routes["constraints"]["tdm_ratio_quantum"] = 4
+        plan = build_timing_dag_ratio_plan(
+            routes,
+            platform,
+            dag_executable=str(tdm_timing_dag_optimizer()),
+            legalization_executable=str(tdm_ratio_optimizer()),
+            post_refinement_iterations=20,
+        )
+        self.assertEqual(plan["configuration"]["min_ratio"], 4)
+        self.assertEqual(plan["configuration"]["ratio_quantum"], 4)
+        self.assertEqual(plan["configuration"]["max_ratio"], 28)
+        self.assertTrue(
+            all(
+                hop["continuous_ratio"] >= 4.0
+                and hop["discrete_ratio"] >= 4
+                and hop["discrete_ratio"] % 4 == 0
+                for hop in plan["hops"]
+            )
+        )
+        self.assertEqual(
+            validate_tdm_ratio_plan(routes, platform, plan)["status"],
+            "pass",
+        )
+        tampered = copy.deepcopy(plan)
+        tampered["hops"][0]["discrete_ratio"] = 1
+        with self.assertRaisesRegex(ValidationError, "discrete ratio"):
+            validate_tdm_ratio_plan(routes, platform, tampered)
+        rebound = copy.deepcopy(plan)
+        rebound["configuration"]["min_ratio"] = 1
+        with self.assertRaisesRegex(ValidationError, "differs from routes"):
+            validate_tdm_ratio_plan(routes, platform, rebound)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            report = run_phase5(
+                routes_path,
+                platform_path,
+                root / "phase5",
+                provider="aspdac26-timing-dag-lagrangian-v1",
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                max_ratio=28,
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(report["status"], "pass")
+            persisted = json.loads(
+                (root / "phase5" / "ratio_plan.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(persisted["configuration"]["min_ratio"], 4)
+            self.assertEqual(
+                persisted["configuration"]["ratio_quantum"], 4
+            )
+
     def test_phase5_accepts_timing_dag_provider_end_to_end(self) -> None:
         routes, _platform = self._timing_dag_fixture()
         platform_value = _platform_value(
@@ -379,6 +634,61 @@ class Phase5Test(unittest.TestCase):
             self.assertEqual(
                 report["ratio_validation"]["status"], "pass"
             )
+            with mock.patch(
+                "emuflow.phase5._prepare_model", wraps=_prepare_model
+            ) as validate_prepare_model:
+                validation = validate_phase5(
+                    routes_path,
+                    platform_path,
+                    root / "phase5" / "schedule.json",
+                    root / "phase5" / "ratio_plan.json",
+                )
+            self.assertEqual(validate_prepare_model.call_count, 1)
+            self.assertEqual(validation["status"], "pass")
+
+    def test_baseline_phase5_prepares_large_timing_model_once(self) -> None:
+        routes, _platform = self._timing_dag_fixture()
+        platform_value = _platform_value(
+            "timing_dag", ["a", "b"], [_link("ab", "a", "b")]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(platform_value), encoding="utf-8"
+            )
+            with mock.patch(
+                "emuflow.phase5._prepare_model", wraps=_prepare_model
+            ) as prepare_model, mock.patch(
+                "emuflow.tdm_ratio._prepare_model",
+                side_effect=AssertionError("timing model rebuilt"),
+            ):
+                report = run_phase5(
+                    routes_path,
+                    platform_path,
+                    root / "phase5",
+                    simulation_frames=1,
+                    provider="deterministic-round-barrier-earliest-slot-v2",
+                )
+            self.assertEqual(prepare_model.call_count, 0)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["tdm_feedback_validation"]["status"], "pass")
+
+    def test_sparse_baseline_timing_matches_dense_optimizer_model(self) -> None:
+        routes, platform = self._timing_dag_fixture()
+        schedule = build_tdm_schedule(routes, platform)
+        dense = reconstruct_tdm_schedule_timing_paths(
+            routes,
+            platform,
+            schedule,
+            model=_prepare_model(routes, platform),
+        )
+        sparse = reconstruct_tdm_schedule_timing_paths_from_routes(
+            routes, platform, schedule
+        )
+        self.assertEqual(sparse, dense)
 
     def test_native_ratio_capacity_product_uses_64_bit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -766,6 +1076,7 @@ class Phase5Test(unittest.TestCase):
                 output_dir=root / "phase5",
                 simulation_frames=7,
                 ratio_optimizer=str(executable),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),
                 max_ratio=16,
                 post_refinement_iterations=20,
@@ -773,7 +1084,7 @@ class Phase5Test(unittest.TestCase):
             )
             self.assertEqual(
                 report["optimization_provider"],
-                "lagrangian-kkt-timing-aware-v1",
+                TDM_TIMING_DAG_RATIO_PROVIDER,
             )
             self.assertGreaterEqual(
                 report["timing_validation"][
@@ -797,6 +1108,68 @@ class Phase5Test(unittest.TestCase):
             self.assertTrue(
                 (root / "phase5" / "ratio_plan.json").is_file()
             )
+
+    def test_round_barrier_promotion_can_migrate_the_boundary(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "boundary_migration",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        hops = []
+        for ratio, round_counts in ((1, (0, 1)), (2, (1, 3))):
+            for transport_round, count in enumerate(round_counts):
+                for _ in range(count):
+                    index = len(hops)
+                    hops.append(
+                        {
+                            "index": index,
+                            "domain": 0,
+                            "direction": 0,
+                            "discrete_ratio": ratio,
+                            "transport_round": transport_round,
+                            "demand": index,
+                            "hop": 0,
+                            "lane": 0,
+                            "beta_ns": 1.0,
+                            "base_delay_ns": 1.0,
+                            "net": f"n{index}",
+                            "capacity_key": "ab:a->b",
+                            "link": "ab",
+                        }
+                    )
+        model = {
+            "constraints": {"frame_slots": 8},
+            "domains": [{"index": 0, "link": "ab", "lanes": 2}],
+            "normalization": {
+                "positive_slack_scale_ns": 10.0,
+                "negative_slack_scale_ns": 10.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "timing_paths": [
+                {
+                    "path": f"p{index}",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "fixed_delay_ns": 0.0,
+                    "hops": [index],
+                }
+                for index in range(len(hops))
+            ],
+        }
+
+        legalization = _round_barrier_legalize(
+            hops, model, platform, max_ratio=8, ratio_quantum=2
+        )
+
+        self.assertEqual(legalization["source_ready_slot"], 3)
+        self.assertEqual(legalization["promotion_steps"], 1)
+        self.assertEqual(legalization["promoted_hops"], 4)
+        self.assertEqual(
+            [(hop["transport_round"], hop["discrete_ratio"]) for hop in hops],
+            [(1, 1), (0, 4), (1, 4), (1, 4), (1, 4)],
+        )
 
     def test_academic_post_refinement_improves_worst_slack(
         self,
@@ -1419,6 +1792,36 @@ class Phase5Test(unittest.TestCase):
         }
         self.assertEqual(completion["d"]["source_ready_slot"], 2)
         self.assertEqual(completion["d"]["transport_round"], 1)
+
+    def test_many_transport_rounds_do_not_rescan_prior_rounds(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "many-rounds",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=0)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [(f"n{index}", "a", ["b"]) for index in range(128)],
+            frame_slots=512,
+        )
+        for index, route in enumerate(routes["routes"]):
+            route["transport_round"] = index
+        schedule = build_tdm_schedule(routes, platform)
+        validation = validate_tdm_schedule(routes, platform, schedule)
+        self.assertEqual(validation["transport_rounds"], 128)
+        self.assertEqual(validation["max_transport_round"], 127)
+        self.assertEqual(
+            sorted(
+                (
+                    item["transport_round"],
+                    item["source_ready_slot"],
+                )
+                for item in schedule["demand_completions"]
+            ),
+            [(index, index) for index in range(128)],
+        )
 
     def test_latency_can_make_route_capacity_schedule_infeasible(self) -> None:
         platform = Platform.from_dict(

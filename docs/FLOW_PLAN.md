@@ -337,15 +337,15 @@ checker reconstructs every tree, capacity domain, direction lock, route
 delay, compressed-path signature, slack, and normalized slack from the
 returned artifact.
 
-The default `timing-aware-route-tdm-cooptimized-v1` provider extends that
+The historical `timing-aware-route-tdm-cooptimized-v1` provider extends that
 kernel with the routing/TDM coupling used in the DAC 2020 and ASP-DAC 2021
-co-optimization formulations. During tree construction it estimates each
-capacity domain's quantized serialization ratio from signal load and physical
-lane count, charges the resulting wait to timing-critical paths, and uses the
-estimated TDM normalized slack as the first lexicographic rip-up/reroute
-objective. Phase 5 then solves the exact per-hop KKT ratios and concrete
-lane/slot schedule. The Phase 4 checker independently reconstructs the proxy;
-the Phase 5 checkers remain the exact acceptance gate.
+co-optimization formulations. The default timing-enabled path now exposes all
+checked tree columns to the `timing-aware-global-candidate-v1` restricted
+master, followed by the ASP-DAC 2026 timing-DAG Phase 5 optimizer and the same
+concrete lane/slot legalization. The historical provider and path-Lagrangian
+Phase 5 optimizer remain explicit rollback and A/B options. The Phase 4
+checker independently reconstructs the proxy; the Phase 5 checkers remain the
+exact acceptance gate.
 
 For real STA input, `emuflow sta emit-vivado-cut-map` produces a lossless
 UTF-8-hex map from stable EmuIR cut-net IDs to the deterministic
@@ -421,8 +421,13 @@ Implemented model:
 
 - selectable continuous ratio providers: the established path-Lagrangian/KKT
   solver and an equation-level ASP-DAC 2026 timing-DAG solver;
+- a checked clock/protocol compatibility artifact: the default global-frame
+  CDC class may multiplex different STA clocks, while explicit transport
+  domains cannot share a physical lane;
 - time-expanded links with fixed legal ratio/lane groups;
-- C++ timing-path-guided concrete-slot local search;
+- C++ timing-path-guided deterministic concrete-slot LNS;
+- optional OR-Tools CP-SAT medium-case oracle with independent certificate
+  reconstruction;
 - exhaustive multi-round small-instance oracle for optimality comparison;
 - static schedule ROM generation;
 - TX/RX, shadow-register, barrier, and virtual-clock-enable RTL;
@@ -436,14 +441,16 @@ Acceptance:
 - partitioned and unpartitioned designs are cycle-equivalent.
 
 The initial dependency-free list schedule is refined by an in-tree C++ engine.
-It moves hops that block the current worst timing path and accepts a move only
-when independently reconstructed worst normalized slack, completion, or total
-wait improves lexicographically. The exact oracle covers fixed ratio/lane
+It exhaustively reorders bounded neighborhoods containing a delayed worst-path
+hop and up to three preceding lane blockers, accepting an order only when
+independently reconstructed worst normalized slack, completion, or total wait
+improves lexicographically. The exact exhaustive oracle covers fixed ratio/lane
 assignments across multiple transport rounds, including multicast-tree
 precedence, link latency, ratio windows, lane collision, global round barriers,
 and the reserved runtime-barrier slot. It is deliberately limited to small
-instances and is a correctness/QoR reference, not the scalable production
-solver.
+instances. The optional time-expanded CP-SAT oracle extends optimality checks
+to medium cases; it is also a correctness/QoR reference, not the scalable
+production solver.
 
 The ratio legalizer's round split is explicitly a capacity-only estimate; it
 does not claim to include multicast-tree precedence. Concrete scheduling
@@ -586,11 +593,14 @@ current pausible-clock timing contract. Phase 6 emits a versioned
 `boundary-identity/v1` database that binds every scheduled hop's TX/RX endpoint
 to its external port bit, merged physical net, DUT source, or transport shadow
 register. A physical backend can return `boundary-timing/v1` measurements under
-those stable endpoint IDs. The versioned `system-timing/v1` artifact then
+those stable endpoint IDs. The versioned `system-timing/v2` artifact then
 reconstructs every timing-aware route from the concrete lane/slot schedule and
 combines per-hop routed endpoint delay, board-link/TDM delay, and the post-route
-DUT logic bound. It reports original-target-clock and virtual-runtime-clock
-slack separately.
+DUT logic bound. It also consumes routed endpoint-exact measurements for every
+same-FPGA original TimingPathDB path.  The local and expanded cross-FPGA path
+ID sets must be disjoint and their canonical union must exactly match the
+sealed source database before the result is called whole-design/global. It
+reports original-target-clock and virtual-runtime-clock slack separately.
 
 Board-link delay is supplied through `board-link-timing/v1`, with one record
 per legal directed BoardDB arc. The contract preserves the functional
@@ -627,6 +637,16 @@ atom pins and evaluates their longest routed delays in the Tatum timing graph.
 Both therefore supply endpoint-exact interface delay through
 `boundary-timing/v1`.
 
+Those stable endpoints also feed a checked optional optimization loop.
+`physical-route-feedback/v1` reconstructs every scheduled TX/RX boundary
+measurement, aggregates delay onto the exact directed capacity domain, and
+combines it with the concrete Phase 5 occupancy/wait price. A repeated global-
+candidate Phase 4 run must provide the original routes, schedule, runtime,
+physical summary, and feedback artifact; all are revalidated before the C++
+router receives a price. This allows post-route lane/interface delay to
+influence the next route/TDM iteration while retaining complete Phase 7
+WNS/TNS as the non-decomposed QoR gate.
+
 For DUT logic, both physical providers expand the original STA members behind
 each compressed cross-FPGA path. A complete member is represented by routed
 `launch -> TX`, zero or more `RX -> next TX`, and `final RX -> capture`
@@ -637,7 +657,7 @@ physical RAMB clock launch object while recovering the exact logical output
 bit from EmuIR net identity. Phase 7C uses the resulting
 `logic-segment-timing/v1` measurements and replaces the matching TX interface
 terms instead of adding a whole partition's critical-path maximum. Exact and
-fallback path counts are part of `system-timing/v1`. When a coarse
+fallback path counts are part of `system-timing/v2`. When a coarse
 provider-neutral hard-macro arc has no corresponding vendor timing arc, the
 Vivado provider constrains the worst physical path through the preserved
 cut-net driver and records a distinct cut-net-cone upper bound rather than

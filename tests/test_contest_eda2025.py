@@ -89,7 +89,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
             self.assertEqual(phase4["status"], "pass")
             self.assertEqual(
                 phase4["provider"],
-                "timing-aware-route-tdm-cooptimized-v1",
+                "timing-aware-global-candidate-v1",
             )
             routes_artifact = read_json(routed / "routes.json")
             opposing_pair = next(

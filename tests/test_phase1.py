@@ -114,6 +114,76 @@ class Phase1Test(unittest.TestCase):
             self.assertEqual(topology["fabric_logic_clocked_ffs"], 1)
             self.assertEqual(topology["maximum_fabric_clock_fanout"], 1)
 
+    def test_vtr_dff_clock_topology_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            yosys = json.loads(
+                (ROOT / "examples/yosys/counter.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            counter = yosys["modules"]["counter"]
+            for cell in counter["cells"].values():
+                if cell["type"].startswith("FD"):
+                    cell["type"] = "$_DFF_P_"
+                    cell["connections"] = {
+                        "C": cell["connections"]["C"],
+                        "D": cell["connections"]["D"],
+                        "Q": cell["connections"]["Q"],
+                    }
+                    cell["port_directions"] = {
+                        "C": "input",
+                        "D": "input",
+                        "Q": "output",
+                    }
+            yosys_path = root / "vtr-dff.json"
+            yosys_path.write_text(json.dumps(yosys), encoding="utf-8")
+
+            report = run_phase1(
+                yosys_json=yosys_path,
+                platform_path=(
+                    ROOT / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+                ),
+                output_dir=root / "phase1",
+                top="counter",
+                clocks=["clk"],
+                require_no_fabric_clock=True,
+            )
+            self.assertEqual(report["status"], "pass")
+            topology = report["clock_topology"]
+            self.assertEqual(topology["ff_clock_nets"], 1)
+            self.assertEqual(topology["fabric_logic_clock_nets"], 0)
+
+            # The same VTR DFF clocked by a generic Yosys LUT is unsafe.
+            counter["cells"]["fabric_clock_lut"] = {
+                "hide_name": 0,
+                "type": "$lut",
+                "parameters": {"LUT": "10", "WIDTH": "1"},
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [2], "Y": [8]},
+            }
+            first_dff = next(
+                cell
+                for cell in counter["cells"].values()
+                if cell["type"].startswith("$_DFF_")
+            )
+            first_dff["connections"]["C"] = [8]
+            yosys_path.write_text(json.dumps(yosys), encoding="utf-8")
+            unsafe = run_phase1(
+                yosys_json=yosys_path,
+                platform_path=(
+                    ROOT / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+                ),
+                output_dir=root / "unsafe-phase1",
+                top="counter",
+                clocks=["clk"],
+                require_no_fabric_clock=True,
+            )
+            self.assertEqual(unsafe["status"], "clock_topology_error")
+            self.assertEqual(
+                unsafe["clock_topology"]["fabric_logic_clock_nets"], 1
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

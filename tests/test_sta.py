@@ -9,11 +9,13 @@ from emuflow.ir import EmuIR
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.sta import (
     PARTITION_NET_WEIGHTS_SCHEMA,
+    STA_PATH_DATABASE_TSV_HEADER,
     STA_PATH_DATABASE_SCHEMA,
     VIVADO_NET_MAP_HEADER,
     VIVADO_PATH_DATABASE_TSV_HEADER,
     VIVADO_STA_TSV_HEADER,
     derive_partition_net_weights,
+    import_sta_path_database_tsv,
     import_vivado_path_database_tsv,
     import_vivado_sta_tsv,
     project_sta_path_database,
@@ -27,6 +29,163 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StaAdapterTest(unittest.TestCase):
+    def test_opensta_escaped_hierarchy_resolves_structured_endpoints(
+        self,
+    ) -> None:
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "escaped_hierarchy",
+                    "top": "escaped_hierarchy",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": [
+                    {
+                        "id": "$flatten\\u.launch",
+                        "name": "$flatten\\u.launch",
+                        "type": "FDRE",
+                        "resources": {"ff": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                    {
+                        "id": "$flatten\\u.capture",
+                        "name": "$flatten\\u.capture",
+                        "type": "FDRE",
+                        "resources": {"ff": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                ],
+                "nets": [
+                    {
+                        "id": "data",
+                        "name": "data",
+                        "width": 1,
+                        "cut_class": "register_output",
+                        "drivers": [
+                            {
+                                "instance": "$flatten\\u.launch",
+                                "port": "Q",
+                                "bit": 0,
+                            }
+                        ],
+                        "sinks": [
+                            {
+                                "instance": "$flatten\\u.capture",
+                                "port": "D",
+                                "bit": 0,
+                            }
+                        ],
+                        "attributes": {},
+                    }
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        canonical_start = "$flatten\\u.launch/Q"
+        canonical_end = "$flatten\\u.capture/D"
+        opensta_start = canonical_start.replace("\\", "\\\\")
+        opensta_end = canonical_end.replace("\\", "\\\\")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            input_path = root / "paths.tsv"
+            output_path = root / "paths.json"
+            write_json(ir_path, ir.value)
+            input_path.write_text(
+                STA_PATH_DATABASE_TSV_HEADER
+                + "\n"
+                + "\t".join(
+                    (
+                        (
+                            f"{opensta_start}->{opensta_end}#00000000"
+                        ).encode().hex(),
+                        "clk".encode().hex(),
+                        "4.0",
+                        "-0.5",
+                        "4.5",
+                        "data".encode().hex(),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report = import_sta_path_database_tsv(
+                input_path,
+                ir_path,
+                output_path,
+                provider="opensta-fpga-path-database-v1",
+            )
+            path = json.loads(output_path.read_text(encoding="utf-8"))[
+                "paths"
+            ][0]
+        self.assertEqual(report["structured_endpoint_paths"], 1)
+        self.assertEqual(
+            path["startpoint"],
+            {
+                "object": canonical_start,
+                "instance": "$flatten\\u.launch",
+                "port": "Q",
+                "bit": 0,
+            },
+        )
+        self.assertEqual(path["endpoint"]["object"], canonical_end)
+        self.assertEqual(path["endpoint"]["instance"], "$flatten\\u.capture")
+
+    def test_ambiguous_opensta_escaped_hierarchy_is_rejected(self) -> None:
+        instances = []
+        for instance_id in ("unit\\ff", "unit\\\\ff"):
+            instances.append(
+                {
+                    "id": instance_id,
+                    "name": instance_id,
+                    "type": "LUT1",
+                    "resources": {"lut": 1},
+                    "parameters": {"INIT": "10"},
+                    "attributes": {},
+                    "constant_connections": [
+                        {"port": "I0", "bit": 0, "value": "0"}
+                    ],
+                }
+            )
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "ambiguous_escape",
+                    "top": "ambiguous_escape",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": instances,
+                "nets": [],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            input_path = root / "paths.tsv"
+            write_json(ir_path, ir.value)
+            input_path.write_text(
+                STA_PATH_DATABASE_TSV_HEADER + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "alias is ambiguous"):
+                import_sta_path_database_tsv(
+                    input_path,
+                    ir_path,
+                    root / "paths.json",
+                    provider="opensta-fpga-path-database-v1",
+                )
+
     def test_vivado_ramb_clock_launch_recovers_logical_output_bit(self) -> None:
         ir = EmuIR(
             {

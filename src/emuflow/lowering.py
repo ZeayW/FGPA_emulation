@@ -126,7 +126,11 @@ def build_placement_ir(
         item["signal"]: item["index"] for item in transport["source_signals"]
     }
     for signal, index in source_index.items():
-        original_net = signal.removeprefix("net:")
+        # The shared open-flow runtime currently uses CPython 3.8 even though
+        # developer environments may be newer.  Keep this hot-path operation
+        # compatible with that validated runtime instead of relying on
+        # str.removeprefix (introduced in Python 3.9).
+        original_net = signal[4:] if signal.startswith("net:") else signal
         if original_net not in local_nets:
             raise ValidationError(
                 f"transport source net {original_net!r} is not local"

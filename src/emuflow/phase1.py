@@ -11,6 +11,18 @@ from .yosys import import_yosys_json
 PHASE1_REPORT_SCHEMA = "emuflow.phase1-report/v1"
 
 
+def _clock_pin(instance_type: str, port: str) -> bool:
+    if instance_type.startswith("FD"):
+        return port == "C"
+    if instance_type.startswith("$_DFF_"):
+        return port == "C"
+    return instance_type in {"VTR_SP_RAM", "VTR_DP_RAM"} and port == "clk"
+
+
+def _fabric_logic(instance_type: str) -> bool:
+    return instance_type.startswith("LUT") or instance_type == "$lut"
+
+
 def analyze_clock_topology(ir: EmuIR) -> Dict[str, Any]:
     instance_types = {
         instance["id"]: instance["type"]
@@ -23,8 +35,9 @@ def analyze_clock_topology(ir: EmuIR) -> Dict[str, Any]:
             endpoint
             for endpoint in net["sinks"]
             if endpoint["instance"] is not None
-            and endpoint["port"] == "C"
-            and instance_types[endpoint["instance"]].startswith("FD")
+            and _clock_pin(
+                instance_types[endpoint["instance"]], endpoint["port"]
+            )
         ]
         if not clock_sinks:
             continue
@@ -33,7 +46,7 @@ def analyze_clock_topology(ir: EmuIR) -> Dict[str, Any]:
             endpoint["instance"]
             for endpoint in net["drivers"]
             if endpoint["instance"] is not None
-            and instance_types[endpoint["instance"]].startswith("LUT")
+            and _fabric_logic(instance_types[endpoint["instance"]])
         )
         if lut_drivers:
             fabric_clock_nets.append(

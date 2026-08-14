@@ -553,7 +553,7 @@ def build_timing_dag_ratio_plan(
     legalization_executable: Optional[str] = None,
     max_iterations: int = 500,
     max_ratio: Optional[int] = None,
-    ratio_quantum: int = 8,
+    ratio_quantum: Optional[int] = None,
     post_refinement_iterations: int = 200,
     exact_domain_limit: int = 2048,
     convergence: float = 1.0e-9,
@@ -564,6 +564,11 @@ def build_timing_dag_ratio_plan(
         if prepared_model is not None
         else _prepare_model(routes, platform)
     )
+    min_ratio = int(model["constraints"].get("tdm_min_ratio", 1))
+    if ratio_quantum is None:
+        ratio_quantum = int(
+            model["constraints"].get("tdm_ratio_quantum", 8)
+        )
     if max_ratio is None:
         link_by_id = {link.id: link for link in platform.links}
         usable_slots = min(
@@ -584,6 +589,7 @@ def build_timing_dag_ratio_plan(
         model,
         executable=dag_executable,
         max_iterations=max_iterations,
+        min_ratio=float(min_ratio),
         max_ratio=max_ratio,
         convergence=convergence,
     )

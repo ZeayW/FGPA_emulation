@@ -376,6 +376,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         )
         self.assertEqual(report["execution"]["requested_workers"], 2)
         self.assertEqual(report["execution"]["effective_workers"], 2)
+        self.assertFalse(report["execution"]["pack_place_resume"])
 
     def test_rejects_non_positive_worker_count(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -410,6 +411,57 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
+                )
+
+    def test_nonempty_output_requires_explicit_resume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            split = root / "split"
+            split.mkdir()
+            write_json(
+                split / "manifest.json",
+                {
+                    "schema": "emuflow.split-manifest/v1",
+                    "fpgas": [{"fpga": "fpga0"}, {"fpga": "fpga1"}],
+                },
+            )
+            output = root / "physical"
+            output.mkdir()
+            (output / "partial").write_text("partial\n", encoding="utf-8")
+            write_json(root / "schedule.json", {})
+            runtime = {
+                "fabric_clock": {"period_ns": 4.0},
+                "virtual_dut_clock": {"nominal_period_ns": 128.0},
+                "timing_model": {"fabric_to_dut_max_delay_ns": 8.0},
+            }
+            with (
+                patch(
+                    "emuflow.multi_fpga_physical_flow.build_virtual_runtime",
+                    return_value=runtime,
+                ),
+                self.assertRaisesRegex(
+                    Exception, "physical output must be an empty directory"
+                ),
+            ):
+                run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    output,
+                )
+
+    def test_rejects_logic_database_without_complete_original_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(
+                ValidationError, "complete original STA path database"
+            ):
+                run_multi_fpga_physical_flow(
+                    root,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    logic_path_database_path=root / "cut-paths.json",
                 )
 
 

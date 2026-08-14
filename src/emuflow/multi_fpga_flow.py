@@ -59,6 +59,145 @@ PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
 
+def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
+    """Return a regular, non-symlink file contained by a flow root."""
+
+    root = root.resolve()
+    path = path if path.is_absolute() else root / path
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError(f"multi-FPGA checkpoint {label} is missing")
+    resolved = path.resolve()
+    if resolved.parent != root and root not in resolved.parents:
+        raise ValidationError(f"multi-FPGA checkpoint {label} escapes its flow")
+    return resolved
+
+
+def finalize_multi_fpga_physical_checkpoint(
+    flow_root: Path,
+    physical_root: Path,
+    *,
+    runtime_directory: str = "runtime-final",
+) -> Dict[str, Any]:
+    """Finish Phase 7C and seal a flow after an independently resumed Phase 7.
+
+    Physical backends are intentionally restartable because their external tool
+    environments can fail after Phase 1--6 have completed.  This entry point
+    consumes only checked artifacts already below ``flow_root``; it does not
+    rerun or silently alter any earlier optimization stage.
+    """
+
+    root = flow_root.resolve()
+    if not root.is_dir():
+        raise ValidationError("multi-FPGA checkpoint flow root is missing")
+    if (
+        not runtime_directory
+        or Path(runtime_directory).is_absolute()
+        or len(Path(runtime_directory).parts) != 1
+        or runtime_directory in {".", ".."}
+    ):
+        raise ValidationError("multi-FPGA checkpoint runtime directory is unsafe")
+    physical_root = (
+        physical_root if physical_root.is_absolute() else root / physical_root
+    )
+    physical_report_path = _checked_flow_member(
+        root,
+        physical_root / "multi-fpga-physical-flow-report.json",
+        "physical flow report",
+    )
+    physical_summary_path = _checked_flow_member(
+        root,
+        physical_root / "physical-summary.json",
+        "physical summary",
+    )
+    members = {
+        "frontend": "frontend/phase1/phase1_report.json",
+        "platform": "frontend/phase1/platform.normalized.json",
+        "emuir": "frontend/phase1/design.emuir.json",
+        "partition": "partition/phase3_report.json",
+        "assignment": "partition/assignment.json",
+        "system_route": "system-route/phase4_report.json",
+        "routes": "system-route/routes.json",
+        "tdm": "tdm/phase5_report.json",
+        "schedule": "tdm/schedule.json",
+        "split": "split/phase6_report.json",
+        "split_manifest": "split/manifest.json",
+    }
+    paths = {
+        key: _checked_flow_member(root, Path(value), key)
+        for key, value in members.items()
+    }
+    stages = {
+        name: read_json(paths[name])
+        for name in ("frontend", "partition", "system_route", "tdm", "split")
+    }
+    physical_report = read_json(physical_report_path)
+    validate_multi_fpga_physical_report(physical_report)
+
+    runtime_root = root / runtime_directory
+    if runtime_root.is_symlink():
+        raise ValidationError("multi-FPGA checkpoint runtime directory is a symlink")
+    runtime_report = run_phase7c(
+        paths["schedule"],
+        paths["platform"],
+        paths["partition"],
+        paths["system_route"],
+        paths["tdm"],
+        paths["split"],
+        runtime_root,
+        physical_summary_path=physical_summary_path,
+        routes_path=paths["routes"],
+    )
+    if runtime_report.get("status") != "pass":
+        raise ValidationError("resumed physical flow did not close Phase 7C timing")
+
+    def artifact(path: Path) -> Dict[str, str]:
+        checked = _checked_flow_member(root, path, path.name)
+        return {
+            "path": checked.relative_to(root).as_posix(),
+            "sha256": _sha256(checked),
+        }
+
+    report: Dict[str, Any] = {
+        "schema": MULTI_FPGA_FLOW_SCHEMA,
+        "status": "pass",
+        "provider": MULTI_FPGA_FLOW_PROVIDER,
+        "architecture_policy": "provider-neutral",
+        "runtime": runtime_report,
+        "physical": physical_report,
+        "stages": stages,
+        "artifacts": {
+            "platform": artifact(paths["platform"]),
+            "emuir": artifact(paths["emuir"]),
+            "partition_constraints": artifact(
+                root / "partition/constraints.normalized.json"
+            ),
+            "route_constraints": artifact(
+                root / "system-route/route_constraints.normalized.json"
+            ),
+            "assignment": artifact(paths["assignment"]),
+            "routes": artifact(paths["routes"]),
+            "schedule": artifact(paths["schedule"]),
+            "split_manifest": artifact(paths["split_manifest"]),
+            "runtime_contract": artifact(runtime_root / "runtime_contract.json"),
+            "qor_report": artifact(runtime_root / "qor_report.json"),
+            "physical_flow_report": artifact(physical_report_path),
+            "physical_summary": artifact(physical_summary_path),
+        },
+    }
+    optional = {
+        "timing_path_database": root / "timing/path-database.json",
+        "partition_net_weights": root / "timing/partition-net-weights.json",
+        "cut_path_database": root / "timing/cut-path-database.json",
+        "cut_timing_paths": root / "timing/cut-timing-paths.json",
+    }
+    for name, path in optional.items():
+        if path.is_file() and not path.is_symlink():
+            report["artifacts"][name] = artifact(path)
+    report["summary"] = validate_multi_fpga_flow_report(report)
+    write_json(root / "multi-fpga-flow-report.json", report)
+    return report
+
+
 def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     records = value["fpgas"]
     return {
@@ -540,6 +679,8 @@ def run_multi_fpga_flow(
     board_link_timing_db: Optional[Path] = None,
     timing_paths: Optional[Path] = None,
     router: Optional[str] = None,
+    route_provider: Optional[str] = None,
+    route_candidate_workers: int = 1,
     frame_slots: Optional[int] = None,
     optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
@@ -787,7 +928,6 @@ def run_multi_fpga_flow(
 
     timing_root = output_dir / "timing"
     path_database_path = timing_root / "path-database.json"
-    effective_path_database_path = path_database_path
     cut_path_database_path = None
     net_weights_path = timing_root / "partition-net-weights.json"
     timing_report = None
@@ -963,11 +1103,14 @@ def run_multi_fpga_flow(
                 log_path=timing_root / "opensta-cut-paths.log",
                 through_nets=cut_net_ids,
             )
-            effective_path_database_path = cut_path_database_path
             timing_report["cut_path_sta"] = cut_sta_report
         projected_timing_paths = timing_root / "cut-timing-paths.json"
+        # Phase 4/5 must optimize the same complete original TimingPathDB
+        # population that Phase 7C later reports.  The post-partition
+        # through-net STA run is useful qualification evidence, but using it
+        # as the routing population silently drops original cross-FPGA paths.
         projection_report = project_sta_path_database(
-            effective_path_database_path,
+            path_database_path,
             assignment_path,
             projected_timing_paths,
         )
@@ -1008,6 +1151,8 @@ def run_multi_fpga_flow(
             ),
             partition_repair_balance=partition_repair_balance,
             router=router,
+            route_provider=route_provider,
+            route_candidate_workers=route_candidate_workers,
             frame_slots=frame_slots,
             optimize_frame_slots=optimize_frame_slots,
             route_max_iterations=route_max_iterations,
@@ -1080,6 +1225,8 @@ def run_multi_fpga_flow(
             route_constraints=effective_route_constraints,
             route_max_iterations=route_max_iterations,
             router=router,
+            route_provider=route_provider,
+            candidate_workers=route_candidate_workers,
             tdm_provider=tdm_provider,
             ratio_optimizer=ratio_optimizer,
             timing_dag_optimizer=timing_dag_optimizer,
@@ -1104,6 +1251,8 @@ def run_multi_fpga_flow(
             max_iterations=route_max_iterations,
             timing_paths_path=projected_timing_paths,
             router=router,
+            provider=route_provider,
+            candidate_workers=route_candidate_workers,
         )
         phase5_report = run_phase5(
             phase4_root / "routes.json",
@@ -1182,7 +1331,10 @@ def run_multi_fpga_flow(
             assignment_path=assignment_path if timing_driven else None,
             routes_path=routes_path if timing_driven else None,
             path_database_path=(
-                effective_path_database_path if timing_driven else None
+                path_database_path if timing_driven else None
+            ),
+            logic_path_database_path=(
+                path_database_path if timing_driven else None
             ),
             workers=physical_workers,
         )
@@ -1336,7 +1488,10 @@ def run_multi_fpga_flow(
             assignment_path=assignment_path if timing_driven else None,
             routes_path=routes_path if timing_driven else None,
             path_database_path=(
-                effective_path_database_path if timing_driven else None
+                path_database_path if timing_driven else None
+            ),
+            logic_path_database_path=(
+                path_database_path if timing_driven else None
             ),
             workers=physical_workers,
         )
@@ -1480,9 +1635,27 @@ def run_multi_fpga_flow(
             "split": phase6_report,
         },
         "artifacts": {
+            "platform": {
+                "path": "frontend/phase1/platform.normalized.json",
+                "sha256": _sha256(
+                    phase1_root / "platform.normalized.json"
+                ),
+            },
             "emuir": {
                 "path": "frontend/phase1/design.emuir.json",
                 "sha256": _sha256(ir_path),
+            },
+            "partition_constraints": {
+                "path": "partition/constraints.normalized.json",
+                "sha256": _sha256(
+                    phase3_root / "constraints.normalized.json"
+                ),
+            },
+            "route_constraints": {
+                "path": "system-route/route_constraints.normalized.json",
+                "sha256": _sha256(
+                    phase4_root / "route_constraints.normalized.json"
+                ),
             },
             "assignment": {
                 "path": "partition/assignment.json",

@@ -475,11 +475,18 @@ Lexicographic feasibility first:
 
 ### Implemented milestone
 
-The C++ provider now constructs two independently checkable topology
-candidates: the original source-rooted shortest-path tree and a DAC
+The C++ provider now constructs six independently checkable topology
+candidates: the original source-rooted shortest-path tree, a DAC
 2025-informed delay-demand-balanced connection tree. The latter connects
 high-cost sinks incrementally through legal Steiner attachment points and
-uses distinct SLL and cable/TDM congestion costs. The provider selects the
+uses distinct SLL and cable/TDM congestion costs, and a deterministic directed
+Takahashi-Matsuyama nearest-terminal Steiner alternative, a directed
+metric-closure Prim expansion, a criticality-gated shallow-light tree, and an
+adaptive-hop tree derived from a direction-feasible hop lower bound. Phase 4
+exports all six plus the selected refined tree in the versioned
+`emuflow.route-candidate-pool/v1` contract.  A separate checker independently
+reconstructs every tree's topology, direction locks, hop bound, latency, and
+delay.  The provider selects the
 better complete solution with the ASP-DAC 2026 worst-normalized-slack
 objective before selective critical-path rip-up/reroute. A separate Python
 oracle exhaustively enumerates direction-feasible directed arborescences and
@@ -493,8 +500,39 @@ lexicographic selector. They no longer alias the same native execution mode.
 This is classified as a **paper-informed extension**, not yet a faithful DAC
 2025 reproduction: the public EmuFlow BoardDB model is more general than the
 contest topology, and paper benchmark/result reproduction is still pending.
-The remaining topology gap is candidate-tree column generation or LNS over a
-larger KMB/Mehlhorn and shallow-light candidate pool.
+The exported pool and exact-oracle coverage gate are implemented. Following
+the corrected whole-design Koios DLA Phase 7 A/B gate, the
+`timing-aware-global-candidate-v1` provider is the timing-enabled default and
+solves the restricted master
+exactly when the candidate product has at most 200,000 combinations and uses
+deterministic batch-conflict LNS above that boundary. Its Python oracle
+independently enumerates compact products and reconstructs capacity, route
+delay, quantized TDM delay, normalized slack, utilization, and bit-hops.
+The planned directed metric-closure, shallow-light, and adaptive-hop columns
+are now in the checked global-master pool. Batch-conflict LNS is implemented: a
+deterministic coloring groups only path moves whose union candidate capacity
+domains and affected STA paths are disjoint, native workers generate proposals
+from a shared immutable snapshot, and stable serial commit rechecks the global
+objective and capacity. A separate Python reconstruction checks the batches,
+while workers=1/2/N regressions require byte-identical public artifacts.
+Concrete Phase
+5 feedback is now implemented as `emuflow.tdm-feedback/v1`: an independent
+reconstruction binds the exact prior routes and schedule to per-domain
+occupancy, wait, capacity, affected timing paths, and deterministic routing
+prices. Phase 4 requires those source artifacts and reruns the checker before
+passing prices to the native candidate generator; source, domain, or path
+tampering fails before routing. This is a checked single feedback edge, not
+yet the final iterative trust-region controller.
+Phase 7 can close a second checked edge. The
+`emuflow.physical-route-feedback/v1` artifact requires complete endpoint-keyed
+TX/RX `boundary-timing/v1` coverage and binds it to the exact routes, concrete
+schedule, runtime, and physical-summary hashes. It aggregates routed boundary
+delay per capacity domain, normalizes the result by the BoardDB fabric slot,
+and adds that price to the reconstructed schedule price. Phase 4 accepts the
+combined price only after independently revalidating every source artifact;
+changed physical delay or cross-run mixing is rejected. This is routed-
+interface feedback, not a claim that final per-FPGA WNS/TNS decomposes
+losslessly into an arc cost. Full Phase 7 A/B remains the acceptance metric.
 
 ### Selected primary route
 
@@ -573,6 +611,14 @@ exact total-displacement dynamic program. Interval-cost precomputation reduces
 the exact segmentation to `O(lanes * signals^2)` and raises the exact domain
 limit to 2,048 signals. Still larger domains retain the deterministic
 minimum-wire construction to bound runtime.
+Lane groups are additionally separated by a checked transport-compatibility
+domain. The default `global-frame-cdc` class records every contributing STA
+clock domain but permits sharing because values are committed only at the
+global frame barrier. A route may explicitly request a different non-empty
+class, for example a source-synchronous protocol; the native legalizer and
+independent checker then forbid sharing a physical lane across those classes.
+This is a protocol/CDC constraint, not the incorrect assumption that every
+logical clock name inherently needs a dedicated transport lane.
 Independent exhaustive Python oracles verify the exact displacement objective
 on small domains and the realized timing optimum of compact single-round
 lane/slot schedules.
@@ -595,12 +641,20 @@ normalized slack, followed by completion slot and analytical slack. This
 guard prevents an improvement in the ratio surrogate from silently degrading
 the realized schedule.
 
-The concrete lane/slot realization remains the ratio-aware deterministic list
-scheduler with independent collision, precedence, round-barrier, and value
-simulation checks. Therefore the ratio/legalization upgrade is implemented,
-while multi-round time-expanded CP-SAT scheduling and scalable schedule LNS
-are still open; the stage is not yet described as a complete faithful
-TODAES/ASP-DAC 2026 reproduction.
+The concrete lane/slot realization starts from the ratio-aware deterministic
+list scheduler and is improved by a source-built C++ deterministic LNS. For a
+delayed hop on the worst path, the bounded neighborhood contains that hop and
+up to three immediately preceding blockers on its physical lane; all relative
+orders (at most `4!`) are evaluated through the complete multi-round schedule
+builder. An optional OR-Tools CP-SAT oracle (`pip install 'emuflow[cp-sat]'`)
+models medium fixed-ratio/lane instances on the time-expanded graph and proves
+the lexicographic worst-slack/completion/wait optimum using one deterministic
+solver worker. Its integer time/score certificate is independently rebuilt
+from the public artifacts. The dependency-free exhaustive oracle remains the
+small-case reference. Collision, precedence, round-barrier, value simulation,
+and timing reconstruction remain independent acceptance gates. Large public
+case and complete Phase 7 WNS/TNS qualification are still required before
+making the upgraded route/TDM providers default.
 
 ### Selected primary route
 
@@ -611,7 +665,8 @@ TODAES/ASP-DAC 2026 reproduction.
    - use path-level timing and per-direction capacity constraints.
 2. **Discrete ratio legalization**
    - reproduce binary-search/DP discretization and displacement objective;
-   - support legal ratio sets, clock groups, direction groups, and channel
+   - support legal ratio sets, protocol/CDC compatibility groups, direction
+     groups, and channel
      capacity;
    - reproduce swap/post-refinement on critical paths.
 3. **Exact schedule oracle**
@@ -622,7 +677,8 @@ TODAES/ASP-DAC 2026 reproduction.
 4. **Scalable schedule construction**
    - decompose by capacity domain and timing component;
    - use list scheduling only for initialization;
-   - apply large-neighborhood repair guided by the CP-SAT model;
+   - apply bounded, deterministic large-neighborhood repair with the same
+     time-expanded legality and objective;
    - allow controlled frame-length search.
 5. **Timing reconstruction**
    - compute realized wait from concrete slots for every global STA path;

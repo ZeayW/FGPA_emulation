@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from .errors import EmuFlowError, ValidationError
-from .io import write_json
+from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .route_artifact import validate_vpr_route_artifacts
 from .synthesis import _yosys_identifier, _yosys_quote
@@ -493,6 +493,7 @@ def run_vpr_pack_place(
     *,
     executable: Optional[str] = None,
     seed: int = 1,
+    resume: bool = False,
 ) -> Dict[str, Any]:
     """Pack and place only, for an OpenPARF-to-VPR physical handoff.
 
@@ -510,6 +511,20 @@ def run_vpr_pack_place(
         raise EmuFlowError("VPR seed must be non-negative")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = output_dir / "vpr-pack-place-report.json"
+    if resume:
+        if checkpoint.is_file() or checkpoint.is_symlink():
+            return validate_vpr_pack_place_checkpoint(
+                architecture,
+                circuit,
+                output_dir,
+                seed=seed,
+            )
+        if any(output_dir.iterdir()):
+            raise ValidationError(
+                "VPR pack/place resume found a partial checkpoint without "
+                "a completed report"
+            )
     command = resolve_native_executable("vpr", executable)
     arguments = [
         command,
@@ -581,6 +596,89 @@ def run_vpr_pack_place(
     return report
 
 
+def validate_vpr_pack_place_checkpoint(
+    architecture: Path,
+    circuit: Path,
+    output_dir: Path,
+    *,
+    seed: int = 1,
+) -> Dict[str, Any]:
+    """Independently validate and return a completed pack/place checkpoint."""
+
+    architecture = architecture.resolve()
+    circuit = circuit.resolve()
+    output_dir = output_dir.resolve()
+    report_path = output_dir / "vpr-pack-place-report.json"
+    if report_path.is_symlink() or not report_path.is_file():
+        raise ValidationError("VPR pack/place checkpoint report is missing")
+    report = read_json(report_path)
+    if (
+        report.get("status") != "pass"
+        or report.get("provider") != VPR_PROVIDER
+        or report.get("stages") != ["pack", "place"]
+        or report.get("configuration") != {"seed": seed}
+    ):
+        raise ValidationError("VPR pack/place checkpoint identity is invalid")
+    for label, expected in (
+        ("architecture", architecture),
+        ("circuit", circuit),
+    ):
+        binding = report.get(label)
+        if (
+            not isinstance(binding, dict)
+            or binding.get("path") != str(expected)
+            or binding.get("sha256") != _sha256(expected)
+        ):
+            raise ValidationError(
+                f"VPR pack/place checkpoint {label} binding disagrees"
+            )
+    stem = circuit.stem
+    expected_artifacts = {
+        "packed_netlist": output_dir / f"{stem}.net",
+        "placement": output_dir / f"{stem}.place",
+    }
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(
+        expected_artifacts
+    ):
+        raise ValidationError("VPR pack/place checkpoint artifacts are incomplete")
+    for label, expected in expected_artifacts.items():
+        binding = artifacts[label]
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"path", "bytes", "sha256"}
+            or binding.get("path") != str(expected)
+            or expected.is_symlink()
+            or not expected.is_file()
+            or binding.get("bytes") != expected.stat().st_size
+            or binding.get("sha256") != _sha256(expected)
+        ):
+            raise ValidationError(
+                f"VPR pack/place checkpoint {label} seal disagrees"
+            )
+    log_path = output_dir / "vpr.console.log"
+    if (
+        report.get("log") != str(log_path)
+        or log_path.is_symlink()
+        or not log_path.is_file()
+    ):
+        raise ValidationError("VPR pack/place checkpoint log is missing")
+    log = log_path.read_text(encoding="utf-8")
+    if "VPR succeeded" not in log:
+        raise ValidationError("VPR pack/place checkpoint log has no success marker")
+    expected_metrics: Dict[str, Any] = {}
+    for name, pattern in _INTEGER_PATTERNS.items():
+        matches = pattern.findall(log)
+        if matches:
+            expected_metrics[name] = int(matches[-1])
+    if (
+        not {"packed_nets", "packed_blocks"}.issubset(expected_metrics)
+        or report.get("metrics") != expected_metrics
+    ):
+        raise ValidationError("VPR pack/place checkpoint metrics disagree")
+    return report
+
+
 def run_vpr_route_packed(
     architecture: Path,
     circuit: Path,
@@ -596,6 +694,8 @@ def run_vpr_route_packed(
     boundary_output: Optional[Path] = None,
     logic_query: Optional[Path] = None,
     logic_output: Optional[Path] = None,
+    local_path_query: Optional[Path] = None,
+    local_path_output: Optional[Path] = None,
     retain_rr_graph: bool = False,
     sdc_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -645,6 +745,21 @@ def run_vpr_route_packed(
             )
         logic_output_path = logic_output.resolve()
         logic_output_path.parent.mkdir(parents=True, exist_ok=True)
+    if (local_path_query is None) != (local_path_output is None):
+        raise EmuFlowError(
+            "VPR local path timing requires both query and output paths"
+        )
+    local_path_query_path = None
+    local_path_output_path = None
+    if local_path_query is not None and local_path_output is not None:
+        local_path_query_path = local_path_query.resolve()
+        if not local_path_query_path.is_file():
+            raise EmuFlowError(
+                "VPR local path timing query does not exist: "
+                f"{local_path_query_path}"
+            )
+        local_path_output_path = local_path_output.resolve()
+        local_path_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -682,6 +797,16 @@ def run_vpr_route_packed(
     if logic_query_path is not None and logic_output_path is not None:
         environment["EMUFLOW_VPR_LOGIC_QUERY"] = str(logic_query_path)
         environment["EMUFLOW_VPR_LOGIC_OUTPUT"] = str(logic_output_path)
+    if (
+        local_path_query_path is not None
+        and local_path_output_path is not None
+    ):
+        environment["EMUFLOW_VPR_LOCAL_PATH_QUERY"] = str(
+            local_path_query_path
+        )
+        environment["EMUFLOW_VPR_LOCAL_PATH_OUTPUT"] = str(
+            local_path_output_path
+        )
     completed = subprocess.run(
         arguments,
         cwd=output_dir,
@@ -752,6 +877,25 @@ def run_vpr_route_packed(
                 "sha256": _sha256(logic_output_path),
             },
         }
+    local_path_artifact = None
+    if local_path_output_path is not None:
+        if (
+            not local_path_output_path.is_file()
+            or local_path_output_path.stat().st_size == 0
+        ):
+            raise ValidationError(
+                "VPR did not emit the requested local path timing report"
+            )
+        local_path_artifact = {
+            "query": {
+                "path": str(local_path_query_path),
+                "sha256": _sha256(local_path_query_path),
+            },
+            "output": {
+                "path": str(local_path_output_path),
+                "sha256": _sha256(local_path_output_path),
+            },
+        }
     report.update(
         {
             name: {"path": str(path), "sha256": _sha256(path)}
@@ -770,6 +914,8 @@ def run_vpr_route_packed(
         report["boundary_timing"] = boundary_artifact
     if logic_artifact is not None:
         report["logic_segment_timing"] = logic_artifact
+    if local_path_artifact is not None:
+        report["local_path_timing"] = local_path_artifact
     rr_graph_artifact = route_check.get("artifacts", {}).get("rr_graph")
     if isinstance(rr_graph_artifact, dict):
         rr_graph_artifact["retained"] = retain_rr_graph

@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import ValidationError
 from emuflow.phase7c import run_phase7c
 from emuflow.platform import Platform
+from emuflow.local_path_timing import path_id_set_sha256
 from emuflow.runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
     aggregate_qor,
@@ -318,7 +320,8 @@ class Phase7CTest(unittest.TestCase):
             routes=self.routes,
             schedule=self.schedule,
         )
-        self.assertEqual(qor["status"], "pass")
+        self.assertEqual(qor["status"], "incomplete")
+        self.assertFalse(qor["whole_design_timing_complete"])
         self.assertLess(
             qor["timing"]["target_clock"]["worst_slack_bound_ns"], 0.0
         )
@@ -344,6 +347,14 @@ class Phase7CTest(unittest.TestCase):
                 "total_negative_slack_bound_ns"
             ],
             sum(runtime_slacks),
+        )
+        self.assertLess(qor["timing"]["target_clock"]["tns_bound_ns"], 0.0)
+        self.assertEqual(qor["timing"]["runtime_clock"]["tns_bound_ns"], 0.0)
+        self.assertEqual(
+            qor["timing"]["summary"]["original_cross_fpga_paths"], 1
+        )
+        self.assertEqual(
+            qor["timing"]["summary"]["compressed_representative_paths"], 1
         )
         self.assertEqual(
             qor["timing"]["qualification"],
@@ -464,6 +475,176 @@ class Phase7CTest(unittest.TestCase):
             ],
             1.0,
         )
+
+    def test_global_tns_expands_compressed_original_path_members(self):
+        routes = copy.deepcopy(self.routes)
+        routes["timing"]["paths"][0]["compressed_path_ids"] = [
+            "member-a", "member-b", "member-c"
+        ]
+        report = copy.deepcopy(self.reports["phase5"])
+        report["timing_validation"] = reconstruct_tdm_schedule_timing(
+            routes, self.platform, self.schedule
+        )
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            report,
+            self.reports["phase6"],
+            self._physical_summary(),
+            self.platform,
+            routes=routes,
+            schedule=self.schedule,
+        )
+        timing = qor["timing"]
+        self.assertEqual(
+            [path["path"] for path in timing["paths"]],
+            ["member-a", "member-b", "member-c"],
+        )
+        self.assertEqual(
+            timing["summary"]["compressed_representative_paths"], 1
+        )
+        self.assertEqual(timing["summary"]["original_cross_fpga_paths"], 3)
+        self.assertAlmostEqual(
+            timing["target_clock"]["tns_bound_ns"],
+            3.0 * timing["target_clock"]["worst_slack_bound_ns"],
+        )
+
+    def test_whole_design_timing_combines_local_and_crossing_paths(self):
+        physical = self._physical_summary()
+        path_ids = ["local-critical", "system-critical"]
+        source = {
+            "path_database_sha256": "a" * 64,
+            "original_ir_sha256": "b" * 64,
+            "assignment_sha256": "c" * 64,
+            "routes_sha256": hashlib.sha256(
+                (json.dumps(self.routes, indent=2, sort_keys=True) + "\n").encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+            "original_paths": 2,
+            "original_path_ids_sha256": path_id_set_sha256(path_ids),
+        }
+        physical["local_path_timing"] = {
+            "fpga0": {
+                "schema": "emuflow.local-path-timing/v1",
+                "status": "pass",
+                "design": "dut",
+                "fpga": "fpga0",
+                "provider": "test",
+                "qualification": (
+                    "source-bound-routed-endpoint-delay-with-capture-setup"
+                ),
+                "source": source,
+                "coverage": {"local_paths": 1},
+                "paths": [{
+                    "id": "local-critical",
+                    "kind": "local",
+                    "fpga": "fpga0",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 20.0,
+                    "start_pin": "i0.Q[0]",
+                    "end_pin": "i1.D[0]",
+                    "delay_ns": 4.0,
+                }],
+            },
+            "fpga1": {
+                "schema": "emuflow.local-path-timing/v1",
+                "status": "pass",
+                "design": "dut",
+                "fpga": "fpga1",
+                "provider": "test",
+                "qualification": (
+                    "source-bound-routed-endpoint-delay-with-capture-setup"
+                ),
+                "source": source,
+                "coverage": {"local_paths": 0},
+                "paths": [],
+            },
+        }
+        runtime = build_virtual_runtime(self.schedule, self.platform)
+        qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            self.reports["phase5"],
+            self.reports["phase6"],
+            physical,
+            self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
+        )
+        self.assertEqual(qor["status"], "pass")
+        self.assertTrue(qor["whole_design_timing_complete"])
+        timing = qor["timing"]
+        self.assertEqual(timing["timing_scope"], "whole-original-design")
+        self.assertEqual(timing["summary"]["original_paths"], 2)
+        self.assertEqual(timing["summary"]["original_local_paths"], 1)
+        self.assertEqual(timing["summary"]["original_cross_fpga_paths"], 1)
+        self.assertEqual(
+            {item["path_scope"] for item in timing["paths"]},
+            {"same-fpga-local", "cross-fpga"},
+        )
+        local_path = next(
+            item
+            for item in timing["paths"]
+            if item["path_scope"] == "same-fpga-local"
+        )
+        self.assertFalse(local_path["physical_logic_segments_exact"])
+        self.assertTrue(local_path["physical_logic_segments_cone_bound"])
+        exactness = timing["path_exactness"]
+        self.assertFalse(exactness["physical_logic_segments"])
+        self.assertFalse(exactness["physical_logic_segment_bounds"])
+        self.assertEqual(exactness["endpoint_exact_logic_paths"], 0)
+        self.assertEqual(exactness["cone_bound_logic_paths"], 1)
+        self.assertEqual(exactness["fallback_logic_paths"], 1)
+        self.assertEqual(exactness["local_original_paths_endpoint_exact"], 0)
+        self.assertEqual(exactness["local_original_paths_cone_bound"], 1)
+
+        selected = copy.deepcopy(physical)
+        selected["local_path_timing"]["fpga0"]["identity_schema"] = (
+            "emuflow.local-path-identity/v2"
+        )
+        selected["local_path_timing"]["fpga1"]["identity_schema"] = (
+            "emuflow.local-path-identity/v2"
+        )
+        selected_path = selected["local_path_timing"]["fpga0"]["paths"][0]
+        selected_path["measurement"] = "explicit-routed-path-chain"
+        selected_path["path_pins"] = ["i0.Q[0]", "i1.D[0]"]
+        selected_qor = aggregate_qor(
+            runtime,
+            self.reports["phase3"],
+            self.reports["phase4"],
+            self.reports["phase5"],
+            self.reports["phase6"],
+            selected,
+            self.platform,
+            routes=self.routes,
+            schedule=self.schedule,
+        )
+        selected_exactness = selected_qor["timing"]["path_exactness"]
+        self.assertEqual(
+            selected_exactness["local_original_paths_endpoint_exact"], 1
+        )
+        self.assertEqual(
+            selected_exactness["local_original_paths_cone_bound"], 0
+        )
+
+        broken = copy.deepcopy(physical)
+        broken["local_path_timing"]["fpga0"]["paths"][0]["id"] = "other"
+        with self.assertRaisesRegex(ValidationError, "exactly cover"):
+            aggregate_qor(
+                runtime,
+                self.reports["phase3"],
+                self.reports["phase4"],
+                self.reports["phase5"],
+                self.reports["phase6"],
+                broken,
+                self.platform,
+                routes=self.routes,
+                schedule=self.schedule,
+            )
 
     def test_qor_uses_versioned_board_link_delay_bound(self):
         physical = self._physical_summary()
@@ -798,7 +979,7 @@ class Phase7CTest(unittest.TestCase):
                 routes_path=paths["routes"],
                 board_link_timing_path=paths["link_timing"],
             )
-            self.assertEqual(closed["status"], "pass")
+            self.assertEqual(closed["status"], "incomplete")
             self.assertIn("system_timing", closed)
             self.assertEqual(
                 closed["system_timing"]["paths"][0][

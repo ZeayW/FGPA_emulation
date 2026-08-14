@@ -213,23 +213,34 @@ identities let partition projection retain the actual sink of each multicast
 member and discard local fanout of otherwise-global nets; provider inputs
 without resolvable endpoints retain an explicit conservative per-partition
 bound.
+Phase 4 and Phase 5 project their cross-FPGA timing population from that
+complete original TimingPathDB, so every original path that becomes
+cross-partition is optimized and remains identifiable at Phase 7C. An
+additional post-partition OpenSTA through-cut query is retained as diagnostic
+coverage evidence for the selected cut nets; it is not substituted for the
+complete original path population. The physical stage likewise keeps the
+complete database for same-FPGA and final set-hash coverage, while using the
+projected member identities for routed cross-FPGA logic-segment queries.
 Both original-target-clock and virtual-runtime-clock system slack are
 reported.
 
 Local Phase 7 physical timing and Phase 7C answer different questions. The
-former reports each implemented FPGA's endpoint-complete WNS/TNS under the
-physical DUT/fabric constraints; for a multi-FPGA result, overall WNS is the
-minimum per-FPGA WNS and overall TNS is the sum of the per-FPGA TNS values.
-Those are the primary final QoR metrics for comparing Phase 6 providers.
-Phase 7C separately composes routed logic, TDM, and board-link delays into the
-pausible-clock system contract. A valid end-to-end comparison reports both;
-neither may be substituted for the other.
+former reports each implemented FPGA's endpoint-complete physical WNS/TNS
+under local DUT/fabric constraints. Its minimum WNS and summed TNS are
+per-FPGA physical aggregates, not the default whole-design timing result.
+Phase 7C forms the exact union of every original TimingPathDB member. It uses
+the selected post-route path when its atom-pin chain is unambiguous, otherwise
+an explicitly labelled conservative endpoint-longest bound, and composes routed
+logic, TDM, and board-link delays for members that cross FPGAs in the
+pausible-clock system contract.  WNS/TNS over that complete, disjoint union are
+the primary final QoR metrics. A valid end-to-end comparison also reports the
+labelled per-FPGA diagnostics, but never substitutes them for global timing.
 
 | Route | Current completion boundary |
 | --- | --- |
 | Common multi-FPGA frontend | Implemented through partitioning, system routing, TDM, logical pin planning, transport generation, per-FPGA splitting, and independent checks |
-| Fully open physical route | Implemented through unified cross-FPGA physical/TDM timing and exercised end to end on a large, four-FPGA Koios DLA design using VPR → OpenPARF → VPR |
-| Vivado physical route | Implemented and exercised end to end on a large, four-FPGA Koios DLA design, including unified cross-FPGA timing, routed DUT logic segments, and stable RAMB endpoint recovery |
+| Fully open physical route | Implemented through whole-design physical/TDM timing; historical PicoRV32 and 528,104-instance Koios GEMM A/B artifacts prove all-original-path population coverage but predate the local launch-Tco repair, while the corrected Koios DLA gate now validates the repaired complete-path model on an independent design |
+| Vivado physical route | Implemented for routed DUT logic segments and stable RAMB endpoint recovery; its former large Koios evidence is likewise a cross-FPGA subset until same-FPGA original-path timing is exported |
 | Bitstream and board bring-up | Outside the current completion gate; requires a concrete board support package |
 
 The flow is board-abstracted. Synthesis, partitioning, routing, TDM, logical
@@ -264,15 +275,21 @@ such a vertex; a run with relaxed balance is a legal capacity/topology result,
 not evidence of high-quality balanced partitioning. Supporting controlled
 combinational cuts requires an explicit multi-phase settling and equivalence
 contract and is a planned semantic extension, not a partitioner tuning flag.
+For Xilinx-mapped flip-flops, `FDRE.R` and `FDSE.S` are synchronous controls
+and are therefore legal second-round `register_input` transport boundaries,
+just like `D` and `CE`. `FDCE.CLR` and `FDPE.PRE` remain asynchronous and are
+never reclassified as transport-safe boundaries. This distinction prevents a
+high-fanout synthesized synchronous reset or set from incorrectly gluing an
+otherwise partitionable design into one combinational atomic component.
 
 | Stage | Implementation source | Honest integration status |
 | --- | --- | --- |
 | Architecture database | In-tree C++ VTR XML importer; optional FPGA Interchange C++ importer | The default open VTR path imports layout, heterogeneous primitive capacity, primitive/interconnect arcs, switches, segments, and directs into provider-neutral ArchitectureDB/TimingDB artifacts; VPR consumes the original XML for exact mode-aware packing |
-| Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source |
+| Synthesis/import | In-tree Yosys/ABC plus EmuIR importer | The public VTR flagship profile maps LUT6/DFF logic, 9/18/36-bit multiplier modes, and inferred synchronous single/dual-port RAM modes from repository source; the importer distinguishes synchronous FDRE/FDSE controls from asynchronous FDCE/FDPE controls when classifying legal transport cuts |
 | Static timing | In-tree standalone OpenSTA or optional external Vivado | Both emit the same `sta-path-database/v1` artifact. OpenSTA consumes the public Architecture TimingDB, retains bounded alternate endpoint paths, and can query explicitly selected cut nets; Vivado uses the selected Xilinx part database |
 | Partitioning | In-tree OpenROAD/TritonPart and RePart | Default providers build and run repository source |
-| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path and DAC 2025-informed delay-demand-balanced multicast trees, then applies ASP-DAC 2026-informed timing-path rerouting. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
-| TDM | Selectable in-tree C++17 path-Lagrangian or ASP-DAC 2026 timing-DAG continuous optimizer, TODAES 2020 displacement DP, timing-path-guided slot local search, and independent checkers/oracles | The timing-DAG provider implements arrival propagation (Eq. 8), KKT ratio/domain-dual updates (Eqs. 13/19), delay-cost multiplier flow (Eqs. 16/17), path-dual normalization (Eq. 15), and residual scaling (Eq. 20). Both continuous providers share the same checked discrete legalization and concrete scheduling contracts |
+| System routing | In-tree C++17 hybrid topology kernel plus independent checker and exact small-instance oracle | The academic provider evaluates shortest-path, DAC 2025-informed delay-demand-balanced, directed metric-closure, nearest-terminal Steiner, shallow-light, and adaptive-hop multicast trees, then applies checked batch-conflict timing-path rerouting. It exports the complete checked pool and selected refined tree for each demand. Hard SLL saturation is enforced during search; scaled utilization pressure balances scarce inter-die links |
+| TDM | Selectable in-tree C++17 path-Lagrangian or ASP-DAC 2026 timing-DAG continuous optimizer, TODAES 2020 displacement DP, deterministic concrete-slot LNS, optional medium-case OR-Tools CP-SAT oracle, and independent checkers | The timing-DAG provider implements arrival propagation (Eq. 8), KKT ratio/domain-dual updates (Eqs. 13/19), delay-cost multiplier flow (Eqs. 16/17), path-dual normalization (Eq. 15), and residual scaling (Eq. 20). Both continuous providers share the same checked discrete legalization and concrete scheduling contracts; CP-SAT is an optional validation extra rather than a production dependency |
 | Netlist/transport | In-tree generator, RTL, simulator, and checker | Working source implementation |
 | Pin planning | In-tree C++17 grouping; sparse min-cost-flow for parallel I/O; fixed differential binding for serial BoardDB endpoints | Parallel-I/O optimization is validated with a synthetic BSP. The source-backed MPS4 model binds documented J48/J49 GTY package pins; the optional Vivado device-DB adapter derives and independently checks their exact GTYE4 channel sites without claiming missing reference-clock/reset package bindings |
 | Placement | Root-built OpenPARF or optional external Vivado | The open provider runs VPR packing followed by OpenPARF analytical placement/legalization; the Vivado provider runs vendor placement for a concrete Xilinx part |
@@ -286,6 +303,103 @@ single/dual-port RAM hard blocks while mapping remaining logic to LUT6/FF. It
 then binds EmuIR import, partitioning, system routing, TDM scheduling,
 per-FPGA splitting, transport generation, independent checks, and
 cycle-equivalence in one report.
+
+Timing-enabled flows now default to
+`--route-provider timing-aware-global-candidate-v1`, the checked multi-tree
+global Phase 4 provider, and to the ASP-DAC 2026 timing-DAG Phase 5 provider.
+The historical `timing-aware-route-tdm-cooptimized-v1` and path-Lagrangian
+providers remain selectable as explicit rollback and A/B baselines. Use
+`--route-candidate-workers N` to parallelize its deterministic candidate
+generation. These options propagate through direct, minimum-frame, and
+cross-stage Phase 3--5 execution, so a complete Phase 7 WNS/TNS experiment
+cannot silently fall back to the historical routing provider.
+
+After both physical arms finish, the in-tree comparison gate independently
+rehashes and validates both complete flows, requires identical EmuIR,
+assignment, TimingPathDB, and partition weights, checks the frozen provider
+pair, and reconstructs whole-design Phase 7 WNS/TNS and closure deltas.  The
+default WNS/TNS terminology means the exact population union of every original
+TimingPathDB path: routed same-FPGA paths plus routed intra-FPGA/boundary
+stages and concrete Phase 5 slot wait/board-link delay for cross-FPGA paths.
+Optimizer-compressed representatives are expanded before global TNS is
+summed. Each result separately reports whether its physical logic delay is an
+exact selected-chain sum or a conservative cone bound; population completeness
+must never be presented as physical-delay exactness. Per-FPGA backend WNS/TNS
+and cross-FPGA-only WNS/TNS remain separately
+labelled diagnostic/subset data and are not the default global result:
+
+```bash
+emuflow multi-fpga compare-routing-tdm \
+  --baseline build/routing-tdm-baseline \
+  --upgrade build/routing-tdm-upgrade \
+  --output build/routing-tdm-comparison.json
+```
+
+The report is labelled
+`complete-phase7-whole-design-timing-source-bound-ab` and requires exact,
+disjoint coverage of 100% of original local and cross-FPGA paths. Its timing
+certificate is byte-bound to the arm's actual EmuIR, assignment, routes, and
+TimingPathDB; the A/B gate independently rehashes and cross-checks all four. A Phase
+4/5-only run, mixed
+upstream artifacts, a changed flow report, incomplete TimingPathDB member
+coverage, or either arm with an unrouted net/DRC violation is rejected rather
+than reported as QoR evidence.
+
+An earlier frozen connected-PicoRV32 acceptance run completed both physical arms on
+4 FPGAs and 67,674 instances, with zero unrouted nets, zero DRC violations,
+and zero cycle-equivalence mismatches. It covered 24 selected cross-FPGA paths
+but did not include the same-FPGA TimingPathDB population. Its historical
+baseline cross-FPGA-subset WNS/TNS was `-83.052828595 ns` /
+`-1268.355281124 ns`; the global-candidate routing plus timing-DAG TDM path produced
+`-83.055118320 ns` / `-1275.5335078091 ns`. Thus subset WNS regressed by
+`0.002289725 ns` and subset TNS regressed by `7.1782266851 ns`.
+Runtime-clock subset WNS changed from `546.947171405 ns` to
+`546.944881680 ns`, and both subset TNS values were zero. The candidate's
+per-FPGA physical WNS diagnostic improved
+from `18.16787 ns` to `18.31778 ns`, which demonstrates why that local metric
+must not substitute for whole-design timing. These historical subset numbers
+are retained as integration evidence but are explicitly superseded as final
+QoR; they cannot support a default-provider promotion.
+
+If an external physical tool environment is repaired after Phase 1--6 has
+already passed, the checked resume gate seals that independently completed
+physical directory and reruns Phase 7C without repeating earlier optimization:
+
+```bash
+emuflow multi-fpga finalize-physical \
+  --flow build/routing-tdm-upgrade \
+  --physical build/routing-tdm-upgrade/physical-resumed
+```
+
+The standalone physical command also accepts `--resume`. It reuses a completed
+VPR pack/place checkpoint only after independently checking the architecture
+and circuit hashes, seed, exact packed-netlist and placement paths, byte counts,
+artifact hashes, reconstructed log metrics, and the VPR success marker. It then
+continues with OpenPARF placement and checked VPR detailed routing. A partial,
+mixed-run, or modified checkpoint is rejected instead of being silently reused.
+
+For public instances too large for a complete physical run, the scale gate
+independently reconstructs both Phase 4 route legality/timing and Phase 5
+ratio/slot legality against one byte-identical assignment, platform, and
+TimingPathDB. It reports algorithmic scale evidence, never Phase 7 QoR:
+
+```bash
+emuflow multi-fpga compare-routing-tdm-scale \
+  --assignment imported/assignment.json --platform imported/platform.json \
+  --route-constraints imported/route-constraints.json \
+  --timing-paths imported/timing-paths.json \
+  --baseline-route baseline-route --baseline-tdm baseline-tdm \
+  --upgrade-route upgrade-route --upgrade-tdm upgrade-tdm \
+  --baseline-runtime-seconds 123.4 --upgrade-runtime-seconds 98.7 \
+  --output routing-tdm-scale-comparison.json
+```
+
+The v2 scale report additionally seals the normalized route constraints and
+the academic ratio plan, records independently reconstructed compact
+routing/TDM timing, load, frame, collision, and bit-hop metrics, and recomputes
+every candidate-minus-baseline delta.  Runtime is the measured combined Phase
+4/5 wall time supplied by the sealed orchestrator.  These metrics remain
+communication-graph algorithm evidence, not physical Phase 7 WNS/TNS.
 
 The stable Phase 6 default is `--phase6-provider baseline`, which preserves
 the checked static split/lane behavior. Chimew remains an explicit research
@@ -319,14 +433,30 @@ identical architecture, constraints, seed, and backend settings. Both arms
 must retain zero unrouted nets, zero DRC violations, complete cell accounting,
 and independently valid timing reports.
 
-The required comparison contains per-FPGA WNS/TNS, overall WNS (the minimum
-per-FPGA/domain slack), overall TNS (the sum of negative endpoint slacks without
-double counting), failing endpoints, critical path, runtime, and absolute
+The required comparison contains labelled per-FPGA physical WNS/TNS, global
+WNS (the minimum composed original-path slack), global TNS (the sum of negative
+composed original-path slack without compression or double counting), failing
+paths/endpoints, coverage, critical path, runtime, and absolute
 baseline-to-candidate deltas. Percentage improvement is negative-slack deficit
 reduction: for a negative baseline, compare the reduction in `-WNS` or `-TNS`;
 if the baseline already closes, the percentage is `N/A` and a closure
 transition is reported separately. Phase 6 crossing, grouping, RUDY, position,
 wirelength, and pin-distance metrics remain diagnostic explanations.
+The versioned `emuflow.system-route-tdm-ab/v6` comparison artifact records
+those percentages and closure transitions for target-clock and virtual-runtime
+global WNS/TNS, and independently recomputes them when the bundle is validated;
+signed slack values are never divided to manufacture a percentage. It also
+seals exact selected-chain, conservative cone-bound, and unmeasured fallback
+path counts, requires those populations to match across both arms, and rejects
+a conservative physical model mislabeled as exact. The same
+gate now also freezes the normalized BoardDB, Phase-3 and Phase-4 constraints,
+and compares the Phase-7 backend descriptor, architecture SHA-256, FPGA order,
+worker configuration, VPR pack/place seed, route channel width, and hashes of
+the external executables recorded by the physical reports.  Newly generated
+top-level flow reports seal those inputs directly.  A pre-v5 flow can still be
+compared only when its formerly unlisted BoardDB and normalized constraints
+are present at their canonical checked locations below the flow root; this
+keeps already-running physical jobs usable without weakening the v6 evidence.
 
 The open VPR route now provides this endpoint-complete contract and binds its
 machine-readable WNS, TNS, logical failing endpoints, and failing endpoint
@@ -1552,6 +1682,11 @@ Passing a public VTR TimingDB with
 `--architecture-timing-db build/architecture/timing.json` automatically
 enables this mode. OpenSTA retains one bounded alternate path per endpoint in
 the global export rather than collapsing a clock group to a single worst path.
+Hierarchical Verilog escaped identifiers are resolved back to canonical EmuIR
+launch/capture identities even when OpenSTA's Tcl export adds a second
+backslash-escaping layer.  The adapter accepts only a unique exact alias and
+rejects ambiguous spellings, so a structured endpoint certificate cannot be
+silently attached to the wrong instance.
 After a partition is selected, the provider can also issue directed
 through-net queries for the actual cut nets, so a timing-relevant cut is not
 silently absent merely because it fell outside the global worst-path prefix.
@@ -1581,7 +1716,7 @@ its virtual DUT frequency is the fabric frequency divided by the selected
 frame length. Original-clock path slack and emulation runtime frequency are
 reported separately. Before physical implementation, timing is explicitly
 qualified as a pre-placement estimate. With `--physical`, Phase 7C replaces
-that estimate with `system-timing/v1`: concrete link/TDM delay is combined per
+that estimate with `system-timing/v2`: concrete link/TDM delay is combined per
 path with the chosen backend's post-route DUT and interface delays. Phase 6
 records every scheduled TX/RX endpoint in `boundary-identity/v1`. Vivado
 queries those routed interfaces through Tcl, while the open backend evaluates
@@ -1602,6 +1737,152 @@ result, and closed combined virtual runtime-clock timing. Local
 original-target-clock WNS/TNS remains a reported physical QoR metric rather
 than the pausible-clock execution gate; `timing_met=false` is therefore a
 meaningful result, not a malformed artifact.
+
+For the open backend, Phase 7 additionally queries every original same-FPGA
+TimingPathDB launch/capture pair in the routed VPR timing graph and publishes
+`local-path-timing/v1`; its data-path delay includes routed launch clock-to-Q,
+combinational/interconnect delay, and the capture setup arc. Clock skew remains
+outside this target-period composition and is reported through the backend's
+separate endpoint-complete physical diagnostics. `system-timing/v2` accepts
+the `whole-original-design`
+scope only when the local path IDs and expanded cross-FPGA member IDs are
+disjoint and their count plus canonical set hash exactly matches the sealed
+source TimingPathDB. Without that proof it reports
+`cross-fpga-path-subset`, and the final A/B validator rejects a global claim.
+
+The local-path query uses the ordered net chain already sealed in each
+original TimingPathDB member. When that chain maps unambiguously to adjacent
+VPR atom pins, VPR sums the selected routed timing edges directly instead of
+re-running a whole timing-DAG traversal for every launch/capture pair. An
+ambiguous pin transition is never guessed: it is explicitly labelled and
+retains the conservative endpoint-longest-path traversal. The identity bundle
+records the selected pin chain or fallback for every path, and the independent
+checker rejects changed endpoints, chains, coverage, or source hashes. This
+keeps complete large-design local timing proportional to the selected path
+edges plus a small number of explicitly reported conservative fallbacks rather
+than to the product of the path population and the complete FPGA timing graph.
+Selected-chain measurements are exact routed-edge sums; fallback measurements
+remain coverage-complete but are reported as cone bounds and are never counted
+as exact physical logic segments.
+
+A completed open-backend Phase 7 A/B on the 67,674-instance
+`picorv32_x32_ring_top` design and the four-FPGA academic mesh exercises this
+whole-design contract.  The CPU core is source-backed PicoRV32 RTL, but the
+32-core connected harness, fixed inter-core traffic, partition constraints,
+and multi-FPGA BoardDB are EmuFlow academic test fixtures.  This run is
+therefore an end-to-end contract and topology-sensitivity acceptance test,
+not evidence of improvement across independent real applications.  Both arms
+cover the same 22,272 original paths
+(21,711 same-FPGA and 561 cross-FPGA paths) with the same canonical path-set
+SHA. Under the legacy endpoint-longest local-delay model, the frozen default
+routing/TDM arm reports historical target-clock WNS/TNS diagnostics of
+`-40.314765708 ns` / `-21137.255055545 ns`; the global-candidate routing plus
+timing-DAG TDM arm reports `-39.988960548 ns` / `-21062.004768017 ns`.
+Therefore the historical comparison reports a WNS delta of `0.325805160 ns`
+and a TNS delta of `75.250287528 ns`. These are not per-FPGA endpoint aggregates or a
+cross-FPGA-only subset. Both arms also close the 640-ns virtual runtime clock
+with zero negative-slack paths. These pre-fix absolute timing values omit the
+local launch clock-to-Q contribution and are retained only as regression
+history, not as final timing or provider-promotion evidence.
+
+A source-backed Koios GEMM run supplies the corresponding independent,
+large-application result. The design contains 528,104 synthesized instances
+and is implemented on the same four-FPGA academic mesh. Both complete
+physical arms cover the identical set of all 178,366 original timing paths:
+128,106 same-FPGA paths and 50,260 cross-FPGA paths, with canonical path-set
+SHA-256
+`434570616ed92f8a503a57c884a84be8372db834edfde43df7dc14d000a6e312`.
+Using the legacy endpoint-longest local-delay model, the frozen default Phase
+4/5 arm reports historical target-clock WNS/TNS diagnostics of
+`-4951.4633630111 ns` / `-76195549.1968224 ns`; global candidate-tree routing
+plus timing-DAG TDM reports `-2595.959268017 ns` /
+`-39857513.89737587 ns`. Thus the historical comparison reports a WNS delta of
+`2355.5040949941 ns` and TNS by `36338035.29944653 ns`, reducing their
+negative deficits by 47.57% and 47.69%, respectively. Both arms close the
+8,192-ns virtual runtime clock. Negative target-slack paths increase slightly
+from 79,167 to 80,186, so the result is an improvement in worst and aggregate
+deficit rather than in every individual path.
+
+This GEMM comparison also demonstrates why the acceptance metric is the
+whole original path set. The upgraded arm's aggregate per-FPGA physical TNS
+improves by 17,526.5 ns and its failing physical endpoints fall by 3,345, but
+its worst local physical slack is 1.77958 ns worse. Looking only at that local
+WNS would therefore give the opposite conclusion from the independently
+recomputed global system WNS/TNS. The frozen physical artifacts predate the
+two later Phase-5 compatibility repairs; the sealed route constraints make
+the first repair inactive (`tdm_min_ratio=1`, quantum 8, and every selected
+ratio already a multiple of 8), while the recorded four positive-saving
+promotion steps prove that the new no-candidate round-boundary fallback was
+not exercised. The current in-tree A/B validator independently rehashes the
+frozen sources and routes, traverses all 178,366 paths, and rechecks the
+physical, legality, coverage, and QoR claims before accepting this result. The
+archived local-delay values omit launch clock-to-Q, so that result alone does
+not promote the upgraded provider. The corrected selected-chain DLA gate below
+supplies the required exact-versus-bound count and independent-design result.
+
+That corrected gate is now complete on the source-backed Koios DLA design.
+Both frozen Phase 4/5 arms implement 379,357 synthesized instances on the same
+two-FPGA point-to-point academic VTR platform, use the same 576-ns runtime
+period, and cover the identical set of all 195,532 original TimingPathDB
+members: 187,854 same-FPGA paths and 7,678 cross-FPGA paths. The repaired VPR
+measurement includes launch clock-to-Q exactly once, capture setup exactly
+once, and the selected routed atom-pin chain for every unambiguous path. The
+final population contains 194,828 endpoint-exact physical paths and 704
+explicitly labelled conservative cone bounds, with no unmeasured fallback and
+100% canonical path-set coverage.
+
+The frozen default routing/TDM arm reports target-clock WNS/TNS of
+`-411.661332993 ns` / `-601999.373554433 ns`; global candidate-tree routing
+plus timing-DAG TDM reports `-129.986758067 ns` /
+`-242837.025741354 ns`. The independently reconstructed improvements are
+`281.674574926 ns` in WNS and `359162.347813079 ns` in TNS, reducing the
+negative deficits by 68.42% and 59.66%, respectively. Negative target-slack
+paths fall from 33,673 to 33,356. Both arms close the same runtime clock with
+zero runtime TNS; runtime WNS improves from `160.338667007 ns` to
+`442.013241933 ns`, while the minimum safe period bound falls from
+`415.661332993 ns` to `133.986758067 ns`. This is a system-level improvement,
+not a hidden local-P&R win: the upgraded arm's aggregate per-FPGA physical WNS
+and TNS are 4.50544 ns and 2598.5469 ns worse, respectively. The sealed A/B
+checker rehashes the frozen inputs, reconstructs all 195,532 slacks, and
+recomputes the exact/cone-bound counts and global metrics before accepting the
+comparison.
+
+The same frozen design on the two-FPGA point-to-point BoardDB is a useful
+negative control. Both complete Phase 7 arms cover all 22,272 source paths
+(22,053 local and 219 cross-FPGA) and report identical historical 4-ns
+target-clock diagnostics: `-15.227118790 ns` / `-17784.330743091 ns`. Thus the measured
+whole-design delta is exactly zero on this topology even though the Phase 4
+route and Phase 5 schedule artifacts differ. Both arms close the 128-ns
+runtime clock with zero negative-slack paths. This result is retained because
+it shows that the routing/TDM upgrade is topology- and bottleneck-dependent;
+it is not presented as a universal improvement or corrected absolute timing.
+
+A second four-FPGA run disables one mesh link, leaving a connected tree and
+forcing every legal route onto that tree. Both arms again cover all 22,272
+original paths (21,711 local and 561 cross-FPGA), pass the independent Phase
+4/5/physical/path-set validator, and close the 1,280-ns runtime clock. The
+default arm reports target-clock WNS/TNS of `-40.761430302 ns` /
+`-21270.744857033 ns`; the upgraded arm reports `-39.322093319 ns` /
+`-20962.158840711 ns`. The corresponding improvements are `1.439336983 ns`
+(3.53% negative-WNS deficit reduction) and `308.586016322 ns` (1.45%
+negative-TNS deficit reduction). The identical route/load summaries confirm
+that this case has no alternate-tree freedom; the final change comes from the
+different timing-aware transport realization exercised by the complete
+Phase 6/7 path.
+
+An eight-FPGA mesh topology stress run also completes both Phase 7 arms and
+independently validates the same complete 22,272-path population, now with
+21,347 local and 925 cross-FPGA paths. The default WNS/TNS is
+`-83.433461504 ns` / `-34246.984061081 ns`; the upgraded result is
+`-81.956688189 ns` / `-32596.097385430 ns`. This is a `1.476773315 ns`
+(1.77%) WNS improvement and a `1650.886675651 ns` (4.82%) TNS improvement;
+negative-slack paths fall from 9,180 to 9,008, and both arms close the 128-ns
+runtime clock. This particular all-eight-used partition is intentionally a
+topology/worker-count stress case, not balanced-partition evidence: the
+instance counts are 16,915, 7, 16,905, 16,909, 11, 10, 8, and 16,909 across
+the eight FPGAs because large atomic clusters forced the minimum-used
+constraint to relax effective balance. A balanced large-design result remains
+a separate validation requirement.
 
 ### Source-backed Arm MPS4 BoardDB
 
@@ -2059,6 +2340,99 @@ independently reconstructs topology, capacity, direction locks, delay, the TDM
 proxy, slack, and path signatures. The original Python negotiated router is no
 longer a runtime provider.
 
+Every Phase 4 run also writes `route_candidate_pool.json`.  This provider-
+neutral artifact preserves the source-built shortest-path,
+delay-demand-balanced, Takahashi-Matsuyama nearest-terminal Steiner, directed
+metric-closure, shallow-light, adaptive-hop, and selected refined tree for
+each demand. The directed metric-closure provider expands a deterministic
+Prim tree over terminal shortest-path distances back into an original-graph
+source arborescence. Shallow-light uses a criticality-dependent delay-stretch
+gate, while adaptive-hop derives a strict bound from the direction-feasible
+minimum-hop lower bound. Its independent checker reconstructs
+direction locks, tree reachability and acyclicity, hop bounds, latency, and
+physical delay. Historical providers preserve their earlier selection; the
+default global provider exposes all columns to its restricted master.
+
+The default timing-enabled Phase 4 provider
+`timing-aware-global-candidate-v1` consumes that
+boundary in the native kernel.  For compact pools it exhaustively solves the
+restricted master over one tree per demand; larger candidate products use a
+deterministic batch-conflict large-neighborhood search. Candidate generation
+and non-conflicting refinement proposals can run concurrently with
+`--candidate-workers`; conflict batches require both disjoint capacity-domain
+footprints and disjoint affected STA paths. Every proposal is committed in
+stable path order and globally rechecked, so workers 1, 2, and N produce the
+same public routes and candidate-pool bytes. An independent Python
+reconstruction checks the conflict coloring and reported maximum batch width.
+Every move is accepted
+only after global capacity and the same lexicographic route/TDM timing
+objective are recomputed.  A separate Python oracle exhaustively evaluates
+the compact candidate product, and regression coverage includes a case whose
+global optimum mixes shortest-path and nearest-terminal Steiner trees across
+different demands. The provider is promoted to the software default by the
+corrected, coverage-complete Koios DLA Phase 7 comparison above. Broader
+design/platform replication remains an active qualification gate rather than
+a prerequisite for making the checked provider available by default; the
+historical provider remains an explicit rollback option if those gates find a
+regression. A cross-FPGA-only proxy is not sufficient evidence.
+
+Every Phase 5 run now also emits `tdm_feedback.json`, a concrete schedule
+certificate that reconstructs occupied slot-lanes, realized wait, remaining
+capacity, affected STA paths, and a deterministic routing price for every
+directed capacity domain. A subsequent global-candidate Phase 4 run may
+consume it with `--tdm-feedback`, but must also supply the exact prior
+`--tdm-feedback-routes` and `--tdm-feedback-schedule` (and the prior ratio
+plan for an academic schedule). Phase 4 independently rebuilds the complete
+feedback artifact before invoking C++; self-declared or cross-run feedback is
+therefore rejected. The native generator uses the checked prices in its arc
+cost, and a behavioral regression demonstrates that a higher realized domain
+price changes the chosen candidate route. This establishes a checked
+one-round Phase 4/5 feedback edge; iterative trust-region orchestration and
+large-case QoR qualification remain pending.
+
+Baseline Phase 5 timing and feedback reconstruction uses the route trees and
+concrete schedule directly instead of materializing the academic optimizer's
+dense hop/path model.  The sparse checker is field-for-field regression-tested
+against the dense reconstruction, including its negative validation cases;
+this keeps public contest scale runs near-linear without weakening the
+certificate.  Academic ratio and timing-DAG providers still build their dense
+model once and share it across optimization, scheduling, timing, and feedback.
+Their two-round discrete legalizer jointly optimizes the round boundary and
+ratio buckets. A promotion that does not save a lane at the current boundary
+is not rejected prematurely: the checker recomputes the complete boundary
+objective, selects the least damaging monotone boundary-migration step, and
+continues over the finite legal ratio set. This matters when asymmetric
+round traffic moves the feasible boundary far from the frame midpoint. The
+resulting lane assignment is still independently checked against both round
+windows and the concrete slot schedule.
+The native concrete-slot optimizer compacts only lane resources that actually
+occur and stores occupied `(resource, slot)` cells in a deterministic sparse
+table whose memory is proportional to scheduled hops.  Sparse external lane
+IDs and long frames therefore cannot create a `max-ID x frame` or
+`resource-count x frame` allocation during repeated LNS schedule rebuilds.
+Standalone Phase 5 validation rebuilds the canonical academic timing model
+once and shares it across ratio, native-slot-certificate, and final timing
+checks; the route-streaming reconstruction remains the baseline-only scale
+path.  This prevents two independently valid path representations from being
+mixed inside one academic certificate comparison.
+
+The Phase 5 ratio plan also seals a deterministic clock/protocol compatibility
+artifact. The normal pausible-clock transport uses `global-frame-cdc`: all
+observed STA clock identities remain visible as evidence, while lanes may be
+shared because the global barrier defines the CDC boundary. Routes that set a
+different non-empty `tdm_compatibility` class are isolated by both the native
+ratio legalizer and independent Python checker. Therefore this mechanism does
+not manufacture a lane per RTL clock, but it does prevent incompatible
+source-synchronous or protocol-specific traffic from being grouped silently.
+
+After a physically routed Phase 7 run, endpoint-exact TX/RX measurements can
+be projected back with `physical-route-feedback/v1`. The artifact is hash-
+bound to the routes, concrete schedule, runtime, and physical summary, and its
+capacity-domain prices are accepted by the global Phase 4 provider only after
+all source artifacts are independently replayed. This feedback supplements
+the concrete TDM occupancy/wait price; it never replaces the required complete
+Phase 7 WNS/TNS comparison.
+
 Cross-stage partition/routing/TDM work uses a partition-independent STA path
 database. The default provider builds standalone OpenSTA from
 `engines/openroad/src/sta`, renders the versioned open FPGA timing model, and
@@ -2101,6 +2475,14 @@ The academic Phase 5 provider is likewise rooted in editable C++17 source at
 versioned timing model, realizes the optimized ratio/lane groups as an exact
 slot schedule, and independently checks capacity, ratio legality, timing,
 collisions, precedence, round barriers, and transported values.
+Unless an experiment supplies an explicit override, Phase 5 inherits both the
+minimum legal ratio and the ratio quantum from the normalized Phase 4 route
+constraints and seals the resolved values in `ratio_plan.json`.  The native
+continuous/discrete optimizers and the independent checker enforce the same
+domain.  This matters for imported architectures such as EDA 2023, whose
+inter-FPGA Wire ratios start at four rather than the generic ratio-one domain;
+silently widening that domain would make an otherwise legal schedule solve a
+different platform problem.
 Its multi-round legalizer evaluates the exact capacity boundary through
 monotone quotient intervals and scores ratio promotions from incremental
 domain and affected-path deltas, avoiding frame-slot-by-bucket and

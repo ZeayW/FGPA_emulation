@@ -4,6 +4,7 @@ from pathlib import Path
 
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
+from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
     _boundary_tx_port,
     _vivado_object,
@@ -11,28 +12,87 @@ from emuflow.logic_segment_timing import (
     import_vivado_logic_segment_timing,
     import_vpr_logic_segment_timing,
 )
+from emuflow.local_path_timing import (
+    _explicit_vpr_path_pins,
+    import_vpr_local_path_timing,
+    path_id_set_sha256,
+    validate_local_path_identity,
+    validate_local_path_timing,
+)
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
-    def test_vpr_boundary_tx_uses_eblif_output_alias(self):
+    def test_vpr_boundary_alias_and_explicit_local_path_chain_are_checked(self):
         ir = EmuIR(
             {
                 "schema": "emuflow.emuir/v1",
                 "design": {
-                    "name": "dut",
-                    "top": "dut",
+                    "name": "dut__fpga0",
+                    "top": "dut__fpga0",
                     "source_format": "test",
                 },
                 "ports": [],
-                "instances": [],
+                "instances": [
+                    {
+                        "id": "launch",
+                        "name": "launch",
+                        "type": "$_DFF_P_",
+                        "resources": {"ff": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                    {
+                        "id": "logic",
+                        "name": "logic",
+                        "type": "$lut",
+                        "resources": {"lut": 1},
+                        "parameters": {"WIDTH": 1, "LUT": "2'b10"},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                    {
+                        "id": "capture",
+                        "name": "capture",
+                        "type": "$_DFF_P_",
+                        "resources": {"ff": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                ],
                 "nets": [
+                    {
+                        "id": "n0",
+                        "name": "n0",
+                        "drivers": [
+                            {"instance": "launch", "port": "Q", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": "logic", "port": "A", "bit": 0}
+                        ],
+                        "fanout": 1,
+                        "cut_class": "combinational",
+                    },
+                    {
+                        "id": "n1",
+                        "name": "n1",
+                        "drivers": [
+                            {"instance": "logic", "port": "Y", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": "capture", "port": "D", "bit": 0}
+                        ],
+                        "fanout": 1,
+                        "cut_class": "combinational",
+                    },
                     {
                         "id": "external",
                         "name": "external",
                         "drivers": [],
                         "sinks": [],
                         "cut_class": "undriven",
-                    }
+                    },
                 ],
                 "clocks": [],
                 "warnings": [],
@@ -65,6 +125,251 @@ class LogicSegmentTimingTest(unittest.TestCase):
             ),
             "out:emuflow_top_output_000007.outpad[0]",
         )
+
+        instances = {item["id"]: item for item in ir.value["instances"]}
+        index = {item["id"]: offset for offset, item in enumerate(ir.value["instances"])}
+        start = {"instance": "launch", "port": "Q", "bit": 0}
+        end = {"instance": "capture", "port": "D", "bit": 0}
+        pins = _explicit_vpr_path_pins(
+            {"path_nets": ["n0", "n1"]},
+            {item["id"]: item for item in ir.value["nets"]},
+            ir,
+            index,
+            instances,
+            start,
+            end,
+        )
+        self.assertEqual(
+            pins,
+            ["i0.Q[0]", "i1.in[0]", "i1.out[0]", "i2.D[0]"],
+        )
+        identity = {
+            "schema": "emuflow.local-path-identity/v2",
+            "status": "pass",
+            "design": "dut",
+            "fpga": "fpga0",
+            "provider": "test",
+            "source": {
+                "path_database_sha256": "a" * 64,
+                "original_ir_sha256": "b" * 64,
+                "assignment_sha256": "c" * 64,
+                "routes_sha256": "d" * 64,
+                "original_paths": 1,
+                "original_path_ids_sha256": path_id_set_sha256(["p0"]),
+            },
+            "coverage": {"local_paths": 1},
+            "paths": [{
+                "id": "p0",
+                "kind": "local",
+                "fpga": "fpga0",
+                "clock_domain": "clk",
+                "clock_period_ns": 4.0,
+                "start_pin": pins[0],
+                "end_pin": pins[-1],
+                "measurement": "explicit-routed-path-chain",
+                "path_pins": pins,
+            }],
+        }
+        self.assertEqual(validate_local_path_identity(identity)["status"], "pass")
+        identity["paths"][0]["path_pins"][-1] = "wrong.D[0]"
+        with self.assertRaisesRegex(ValidationError, "path chain"):
+            validate_local_path_identity(identity)
+
+    def test_explicit_local_path_chain_falls_back_on_ambiguous_cell_arc(self):
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "dut__fpga0",
+                    "top": "dut__fpga0",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": [
+                    {
+                        "id": item,
+                        "name": item,
+                        "type": "$_DFF_P_" if item != "logic" else "$lut",
+                        "resources": (
+                            {"ff": 1} if item != "logic" else {"lut": 1}
+                        ),
+                        "parameters": (
+                            {} if item != "logic" else {
+                                "WIDTH": 2,
+                                "LUT": "4'b1000",
+                            }
+                        ),
+                        "attributes": {},
+                        "constant_connections": [],
+                    }
+                    for item in ("launch", "logic", "capture")
+                ],
+                "nets": [
+                    {
+                        "id": "n0",
+                        "name": "n0",
+                        "drivers": [
+                            {"instance": "launch", "port": "Q", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": "logic", "port": "A", "bit": 0},
+                            {"instance": "logic", "port": "A", "bit": 1},
+                        ],
+                        "fanout": 2,
+                        "cut_class": "combinational",
+                    },
+                    {
+                        "id": "n1",
+                        "name": "n1",
+                        "drivers": [
+                            {"instance": "logic", "port": "Y", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": "capture", "port": "D", "bit": 0}
+                        ],
+                        "fanout": 1,
+                        "cut_class": "combinational",
+                    },
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        instances = {item["id"]: item for item in ir.value["instances"]}
+        index = {
+            item["id"]: offset
+            for offset, item in enumerate(ir.value["instances"])
+        }
+        self.assertEqual(
+            _explicit_vpr_path_pins(
+                {"path_nets": ["n0", "n1"]},
+                {item["id"]: item for item in ir.value["nets"]},
+                ir,
+                index,
+                instances,
+                {"instance": "launch", "port": "Q", "bit": 0},
+                {"instance": "capture", "port": "D", "bit": 0},
+            ),
+            [],
+        )
+
+    def test_local_path_v2_import_preserves_selected_chain_certificate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity_path = root / "local-identity.json"
+            record = {
+                "id": "local-a",
+                "kind": "local",
+                "fpga": "fpga0",
+                "clock_domain": "clk",
+                "clock_period_ns": 10.0,
+                "start_pin": "i0.Q[0]",
+                "end_pin": "i1.D[0]",
+                "measurement": "explicit-routed-path-chain",
+                "path_pins": ["i0.Q[0]", "i1.D[0]"],
+            }
+            write_json(
+                identity_path,
+                {
+                    "schema": "emuflow.local-path-identity/v2",
+                    "status": "pass",
+                    "design": "dut",
+                    "fpga": "fpga0",
+                    "provider": "test",
+                    "source": {
+                        "path_database_sha256": "a" * 64,
+                        "original_ir_sha256": "b" * 64,
+                        "assignment_sha256": "c" * 64,
+                        "routes_sha256": "d" * 64,
+                        "original_paths": 1,
+                        "original_path_ids_sha256": path_id_set_sha256(
+                            ["local-a"]
+                        ),
+                    },
+                    "coverage": {"local_paths": 1},
+                    "paths": [record],
+                },
+            )
+            raw = root / "local.tsv"
+            raw.write_text(
+                "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"
+                "local-a\tlocal\t2.5\ti0.Q[0]\ti1.D[0]\n",
+                encoding="utf-8",
+            )
+            output = root / "local.json"
+            import_vpr_local_path_timing(raw, identity_path, output)
+            database = read_json(output)
+            self.assertEqual(
+                database["identity_schema"],
+                "emuflow.local-path-identity/v2",
+            )
+            self.assertEqual(database["paths"][0]["path_pins"], record["path_pins"])
+            self.assertEqual(
+                validate_local_path_timing(database)["measurement_counts"],
+                {
+                    "explicit-routed-path-chain": 1,
+                    "endpoint-longest-path-fallback": 0,
+                },
+            )
+
+    def test_local_path_import_is_source_bound_and_coverage_exact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity_path = root / "local-identity.json"
+            source_ids = ["local-a", "cross-b"]
+            record = {
+                "id": "local-a",
+                "kind": "local",
+                "fpga": "fpga0",
+                "clock_domain": "clk",
+                "clock_period_ns": 10.0,
+                "start_pin": "i0.Q[0]",
+                "end_pin": "i1.D[0]",
+            }
+            write_json(
+                identity_path,
+                {
+                    "schema": "emuflow.local-path-identity/v1",
+                    "status": "pass",
+                    "design": "dut",
+                    "fpga": "fpga0",
+                    "provider": "test",
+                    "source": {
+                        "path_database_sha256": "a" * 64,
+                        "original_ir_sha256": "b" * 64,
+                        "assignment_sha256": "c" * 64,
+                        "routes_sha256": "d" * 64,
+                        "original_paths": 2,
+                        "original_path_ids_sha256": path_id_set_sha256(
+                            source_ids
+                        ),
+                    },
+                    "coverage": {"local_paths": 1},
+                    "paths": [record],
+                },
+            )
+            raw = root / "local.tsv"
+            raw.write_text(
+                "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"
+                "local-a\tlocal\t3.25\ti0.Q[0]\ti1.D[0]\n",
+                encoding="utf-8",
+            )
+            output = root / "local.json"
+            report = import_vpr_local_path_timing(
+                raw, identity_path, output
+            )
+            self.assertEqual(report["local_paths"], 1)
+            self.assertEqual(report["maximum_delay_ns"], 3.25)
+            database = read_json(output)
+            self.assertEqual(
+                validate_local_path_timing(database)["status"], "pass"
+            )
+            raw.write_text(
+                "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValidationError):
+                import_vpr_local_path_timing(raw, identity_path, output)
 
     def test_vivado_pin_mapping_covers_logic_ff_and_memory_endpoints(self):
         ir = EmuIR(

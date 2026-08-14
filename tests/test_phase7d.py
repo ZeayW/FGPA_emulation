@@ -196,12 +196,12 @@ class Phase7DTest(unittest.TestCase):
             "platform": platform.name,
             "physical": physical,
             "system_timing": {
-                "schema": "emuflow.system-timing/v1",
+                "schema": "emuflow.system-timing/v2",
                 "status": "pass",
             },
         }
         qor = {
-            "schema": "emuflow.qor-report/v3",
+            "schema": "emuflow.qor-report/v4",
             "status": "pass",
             "physical": physical,
             "timing": phase7c["system_timing"],

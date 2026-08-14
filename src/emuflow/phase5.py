@@ -23,6 +23,7 @@ from .tdm_ratio import (
 )
 from .tdm_slot import refine_tdm_schedule_native
 from .tdm_timing_dag import build_timing_dag_ratio_plan
+from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
 
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
@@ -39,7 +40,7 @@ def run_phase5(
     slot_optimizer: Optional[str] = None,
     ratio_max_iterations: int = 500,
     max_ratio: Optional[int] = None,
-    ratio_quantum: int = 8,
+    ratio_quantum: Optional[int] = None,
     post_refinement_iterations: int = 200,
     slot_refinement_iterations: int = 0,
     convergence: float = 1.0e-9,
@@ -56,7 +57,7 @@ def run_phase5(
     platform = Platform.load(platform_path)
     if provider is None:
         provider = (
-            TDM_RATIO_PROVIDER
+            TDM_TIMING_DAG_RATIO_PROVIDER
             if isinstance(routes.get("timing"), dict)
             else TDM_BASELINE_PROVIDER
         )
@@ -66,6 +67,7 @@ def run_phase5(
     validation = None
     timing_validation = None
     candidate_selection = None
+    prepared_ratio_model = None
     if provider == TDM_BASELINE_PROVIDER:
         if (
             ratio_optimizer is not None
@@ -76,6 +78,7 @@ def run_phase5(
                 "native TDM optimizers require the academic Phase 5 provider"
             )
     elif provider in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}:
+        prepared_ratio_model = _prepare_model(routes, platform)
         if (
             provider == TDM_RATIO_PROVIDER
             and timing_dag_optimizer is not None
@@ -84,7 +87,6 @@ def run_phase5(
                 "timing_dag_optimizer requires the timing-DAG Phase 5 "
                 "provider"
             )
-        prepared_ratio_model = _prepare_model(routes, platform)
         candidates = []
         for strategy, exact_domain_limit in (
             ("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT),
@@ -235,7 +237,12 @@ def run_phase5(
             routes, platform, schedule, ratio_plan
         )
         timing_validation = (
-            reconstruct_tdm_schedule_timing(routes, platform, schedule)
+            reconstruct_tdm_schedule_timing(
+                routes,
+                platform,
+                schedule,
+                model=prepared_ratio_model,
+            )
             if isinstance(routes.get("timing"), dict)
             else None
         )
@@ -245,6 +252,21 @@ def run_phase5(
         frames=simulation_frames,
     )
     manifest = build_transport_manifest(routes, schedule, platform)
+    feedback = build_tdm_feedback(
+        routes,
+        platform,
+        schedule,
+        ratio_plan,
+        prepared_ratio_model=prepared_ratio_model,
+    )
+    feedback_validation = validate_tdm_feedback(
+        routes,
+        platform,
+        schedule,
+        feedback,
+        ratio_plan,
+        prepared_ratio_model=prepared_ratio_model,
+    )
     report: Dict[str, Any] = {
         "schema": PHASE5_REPORT_SCHEMA,
         "phase": 5,
@@ -272,24 +294,32 @@ def run_phase5(
             else {}
         ),
         "simulation": simulation,
+        "tdm_feedback_validation": feedback_validation,
         "artifacts": {
             "schedule": "schedule.json",
             "schedule_tsv": "schedule.tsv",
             "transport_manifest": "transport_manifest.json",
             "rtl_testbench": "transport_schedule_tb.sv",
             "report": "phase5_report.json",
+            "tdm_feedback": "tdm_feedback.json",
         },
     }
     if ratio_plan is not None:
         report["artifacts"]["ratio_plan"] = "ratio_plan.json"
     output_dir.mkdir(parents=True, exist_ok=True)
     if ratio_plan is not None:
-        write_json(output_dir / "ratio_plan.json", ratio_plan)
-    write_json(output_dir / "schedule.json", schedule)
+        write_json(output_dir / "ratio_plan.json", ratio_plan, compact=True)
+    # Phase 5 machine artifacts can contain one record per routed hop.  Using
+    # compact JSON keeps the encoder on CPython's C fast path; pretty-printing
+    # a million-hop schedule can otherwise dominate the actual optimizer.
+    write_json(output_dir / "schedule.json", schedule, compact=True)
     (output_dir / "schedule.tsv").write_text(
         schedule_to_tsv(schedule), encoding="utf-8"
     )
-    write_json(output_dir / "transport_manifest.json", manifest)
+    write_json(
+        output_dir / "transport_manifest.json", manifest, compact=True
+    )
+    write_json(output_dir / "tdm_feedback.json", feedback, compact=True)
     (output_dir / "transport_schedule_tb.sv").write_text(
         schedule_to_systemverilog_testbench(
             routes,
@@ -312,18 +342,30 @@ def validate_phase5(
     routes = read_json(routes_path)
     platform = Platform.load(platform_path)
     schedule = read_json(schedule_path)
+    ratio_plan = (
+        read_json(ratio_plan_path)
+        if ratio_plan_path is not None
+        else None
+    )
+    # Academic schedules are constructed and certified against the canonical
+    # dense ratio model.  Rebuild that model once for standalone validation as
+    # well; otherwise the schedule validator compares the native certificate
+    # with the sparse baseline reconstruction, which is intentionally used
+    # only for ratio-free baseline scale runs and may use a different path
+    # representation.  Sharing one model also avoids rebuilding a large
+    # TimingPathDB for the subsequent timing report.
+    prepared_ratio_model = (
+        _prepare_model(routes, platform) if ratio_plan is not None else None
+    )
     validation = validate_tdm_schedule(
         routes,
         platform,
         schedule,
-        (
-            read_json(ratio_plan_path)
-            if ratio_plan_path is not None
-            else None
-        ),
+        ratio_plan,
+        prepared_ratio_model=prepared_ratio_model,
     )
     if isinstance(routes.get("timing"), dict):
         validation["timing"] = reconstruct_tdm_schedule_timing(
-            routes, platform, schedule
+            routes, platform, schedule, model=prepared_ratio_model
         )
     return validation
