@@ -74,6 +74,11 @@ from .contest_public import (
 from .contest_validation_matrix import load_contest_validation_matrix
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
 from .canonical_experiment import compile_canonical_experiment_spec
+from .canonical_qor import (
+    parse_canonical_qor_arms,
+    run_canonical_qor_comparison,
+    validate_canonical_qor_comparison,
+)
 from .experiment_dag import (
     build_experiment_farm_spec,
     import_experiment_checkpoint,
@@ -710,6 +715,32 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7_validate.add_argument("--seed", type=int)
     phase7_validate.add_argument("--workers", type=int)
     phase7_validate.add_argument("--route-channel-width", type=int)
+    qor_compare_run = experiment_stage_subparsers.add_parser(
+        "qor-compare-run",
+        help="aggregate all nine canonical Phase 7 QoR arms",
+    )
+    qor_compare_run.add_argument("--shared", type=Path, required=True)
+    qor_compare_run.add_argument(
+        "--arm",
+        nargs=3,
+        action="append",
+        required=True,
+        metavar=("PROVIDER", "SEED", "ROOT"),
+    )
+    qor_compare_run.add_argument("--out", type=Path, required=True)
+    qor_compare_validate = experiment_stage_subparsers.add_parser(
+        "qor-compare-validate",
+        help="independently rebuild a canonical nine-arm QoR comparison",
+    )
+    qor_compare_validate.add_argument("root", type=Path)
+    qor_compare_validate.add_argument("--shared", type=Path, required=True)
+    qor_compare_validate.add_argument(
+        "--arm",
+        nargs=3,
+        action="append",
+        required=True,
+        metavar=("PROVIDER", "SEED", "ROOT"),
+    )
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
     platform_subparsers = platform_parser.add_subparsers(
@@ -3085,7 +3116,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openparf_python=args.openparf_python,
                 route_channel_width=args.route_channel_width,
             )
-        else:
+        elif args.experiment_stage_command == "phase7-validate":
             report = validate_phase7_checkpoint(
                 args.root,
                 args.shared,
@@ -3095,6 +3126,18 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_seed=args.seed,
                 expected_workers=args.workers,
                 expected_route_channel_width=args.route_channel_width,
+            )
+        elif args.experiment_stage_command == "qor-compare-run":
+            report = run_canonical_qor_comparison(
+                args.shared,
+                parse_canonical_qor_arms(args.arm),
+                args.out,
+            )
+        else:
+            report = validate_canonical_qor_comparison(
+                args.root,
+                args.shared,
+                parse_canonical_qor_arms(args.arm),
             )
         _print_json(report)
         return 0

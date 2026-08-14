@@ -866,8 +866,11 @@ constraints feed Phase 3 hop legality, Phase 4 routing, and Phase 5 ratio
 quantum/frame bound, and each independent validator rechecks that chain.
 Supplying an arbitrary design or merely renaming a platform therefore cannot
 enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
-per provider and nine terminal Phase 7 nodes (three providers by seeds 1, 2,
-and 3). Tool bytes and per-stage implementation closures are part of node
+per provider, nine physical Phase 7 nodes (three providers by seeds 1, 2, and
+3), and one final paired QoR-comparison node. The comparison independently
+reconstructs every whole-design target/runtime-clock WNS/TNS result, verifies
+the frozen Phase 1/3/4/5 hashes, and reports per-seed deltas plus mean/median
+statistics. Tool bytes and per-stage implementation closures are part of node
 identity, so a router-only change preserves frontend, STA, and partition
 checkpoints while invalidating routing and its descendants.  The OpenPARF
 manifest is itself an `experiment-implementation-closure/v1` rooted at the
@@ -980,7 +983,7 @@ inventory are authoritative for a new design.
 emuflow experiment-cache inventory --cache /research/d4/gds/ziyiwang21/emuflow/checkpoints \
   --out /research/d4/gds/ziyiwang21/experiments/cache-inventory.json
 emuflow experiment-cache evidence-create --plan experiment.plan.json \
-  --terminal phase7-chimew-seed3 --out /research/d4/gds/ziyiwang21/emuflow/evidence/run-001
+  --terminal qor-comparison --out /research/d4/gds/ziyiwang21/emuflow/evidence/run-001
 emuflow experiment-cache evidence-validate /research/d4/gds/ziyiwang21/emuflow/evidence/run-001
 ```
 

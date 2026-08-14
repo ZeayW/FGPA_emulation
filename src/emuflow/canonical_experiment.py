@@ -261,6 +261,13 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/vpr_packed_netlist_importer.cpp",
         "src/native/vpr_route_checker.cpp",
     ),
+    "qor-compare": (
+        "src/emuflow/canonical_qor.py",
+        "src/emuflow/experiment_stages.py",
+        "src/emuflow/multi_fpga_physical_flow.py",
+        "src/emuflow/runtime.py",
+        "src/emuflow/system_timing.py",
+    ),
 }
 
 
@@ -611,6 +618,57 @@ def compile_canonical_experiment_spec(
                 configuration={"physical_backend": "open", "physical_workers": workers, "physical_seed": seed, "route_channel_width": channel_width},
                 peak_gib=48, retained_gib=8, provider=provider, physical_seed=seed,
             )
+    phase7_ids = [
+        f"phase7-{provider}-seed{seed}"
+        for provider in ("baseline", "placement-aware", "chimew")
+        for seed in (1, 2, 3)
+    ]
+    comparison_command = [
+        executable,
+        "experiment-stage",
+        "qor-compare-run",
+        "--shared",
+        "{dependency:shared-phase1-5}",
+    ]
+    comparison_validator = [
+        executable,
+        "experiment-stage",
+        "qor-compare-validate",
+        "{artifact_root}",
+        "--shared",
+        "{dependency:shared-phase1-5}",
+    ]
+    for provider in ("baseline", "placement-aware", "chimew"):
+        for seed in (1, 2, 3):
+            phase7_id = f"phase7-{provider}-seed{seed}"
+            arm = (
+                "--arm",
+                provider,
+                str(seed),
+                f"{{dependency:{phase7_id}}}",
+            )
+            comparison_command.extend(arm)
+            comparison_validator.extend(arm)
+    comparison_command.extend(("--out", "{output_dir}"))
+    node(
+        "qor-comparison",
+        "qor-compare",
+        ["shared-phase1-5", *phase7_ids],
+        comparison_command,
+        comparison_validator,
+        [_artifact("canonical-qor-comparison.json", "evidence-critical")],
+        inputs=("tool.emuflow",),
+        configuration={
+            "providers": ["baseline", "placement-aware", "chimew"],
+            "physical_seeds": [1, 2, 3],
+            "primary_metrics": [
+                "global_target_clock_wns_ns",
+                "global_target_clock_tns_ns",
+            ],
+        },
+        peak_gib=2,
+        retained_gib=1,
+    )
     spec = {
         "schema": EXPERIMENT_SPEC_V2_SCHEMA,
         "experiment_id": case_id,
@@ -623,6 +681,7 @@ def compile_canonical_experiment_spec(
         "status": "pass",
         "experiment_id": case_id,
         "nodes": len(validated["nodes"]),
-        "terminal_nodes": 9,
+        "physical_terminal_nodes": 9,
+        "terminal_nodes": 1,
         "output": str(output_path.resolve()),
     }

@@ -151,8 +151,9 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_canonical_experiment_spec(
                 self._config(root), REPOSITORY, output
             )
-            self.assertEqual(report["nodes"], 20)
-            self.assertEqual(report["terminal_nodes"], 9)
+            self.assertEqual(report["nodes"], 21)
+            self.assertEqual(report["physical_terminal_nodes"], 9)
+            self.assertEqual(report["terminal_nodes"], 1)
             spec = validate_experiment_spec(json.loads(output.read_text()))
             nodes = {item["id"]: item for item in spec["nodes"]}
             self.assertEqual(
@@ -219,6 +220,28 @@ class CanonicalExperimentTest(unittest.TestCase):
                     ]
                     for item in terminals
                 )
+            )
+            comparison = nodes["qor-comparison"]
+            self.assertEqual(
+                comparison["dependencies"],
+                [
+                    "shared-phase1-5",
+                    *[
+                        f"phase7-{provider}-seed{seed}"
+                        for provider in ("baseline", "placement-aware", "chimew")
+                        for seed in (1, 2, 3)
+                    ],
+                ],
+            )
+            self.assertEqual(
+                comparison["artifacts"],
+                [
+                    {
+                        "path": "canonical-qor-comparison.json",
+                        "role": "evidence-critical",
+                        "retention": "required",
+                    }
+                ],
             )
 
     def test_external_tool_bytes_are_part_of_execution_inputs(self) -> None:

@@ -244,6 +244,11 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
 - The primary final QoR is whole-design target-clock WNS and TNS after Phase
   7/7C.  Per-FPGA WNS/TNS, Phase 6 cost, crossings, RUDY, and congestion are
   diagnostics and must not be substituted for the primary metrics.
+- Canonical provider studies finish at the content-addressed `qor-comparison`
+  node, not at an individual Phase 7 arm. It depends on every
+  baseline/placement-aware/Chimew seed 1/2/3, rechecks their common frozen
+  Phase 1/3/4/5 hashes, and preserves paired target-clock WNS/TNS deltas and
+  per-provider statistics in final evidence.
 - Small fixtures are suitable for correctness and determinism tests, but a
   default algorithm or QoR claim also requires a materially sized real design.
 - Replicated-core or artificially coupled RTL harnesses are not accepted as

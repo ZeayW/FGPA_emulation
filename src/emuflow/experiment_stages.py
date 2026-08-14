@@ -647,6 +647,12 @@ def run_phase7_checkpoint(
         "workers": workers,
         "route_channel_width": route_channel_width,
         "phase6_manifest_sha256": _sha256(phase6_root / "split/manifest.json"),
+        "frozen_upstream": {
+            "emuir_sha256": _sha256(paths["ir"]),
+            "assignment_sha256": _sha256(paths["assignment"]),
+            "routes_sha256": _sha256(paths["routes"]),
+            "schedule_sha256": _sha256(phase6_root / "schedule.json"),
+        },
         "physical_summary_sha256": _sha256(output_dir / "physical/physical-summary.json"),
         "qor_sha256": _sha256(output_dir / "runtime/qor_report.json"),
         "qor": read_json(output_dir / "runtime/qor_report.json"),
@@ -687,6 +693,15 @@ def validate_phase7_checkpoint(
         "route_channel_width"
     ) != expected_route_channel_width:
         raise ValidationError("experiment Phase 7 channel-width contract disagrees")
+    paths = _shared_paths(shared_root)
+    expected_upstream = {
+        "emuir_sha256": _sha256(paths["ir"]),
+        "assignment_sha256": _sha256(paths["assignment"]),
+        "routes_sha256": _sha256(paths["routes"]),
+        "schedule_sha256": _sha256(phase6_root / "schedule.json"),
+    }
+    if report.get("frozen_upstream") != expected_upstream:
+        raise ValidationError("experiment Phase 7 frozen-upstream seal is broken")
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
@@ -712,7 +727,6 @@ def validate_phase7_checkpoint(
         root / "physical/physical-summary.json"
     ) or report.get("qor_sha256") != _sha256(root / "runtime/qor_report.json"):
         raise ValidationError("experiment Phase 7 checkpoint seal is broken")
-    paths = _shared_paths(shared_root)
     with tempfile.TemporaryDirectory() as temporary:
         replay = run_phase7c(
             phase6_root / "schedule.json",
