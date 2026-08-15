@@ -88,6 +88,58 @@ def _spec() -> dict:
 
 
 class ExperimentStoreTest(unittest.TestCase):
+    def test_evidence_preserves_and_rechecks_portable_execution_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            value = _spec()
+            for node in value["nodes"]:
+                node["inputs"]["tool.python"] = _digest("python-runtime")
+                node["execution_bindings"] = {"tool.python": sys.executable}
+                node["command_identity"] = [
+                    "{input:tool.python}", *node["command"][1:]
+                ]
+                node["validator_identity"] = [
+                    "{input:tool.python}", *node["validator"][1:]
+                ]
+            spec_path = root / "spec.json"
+            write_json(spec_path, value)
+            for node_id in ("phase1", "phase2", "phase3"):
+                plan_path = root / f"{node_id}.plan.json"
+                plan_experiment(spec_path, cache, plan_path)
+                run_experiment_node(plan_path, node_id, root / f"attempt-{node_id}")
+            final_plan = root / "final.plan.json"
+            plan_experiment(spec_path, cache, final_plan)
+            evidence_root = root / "evidence"
+            self.assertEqual(
+                create_experiment_evidence_bundle(
+                    final_plan, ["phase3"], evidence_root
+                )["status"],
+                "pass",
+            )
+
+            for path in evidence_root.rglob("*"):
+                path.chmod(0o755 if path.is_dir() else 0o644)
+            evidence_root.chmod(0o755)
+            manifest_path = evidence_root / "evidence-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["nodes"][0]["contract"]["command"][0] = "/forged/python"
+            write_json(manifest_path, manifest)
+            write_json(
+                evidence_root / "evidence-seal.json",
+                {
+                    "schema": "emuflow.experiment-evidence-seal/v1",
+                    "status": "sealed",
+                    "manifest_sha256": hashlib.sha256(
+                        manifest_path.read_bytes()
+                    ).hexdigest(),
+                },
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "portable execution identity is broken"
+            ):
+                validate_experiment_evidence_bundle(evidence_root)
+
     def test_inventory_and_self_contained_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

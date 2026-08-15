@@ -17,6 +17,7 @@ from .experiment_dag import (
     _artifact_digest,
     _cached_checkpoint,
     _load_plan,
+    _portable_argv,
     _safe_artifact,
     _validated_certificate,
     _v2_execution_key,
@@ -257,6 +258,15 @@ def create_experiment_evidence_bundle(
                     }
                     | {
                         key: node[key]
+                        for key in (
+                            "execution_bindings",
+                            "command_identity",
+                            "validator_identity",
+                        )
+                        if key in node
+                    }
+                    | {
+                        key: node[key]
                         for key in ("provider", "physical_seed")
                         if key in node
                     },
@@ -314,6 +324,45 @@ def validate_experiment_evidence_bundle(root: Path) -> dict[str, Any]:
         contract = node.get("contract")
         if not isinstance(contract, dict):
             raise ValidationError("experiment evidence node contract is invalid")
+        execution_bindings = contract.get("execution_bindings", {})
+        command_identity = contract.get("command_identity")
+        validator_identity = contract.get("validator_identity")
+        identity_declared = (
+            bool(execution_bindings)
+            or command_identity is not None
+            or validator_identity is not None
+        )
+        if identity_declared:
+            inputs = contract.get("inputs", {})
+            command = contract.get("command")
+            validator = contract.get("validator")
+            if (
+                not isinstance(inputs, dict)
+                or not isinstance(command, list)
+                or not all(isinstance(value, str) for value in command)
+                or not isinstance(validator, list)
+                or not all(isinstance(value, str) for value in validator)
+                or not isinstance(execution_bindings, dict)
+                or not execution_bindings
+                or not all(
+                    isinstance(label, str)
+                    and label in inputs
+                    and isinstance(value, str)
+                    and value
+                    for label, value in execution_bindings.items()
+                )
+                or not isinstance(command_identity, list)
+                or not all(isinstance(value, str) for value in command_identity)
+                or not isinstance(validator_identity, list)
+                or not all(isinstance(value, str) for value in validator_identity)
+                or command_identity
+                != _portable_argv(command, execution_bindings)
+                or validator_identity
+                != _portable_argv(validator, execution_bindings)
+            ):
+                raise ValidationError(
+                    "experiment evidence portable execution identity is broken"
+                )
         if _v2_execution_key(contract, node.get("dependency_keys", {})) != node[
             "execution_key"
         ]:
