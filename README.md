@@ -2132,10 +2132,26 @@ sealed artifact hash.  Redundant continuous objective
 summaries are then rebuilt from those canonical hop ratios rather than copied
 from a separately reduced native value, so the serialized aggregate and the
 independent checker share one exact canonical state.  Local qualification is
-currently 581 passed and 1 skipped plus the source-completeness audit, strict
-C++ compile, and diff check.  Materially sized proxy A/B and complete Phase 7
-global WNS/TNS A/B remain pending, so the routing loop remains opt-in and no
-final timing-improvement claim is made from the intermediate Phase 5 score.
+currently 585 passed and 1 skipped plus the source-completeness audit, strict
+C++ compile, and diff check.  The corrected two-FPGA Koios DLA checkpoint has
+also completed a frozen feedback-off/feedback-on Phase 7C comparison.  Both
+arms retained the same routes and concrete schedule, so their independently
+reconstructed whole-original-design reports are byte-identical: target-clock
+WNS is `-130.623315097 ns`, target-clock TNS is
+`-239454.96545801504 ns`, all 195,532 original paths are covered exactly once
+(7,678 cross-FPGA), and no fallback logic path is used.  The measured feedback
+delta on this topology is therefore exactly zero: it proves no regression but
+does not establish an improvement.  A 16-FPGA EDA 2023 Case 7 scale A/B also
+exercises the nontrivial reroute policy over 72,418 demands.  Its two accepted
+rounds reduce concrete completion from slot 976 to 679, improve the complete
+contest-path estimated slack by 297 ns, and reduce link bit-hops from 243,180
+to 242,717.  In round two, feedback steps 1 and 0.5 are rolled back before
+step 0.25 is accepted, demonstrating that the line search is selecting with
+the realized Phase 5 objective rather than accepting a proxy improvement.
+Case 7 has no RTL/physical source for a Phase 7 timing claim, so this remains
+scale/proxy evidence; broader RTL/platform Phase 7 replication is pending.
+The routing loop remains opt-in, and no final timing-improvement claim is
+inferred from an intermediate Phase 5 score.
 
 Baseline Phase 5 timing and feedback reconstruction uses the route trees and
 concrete schedule directly instead of materializing the academic optimizer's
