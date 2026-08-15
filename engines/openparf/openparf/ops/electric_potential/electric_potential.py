@@ -140,7 +140,7 @@ class ElectrostaticSystem(object):
             self.wv_by_wu2_plus_wv2_half[area_type] = wv.mul(
                 self.inv_wu2_plus_wv2[area_type]).mul_(1. / 2)
 
-    def forward(self, density_maps):
+    def forward(self, density_maps, area_type_mask):
         """Compute potential, field, energy given density map;
         The energy here is actually total potential
         """
@@ -150,6 +150,22 @@ class ElectrostaticSystem(object):
         potential_maps = [None] * num_area_types
         energy = density_maps[0].new_zeros(num_area_types)
         for area_type in range(num_area_types):
+            if not area_type_mask[area_type]:
+                # A resource type with no movable capacity, or one removed
+                # from optimization by legalization, has no active charge.
+                # Preserve tensor shapes for the native backward kernel while
+                # skipping the spectral solve completely.
+                field_map_xs[area_type] = torch.zeros_like(
+                    density_maps[area_type]
+                )
+                field_map_ys[area_type] = torch.zeros_like(
+                    density_maps[area_type]
+                )
+                if not self.fast_mode:
+                    potential_maps[area_type] = torch.zeros_like(
+                        density_maps[area_type]
+                    )
+                continue
             # compute auv
             auv = self.dct2[area_type].forward(density_maps[area_type])
 
@@ -209,7 +225,7 @@ class ElectricPotentialFunction(Function):
             density_maps[area_type].mul_(1.0 / bin_map_areas[area_type])
 
         potential_maps, field_map_xs, field_map_ys, energy = electrostatic_system.forward(
-            density_maps)
+            density_maps, area_type_mask)
 
         ctx.pos = pos
         ctx.inst_sizes = inst_sizes

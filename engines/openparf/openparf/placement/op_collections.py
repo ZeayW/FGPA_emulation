@@ -99,7 +99,7 @@ def build_electric_potential_op(params, placedb, data_cls):
         bin_map_dims=torch.from_numpy(data_cls.bin_map_dims).to(
             data_cls.inst_sizes.device
         ),
-        area_type_mask=data_cls.area_type_mask,
+        area_type_mask=data_cls.optimization_area_type_mask,
         xl=data_cls.diearea[0],
         yl=data_cls.diearea[1],
         xh=data_cls.diearea[2],

@@ -204,6 +204,8 @@ class PlaceModel(nn.Module):
             # compute normalization factor alphas for preconditioning
             gd_gw_gs_norm_ratios = pos.new_ones(self.data_cls.num_area_types)
             for area_type in range(self.data_cls.num_area_types - 1):
+                if not self.data_cls.optimization_area_type_mask[area_type]:
+                    continue
                 inst_ids = self.data_cls.area_type_inst_groups[area_type]
                 if len(inst_ids):
                     wirelength_grad_norm = wirelength_grad[inst_ids].norm(p=1)
@@ -308,17 +310,23 @@ class FenceRegionPlaceModel(PlaceModel):
             # compute normalization factor alphas for preconditioning
             gd_gw_gs_norm_ratios = pos.new_ones(self.data_cls.num_area_types)
             for area_type in range(self.data_cls.num_area_types - 1):
+                if not self.data_cls.optimization_area_type_mask[area_type]:
+                    continue
                 inst_ids = self.data_cls.area_type_inst_groups[area_type]
-                if len(inst_ids):
-                    wirelength_grad_norm = wirelength_grad[inst_ids].norm(p=1)
-                    density_grad_norm = density_grad[inst_ids].norm(p=1)
+                if not len(inst_ids):
+                    continue
+                wirelength_grad_norm = wirelength_grad[inst_ids].norm(p=1)
+                density_grad_norm = density_grad[inst_ids].norm(p=1)
                 if sll_flag:
                     wasll_grad_norm = wasll_grad[inst_ids].norm(p=1)
-                    gd_gw_gs_norm_ratios[area_type] = density_grad_norm / (
-                        wirelength_grad_norm + 0.5 * wasll_grad_norm)
+                    gd_gw_gs_norm_ratios[area_type] = self.op_cls.stable_div_op(
+                        density_grad_norm,
+                        wirelength_grad_norm + 0.5 * wasll_grad_norm,
+                    )
                 else:
-                    gd_gw_gs_norm_ratios[area_type] = density_grad_norm / (
-                        wirelength_grad_norm)
+                    gd_gw_gs_norm_ratios[area_type] = self.op_cls.stable_div_op(
+                        density_grad_norm, wirelength_grad_norm
+                    )
             self.data_cls.multiplier.gd_gw_gs_norm_ratio = self.op_cls.stable_zero_div_op(
                 gd_gw_gs_norm_ratios.clamp_(min=1.0),
                 self.data_cls.multiplier.lambdas)

@@ -100,7 +100,8 @@ set queried_paths 0
 # Path handles returned by find_timing_paths are owned by OpenSTA and may be
 # invalidated by a subsequent query.  Serialize each query immediately instead
 # of retaining those handles across the per-cut-net loop.
-proc emuflow_emit_timing_paths {timing_paths output_var emitted_var {forced_net ""}} {
+proc emuflow_emit_timing_paths {
+    timing_paths output_var emitted_var {forced_net ""} {forced_position "head"}} {
   global emuir_by_mapped_net
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
@@ -125,7 +126,7 @@ proc emuflow_emit_timing_paths {timing_paths output_var emitted_var {forced_net 
     set path_nets [list]
     unset -nocomplain seen_net
     array set seen_net {}
-    if {$forced_net ne ""} {
+    if {$forced_net ne "" && $forced_position eq "head"} {
       set seen_net($forced_net) 1
       lappend path_nets $forced_net
     }
@@ -144,6 +145,11 @@ proc emuflow_emit_timing_paths {timing_paths output_var emitted_var {forced_net 
           }
         }
       }
+    }
+    if {$forced_net ne "" && $forced_position eq "tail" &&
+        ![info exists seen_net($forced_net)]} {
+      set seen_net($forced_net) 1
+      lappend path_nets $forced_net
     }
     if {[llength $path_nets] == 0} {
       continue
@@ -259,7 +265,8 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
             -sort_by_slack] {
           set timing_paths [list $path_end]
           incr queried_paths
-          emuflow_emit_timing_paths $timing_paths output emitted $emuir_name
+          emuflow_emit_timing_paths \
+            $timing_paths output emitted $emuir_name tail
         }
         if {$emitted > $before_emitted} {
           break
