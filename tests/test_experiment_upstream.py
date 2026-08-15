@@ -124,6 +124,62 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     frontend, timing, platform, partition
                 )
 
+    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    def test_partition_validator_binds_static_exact_cut_policy(
+        self, validate_phase3
+    ) -> None:
+        validate_phase3.return_value = {
+            "status": "pass",
+            "cut_mode": "static-exact-combinational",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            frontend, timing, platform, partition = self._partition_fixture(
+                Path(temporary)
+            )
+            clusters_path = partition / "clusters.json"
+            clusters_path.write_text(
+                json.dumps(
+                    {
+                        "policy": {
+                            "cut_mode": "static-exact-combinational",
+                            "max_cross_fpga_dependency_depth": 1,
+                            "comb_segment_budget_slots": 3,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path = partition / "experiment-partition-report.json"
+            report = json.loads(report_path.read_text())
+            report.update(
+                {
+                    "clusters_sha256": _sha256(clusters_path),
+                    "cut_mode": "static-exact-combinational",
+                    "max_cross_fpga_dependency_depth": 1,
+                    "comb_segment_budget_slots": 3,
+                }
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            checked = validate_partition_checkpoint(
+                frontend,
+                timing,
+                platform,
+                partition,
+                expected_cut_mode="static-exact-combinational",
+                expected_max_cross_fpga_dependency_depth=1,
+                expected_comb_segment_budget_slots=3,
+            )
+            self.assertEqual(checked["cut_mode"], "static-exact-combinational")
+
+            report["comb_segment_budget_slots"] = 2
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError,
+                "comb-segment-budget-slots seal disagrees",
+            ):
+                validate_partition_checkpoint(
+                    frontend, timing, platform, partition
+                )
 
 if __name__ == "__main__":
     unittest.main()

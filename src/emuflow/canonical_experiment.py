@@ -20,10 +20,15 @@ from .experiment_identity import (
     validate_implementation_closure,
 )
 from .io import read_json, write_json
+from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .platform import Platform
 from .routing import load_route_constraints
+from .tdm import TDM_STATIC_EXACT_PROVIDER
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
-from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from .timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
+    NATIVE_TIMING_EVALUATED_PROVIDER,
+)
 
 
 CANONICAL_EXPERIMENT_CONFIG_SCHEMA = "emuflow.canonical-experiment-config/v1"
@@ -452,6 +457,25 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical experiment partition_repair_balance must be boolean"
         )
+    cut_mode = config.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
+        raise ValidationError("canonical experiment cut_mode is invalid")
+    max_cross_fpga_dependency_depth = _positive_integer(
+        config.get("max_cross_fpga_dependency_depth", 1),
+        "max_cross_fpga_dependency_depth",
+    )
+    comb_segment_budget_slots = _positive_integer(
+        config.get("comb_segment_budget_slots", 1),
+        "comb_segment_budget_slots",
+    )
+    if (
+        cut_mode == CUT_MODE_STATIC_EXACT
+        and max_cross_fpga_dependency_depth != 1
+    ):
+        raise ValidationError(
+            "canonical static exact cut currently requires "
+            "max_cross_fpga_dependency_depth=1"
+        )
     executable = str(tools["emuflow"])
     base_inputs = {
         "rtl": _sha256(rtl),
@@ -574,6 +598,10 @@ def compile_canonical_experiment_spec(
         "--timing", "{dependency:timing}", "--platform", str(platform),
         "--provider", "tritonpart", "--seed", str(partition_seed),
         "--seed-attempts", str(partition_seed_attempts),
+        "--cut-mode", cut_mode,
+        "--max-cross-fpga-dependency-depth",
+        str(max_cross_fpga_dependency_depth),
+        "--comb-segment-budget-slots", str(comb_segment_budget_slots),
         "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
         "--out", "{output_dir}",
     ]
@@ -583,6 +611,10 @@ def compile_canonical_experiment_spec(
         "--platform", str(platform), "--route-constraints", str(route_constraints),
         "--provider", "tritonpart", "--seed", str(partition_seed),
         "--seed-attempts", str(partition_seed_attempts),
+        "--cut-mode", cut_mode,
+        "--max-cross-fpga-dependency-depth",
+        str(max_cross_fpga_dependency_depth),
+        "--comb-segment-budget-slots", str(comb_segment_budget_slots),
     ]
     if partition_repair_balance:
         partition_command.insert(-2, "--repair-balance")
@@ -596,7 +628,7 @@ def compile_canonical_experiment_spec(
         partition_validator,
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10},
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [
@@ -616,22 +648,61 @@ def compile_canonical_experiment_spec(
         configuration={"clock_periods": periods, "max_paths": 200000},
         peak_gib=16, retained_gib=4,
     )
-    node(
-        "route", "route", ["partition", "cut-timing"],
-        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", GLOBAL_CANDIDATE_PROVIDER, "--candidate-workers", str(route_candidate_workers), "--router", str(tools["router"]), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", GLOBAL_CANDIDATE_PROVIDER, "--candidate-workers", str(route_candidate_workers)],
-        [_artifact("routes.json", "consumer-checkpoint"), _artifact("phase4_report.json", "consumer-checkpoint"), _artifact("experiment-route-report.json", "evidence-critical")],
-        inputs=("platform", "route_constraints", "tool.emuflow", "tool.router"),
-        configuration={"provider": GLOBAL_CANDIDATE_PROVIDER, "candidate_workers": route_candidate_workers, "route_constraints": contract["route_constraints"]},
-        peak_gib=12, retained_gib=3,
+    route_provider = (
+        NATIVE_TIMING_EVALUATED_PROVIDER
+        if cut_mode == CUT_MODE_STATIC_EXACT
+        else GLOBAL_CANDIDATE_PROVIDER
+    )
+    effective_candidate_workers = (
+        1 if cut_mode == CUT_MODE_STATIC_EXACT else route_candidate_workers
     )
     node(
+        "route", "route", ["partition", "cut-timing"],
+        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--router", str(tools["router"]), "--out", "{output_dir}"],
+        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers)],
+        [_artifact("routes.json", "consumer-checkpoint"), _artifact("phase4_report.json", "consumer-checkpoint"), _artifact("experiment-route-report.json", "evidence-critical")],
+        inputs=("platform", "route_constraints", "tool.emuflow", "tool.router"),
+        configuration={"provider": route_provider, "candidate_workers": effective_candidate_workers, "route_constraints": contract["route_constraints"], "cut_mode": cut_mode},
+        peak_gib=12, retained_gib=3,
+    )
+    tdm_provider = (
+        TDM_STATIC_EXACT_PROVIDER
+        if cut_mode == CUT_MODE_STATIC_EXACT
+        else TDM_TIMING_DAG_RATIO_PROVIDER
+    )
+    tdm_command = [
+        executable, "experiment-stage", "tdm-run", "--route",
+        "{dependency:route}", "--platform", str(platform), "--provider",
+        tdm_provider,
+    ]
+    tdm_inputs = ["platform", "route_constraints", "tool.emuflow"]
+    tdm_artifacts = [
+        _artifact("schedule.json", "consumer-checkpoint"),
+        _artifact("phase5_report.json", "consumer-checkpoint"),
+        _artifact("experiment-tdm-report.json", "evidence-critical"),
+    ]
+    if cut_mode != CUT_MODE_STATIC_EXACT:
+        tdm_command.extend((
+            "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]),
+            "--max-ratio", str(contract["route_constraints"]["frame_slots"]),
+            "--ratio-optimizer", str(tools["ratio_optimizer"]),
+            "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]),
+            "--slot-optimizer", str(tools["slot_optimizer"]),
+        ))
+        tdm_inputs.extend((
+            "tool.ratio_optimizer",
+            "tool.timing_dag_optimizer",
+            "tool.slot_optimizer",
+        ))
+        tdm_artifacts.insert(1, _artifact("ratio_plan.json", "consumer-checkpoint"))
+    tdm_command.extend(("--out", "{output_dir}"))
+    node(
         "tdm", "tdm", ["route"],
-        [executable, "experiment-stage", "tdm-run", "--route", "{dependency:route}", "--platform", str(platform), "--provider", TDM_TIMING_DAG_RATIO_PROVIDER, "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]), "--max-ratio", str(contract["route_constraints"]["frame_slots"]), "--ratio-optimizer", str(tools["ratio_optimizer"]), "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]), "--slot-optimizer", str(tools["slot_optimizer"]), "--out", "{output_dir}"],
-        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", TDM_TIMING_DAG_RATIO_PROVIDER],
-        [_artifact("schedule.json", "consumer-checkpoint"), _artifact("ratio_plan.json", "consumer-checkpoint"), _artifact("phase5_report.json", "consumer-checkpoint"), _artifact("experiment-tdm-report.json", "evidence-critical")],
-        inputs=("platform", "route_constraints", "tool.emuflow", "tool.ratio_optimizer", "tool.timing_dag_optimizer", "tool.slot_optimizer"),
-        configuration={"provider": TDM_TIMING_DAG_RATIO_PROVIDER, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200},
+        tdm_command,
+        [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider],
+        tdm_artifacts,
+        inputs=tuple(tdm_inputs),
+        configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200, "cut_mode": cut_mode},
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]
@@ -666,7 +737,12 @@ def compile_canonical_experiment_spec(
         inputs=("platform", "physical_architecture", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
         configuration={"physical_seed": 1, "physical_workers": workers, "region_count": region_count, "route_channel_width": channel_width}, peak_gib=48, retained_gib=10,
     )
-    for provider in ("placement-aware", "chimew"):
+    phase6_research_providers = (
+        ()
+        if cut_mode == CUT_MODE_STATIC_EXACT
+        else ("placement-aware", "chimew")
+    )
+    for provider in phase6_research_providers:
         phase6_id = f"phase6-{provider}"
         extra_artifacts = (
             [_artifact("placement-aware-position-hints.json", "consumer-checkpoint"), _artifact("placement-aware-pin-plan.json", "consumer-checkpoint")]
@@ -695,7 +771,12 @@ def compile_canonical_experiment_spec(
             [_artifact("split", "consumer-checkpoint"), _artifact("schedule.json", "consumer-checkpoint"), _artifact("experiment-phase6-report.json", "evidence-critical"), *extra_artifacts],
             inputs=tuple(phase6_inputs), configuration={"provider": provider, "equivalence_cycles": 16}, peak_gib=12, retained_gib=4, provider=provider,
         )
-    for provider in ("baseline", "placement-aware", "chimew"):
+    phase7_providers = (
+        ("baseline",)
+        if cut_mode == CUT_MODE_STATIC_EXACT
+        else ("baseline", "placement-aware", "chimew")
+    )
+    for provider in phase7_providers:
         for seed in (1, 2, 3):
             phase6_id = f"phase6-{provider}"
             phase7_id = f"phase7-{provider}-seed{seed}"
@@ -723,9 +804,27 @@ def compile_canonical_experiment_spec(
             )
     phase7_ids = [
         f"phase7-{provider}-seed{seed}"
-        for provider in ("baseline", "placement-aware", "chimew")
+        for provider in phase7_providers
         for seed in (1, 2, 3)
     ]
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        spec = {
+            "schema": EXPERIMENT_SPEC_V2_SCHEMA,
+            "experiment_id": case_id,
+            "source_commit": source_commit,
+            "nodes": nodes,
+        }
+        validated = validate_experiment_spec(spec)
+        write_json(output_path, spec)
+        return {
+            "status": "pass",
+            "experiment_id": case_id,
+            "nodes": len(validated["nodes"]),
+            "physical_terminal_nodes": 3,
+            "terminal_nodes": 3,
+            "cut_mode": cut_mode,
+            "output": str(output_path.resolve()),
+        }
     comparison_command = [
         executable,
         "experiment-stage",

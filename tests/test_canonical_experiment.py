@@ -12,8 +12,12 @@ from emuflow.experiment_dag import validate_experiment_spec
 from emuflow.errors import ValidationError
 from emuflow.experiment_identity import build_implementation_closure
 from emuflow.io import write_json
+from emuflow.tdm import TDM_STATIC_EXACT_PROVIDER
 from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
-from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from emuflow.timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER,
+    NATIVE_TIMING_EVALUATED_PROVIDER,
+)
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -367,6 +371,72 @@ class CanonicalExperimentTest(unittest.TestCase):
                     route["validator"].index("--candidate-workers") + 1
                 ],
                 "3",
+            )
+
+    def test_static_exact_mode_is_sealed_as_a_distinct_three_seed_dag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config.update(
+                {
+                    "cut_mode": "static-exact-combinational",
+                    "max_cross_fpga_dependency_depth": 1,
+                    "comb_segment_budget_slots": 2,
+                    "route_candidate_workers": 7,
+                }
+            )
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            report = compile_canonical_experiment_spec(
+                config_path, REPOSITORY, output
+            )
+            self.assertEqual(report["physical_terminal_nodes"], 3)
+            self.assertEqual(report["terminal_nodes"], 3)
+            self.assertEqual(
+                report["cut_mode"], "static-exact-combinational"
+            )
+            nodes = {
+                item["id"]: item
+                for item in validate_experiment_spec(
+                    json.loads(output.read_text())
+                )["nodes"]
+            }
+            self.assertNotIn("phase6-placement-aware", nodes)
+            self.assertNotIn("phase6-chimew", nodes)
+            self.assertNotIn("qor-comparison", nodes)
+            partition = nodes["partition"]
+            self.assertEqual(
+                partition["configuration"]["cut_mode"],
+                "static-exact-combinational",
+            )
+            self.assertEqual(
+                partition["configuration"]["comb_segment_budget_slots"], 2
+            )
+            self.assertIn("--cut-mode", partition["command"])
+            self.assertIn("--cut-mode", partition["validator"])
+            route = nodes["route"]
+            self.assertEqual(
+                route["configuration"]["provider"],
+                NATIVE_TIMING_EVALUATED_PROVIDER,
+            )
+            self.assertEqual(route["configuration"]["candidate_workers"], 1)
+            tdm = nodes["tdm"]
+            self.assertEqual(
+                tdm["configuration"]["provider"],
+                TDM_STATIC_EXACT_PROVIDER,
+            )
+            self.assertNotIn("--ratio-optimizer", tdm["command"])
+            self.assertNotIn(
+                "ratio_plan.json",
+                {item["path"] for item in tdm["artifacts"]},
+            )
+            terminals = [
+                node for node in nodes.values() if node["stage"] == "phase7"
+            ]
+            self.assertEqual(
+                {(item["provider"], item["physical_seed"]) for item in terminals},
+                {("baseline", seed) for seed in (1, 2, 3)},
             )
 
     def test_partition_seed_attempts_must_be_positive(self) -> None:

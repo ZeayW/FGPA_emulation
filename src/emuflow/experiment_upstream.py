@@ -36,6 +36,7 @@ from .sta import (
     validate_sta_path_database,
 )
 from .synthesis import run_generic_yosys
+from .tdm import TDM_STATIC_EXACT_PROVIDER
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
 
@@ -744,22 +745,44 @@ def validate_tdm_checkpoint(
     report = read_json(_require(root, "experiment-tdm-report.json"))
     if report.get("schema") != EXPERIMENT_TDM_SCHEMA or report.get("status") != "pass":
         raise ValidationError("TDM checkpoint report is invalid")
+    phase5_report = _require(root, "phase5_report.json")
+    phase5 = read_json(phase5_report)
+    route_document = read_json(routes)
+    schedule_document = read_json(schedule)
+    actual_provider = schedule_document.get("provider")
+    exact_mode = route_document.get("semantic_contract") is not None
+    if exact_mode != (actual_provider == TDM_STATIC_EXACT_PROVIDER):
+        raise ValidationError(
+            "TDM checkpoint exact-cut route/schedule contract disagrees"
+        )
+    if phase5.get("provider") != actual_provider:
+        raise ValidationError(
+            "TDM checkpoint Phase 5 provider disagrees with schedule"
+        )
+    if exact_mode and ratio_plan.exists():
+        raise ValidationError(
+            "static exact TDM checkpoint may not contain a ratio plan"
+        )
     if constraints_path is not None:
         constraints = load_route_constraints(
             constraints_path, Platform.load(platform_path)
         )
-        if read_json(routes).get("constraints") != constraints:
+        if route_document.get("constraints") != constraints:
             raise ValidationError("TDM route-constraints contract disagrees")
-        if not ratio_plan.is_file():
-            raise ValidationError("TDM contest constraints require a ratio plan")
-        configuration = read_json(ratio_plan).get("configuration", {})
-        if (
-            configuration.get("ratio_quantum")
-            != constraints["tdm_ratio_quantum"]
-            or configuration.get("max_ratio") != constraints["frame_slots"]
-        ):
-            raise ValidationError("TDM ratio constraints contract disagrees")
-    phase5_report = _require(root, "phase5_report.json")
+        if not exact_mode:
+            if not ratio_plan.is_file():
+                raise ValidationError(
+                    "TDM contest constraints require a ratio plan"
+                )
+            configuration = read_json(ratio_plan).get("configuration", {})
+            if (
+                configuration.get("ratio_quantum")
+                != constraints["tdm_ratio_quantum"]
+                or configuration.get("max_ratio") != constraints["frame_slots"]
+            ):
+                raise ValidationError(
+                    "TDM ratio constraints contract disagrees"
+                )
     for label, path in {
         "routes_sha256": routes,
         "platform_sha256": platform_path.resolve(),
@@ -768,7 +791,6 @@ def validate_tdm_checkpoint(
     }.items():
         if report.get(label) != _sha256(path):
             raise ValidationError(f"TDM checkpoint {label} seal is broken")
-    phase5 = read_json(phase5_report)
     if report.get("phase5") != phase5:
         raise ValidationError("TDM checkpoint embedded Phase 5 report disagrees")
     if expected_provider is not None and phase5.get("provider") != expected_provider:

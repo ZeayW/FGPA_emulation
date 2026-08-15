@@ -174,6 +174,23 @@ emuflow multi-fpga compile design.v \
   --frame-slots 32 --physical --out build/exact-flow
 ```
 
+For retained evidence, the same policy is available through the canonical
+Experiment v2 compiler by adding these fields to the case config:
+
+```json
+{
+  "cut_mode": "static-exact-combinational",
+  "max_cross_fpga_dependency_depth": 1,
+  "comb_segment_budget_slots": 1
+}
+```
+
+Those values are part of the Phase 3 producer and validator identities.  The
+compiler fixes Phase 4 to the native route tree with post-route timing
+annotation, Phase 5 to the exact dependency scheduler, omits ratio optimizers,
+and produces three independently sealed physical Phase 7 terminals.  This is
+the evidence path; the one-command flow above remains a convenience path.
+
 Characterization is deterministic and near-linear apart from sorting. The
 validator reconstructs the complete report from EmuIR and rejects changed
 eligibility, SCC, dependency, depth, source identity, or metric fields.

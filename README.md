@@ -1123,6 +1123,15 @@ quantum/frame bound, and each independent validator rechecks that chain.
 Canonical timing-enabled experiments explicitly bind Phase 4 to
 `timing-aware-global-candidate-v1` and Phase 5 to
 `aspdac26-timing-dag-lagrangian-v1`; they do not rely on mutable CLI defaults.
+An opt-in canonical config with
+`"cut_mode": "static-exact-combinational"` instead binds the Phase 3 cut
+policy (including `max_cross_fpga_dependency_depth` and
+`comb_segment_budget_slots`), native route-tree timing annotation, and the
+dependency-aware exact Phase 5 scheduler into the Experiment v2 task keys and
+independent validators.  That qualification DAG intentionally emits only the
+unmodified baseline Phase 6 transport and three physical seeds: placement-aware
+and Chimew rescheduling are not permitted to rewrite an exact dependency
+schedule, and no inapplicable ratio-plan artifact is claimed.
 They also bind `partition_seed_attempts` and the explicit
 `partition_repair_balance` policy into both the Phase 3 producer and independent
 validator identities. A multi-seed TritonPart sweep therefore searches for an

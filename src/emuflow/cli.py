@@ -555,6 +555,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_run.add_argument("--num-initial-solutions", type=int, default=50)
     partition_run.add_argument("--num-best-initial-solutions", type=int, default=10)
+    partition_run.add_argument(
+        "--cut-mode",
+        choices=("sequential-only", "static-exact-combinational"),
+        default="sequential-only",
+    )
+    partition_run.add_argument(
+        "--max-cross-fpga-dependency-depth", type=int, default=1
+    )
+    partition_run.add_argument(
+        "--comb-segment-budget-slots", type=int, default=1
+    )
     partition_run.add_argument("--out", type=Path, required=True)
     partition_validate = experiment_stage_subparsers.add_parser(
         "partition-validate", help="independently validate a Phase 3 checkpoint"
@@ -572,6 +583,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    partition_validate.add_argument(
+        "--cut-mode",
+        choices=("sequential-only", "static-exact-combinational"),
+    )
+    partition_validate.add_argument(
+        "--max-cross-fpga-dependency-depth", type=int
+    )
+    partition_validate.add_argument("--comb-segment-budget-slots", type=int)
 
     cut_timing_run = experiment_stage_subparsers.add_parser(
         "cut-timing-run", help="extract and project partition cut timing paths"
@@ -3230,6 +3249,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 repair_balance=args.repair_balance,
                 num_initial_solutions=args.num_initial_solutions,
                 num_best_initial_solutions=args.num_best_initial_solutions,
+                cut_mode=args.cut_mode,
+                max_cross_fpga_dependency_depth=(
+                    args.max_cross_fpga_dependency_depth
+                ),
+                comb_segment_budget_slots=args.comb_segment_budget_slots,
             )
         elif args.experiment_stage_command == "partition-validate":
             report = validate_partition_checkpoint(
@@ -3242,6 +3266,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,
                 expected_repair_balance=args.repair_balance,
+                expected_cut_mode=args.cut_mode,
+                expected_max_cross_fpga_dependency_depth=(
+                    args.max_cross_fpga_dependency_depth
+                ),
+                expected_comb_segment_budget_slots=(
+                    args.comb_segment_budget_slots
+                ),
             )
         elif args.experiment_stage_command == "cut-timing-run":
             report = run_cut_timing_checkpoint(

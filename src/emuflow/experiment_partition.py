@@ -20,6 +20,7 @@ from .experiment_upstream import (
 )
 from .io import read_json, write_json
 from .partition_hops import validate_assignment_hop_constraints
+from .partition import CUT_MODE_SEQUENTIAL_ONLY
 from .phase3 import run_phase3, validate_phase3
 
 
@@ -42,6 +43,9 @@ def run_partition_checkpoint(
     repair_balance: bool = False,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
+    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    max_cross_fpga_dependency_depth: int = 1,
+    comb_segment_budget_slots: int = 1,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     validate_timing_checkpoint(frontend_root, timing_root)
@@ -65,6 +69,9 @@ def run_partition_checkpoint(
         net_weights_path=weights_path,
         route_constraints_path=route_constraints_path,
         hop_refiner=hop_refiner,
+        cut_mode=cut_mode,
+        max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
+        comb_segment_budget_slots=comb_segment_budget_slots,
     )
     report = {
         "schema": EXPERIMENT_PARTITION_SCHEMA,
@@ -73,6 +80,11 @@ def run_partition_checkpoint(
         "seed": seed,
         "seed_attempts": seed_attempts,
         "repair_balance": repair_balance,
+        "cut_mode": cut_mode,
+        "max_cross_fpga_dependency_depth": (
+            max_cross_fpga_dependency_depth
+        ),
+        "comb_segment_budget_slots": comb_segment_budget_slots,
         "emuir_sha256": _sha256(ir_path),
         "platform_sha256": _sha256(platform_path.resolve()),
         "weights_sha256": _sha256(weights_path),
@@ -97,6 +109,11 @@ def run_partition_checkpoint(
         expected_seed=seed,
         expected_seed_attempts=seed_attempts,
         expected_repair_balance=repair_balance,
+        expected_cut_mode=cut_mode,
+        expected_max_cross_fpga_dependency_depth=(
+            max_cross_fpga_dependency_depth
+        ),
+        expected_comb_segment_budget_slots=comb_segment_budget_slots,
     )
     return report
 
@@ -112,6 +129,9 @@ def validate_partition_checkpoint(
     expected_seed: int | None = None,
     expected_seed_attempts: int | None = None,
     expected_repair_balance: bool | None = None,
+    expected_cut_mode: str | None = None,
+    expected_max_cross_fpga_dependency_depth: int | None = None,
+    expected_comb_segment_budget_slots: int | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
@@ -135,6 +155,26 @@ def validate_partition_checkpoint(
         and report.get("repair_balance") is not expected_repair_balance
     ):
         raise ValidationError("partition balance-repair contract disagrees")
+    legacy_cut_defaults = {
+        "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
+        "max_cross_fpga_dependency_depth": 1,
+        "comb_segment_budget_slots": 1,
+    }
+    for field, expected in (
+        ("cut_mode", expected_cut_mode),
+        (
+            "max_cross_fpga_dependency_depth",
+            expected_max_cross_fpga_dependency_depth,
+        ),
+        ("comb_segment_budget_slots", expected_comb_segment_budget_slots),
+    ):
+        if (
+            expected is not None
+            and report.get(field, legacy_cut_defaults[field]) != expected
+        ):
+            raise ValidationError(
+                f"partition {field.replace('_', '-')} contract disagrees"
+            )
     if route_constraints_path is not None and report.get(
         "route_constraints_sha256"
     ) != _sha256(route_constraints_path.resolve()):
@@ -180,6 +220,24 @@ def validate_partition_checkpoint(
         seals["clusters_sha256"],
         seals["assignment_sha256"],
     )
+    cut_policy = read_json(seals["clusters_sha256"]).get("policy", {})
+    independently_reconstructed = {
+        "cut_mode": cut_policy.get(
+            "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
+        ),
+        "max_cross_fpga_dependency_depth": cut_policy.get(
+            "max_cross_fpga_dependency_depth", 1
+        ),
+        "comb_segment_budget_slots": cut_policy.get(
+            "comb_segment_budget_slots", 1
+        ),
+    }
+    for field, actual in independently_reconstructed.items():
+        if report.get(field, legacy_cut_defaults[field]) != actual:
+            raise ValidationError(
+                f"partition {field.replace('_', '-')} seal disagrees with "
+                "the independently validated assignment"
+            )
     hop_audit = (
         validate_assignment_hop_constraints(
             seals["assignment_sha256"], platform_path, route_constraints_path
