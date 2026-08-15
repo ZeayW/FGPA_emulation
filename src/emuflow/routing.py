@@ -4,6 +4,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
+from .combinational_cut import (
+    STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+    semantic_contract_sha256,
+)
 from .io import read_json
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .platform import BoardLink, Platform
@@ -12,6 +16,81 @@ from .platform import BoardLink, Platform
 SYSTEM_ROUTES_SCHEMA = "emuflow.system-routes/v1"
 SYSTEM_ROUTE_CONSTRAINTS_SCHEMA = "emuflow.system-route-constraints/v1"
 ArcKey = Tuple[str, str, str]
+
+
+def static_exact_contract_from_assignment(
+    assignment: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    contract = assignment.get("semantic_contract")
+    if contract is None:
+        return None
+    if not isinstance(contract, dict):
+        raise ValidationError("assignment.semantic_contract: expected an object")
+    if (
+        contract.get("schema") != STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA
+        or contract.get("mode") != "static-exact-combinational"
+        or contract.get("qualification")
+        != "partition-legality-only-provisional"
+    ):
+        raise ValidationError(
+            "assignment.semantic_contract is not a supported exact-cut contract"
+        )
+    raw_cuts = assignment.get("cut_nets")
+    raw_nodes = contract.get("cut_nodes")
+    if not isinstance(raw_cuts, list) or not isinstance(raw_nodes, list):
+        raise ValidationError(
+            "exact assignment cut and contract nodes must be arrays"
+        )
+    if not all(
+        isinstance(item, dict)
+        and isinstance(item.get("net"), str)
+        and bool(item["net"])
+        for item in raw_cuts + raw_nodes
+    ):
+        raise ValidationError(
+            "exact assignment cuts and contract nodes require non-empty net "
+            "identities"
+        )
+    cuts = {
+        item["net"]: item for item in raw_cuts
+    }
+    nodes = {
+        item["net"]: item for item in raw_nodes
+    }
+    if (
+        len(cuts) != len(raw_cuts)
+        or len(nodes) != len(raw_nodes)
+        or set(cuts) != set(nodes)
+    ):
+        raise ValidationError(
+            "exact semantic contract cut-node coverage is not exact"
+        )
+    for net_id in sorted(cuts):
+        cut = cuts[net_id]
+        node = nodes[net_id]
+        expected = {
+            "cut_class": cut.get("cut_class"),
+            "source_fpgas": cut.get("source_fpgas"),
+            "sink_fpgas": cut.get("sink_fpgas"),
+        }
+        for field, value in expected.items():
+            if node.get(field) != value:
+                raise ValidationError(
+                    f"exact semantic contract node {net_id!r}.{field} "
+                    "does not match assignment"
+                )
+        if cut.get("cut_class") == "combinational":
+            for field in (
+                "dependency_level",
+                "combinational_dependency_depth",
+                "predecessor_cut_nets",
+            ):
+                if cut.get(field) != node.get(field):
+                    raise ValidationError(
+                        f"exact semantic contract node {net_id!r}.{field} "
+                        "does not match assignment"
+                    )
+    return contract
 
 
 def normalize_route_constraints(
@@ -404,6 +483,12 @@ def demands_from_assignment(
             f"got {assignment.get('platform')!r}"
         )
     fpga_ids = {fpga.id for fpga in platform.fpgas}
+    exact_contract = static_exact_contract_from_assignment(assignment)
+    contract_nodes = (
+        {item["net"]: item for item in exact_contract["cut_nodes"]}
+        if exact_contract is not None
+        else {}
+    )
     raw_cuts = assignment.get("cut_nets")
     if not isinstance(raw_cuts, list):
         raise ValidationError("assignment.cut_nets: expected an array")
@@ -469,6 +554,20 @@ def demands_from_assignment(
         }
         if "transport_round" in cut:
             demand["transport_round"] = raw_round
+        if exact_contract is not None:
+            node = contract_nodes[net_id]
+            demand.update(
+                {
+                    "cut_class": node["cut_class"],
+                    "dependency_level": node["dependency_level"],
+                    "combinational_dependency_depth": node[
+                        "combinational_dependency_depth"
+                    ],
+                    "predecessor_cut_nets": list(
+                        node["predecessor_cut_nets"]
+                    ),
+                }
+            )
         demands.append(demand)
     return sorted(demands, key=lambda demand: demand["net"])
 
@@ -578,6 +677,26 @@ def validate_system_routes(
     expected_demands = demands_from_assignment(assignment, platform)
     if routes_artifact.get("demands") != expected_demands:
         raise ValidationError("routes.demands does not match partition cut nets")
+    exact_contract = static_exact_contract_from_assignment(assignment)
+    if exact_contract is None:
+        if any(
+            key in routes_artifact
+            for key in ("semantic_contract", "semantic_contract_sha256")
+        ):
+            raise ValidationError(
+                "safe routes may not contain an exact semantic contract"
+            )
+    else:
+        if routes_artifact.get("semantic_contract") != exact_contract:
+            raise ValidationError(
+                "routes.semantic_contract does not match assignment"
+            )
+        if routes_artifact.get("semantic_contract_sha256") != (
+            semantic_contract_sha256(exact_contract)
+        ):
+            raise ValidationError(
+                "routes.semantic_contract_sha256 does not match contract"
+            )
 
     adjacency, arcs, capacities = build_directed_graph(platform, constraints)
     del adjacency

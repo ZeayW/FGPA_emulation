@@ -209,7 +209,7 @@ from .serial_wrapper import run_phase6c
 from .serial_phy_provider import validate_serial_phy_provider_file
 from .serial_phy_elaboration import run_serial_phy_elaboration
 from .serial_phy_recipe import materialize_serial_phy_recipe
-from .tdm import TDM_BASELINE_PROVIDER
+from .tdm import TDM_BASELINE_PROVIDER, TDM_STATIC_EXACT_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -1644,6 +1644,7 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
+            TDM_STATIC_EXACT_PROVIDER,
         ),
         help=(
             f"explicit Phase 5 provider; timing-enabled flows default to "
@@ -2562,6 +2563,7 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
+            TDM_STATIC_EXACT_PROVIDER,
         ),
         default=None,
         help=(
@@ -2784,6 +2786,7 @@ def _build_parser() -> argparse.ArgumentParser:
             TDM_RATIO_PROVIDER,
             TDM_TIMING_DAG_RATIO_PROVIDER,
             TDM_BASELINE_PROVIDER,
+            TDM_STATIC_EXACT_PROVIDER,
         ),
     )
     cross_stage_optimize.add_argument("--ratio-optimizer")
@@ -4590,6 +4593,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "phase5":
+        phase5_routes = read_json(args.routes)
+        phase5_slot_refinement_iterations = (
+            0
+            if phase5_routes.get("semantic_contract") is not None
+            else args.slot_refinement_iterations
+        )
         report = run_phase5(
             routes_path=args.routes,
             platform_path=args.platform,
@@ -4603,7 +4612,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             max_ratio=args.max_ratio,
             ratio_quantum=args.ratio_quantum,
             post_refinement_iterations=args.post_refinement_iterations,
-            slot_refinement_iterations=args.slot_refinement_iterations,
+            slot_refinement_iterations=phase5_slot_refinement_iterations,
             convergence=args.ratio_convergence,
         )
         _print_json(report)

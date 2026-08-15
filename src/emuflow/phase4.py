@@ -29,18 +29,6 @@ from .physical_route_feedback import (
 PHASE4_REPORT_SCHEMA = "emuflow.phase4-report/v1"
 
 
-def _reject_unqualified_exact_assignment(assignment: Dict[str, Any]) -> None:
-    contract = assignment.get("semantic_contract")
-    if contract is None:
-        return
-    if contract.get("mode") == "static-exact-combinational":
-        raise ValueError(
-            "static exact combinational cuts currently stop after the "
-            "Phase 3 partition-legality gate; Phase 4/5 contract propagation "
-            "and dependency-aware scheduling are not yet qualified"
-        )
-
-
 def run_phase4(
     assignment_path: Path,
     platform_path: Path,
@@ -62,7 +50,6 @@ def run_phase4(
     candidate_workers: int = 1,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
-    _reject_unqualified_exact_assignment(assignment)
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     candidate_pool_path = output_dir / "route_candidate_pool.json"
@@ -77,6 +64,13 @@ def run_phase4(
             GLOBAL_CANDIDATE_PROVIDER
             if timing_paths_path is not None
             else NATIVE_ROUTER_PROVIDER
+        )
+    exact_mode = assignment.get("semantic_contract") is not None
+    if exact_mode and provider != NATIVE_ROUTER_PROVIDER:
+        raise ValueError(
+            "static exact combinational cuts currently require the "
+            "timing-oblivious native Phase 4 router; timing/feedback "
+            "providers are not dependency-qualified"
         )
     timing_paths = None
     feedback_source_paths = (
@@ -253,6 +247,9 @@ def run_phase4(
             "report": "phase4_report.json",
         },
     }
+    if exact_mode:
+        report["cut_mode"] = "static-exact-combinational"
+        report["qualification"] = "route-contract-propagation-pass"
     if timing_paths is not None:
         report["artifacts"]["timing_paths"] = "timing_paths.normalized.json"
     if provider == GLOBAL_CANDIDATE_PROVIDER:
@@ -309,10 +306,17 @@ def validate_phase4(
     timing_paths_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
-    _reject_unqualified_exact_assignment(assignment)
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     provider = routes.get("provider")
+    if (
+        assignment.get("semantic_contract") is not None
+        and provider != NATIVE_ROUTER_PROVIDER
+    ):
+        raise ValueError(
+            "static exact route validation currently supports only the "
+            "timing-oblivious native provider"
+        )
     if provider == NATIVE_ROUTER_PROVIDER:
         if timing_paths_path is not None:
             raise ValueError(

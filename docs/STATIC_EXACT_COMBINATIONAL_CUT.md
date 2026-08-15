@@ -2,23 +2,25 @@
 
 ## Status and claim boundary
 
-The production flow remains `sequential-only`. Phase 3 transports register
-outputs, transport-safe register inputs, and replicated primary inputs; other
-combinational connectivity remains atomic. The checked-in
+The production flow remains `sequential-only`. The opt-in depth-1 path now
+passes Phase 3 partition legality, Phase 4 native-route contract propagation,
+and Phase 5 dependency/capture scheduling. Safe-mode Phase 3 transports
+register outputs, transport-safe register inputs, and replicated primary
+inputs; other combinational connectivity remains atomic. The checked-in
 `combinational-cut characterize` command is read-only. It identifies a
 conservative LUT-only eligibility upper bound, combinational SCCs, potential
 cut dependencies, and atomic-component reductions. It does **not** change a
 partition, create a transport schedule, establish macro-cycle equivalence, or
 claim physical timing closure.
 
-The opt-in Phase 3 mode `static-exact-combinational` now implements the first
-legality gate for dependency depth 1. It emits an independently reconstructed
-semantic contract but is deliberately qualified only as
-`partition-legality-only-provisional`. It must not be routed, scheduled, split,
-or used for timing claims until the later Phase 4--7 gates below consume that
-contract. Merely adding `combinational` to the existing legal-cut constant is
-invalid because the current production schedule and equivalence model do not
-yet prove when a downstream combinational value becomes available.
+The opt-in Phase 3 mode `static-exact-combinational` implements the first
+legality gate for dependency depth 1 and emits an independently reconstructed
+semantic contract. Phase 4 binds that contract through native routing. Phase 5
+uses it to prove when downstream combinational values become available and
+when terminal captures are ready. Phase 6 still rejects exact schedules until
+its event-driven macro-cycle equivalence gate is implemented, so these
+artifacts must not yet be split or used for physical timing claims. Merely
+adding `combinational` to the old legal-cut constant remains invalid.
 
 ## Slot-edge convention
 
@@ -98,8 +100,9 @@ feasibility, and physical segment deadlines.
 2. **Phase 3 depth 1 (implemented, opt-in).** Explicit cut policy, assignment
    semantic contract, provider-independent cluster/legality reconstruction,
    and balance fixture. Its strongest qualification is
-   `partition-legality-only-provisional`; all downstream gates are `pending`.
-3. **Phase 4/5 depth 1.** Exact contract propagation, deterministic
+   `partition-legality-only-provisional`.
+3. **Phase 4/5 depth 1 (implemented, opt-in).** Exact contract propagation,
+   canonical contract digest binding, deterministic
    dependency-aware list scheduling, source-ready/capture certificate, fixed
    frame fail-closed diagnostics, and tamper tests.
 4. **Phase 6.** Event-driven macro-cycle simulation and exhaustive/formal
@@ -129,6 +132,22 @@ emuflow phase3 \
   --max-cross-fpga-dependency-depth 1 \
   --comb-segment-budget-slots 1 \
   --out build/phase3-exact
+
+emuflow phase4 \
+  --assignment build/phase3-exact/assignment.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --provider native-load-balanced-v1 \
+  --out build/phase4-exact
+
+emuflow phase5 \
+  --routes build/phase4-exact/routes.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --out build/phase5-exact
+
+emuflow schedule validate \
+  build/phase5-exact/schedule.json \
+  --routes build/phase4-exact/routes.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json
 ```
 
 Characterization is deterministic and near-linear apart from sorting. The
@@ -137,3 +156,7 @@ eligibility, SCC, dependency, depth, source identity, or metric fields.
 The Phase 3 validator also regenerates the exact cluster release policy and
 semantic contract from EmuIR, PlatformDB, normalized constraints, and the
 instance assignment; provider output cannot self-declare eligibility.
+The Phase 4 checker additionally binds every routed demand to the exact cut
+node, and the Phase 5 checker independently reconstructs the complete
+dependency/capture certificate. Phase 6 intentionally rejects this schedule
+until the next delivery increment closes functional macro-cycle equivalence.

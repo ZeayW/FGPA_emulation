@@ -29,10 +29,11 @@ The initial semantic envelope is intentionally narrow:
 
 Multi-clock designs, runtime packet switching, partial reconfiguration, and
 transparent encrypted-IP partitioning are later extensions. Controlled static
-exact combinational cuts are an active opt-in extension. Its read-only
-characterization increment is implemented, while partition, schedule,
-macro-cycle-equivalence, and physical-deadline gates remain pending; the
-production default therefore remains sequential-only.
+exact combinational cuts are an active opt-in extension. Characterization,
+depth-1 partition legality, native-route contract propagation, and dependency-
+aware Phase 5 scheduling are implemented. Phase 6 macro-cycle equivalence and
+Phase 7C physical-deadline gates remain pending; the production default
+therefore remains sequential-only.
 
 ## 2. Architectural layers
 
@@ -272,19 +273,29 @@ Its independent validator regenerates the whole report. An opt-in
 `--cut-mode static-exact-combinational` Phase 3 path now releases only depth-1
 eligible nets, emits `emuflow.static-exact-combinational-cut/v1`, and
 independently reconstructs both clusters and contract. Its qualification is
-only `partition-legality-only-provisional`; production defaults and downstream
-Phase 4--7 behavior are unchanged.
+only `partition-legality-only-provisional`; production defaults and safe-mode
+Phase 4--7 behavior are unchanged. Exact-mode Phase 4 accepts only
+`native-load-balanced-v1`, copies the full contract and canonical digest into
+the route artifact, and independently checks every routed demand against its
+cut-node metadata. Exact-mode Phase 5 uses
+`deterministic-static-exact-list-schedule-v1`: it topologically orders cut
+nodes, derives each source-ready edge from launch or predecessor arrival,
+reserves collision-free lane/slots, and proves each final capture is ready by
+the fixed commit edge. Its versioned
+`emuflow.static-exact-schedule-certificate/v1` is reconstructed through a
+separate checker path. Ratio, feedback, timing-aware routing, and slot-
+refinement providers remain fail-closed for exact mode.
 
-Future exact-mode stages share the
+All exact-mode stages share the
 `fabric-rising-edge-current-slot/v1` convention: TX samples on the rising edge
 labelled by its current slot; RX shadow capture occurs on the rising edge
 labelled by `arrival_slot`; a budget `B` makes the value available at edge
 `arrival+B`; and virtual-DUT commit occurs on the `frame_slots-1` edge. The
 versioned semantic contract and staged acceptance plan are defined in
 `docs/STATIC_EXACT_COMBINATIONAL_CUT.md`. No exact-mode provider may be
-promoted until Phase 5 proves source readiness and final capture, Phase 6
-proves one macro-step equivalence, and Phase 7C proves every routed segment
-deadline plus whole-design target/runtime WNS/TNS.
+promoted until the implemented Phase 5 source-readiness/final-capture gate is
+followed by Phase 6 one-macro-step equivalence and Phase 7C routed segment
+deadlines plus whole-design target/runtime WNS/TNS.
 
 The RePart replication provider adds a versioned replication artifact without
 changing the unique-owner primary assignment. A C++-kernel replicability mask
@@ -334,6 +345,15 @@ Acceptance:
 - no link exceeds modeled capacity;
 - route trees contain no cycles;
 - the checker independently reconstructs link utilization.
+
+For the opt-in static-exact depth-1 path, Phase 4 deliberately permits only
+the timing-oblivious native provider. The route artifact retains the complete
+Phase 3 semantic contract and its canonical SHA-256, while each route repeats
+the cut class, dependency level, predecessor-cut set, and combinational depth.
+The standalone validator cross-checks all of those fields against the
+assignment. Timing-aware and feedback providers remain unavailable until
+their objectives consume dependency readiness rather than treating cut nets
+as simultaneously launchable.
 
 The `native-load-balanced-v1` mode uses the same C++ kernel without requiring
 STA input. Four-FPGA diamond, multicast, unavailable-link,
@@ -463,6 +483,18 @@ Acceptance:
 - all multi-hop precedence constraints hold;
 - every frame completes before the virtual clock-enable;
 - partitioned and unpartitioned designs are cycle-equivalent.
+
+The first three items now also have a separate exact-mode implementation for
+depth-1 combinational cuts. Its topological list scheduler uses the shared
+`fabric-rising-edge-current-slot/v1` convention, computes launch-to-TX,
+RX-to-TX, and RX-to-capture readiness from the Phase 3 contract, and stops
+with a precise fixed-frame infeasibility diagnostic when any arrival or
+capture cannot precede commit. The builder emits a versioned dependency
+certificate; the standalone checker reconstructs readiness, arrivals,
+collisions, captures, metrics, and the certificate without calling the
+scheduler's readiness/capture routines. Transport simulation is supplemental:
+functional cycle equivalence remains a Phase 6 gate and exact schedules are
+rejected there until that gate is implemented.
 
 The initial dependency-free list schedule is refined by an in-tree C++ engine.
 It exhaustively reorders bounded neighborhoods containing a delayed worst-path

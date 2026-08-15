@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/static-exact-schedule-certificate-v1.schema.json",
+  "title": "EmuFlow Static Exact Schedule Certificate v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "provider",
+    "topological_cut_order",
+    "demand_readiness",
+    "capture_readiness",
+    "minimum_capture_slack_slots"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.static-exact-schedule-certificate/v1"
+    },
+    "provider": {
+      "const": "independent-readiness-certificate-v1"
+    },
+    "topological_cut_order": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "demand_readiness": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "capture_readiness": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "minimum_capture_slack_slots": {
+      "type": ["integer", "null"]
+    }
+  },
+  "additionalProperties": false
+}

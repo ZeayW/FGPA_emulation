@@ -1229,6 +1229,14 @@ def route_system_native(
                 ],
             }
         )
+    exact_contract = assignment.get("semantic_contract")
+    if exact_contract is not None:
+        from .combinational_cut import semantic_contract_sha256
+
+        result["semantic_contract"] = dict(exact_contract)
+        result["semantic_contract_sha256"] = semantic_contract_sha256(
+            exact_contract
+        )
     return result
 
 

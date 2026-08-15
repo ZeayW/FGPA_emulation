@@ -9,6 +9,7 @@ from pathlib import Path
 from emuflow.cli import main
 from emuflow.combinational_cut import (
     characterize_combinational_cuts,
+    semantic_contract_sha256,
     validate_combinational_cut_characterization,
 )
 from emuflow.errors import ValidationError
@@ -22,7 +23,17 @@ from emuflow.partition import (
     validate_partition_artifacts,
 )
 from emuflow.platform import Platform
-from emuflow.phase4 import run_phase4
+from emuflow.routing import (
+    demands_from_assignment,
+    normalize_route_constraints,
+    validate_system_routes,
+)
+from emuflow.tdm import (
+    TDM_STATIC_EXACT_CERTIFICATE_SCHEMA,
+    TDM_STATIC_EXACT_PROVIDER,
+    build_tdm_schedule,
+    validate_tdm_schedule,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -255,14 +266,26 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             None, self.ir, self.platform
         )
 
-    def _exact_artifacts(self):
+    def _exact_artifacts(self, frame_slots=16, dependent_return=False):
+        constraints = (
+            normalize_partition_constraints(
+                {
+                    "schema": "emuflow.partition-constraints/v1",
+                    "balance_tolerance": 1.0,
+                },
+                self.ir,
+                self.platform,
+            )
+            if dependent_return
+            else self.constraints
+        )
         clusters = build_clusters(
             self.ir,
-            self.constraints,
+            constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
             max_cross_fpga_dependency_depth=1,
             comb_segment_budget_slots=1,
-            frame_slots=16,
+            frame_slots=frame_slots,
         )
         cluster_for = {
             instance: cluster["id"]
@@ -273,17 +296,89 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.ir,
             self.platform,
             clusters,
-            self.constraints,
+            constraints,
             {
                 cluster_for["q0"]: "fpga0",
                 cluster_for["l0"]: "fpga0",
                 cluster_for["l1"]: "fpga1",
-                cluster_for["q1"]: "fpga1",
+                cluster_for["q1"]: (
+                    "fpga0" if dependent_return else "fpga1"
+                ),
             },
             provider="test-static-exact-v1",
             seed=0,
         )
         return clusters, assignment
+
+    def _exact_routes(self, assignment, frame_slots=16):
+        demands = demands_from_assignment(assignment, self.platform)
+        constraints = normalize_route_constraints(
+            None, self.platform, frame_slots=frame_slots
+        )
+        utilization = {
+            "link_0_1:fpga0->fpga1": 0,
+            "link_0_1:fpga1->fpga0": 0,
+        }
+        routed = []
+        for demand in demands:
+            source = demand["source"]
+            sink = demand["sinks"][0]
+            key = f"link_0_1:{source}->{sink}"
+            utilization[key] += 1
+            routed.append(
+                {
+                    **demand,
+                    "tree_edges": [
+                        {
+                            "link": "link_0_1",
+                            "from": source,
+                            "to": sink,
+                        }
+                    ],
+                    "max_latency_cycles": 2,
+                }
+            )
+        capacity = 32 * frame_slots
+        link_utilization = []
+        for key in sorted(utilization):
+            direction = key.split(":", 1)[1]
+            used = utilization[key]
+            link_utilization.append(
+                {
+                    "key": key,
+                    "link": "link_0_1",
+                    "direction": direction,
+                    "capacity_bits": capacity,
+                    "used_bits": used,
+                    "utilization": used / capacity,
+                }
+            )
+        routes = {
+            "schema": "emuflow.system-routes/v1",
+            "design": assignment["design"],
+            "platform": self.platform.name,
+            "provider": "native-load-balanced-multicast-v2",
+            "constraints": constraints,
+            "demands": demands,
+            "routes": routed,
+            "link_utilization": link_utilization,
+            "metrics": {
+                "demands": len(demands),
+                "routed_sinks": len(demands),
+                "tree_edges": len(demands),
+                "max_link_utilization": max(
+                    item["utilization"] for item in link_utilization
+                ),
+                "total_link_bit_hops": len(demands),
+                "iterations": 1,
+            },
+            "semantic_contract": assignment["semantic_contract"],
+            "semantic_contract_sha256": semantic_contract_sha256(
+                assignment["semantic_contract"]
+            ),
+        }
+        validate_system_routes(assignment, self.platform, routes)
+        return routes
 
     def test_safe_default_is_identical_to_explicit_safe_mode(self):
         implicit = build_clusters(self.ir, self.constraints)
@@ -427,20 +522,123 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 "static-exact-combinational",
             )
 
-    def test_unqualified_exact_assignment_cannot_enter_phase4(self):
+    def test_phase4_propagates_exact_contract_without_mutation(self):
         _, assignment = self._exact_artifacts()
+        routes = self._exact_routes(assignment)
+        validation = validate_system_routes(assignment, self.platform, routes)
+        self.assertEqual(validation["status"], "pass")
+        tampered = copy.deepcopy(routes)
+        tampered["semantic_contract"]["commit_slot"] -= 1
+        with self.assertRaisesRegex(ValidationError, "semantic_contract"):
+            validate_system_routes(assignment, self.platform, tampered)
+
+    def test_phase5_uses_path_local_predecessor_readiness(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
+        schedule = build_tdm_schedule(routes, self.platform)
+        self.assertEqual(schedule["provider"], TDM_STATIC_EXACT_PROVIDER)
+        self.assertEqual(
+            schedule["schedule_dependency_certificate"]["schema"],
+            TDM_STATIC_EXACT_CERTIFICATE_SCHEMA,
+        )
+        validation = validate_tdm_schedule(
+            routes, self.platform, schedule
+        )
+        self.assertEqual(
+            validation["qualification"],
+            "dependency-schedule-readiness-pass",
+        )
+        readiness = {
+            item["net"]: item
+            for item in schedule["schedule_dependency_certificate"][
+                "demand_readiness"
+            ]
+        }
+        self.assertEqual(readiness["n0"]["source_ready_slot"], 1)
+        self.assertEqual(readiness["d"]["source_ready_slot"], 4)
+        self.assertEqual(
+            readiness["d"]["evidence"][0]["predecessor_cut_net"],
+            "n0",
+        )
+        tampered = copy.deepcopy(schedule)
+        entry = next(item for item in tampered["entries"] if item["net"] == "d")
+        entry["ready_slot"] -= 1
+        with self.assertRaisesRegex(ValidationError, "inconsistent"):
+            validate_tdm_schedule(routes, self.platform, tampered)
+
+        tampered = copy.deepcopy(schedule)
+        tampered["entries"][0]["arrival_slot"] += 1
+        with self.assertRaisesRegex(ValidationError, "inconsistent"):
+            validate_tdm_schedule(routes, self.platform, tampered)
+
+        tampered = copy.deepcopy(schedule)
+        tampered["schedule_dependency_certificate"]["capture_readiness"][0][
+            "ready_slot"
+        ] += 1
+        with self.assertRaisesRegex(ValidationError, "certificate"):
+            validate_tdm_schedule(routes, self.platform, tampered)
+
+    def test_phase5_cli_writes_and_revalidates_exact_schedule(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            assignment_path = root / "assignment.json"
-            assignment_path.write_text(
-                json.dumps(assignment), encoding="utf-8"
-            )
-            with self.assertRaisesRegex(ValueError, "stop after the Phase 3"):
-                run_phase4(
-                    assignment_path=assignment_path,
-                    platform_path=PLATFORM_PATH,
-                    output_dir=root / "phase4",
+            routes_path = root / "routes.json"
+            output = root / "phase5"
+            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    main(
+                        [
+                            "phase5",
+                            "--routes",
+                            str(routes_path),
+                            "--platform",
+                            str(PLATFORM_PATH),
+                            "--out",
+                            str(output),
+                        ]
+                    ),
+                    0,
                 )
+                self.assertEqual(
+                    main(
+                        [
+                            "schedule",
+                            "validate",
+                            str(output / "schedule.json"),
+                            "--routes",
+                            str(routes_path),
+                            "--platform",
+                            str(PLATFORM_PATH),
+                        ]
+                    ),
+                    0,
+                )
+            report = json.loads(
+                (output / "phase5_report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                report["qualification"],
+                "dependency-schedule-readiness-pass",
+            )
+            self.assertEqual(report["cut_mode"], "static-exact-combinational")
+
+    def test_phase4_rejects_exact_contract_digest_tamper(self):
+        _, assignment = self._exact_artifacts()
+        routes = self._exact_routes(assignment)
+        tampered = copy.deepcopy(routes)
+        tampered["semantic_contract_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValidationError, "semantic_contract"):
+            validate_system_routes(assignment, self.platform, tampered)
+
+    def test_phase5_rejects_fixed_frame_that_cannot_meet_capture(self):
+        _, assignment = self._exact_artifacts(
+            frame_slots=4, dependent_return=True
+        )
+        routes = self._exact_routes(assignment, frame_slots=4)
+        with self.assertRaisesRegex(ValidationError, "infeasible"):
+            build_tdm_schedule(routes, self.platform)
 
 
 if __name__ == "__main__":

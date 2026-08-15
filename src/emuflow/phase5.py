@@ -5,6 +5,7 @@ from .io import read_json, write_json
 from .platform import Platform
 from .tdm import (
     TDM_BASELINE_PROVIDER,
+    TDM_STATIC_EXACT_PROVIDER,
     build_tdm_schedule,
     build_transport_manifest,
     reconstruct_tdm_schedule_timing,
@@ -55,11 +56,19 @@ def run_phase5(
         )
     routes = read_json(routes_path)
     platform = Platform.load(platform_path)
+    exact_mode = routes.get("semantic_contract") is not None
     if provider is None:
-        provider = (
-            TDM_TIMING_DAG_RATIO_PROVIDER
-            if isinstance(routes.get("timing"), dict)
-            else TDM_BASELINE_PROVIDER
+        if exact_mode:
+            provider = TDM_STATIC_EXACT_PROVIDER
+        else:
+            provider = (
+                TDM_TIMING_DAG_RATIO_PROVIDER
+                if isinstance(routes.get("timing"), dict)
+                else TDM_BASELINE_PROVIDER
+            )
+    if exact_mode and provider != TDM_STATIC_EXACT_PROVIDER:
+        raise ValueError(
+            "static exact routes require the dependency-aware Phase 5 provider"
         )
     ratio_plan = None
     ratio_validation = None
@@ -68,7 +77,28 @@ def run_phase5(
     timing_validation = None
     candidate_selection = None
     prepared_ratio_model = None
-    if provider == TDM_BASELINE_PROVIDER:
+    if provider == TDM_STATIC_EXACT_PROVIDER:
+        if not exact_mode:
+            raise ValueError(
+                "static exact Phase 5 provider requires a routed semantic "
+                "contract"
+            )
+        if (
+            ratio_optimizer is not None
+            or timing_dag_optimizer is not None
+            or slot_optimizer is not None
+            or slot_refinement_iterations != 0
+        ):
+            raise ValueError(
+                "static exact Phase 5 does not accept ratio/slot optimizers"
+            )
+        schedule = build_tdm_schedule(routes, platform)
+        validation = validate_tdm_schedule(routes, platform, schedule)
+    elif provider == TDM_BASELINE_PROVIDER:
+        if exact_mode:
+            raise ValueError(
+                "static exact routes require the dependency-aware provider"
+            )
         if (
             ratio_optimizer is not None
             or timing_dag_optimizer is not None
@@ -304,6 +334,9 @@ def run_phase5(
             "tdm_feedback": "tdm_feedback.json",
         },
     }
+    if exact_mode:
+        report["cut_mode"] = "static-exact-combinational"
+        report["qualification"] = "dependency-schedule-readiness-pass"
     if ratio_plan is not None:
         report["artifacts"]["ratio_plan"] = "ratio_plan.json"
     output_dir.mkdir(parents=True, exist_ok=True)

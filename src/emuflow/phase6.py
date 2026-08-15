@@ -19,6 +19,15 @@ from .runtime import virtual_runtime_controller_to_systemverilog
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
 
 
+def _reject_unqualified_exact_schedule(schedule: Mapping[str, Any]) -> None:
+    if schedule.get("provider") == "deterministic-static-exact-list-schedule-v1":
+        raise ValidationError(
+            "static exact combinational cuts currently stop after the "
+            "Phase 5 dependency-readiness gate; Phase 6 event-driven "
+            "macro-cycle equivalence is not yet qualified"
+        )
+
+
 def _load_artifacts(root: Path, manifest: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         "manifest": dict(manifest),
@@ -53,6 +62,7 @@ def run_phase6(
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
     schedule = read_json(schedule_path)
+    _reject_unqualified_exact_schedule(schedule)
     platform = Platform.load(platform_path)
     pin_plan = read_json(pin_plan_path) if pin_plan_path is not None else None
     position_hints = (
@@ -209,6 +219,7 @@ def validate_phase6(
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
     schedule = read_json(schedule_path)
+    _reject_unqualified_exact_schedule(schedule)
     platform = Platform.load(platform_path)
     manifest = read_json(manifest_path)
     artifacts = _load_artifacts(manifest_path.parent, manifest)

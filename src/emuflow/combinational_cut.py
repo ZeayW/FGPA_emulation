@@ -91,6 +91,12 @@ def _canonical_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def semantic_contract_sha256(value: Mapping[str, Any]) -> str:
+    """Return the canonical identity propagated across exact-mode stages."""
+
+    return _canonical_sha256(value)
+
+
 def _instance_class(instance: Mapping[str, Any]) -> str:
     resources = instance["resources"]
     if any(resources.get(field, 0) for field in _STATE_RESOURCES):

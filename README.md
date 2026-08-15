@@ -278,7 +278,7 @@ partition vertex. The reports expose any balance relaxation needed to place
 such a vertex; a run with relaxed balance is a legal capacity/topology result,
 not evidence of high-quality balanced partitioning. Supporting controlled
 combinational cuts requires an explicit multi-phase settling and equivalence
-contract and is a planned semantic extension, not a partitioner tuning flag.
+contract and is an opt-in staged extension, not a partitioner tuning flag.
 The characterization increment is deliberately read-only:
 
 ```bash
@@ -310,14 +310,34 @@ emuflow phase3 \
   --out build/phase3-exact
 ```
 
-That opt-in artifact is qualified only as
-`partition-legality-only-provisional`: Phase 4--7 consumption remains blocked.
+That opt-in Phase 3 artifact is qualified only as
+`partition-legality-only-provisional`. Phase 4 can now propagate the contract
+through the timing-oblivious native router, and Phase 5 can produce and
+independently reconstruct a deterministic dependency-aware schedule with
+path-local source-ready and final-capture certificates:
+
+```bash
+emuflow phase4 \
+  --assignment build/phase3-exact/assignment.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --provider native-load-balanced-v1 \
+  --out build/phase4-exact
+emuflow phase5 \
+  --routes build/phase4-exact/routes.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --out build/phase5-exact
+```
+
+Those gates are qualified as `route-contract-propagation-pass` and
+`dependency-schedule-readiness-pass`; neither is a functional-equivalence or
+physical-timing claim. Phase 6 and Phase 7 remain fail-closed until the event-
+driven macro-cycle and routed segment-deadline gates are implemented.
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).
-The default remains sequential-only until dependency-aware scheduling,
-macro-cycle equivalence, routed segment deadlines, and whole-design target and
-virtual-runtime WNS/TNS all pass.
+The default remains sequential-only until macro-cycle equivalence, routed
+segment deadlines, and whole-design target and virtual-runtime WNS/TNS all
+pass.
 For Xilinx-mapped flip-flops, `FDRE.R` and `FDSE.S` are synchronous controls
 and are therefore legal second-round `register_input` transport boundaries,
 just like `D` and `CE`. `FDCE.CLR` and `FDPE.PRE` remain asynchronous and are

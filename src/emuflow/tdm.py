@@ -14,6 +14,10 @@ from .routing import (
 
 TDM_SCHEDULE_SCHEMA = "emuflow.tdm-schedule/v1"
 TDM_BASELINE_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
+TDM_STATIC_EXACT_PROVIDER = "deterministic-static-exact-list-schedule-v1"
+TDM_STATIC_EXACT_CERTIFICATE_SCHEMA = (
+    "emuflow.static-exact-schedule-certificate/v1"
+)
 TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER = (
     "lagrangian-kkt-ratio-aware-list-schedule-v1"
 )
@@ -23,6 +27,79 @@ TDM_ACADEMIC_SCHEDULE_PROVIDER = (
 COMBINATIONAL_SETTLE_SLOTS = 1
 RUNTIME_BARRIER_SLOTS = 1
 HopKey = Tuple[str, str, str, str]
+
+
+def _static_exact_contract_from_routes(
+    routes: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    contract = routes.get("semantic_contract")
+    digest = routes.get("semantic_contract_sha256")
+    if contract is None and digest is None:
+        return None
+    if not isinstance(contract, dict) or not isinstance(digest, str):
+        raise ValidationError(
+            "routes exact semantic contract binding is incomplete"
+        )
+    from .combinational_cut import (
+        STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+        semantic_contract_sha256,
+    )
+
+    if (
+        contract.get("schema") != STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA
+        or contract.get("mode") != "static-exact-combinational"
+        or contract.get("qualification")
+        != "partition-legality-only-provisional"
+        or semantic_contract_sha256(contract) != digest
+    ):
+        raise ValidationError("routes exact semantic contract binding is invalid")
+    nodes = contract.get("cut_nodes")
+    raw_routes = routes.get("routes")
+    if not isinstance(nodes, list) or not isinstance(raw_routes, list):
+        raise ValidationError("exact contract nodes and routes must be arrays")
+    if not all(
+        isinstance(item, dict)
+        and isinstance(item.get("net"), str)
+        and bool(item["net"])
+        for item in nodes + raw_routes
+    ):
+        raise ValidationError(
+            "exact contract nodes and routed demands require non-empty net "
+            "identities"
+        )
+    nodes_by_net = {
+        item["net"]: item for item in nodes
+    }
+    routes_by_net = {
+        item["net"]: item for item in raw_routes
+    }
+    if (
+        len(nodes_by_net) != len(nodes)
+        or len(routes_by_net) != len(raw_routes)
+        or set(nodes_by_net) != set(routes_by_net)
+    ):
+        raise ValidationError(
+            "exact contract node coverage does not match routed demands"
+        )
+    for net_id in sorted(nodes_by_net):
+        node = nodes_by_net[net_id]
+        route = routes_by_net[net_id]
+        expected = {
+            "cut_class": route.get("cut_class"),
+            "source_fpgas": [route.get("source")],
+            "sink_fpgas": route.get("sinks"),
+            "dependency_level": route.get("dependency_level"),
+            "combinational_dependency_depth": route.get(
+                "combinational_dependency_depth"
+            ),
+            "predecessor_cut_nets": route.get("predecessor_cut_nets"),
+        }
+        for field, value in expected.items():
+            if node.get(field) != value:
+                raise ValidationError(
+                    f"exact route {net_id!r} does not match contract {field}"
+                )
+    return contract
 
 
 def _hop_key(
@@ -151,6 +228,424 @@ def _round_barrier_realization(
     }
 
 
+def _exact_route_metadata(route: Mapping[str, Any]) -> Dict[str, Any]:
+    record = {
+        "id": route["id"],
+        "net": route["net"],
+        "source": route["source"],
+        "sinks": list(route["sinks"]),
+        "cut_class": route["cut_class"],
+        "dependency_level": route["dependency_level"],
+        "combinational_dependency_depth": route[
+            "combinational_dependency_depth"
+        ],
+        "predecessor_cut_nets": list(route["predecessor_cut_nets"]),
+        "tree_edges": list(route["tree_edges"]),
+    }
+    if "transport_round" in route:
+        record["transport_round"] = route["transport_round"]
+    return record
+
+
+def _exact_contract_indexes(
+    contract: Mapping[str, Any],
+) -> Tuple[
+    Dict[str, Mapping[str, Any]],
+    Dict[str, Mapping[str, Any]],
+    Dict[str, Mapping[str, Any]],
+]:
+    raw_nodes = contract.get("cut_nodes")
+    raw_segments = contract.get("logic_segments")
+    raw_captures = contract.get("capture_requirements")
+    for field, value in (
+        ("cut_nodes", raw_nodes),
+        ("logic_segments", raw_segments),
+        ("capture_requirements", raw_captures),
+    ):
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict) for item in value
+        ):
+            raise ValidationError(
+                f"exact semantic contract {field} must be an object array"
+            )
+    if not all(
+        isinstance(item.get("net"), str) and item["net"]
+        for item in raw_nodes
+    ):
+        raise ValidationError("exact cut nodes require non-empty net identities")
+    if not all(
+        isinstance(item.get("id"), str) and item["id"]
+        for item in raw_segments + raw_captures
+    ):
+        raise ValidationError(
+            "exact logic segments and captures require non-empty identities"
+        )
+    nodes = {item["net"]: item for item in raw_nodes}
+    segments = {item["id"]: item for item in raw_segments}
+    captures = {item["id"]: item for item in raw_captures}
+    if (
+        len(nodes) != len(raw_nodes)
+        or len(segments) != len(raw_segments)
+        or len(captures) != len(raw_captures)
+    ):
+        raise ValidationError("exact semantic contract identities are not unique")
+    return nodes, segments, captures
+
+
+def _exact_source_readiness(
+    node: Mapping[str, Any],
+    segments: Mapping[str, Mapping[str, Any]],
+    arrivals: Mapping[Tuple[str, str], int],
+) -> Tuple[int, List[Dict[str, Any]]]:
+    evidence = []
+    for segment_id in node.get("source_segment_ids", []):
+        segment = segments.get(segment_id)
+        if segment is None:
+            raise ValidationError(
+                f"exact cut {node.get('net')!r} references unknown segment "
+                f"{segment_id!r}"
+            )
+        budget = segment.get("budget_slots")
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, int)
+            or budget < 0
+        ):
+            raise ValidationError(
+                f"exact logic segment {segment_id!r} has invalid budget"
+            )
+        kind = segment.get("kind")
+        if kind == "launch_to_tx":
+            if segment.get("sink_cut_net") != node.get("net"):
+                raise ValidationError(
+                    f"exact launch segment {segment_id!r} has wrong sink"
+                )
+            ready = budget
+            evidence.append(
+                {
+                    "segment": segment_id,
+                    "kind": kind,
+                    "launch_slot": 0,
+                    "budget_slots": budget,
+                    "ready_slot": ready,
+                }
+            )
+        elif kind == "rx_to_tx":
+            predecessor = segment.get("source_cut_net")
+            source_fpga = node["source_fpgas"][0]
+            if (
+                segment.get("sink_cut_net") != node.get("net")
+                or segment.get("fpga") != source_fpga
+                or predecessor not in node.get("predecessor_cut_nets", [])
+            ):
+                raise ValidationError(
+                    f"exact dependency segment {segment_id!r} is inconsistent"
+                )
+            key = (predecessor, source_fpga)
+            if key not in arrivals:
+                raise ValidationError(
+                    f"exact predecessor {predecessor!r} has not arrived at "
+                    f"{source_fpga!r}"
+                )
+            arrival = arrivals[key]
+            ready = arrival + budget
+            evidence.append(
+                {
+                    "segment": segment_id,
+                    "kind": kind,
+                    "predecessor_cut_net": predecessor,
+                    "arrival_slot": arrival,
+                    "budget_slots": budget,
+                    "ready_slot": ready,
+                }
+            )
+        else:
+            raise ValidationError(
+                f"exact source segment {segment_id!r} has unsupported kind"
+            )
+    if not evidence:
+        raise ValidationError(
+            f"exact cut {node.get('net')!r} has no source-readiness segment"
+        )
+    predecessors = sorted(node.get("predecessor_cut_nets", []))
+    evidenced_predecessors = sorted(
+        item["predecessor_cut_net"]
+        for item in evidence
+        if item["kind"] == "rx_to_tx"
+    )
+    if predecessors != evidenced_predecessors:
+        raise ValidationError(
+            f"exact cut {node.get('net')!r} predecessor coverage is incomplete"
+        )
+    return max(item["ready_slot"] for item in evidence), evidence
+
+
+def _exact_capture_certificate(
+    contract: Mapping[str, Any],
+    segments: Mapping[str, Mapping[str, Any]],
+    captures: Mapping[str, Mapping[str, Any]],
+    arrivals: Mapping[Tuple[str, str], int],
+) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    records = []
+    commit_slot = contract["commit_slot"]
+    for capture_id in sorted(captures):
+        capture = captures[capture_id]
+        matching = [
+            segment
+            for segment in segments.values()
+            if segment.get("kind") == "rx_to_capture"
+            and segment.get("capture_requirement") == capture_id
+        ]
+        if len(matching) != 1:
+            raise ValidationError(
+                f"exact capture {capture_id!r} must have one timing segment"
+            )
+        segment = matching[0]
+        cut_net = capture["cut_net"]
+        fpga = capture["fpga"]
+        key = (cut_net, fpga)
+        if (
+            segment.get("source_cut_net") != cut_net
+            or segment.get("fpga") != fpga
+            or key not in arrivals
+        ):
+            raise ValidationError(
+                f"exact capture {capture_id!r} is not bound to an arrival"
+            )
+        budget = segment.get("budget_slots")
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, int)
+            or budget < 0
+        ):
+            raise ValidationError(
+                f"exact capture segment {segment.get('id')!r} has invalid budget"
+            )
+        arrival = arrivals[key]
+        ready = arrival + budget
+        slack = commit_slot - ready
+        if slack < 0:
+            raise ValidationError(
+                "exact schedule is infeasible at capture "
+                f"{capture_id!r}: ready={ready}, commit={commit_slot}"
+            )
+        records.append(
+            {
+                "capture": capture_id,
+                "cut_net": cut_net,
+                "fpga": fpga,
+                "segment": segment["id"],
+                "arrival_slot": arrival,
+                "budget_slots": budget,
+                "ready_slot": ready,
+                "commit_slot": commit_slot,
+                "slack_slots": slack,
+            }
+        )
+    minimum = min((item["slack_slots"] for item in records), default=None)
+    return records, minimum
+
+
+def _build_static_exact_tdm_schedule(
+    routes: Mapping[str, Any],
+    platform: Platform,
+) -> Dict[str, Any]:
+    contract = _static_exact_contract_from_routes(routes)
+    if contract is None:
+        raise ValidationError("static exact scheduler requires a semantic contract")
+    constraints = normalize_route_constraints(routes.get("constraints"), platform)
+    if constraints["frame_slots"] != contract.get("frame_slots"):
+        raise ValidationError(
+            "exact contract frame_slots does not match route constraints"
+        )
+    frame_slots = constraints["frame_slots"]
+    commit_slot = contract.get("commit_slot")
+    if commit_slot != frame_slots - 1:
+        raise ValidationError("exact contract commit slot does not match frame")
+    _, arcs, capacity_records = build_directed_graph(platform, constraints)
+    links = _link_by_id(platform)
+    nodes, segments, captures = _exact_contract_indexes(contract)
+    route_by_net = {route["net"]: route for route in routes["routes"]}
+    ordered_nodes = sorted(
+        nodes.values(), key=lambda item: (item["dependency_level"], item["net"])
+    )
+
+    slot_fill = {
+        key: [0] * frame_slots for key in capacity_records
+    }
+    next_available = {
+        key: list(range(frame_slots + 1)) for key in capacity_records
+    }
+
+    def first_available_slot(capacity_key: str, start: int) -> int:
+        parents = next_available[capacity_key]
+        slot = start
+        while parents[slot] != slot:
+            parents[slot] = parents[parents[slot]]
+            slot = parents[slot]
+        root = slot
+        slot = start
+        while parents[slot] != slot:
+            successor = parents[slot]
+            parents[slot] = root
+            slot = successor
+        return root
+
+    entries = []
+    completions = []
+    readiness_records = []
+    arrivals: Dict[Tuple[str, str], int] = {}
+    entry_index = 0
+    for node in ordered_nodes:
+        route = route_by_net[node["net"]]
+        source_ready, source_evidence = _exact_source_readiness(
+            node, segments, arrivals
+        )
+        readiness_records.append(
+            {
+                "demand": route["id"],
+                "net": route["net"],
+                "source": route["source"],
+                "source_ready_slot": source_ready,
+                "evidence": source_evidence,
+            }
+        )
+        arrival_by_node = {route["source"]: source_ready - 1}
+        for depth, edge in _route_hops(route):
+            arc_key = (edge["link"], edge["from"], edge["to"])
+            if arc_key not in arcs:
+                raise ValidationError(
+                    f"exact route {route['id']!r} uses illegal edge {arc_key}"
+                )
+            arc = arcs[arc_key]
+            link = links[edge["link"]]
+            ready = (
+                source_ready
+                if edge["from"] == route["source"]
+                else arrival_by_node[edge["from"]] + 1
+            )
+            latest_exclusive = commit_slot - link.latency_cycles
+            slot = (
+                frame_slots
+                if ready >= frame_slots
+                else first_available_slot(arc["capacity_key"], ready)
+            )
+            if slot >= latest_exclusive:
+                raise ValidationError(
+                    "exact TDM scheduling is infeasible for demand "
+                    f"{route['id']!r} edge {arc_key}: ready={ready}, "
+                    f"commit={commit_slot}, latency={link.latency_cycles}"
+                )
+            lane = slot_fill[arc["capacity_key"]][slot]
+            slot_fill[arc["capacity_key"]][slot] += 1
+            if (
+                slot_fill[arc["capacity_key"]][slot]
+                == link.transport_bits_per_cycle_per_direction
+            ):
+                next_available[arc["capacity_key"]][slot] = (
+                    first_available_slot(arc["capacity_key"], slot + 1)
+                )
+            arrival = slot + link.latency_cycles
+            arrival_by_node[edge["to"]] = arrival
+            entries.append(
+                {
+                    "id": f"s{entry_index:06d}",
+                    "demand": route["id"],
+                    "net": route["net"],
+                    "hop": depth,
+                    "link": edge["link"],
+                    "from": edge["from"],
+                    "to": edge["to"],
+                    "capacity_key": arc["capacity_key"],
+                    "slot": slot,
+                    "lane": lane,
+                    "ready_slot": ready,
+                    "arrival_slot": arrival,
+                }
+            )
+            entry_index += 1
+        missing = sorted(set(route["sinks"]) - set(arrival_by_node))
+        if missing:
+            raise ValidationError(
+                f"exact route {route['id']!r} did not schedule sinks {missing}"
+            )
+        sink_arrivals = {
+            sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
+        }
+        for sink, arrival in sink_arrivals.items():
+            arrivals[(route["net"], sink)] = arrival
+        completions.append(
+            {
+                "demand": route["id"],
+                "net": route["net"],
+                "source_ready_slot": source_ready,
+                "sink_arrival_slots": sink_arrivals,
+                "completion_slot": max(sink_arrivals.values()),
+            }
+        )
+
+    capture_records, minimum_capture_slack = _exact_capture_certificate(
+        contract, segments, captures, arrivals
+    )
+    entries.sort(
+        key=lambda item: (
+            item["slot"],
+            item["capacity_key"],
+            item["lane"],
+            item["demand"],
+        )
+    )
+    domains = _domain_schedule_records(platform, constraints, entries)
+    certificate = {
+        "schema": TDM_STATIC_EXACT_CERTIFICATE_SCHEMA,
+        "provider": "independent-readiness-certificate-v1",
+        "topological_cut_order": [item["net"] for item in ordered_nodes],
+        "demand_readiness": readiness_records,
+        "capture_readiness": capture_records,
+        "minimum_capture_slack_slots": minimum_capture_slack,
+    }
+    metrics = {
+        "demands": len(route_by_net),
+        "scheduled_bit_hops": len(entries),
+        "frame_slots": frame_slots,
+        "commit_slot": commit_slot,
+        "completion_slot": max(
+            (item["completion_slot"] for item in completions), default=0
+        ),
+        "max_domain_utilization": max(
+            (item["utilization"] for item in domains), default=0.0
+        ),
+        "dependency_edges": len(contract["dependency_edges"]),
+        "maximum_combinational_dependency_depth": contract["metrics"][
+            "maximum_combinational_dependency_depth"
+        ],
+        "capture_requirements": len(capture_records),
+        "minimum_capture_slack_slots": minimum_capture_slack,
+        "collisions": 0,
+    }
+    return {
+        "schema": TDM_SCHEDULE_SCHEMA,
+        "design": routes.get("design"),
+        "platform": platform.name,
+        "provider": TDM_STATIC_EXACT_PROVIDER,
+        "qualification": "dependency-schedule-readiness-pass",
+        "semantic_contract": dict(contract),
+        "semantic_contract_sha256": routes["semantic_contract_sha256"],
+        "route_constraints": constraints,
+        "routes": [
+            _exact_route_metadata(route)
+            for route in sorted(routes["routes"], key=lambda item: item["id"])
+        ],
+        "entries": entries,
+        "demand_completions": sorted(
+            completions, key=lambda item: item["demand"]
+        ),
+        "schedule_dependency_certificate": certificate,
+        "domain_schedules": domains,
+        "metrics": metrics,
+    }
+
+
 def build_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -163,6 +658,13 @@ def build_tdm_schedule(
             f"routes.schema: expected {SYSTEM_ROUTES_SCHEMA!r}, "
             f"got {routes.get('schema')!r}"
         )
+    exact_contract = _static_exact_contract_from_routes(routes)
+    if exact_contract is not None:
+        if ratio_plan is not None or prepared_ratio_model is not None:
+            raise ValidationError(
+                "static exact scheduling does not accept ratio optimization"
+            )
+        return _build_static_exact_tdm_schedule(routes, platform)
     constraints = normalize_route_constraints(
         routes.get("constraints"),
         platform,
@@ -531,6 +1033,459 @@ def _expected_hops(
     return expected
 
 
+def _independently_reconstruct_exact_source_readiness(
+    node: Mapping[str, Any],
+    segments: Mapping[str, Mapping[str, Any]],
+    arrivals: Mapping[Tuple[str, str], int],
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """Rebuild one cut's readiness without calling the scheduler helper."""
+    segment_ids = node.get("source_segment_ids")
+    predecessors = node.get("predecessor_cut_nets")
+    source_fpgas = node.get("source_fpgas")
+    if (
+        not isinstance(segment_ids, list)
+        or not segment_ids
+        or not all(isinstance(item, str) for item in segment_ids)
+        or len(segment_ids) != len(set(segment_ids))
+        or not isinstance(predecessors, list)
+        or not all(isinstance(item, str) for item in predecessors)
+        or len(predecessors) != len(set(predecessors))
+        or not isinstance(source_fpgas, list)
+        or len(source_fpgas) != 1
+        or not isinstance(source_fpgas[0], str)
+    ):
+        raise ValidationError(
+            f"exact cut {node.get('net')!r} has malformed readiness metadata"
+        )
+    evidence: List[Dict[str, Any]] = []
+    covered_predecessors = []
+    for segment_id in segment_ids:
+        segment = segments.get(segment_id)
+        if segment is None:
+            raise ValidationError(
+                f"exact cut {node.get('net')!r} references unknown segment "
+                f"{segment_id!r}"
+            )
+        budget = segment.get("budget_slots")
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, int)
+            or budget < 0
+        ):
+            raise ValidationError(
+                f"exact logic segment {segment_id!r} has invalid budget"
+            )
+        kind = segment.get("kind")
+        if kind == "launch_to_tx":
+            if segment.get("sink_cut_net") != node.get("net"):
+                raise ValidationError(
+                    f"exact launch segment {segment_id!r} has wrong sink"
+                )
+            evidence.append(
+                {
+                    "segment": segment_id,
+                    "kind": kind,
+                    "launch_slot": 0,
+                    "budget_slots": budget,
+                    "ready_slot": budget,
+                }
+            )
+            continue
+        if kind != "rx_to_tx":
+            raise ValidationError(
+                f"exact source segment {segment_id!r} has unsupported kind"
+            )
+        predecessor = segment.get("source_cut_net")
+        if (
+            not isinstance(predecessor, str)
+            or segment.get("sink_cut_net") != node.get("net")
+            or segment.get("fpga") != source_fpgas[0]
+            or predecessor not in predecessors
+        ):
+            raise ValidationError(
+                f"exact dependency segment {segment_id!r} is inconsistent"
+            )
+        arrival_key = (predecessor, source_fpgas[0])
+        if arrival_key not in arrivals:
+            raise ValidationError(
+                f"exact predecessor {predecessor!r} has not arrived at "
+                f"{source_fpgas[0]!r}"
+            )
+        arrival = arrivals[arrival_key]
+        covered_predecessors.append(predecessor)
+        evidence.append(
+            {
+                "segment": segment_id,
+                "kind": kind,
+                "predecessor_cut_net": predecessor,
+                "arrival_slot": arrival,
+                "budget_slots": budget,
+                "ready_slot": arrival + budget,
+            }
+        )
+    if sorted(covered_predecessors) != sorted(predecessors):
+        raise ValidationError(
+            f"exact cut {node.get('net')!r} predecessor coverage is incomplete"
+        )
+    return max(item["ready_slot"] for item in evidence), evidence
+
+
+def _independently_reconstruct_exact_captures(
+    contract: Mapping[str, Any],
+    segments: Mapping[str, Mapping[str, Any]],
+    captures: Mapping[str, Mapping[str, Any]],
+    arrivals: Mapping[Tuple[str, str], int],
+) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    """Rebuild final capture readiness without calling builder code."""
+    commit_slot = contract.get("commit_slot")
+    if (
+        isinstance(commit_slot, bool)
+        or not isinstance(commit_slot, int)
+        or commit_slot < 0
+    ):
+        raise ValidationError("exact contract commit slot is invalid")
+    segment_by_capture: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
+    for segment in segments.values():
+        if segment.get("kind") == "rx_to_capture":
+            capture_id = segment.get("capture_requirement")
+            if not isinstance(capture_id, str):
+                raise ValidationError(
+                    "exact capture segment lacks a capture identity"
+                )
+            segment_by_capture[capture_id].append(segment)
+    if set(segment_by_capture) != set(captures):
+        raise ValidationError("exact capture segment coverage is incomplete")
+    records = []
+    for capture_id in sorted(captures):
+        candidates = segment_by_capture[capture_id]
+        if len(candidates) != 1:
+            raise ValidationError(
+                f"exact capture {capture_id!r} must have one timing segment"
+            )
+        capture = captures[capture_id]
+        segment = candidates[0]
+        cut_net = capture.get("cut_net")
+        fpga = capture.get("fpga")
+        if (
+            not isinstance(cut_net, str)
+            or not isinstance(fpga, str)
+            or segment.get("source_cut_net") != cut_net
+            or segment.get("fpga") != fpga
+            or (cut_net, fpga) not in arrivals
+        ):
+            raise ValidationError(
+                f"exact capture {capture_id!r} is not bound to an arrival"
+            )
+        budget = segment.get("budget_slots")
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, int)
+            or budget < 0
+        ):
+            raise ValidationError(
+                f"exact capture segment {segment.get('id')!r} has invalid budget"
+            )
+        arrival = arrivals[(cut_net, fpga)]
+        ready = arrival + budget
+        slack = commit_slot - ready
+        if slack < 0:
+            raise ValidationError(
+                f"exact capture {capture_id!r} misses the commit deadline"
+            )
+        records.append(
+            {
+                "capture": capture_id,
+                "cut_net": cut_net,
+                "fpga": fpga,
+                "segment": segment["id"],
+                "arrival_slot": arrival,
+                "budget_slots": budget,
+                "ready_slot": ready,
+                "commit_slot": commit_slot,
+                "slack_slots": slack,
+            }
+        )
+    minimum = min((item["slack_slots"] for item in records), default=None)
+    return records, minimum
+
+
+def _validate_static_exact_tdm_schedule(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    schedule: Mapping[str, Any],
+) -> Dict[str, Any]:
+    contract = _static_exact_contract_from_routes(routes)
+    if contract is None:
+        raise ValidationError("exact schedule validation requires a contract")
+    expected_keys = {
+        "schema",
+        "design",
+        "platform",
+        "provider",
+        "qualification",
+        "semantic_contract",
+        "semantic_contract_sha256",
+        "route_constraints",
+        "routes",
+        "entries",
+        "demand_completions",
+        "schedule_dependency_certificate",
+        "domain_schedules",
+        "metrics",
+    }
+    if set(schedule) != expected_keys:
+        raise ValidationError(
+            "exact schedule top-level field coverage is not exact"
+        )
+    if (
+        schedule.get("schema") != TDM_SCHEDULE_SCHEMA
+        or schedule.get("provider") != TDM_STATIC_EXACT_PROVIDER
+        or schedule.get("qualification")
+        != "dependency-schedule-readiness-pass"
+        or schedule.get("design") != routes.get("design")
+        or schedule.get("platform") != platform.name
+        or schedule.get("semantic_contract") != contract
+        or schedule.get("semantic_contract_sha256")
+        != routes.get("semantic_contract_sha256")
+    ):
+        raise ValidationError("exact schedule identity or contract binding is invalid")
+    constraints = normalize_route_constraints(
+        schedule.get("route_constraints"), platform
+    )
+    if constraints != normalize_route_constraints(
+        routes.get("constraints"), platform
+    ):
+        raise ValidationError(
+            "exact schedule route constraints do not match routes"
+        )
+    frame_slots = constraints["frame_slots"]
+    commit_slot = contract.get("commit_slot")
+    if (
+        contract.get("frame_slots") != frame_slots
+        or commit_slot != frame_slots - 1
+    ):
+        raise ValidationError("exact schedule frame/commit contract is invalid")
+    expected_route_metadata = [
+        _exact_route_metadata(route)
+        for route in sorted(routes["routes"], key=lambda item: item["id"])
+    ]
+    if schedule.get("routes") != expected_route_metadata:
+        raise ValidationError("exact schedule routes do not match routed demands")
+
+    _, arcs, _ = build_directed_graph(platform, constraints)
+    links = _link_by_id(platform)
+    nodes, segments, captures = _exact_contract_indexes(contract)
+    route_by_net = {route["net"]: route for route in routes["routes"]}
+    ordered_nodes = sorted(
+        nodes.values(), key=lambda item: (item["dependency_level"], item["net"])
+    )
+    expected_id_by_hop = {}
+    entry_number = 0
+    for node in ordered_nodes:
+        route = route_by_net[node["net"]]
+        for _depth, edge in _route_hops(route):
+            expected_id_by_hop[
+                _hop_key(
+                    route["id"], edge["link"], edge["from"], edge["to"]
+                )
+            ] = f"s{entry_number:06d}"
+            entry_number += 1
+
+    raw_entries = schedule.get("entries")
+    if not isinstance(raw_entries, list):
+        raise ValidationError("exact schedule entries must be an array")
+    if raw_entries != sorted(
+        raw_entries,
+        key=lambda item: (
+            item.get("slot"),
+            item.get("capacity_key"),
+            item.get("lane"),
+            item.get("demand"),
+        ),
+    ):
+        raise ValidationError("exact schedule entries are not canonical")
+    entries_by_hop = {}
+    occupancy: Dict[str, Set[Tuple[int, int]]] = defaultdict(set)
+    for index, entry in enumerate(raw_entries):
+        if not isinstance(entry, dict):
+            raise ValidationError(f"exact schedule entry {index} is not an object")
+        key = _hop_key(
+            entry.get("demand"),
+            entry.get("link"),
+            entry.get("from"),
+            entry.get("to"),
+        )
+        if key not in expected_id_by_hop or key in entries_by_hop:
+            raise ValidationError(
+                f"exact schedule entry {index} has unexpected/duplicate hop"
+            )
+        entries_by_hop[key] = entry
+        arc_key = (entry.get("link"), entry.get("from"), entry.get("to"))
+        if arc_key not in arcs:
+            raise ValidationError(f"exact schedule entry {index} uses illegal arc")
+        arc = arcs[arc_key]
+        link = links[entry["link"]]
+        slot = entry.get("slot")
+        lane = entry.get("lane")
+        if (
+            isinstance(slot, bool)
+            or not isinstance(slot, int)
+            or slot < 0
+            or slot >= frame_slots
+            or isinstance(lane, bool)
+            or not isinstance(lane, int)
+            or lane < 0
+            or lane >= link.transport_bits_per_cycle_per_direction
+        ):
+            raise ValidationError(f"exact schedule entry {index} slot/lane invalid")
+        collision = (slot, lane)
+        if collision in occupancy[arc["capacity_key"]]:
+            raise ValidationError(
+                f"exact schedule collision at {arc['capacity_key']!r} "
+                f"slot={slot}, lane={lane}"
+            )
+        occupancy[arc["capacity_key"]].add(collision)
+    if set(entries_by_hop) != set(expected_id_by_hop):
+        raise ValidationError("exact schedule route-hop coverage is incomplete")
+
+    arrivals: Dict[Tuple[str, str], int] = {}
+    completions = []
+    readiness_records = []
+    for node in ordered_nodes:
+        route = route_by_net[node["net"]]
+        source_ready, source_evidence = (
+            _independently_reconstruct_exact_source_readiness(
+            node, segments, arrivals
+            )
+        )
+        readiness_records.append(
+            {
+                "demand": route["id"],
+                "net": route["net"],
+                "source": route["source"],
+                "source_ready_slot": source_ready,
+                "evidence": source_evidence,
+            }
+        )
+        arrival_by_node = {route["source"]: source_ready - 1}
+        for depth, edge in _route_hops(route):
+            key = _hop_key(
+                route["id"], edge["link"], edge["from"], edge["to"]
+            )
+            entry = entries_by_hop[key]
+            arc = arcs[(edge["link"], edge["from"], edge["to"])]
+            link = links[edge["link"]]
+            ready = (
+                source_ready
+                if edge["from"] == route["source"]
+                else arrival_by_node[edge["from"]] + 1
+            )
+            expected_arrival = entry["slot"] + link.latency_cycles
+            expected_entry = {
+                "id": expected_id_by_hop[key],
+                "demand": route["id"],
+                "net": route["net"],
+                "hop": depth,
+                "link": edge["link"],
+                "from": edge["from"],
+                "to": edge["to"],
+                "capacity_key": arc["capacity_key"],
+                "slot": entry["slot"],
+                "lane": entry["lane"],
+                "ready_slot": ready,
+                "arrival_slot": expected_arrival,
+            }
+            if entry != expected_entry:
+                raise ValidationError(
+                    f"exact schedule entry {entry.get('id')!r} is inconsistent"
+                )
+            if entry["slot"] < ready:
+                raise ValidationError(
+                    f"exact demand {route['id']!r} transmits before ready"
+                )
+            if expected_arrival >= commit_slot:
+                raise ValidationError(
+                    f"exact demand {route['id']!r} arrives at/after commit"
+                )
+            arrival_by_node[edge["to"]] = expected_arrival
+        missing = sorted(set(route["sinks"]) - set(arrival_by_node))
+        if missing:
+            raise ValidationError(
+                f"exact demand {route['id']!r} is missing sinks {missing}"
+            )
+        sink_arrivals = {
+            sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
+        }
+        for sink, arrival in sink_arrivals.items():
+            arrivals[(route["net"], sink)] = arrival
+        completions.append(
+            {
+                "demand": route["id"],
+                "net": route["net"],
+                "source_ready_slot": source_ready,
+                "sink_arrival_slots": sink_arrivals,
+                "completion_slot": max(sink_arrivals.values()),
+            }
+        )
+    completions.sort(key=lambda item: item["demand"])
+    if schedule.get("demand_completions") != completions:
+        raise ValidationError(
+            "exact schedule demand completions do not match reconstruction"
+        )
+    capture_records, minimum_capture_slack = (
+        _independently_reconstruct_exact_captures(
+        contract, segments, captures, arrivals
+        )
+    )
+    expected_certificate = {
+        "schema": TDM_STATIC_EXACT_CERTIFICATE_SCHEMA,
+        "provider": "independent-readiness-certificate-v1",
+        "topological_cut_order": [item["net"] for item in ordered_nodes],
+        "demand_readiness": readiness_records,
+        "capture_readiness": capture_records,
+        "minimum_capture_slack_slots": minimum_capture_slack,
+    }
+    if schedule.get("schedule_dependency_certificate") != expected_certificate:
+        raise ValidationError(
+            "exact schedule dependency certificate does not match reconstruction"
+        )
+    domains = _domain_schedule_records(platform, constraints, raw_entries)
+    if schedule.get("domain_schedules") != domains:
+        raise ValidationError(
+            "exact schedule domain occupancy does not match reconstruction"
+        )
+    expected_metrics = {
+        "demands": len(route_by_net),
+        "scheduled_bit_hops": len(raw_entries),
+        "frame_slots": frame_slots,
+        "commit_slot": commit_slot,
+        "completion_slot": max(
+            (item["completion_slot"] for item in completions), default=0
+        ),
+        "max_domain_utilization": max(
+            (item["utilization"] for item in domains), default=0.0
+        ),
+        "dependency_edges": len(contract["dependency_edges"]),
+        "maximum_combinational_dependency_depth": contract["metrics"][
+            "maximum_combinational_dependency_depth"
+        ],
+        "capture_requirements": len(capture_records),
+        "minimum_capture_slack_slots": minimum_capture_slack,
+        "collisions": 0,
+    }
+    if schedule.get("metrics") != expected_metrics:
+        raise ValidationError(
+            "exact schedule metrics do not match independent reconstruction"
+        )
+    return {
+        "status": "pass",
+        "qualification": "dependency-schedule-readiness-pass",
+        **expected_metrics,
+        "source_ready_violations": 0,
+        "capture_deadline_violations": 0,
+    }
+
+
 def validate_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -539,6 +1494,15 @@ def validate_tdm_schedule(
     *,
     prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    exact_contract = _static_exact_contract_from_routes(routes)
+    if exact_contract is not None:
+        if ratio_plan is not None or prepared_ratio_model is not None:
+            raise ValidationError(
+                "static exact schedule validation does not accept ratio plans"
+            )
+        return _validate_static_exact_tdm_schedule(
+            routes, platform, schedule
+        )
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError(
             f"schedule.schema: expected {TDM_SCHEDULE_SCHEMA!r}, "
