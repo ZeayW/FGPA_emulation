@@ -114,8 +114,10 @@ feasibility, and physical segment deadlines.
    macro-cycle simulation, complete small-model one-step enumeration, and a
    canonical Yosys formal miter fixture. General-design formal closure is not
    claimed.
-5. **Phase 7C.** Routed `launch_to_tx`, `rx_to_tx`, and `rx_to_capture`
-   deadlines plus global target-clock and virtual-runtime WNS/TNS.
+5. **Phase 7C (implementation complete; real routed evidence pending).**
+   Contract-bound routed `launch_to_tx`, `rx_to_tx`, and `rx_to_capture`
+   evidence, independent causal deadline reconstruction, explicit missing-
+   evidence incompleteness, and global target-clock/virtual-runtime WNS/TNS.
 6. **Depth 2 and optimizer integration.** Path-local readiness precedes any
    timing-DAG/ratio provider promotion.
 
@@ -162,6 +164,14 @@ emuflow phase6 \
   --schedule build/phase5-exact/schedule.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --out build/phase6-exact
+
+emuflow multi-fpga compile design.v \
+  --top top --clock clk --clock-period clk=10 \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --cut-mode static-exact-combinational \
+  --max-cross-fpga-dependency-depth 1 \
+  --comb-segment-budget-slots 1 \
+  --frame-slots 32 --physical --out build/exact-flow
 ```
 
 Characterization is deterministic and near-linear apart from sorting. The
@@ -175,4 +185,6 @@ node, and the Phase 5 checker independently reconstructs the complete
 dependency/capture certificate. Phase 6 independently rebuilds the split and
 replays event-driven macro-steps; its report keeps random, exhaustive, and
 formal evidence types distinct. Physical qualification is still withheld
-until Phase 7C checks routed source-ready and capture deadlines.
+until a complete physical run supplies all routed source-ready and capture
+segment evidence and passes both exact deadlines and whole-design global
+target/virtual-runtime WNS/TNS.

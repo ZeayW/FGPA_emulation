@@ -41,6 +41,41 @@ FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_one_command_static_exact_flow_reaches_phase7c_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "static-exact"
+            report = run_multi_fpga_flow(
+                platform_path=PLATFORM,
+                output_dir=root,
+                yosys_json=ROOT / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+                partition_provider="greedy",
+                timing_driven=False,
+                clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA),
+                router=str(tlr_router()),
+                frame_slots=32,
+                equivalence_cycles=2,
+                cut_mode="static-exact-combinational",
+                max_cross_fpga_dependency_depth=1,
+                comb_segment_budget_slots=1,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["stages"]["partition"]["validation"]["cut_mode"],
+                "static-exact-combinational",
+            )
+            self.assertEqual(
+                report["stages"]["tdm"]["provider"],
+                "deterministic-static-exact-list-schedule-v1",
+            )
+            self.assertEqual(
+                report["stages"]["split"]["equivalence"]["qualification"],
+                "exhaustive-small-model-proof-plus-random-traces",
+            )
+            self.assertEqual(report["runtime"]["status"], "generated")
+
     def test_cli_enables_timing_driven_by_default(self) -> None:
         base = [
             "multi-fpga",

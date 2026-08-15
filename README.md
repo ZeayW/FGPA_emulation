@@ -335,8 +335,11 @@ identities, rejects hidden cross-FPGA bypasses, and validates each exact
 schedule with three event-driven macro-cycle traces. Small models additionally
 enumerate every architectural state and non-reset primary input for one
 macro-step. The report distinguishes randomized validation from exhaustive
-small-model proof; Phase 7 still remains fail-closed until routed segment-
-deadline evidence is implemented.
+small-model proof. Phase 7C now independently reconstructs every exact
+segment's routed settle window and refuses missing evidence or a late
+source/capture even when aggregate virtual-runtime slack is positive. This is
+implemented qualification machinery; a real routed complete Phase 1--7 result
+is still pending and the mode remains opt-in.
 
 ```bash
 emuflow phase6 \
@@ -345,6 +348,20 @@ emuflow phase6 \
   --schedule build/phase5-exact/schedule.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
   --out build/phase6-exact
+```
+
+The same path is wired through the one-command flow. Exact mode currently
+requires the native route tree with post-route timing annotation, the dedicated
+dependency scheduler, a fixed frame, and no unqualified ratio/slot optimizer:
+
+```bash
+emuflow multi-fpga compile design.v \
+  --top top --clock clk --clock-period clk=10 \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --cut-mode static-exact-combinational \
+  --max-cross-fpga-dependency-depth 1 \
+  --comb-segment-budget-slots 1 \
+  --frame-slots 32 --physical --out build/exact-flow
 ```
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in

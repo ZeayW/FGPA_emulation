@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -72,7 +74,20 @@ def _static_exact_equivalence_evidence(
         "random_traces": random_traces,
         "random_trace_count": len(random_traces),
         "random_macro_cycles": sum(item["cycles"] for item in random_traces),
+        "cycles": sum(item["cycles"] for item in random_traces),
+        "compared_state_bits": sum(
+            item["compared_state_bits"] for item in random_traces
+        ),
+        "compared_output_bits": sum(
+            item["compared_output_bits"] for item in random_traces
+        ),
         "mismatches": 0,
+        "trace_sha256": hashlib.sha256(
+            json.dumps(
+                [item["trace_sha256"] for item in random_traces],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
         "assumptions": [
             "one-commit macro-step semantics",
             "reset is deasserted during each checked macro-step",

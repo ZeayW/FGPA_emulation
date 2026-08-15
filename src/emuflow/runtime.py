@@ -685,7 +685,10 @@ def aggregate_qor(
             "pass"
             if closed
             else "incomplete"
-            if physical_closed and not whole_design_timing_complete
+            if (
+                (physical_closed and not whole_design_timing_complete)
+                or runtime_timing.get("status") == "incomplete"
+            )
             else "pending"
             if physical["status"] == "pending"
             else "fail"

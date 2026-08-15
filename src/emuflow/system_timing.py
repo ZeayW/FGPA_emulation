@@ -16,6 +16,11 @@ from .local_path_timing import (
     validate_local_path_timing,
 )
 from .platform import Platform
+from .static_exact_timing import (
+    STATIC_EXACT_SCHEDULE_PROVIDER,
+    build_static_exact_segment_deadlines,
+    validate_static_exact_segment_deadlines,
+)
 from .tdm import reconstruct_tdm_schedule_timing_paths
 
 
@@ -312,6 +317,14 @@ def build_system_timing(
     board_link_delays = _board_link_delay_database(
         physical_summary, platform
     )
+    exact_deadlines = None
+    if schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER:
+        exact_deadlines = build_static_exact_segment_deadlines(
+            schedule, physical_summary, platform
+        )
+        validate_static_exact_segment_deadlines(
+            exact_deadlines, schedule, physical_summary, platform
+        )
     expected_fpgas = {fpga.id for fpga in platform.fpgas}
     if set(delays) != expected_fpgas:
         raise ValidationError(
@@ -579,9 +592,15 @@ def build_system_timing(
         path["system_delay_bound_ns"] for path in system_paths
     )
     runtime_wns = runtime_worst["runtime_clock_slack_bound_ns"]
+    status = "pass" if runtime_wns >= 0.0 else "fail"
+    if exact_deadlines is not None:
+        if exact_deadlines["status"] == "incomplete":
+            status = "incomplete"
+        elif exact_deadlines["status"] == "fail":
+            status = "fail"
     return {
         "schema": SYSTEM_TIMING_SCHEMA,
-        "status": "pass" if runtime_wns >= 0.0 else "fail",
+        "status": status,
         "design": runtime["design"],
         "platform": platform.name,
         "qualification": (
@@ -649,6 +668,11 @@ def build_system_timing(
             "provider": physical_summary.get("provider"),
             "qualification": physical_summary.get("qualification"),
         },
+        **(
+            {"static_exact_segment_deadlines": exact_deadlines}
+            if exact_deadlines is not None
+            else {}
+        ),
         # Preserve the byte-level identity of the original whole-design
         # timing population and every artifact used to classify it as local
         # or cross-FPGA.  Final A/B qualification cross-checks this binding

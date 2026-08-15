@@ -94,6 +94,10 @@ def run_phase5(
             )
         schedule = build_tdm_schedule(routes, platform)
         validation = validate_tdm_schedule(routes, platform, schedule)
+        if isinstance(routes.get("timing"), dict):
+            timing_validation = reconstruct_tdm_schedule_timing(
+                routes, platform, schedule
+            )
     elif provider == TDM_BASELINE_PROVIDER:
         if exact_mode:
             raise ValueError(

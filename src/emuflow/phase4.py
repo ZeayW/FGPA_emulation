@@ -66,11 +66,14 @@ def run_phase4(
             else NATIVE_ROUTER_PROVIDER
         )
     exact_mode = assignment.get("semantic_contract") is not None
-    if exact_mode and provider != NATIVE_ROUTER_PROVIDER:
+    if exact_mode and provider not in {
+        NATIVE_ROUTER_PROVIDER,
+        NATIVE_TIMING_EVALUATED_PROVIDER,
+    }:
         raise ValueError(
             "static exact combinational cuts currently require the "
-            "timing-oblivious native Phase 4 router; timing/feedback "
-            "providers are not dependency-qualified"
+            "native Phase 4 route tree; only timing-oblivious routing or "
+            "post-route timing annotation is dependency-qualified"
         )
     timing_paths = None
     feedback_source_paths = (
@@ -311,11 +314,14 @@ def validate_phase4(
     provider = routes.get("provider")
     if (
         assignment.get("semantic_contract") is not None
-        and provider != NATIVE_ROUTER_PROVIDER
+        and provider not in {
+            NATIVE_ROUTER_PROVIDER,
+            NATIVE_TIMING_EVALUATED_PROVIDER,
+        }
     ):
         raise ValueError(
             "static exact route validation currently supports only the "
-            "timing-oblivious native provider"
+            "native tree with optional post-route timing annotation"
         )
     if provider == NATIVE_ROUTER_PROVIDER:
         if timing_paths_path is not None:

@@ -34,8 +34,10 @@ depth-1 partition legality, native-route contract propagation, and dependency-
 aware Phase 5 scheduling, Phase 6 exact boundary materialization, and event-
 driven macro-cycle equivalence are implemented. Small LUT/FF models receive
 complete one-step state/input enumeration, while larger models are honestly
-qualified as multi-seed trace validation rather than proof. Phase 7C physical-
-deadline gates remain pending; the production default therefore remains
+qualified as multi-seed trace validation rather than proof. Phase 7C now binds
+physical logic-segment evidence to the semantic contract and independently
+checks source-ready and final-capture deadlines. A real routed complete-flow
+acceptance result is still pending; the production default therefore remains
 sequential-only.
 
 ## 2. Architectural layers

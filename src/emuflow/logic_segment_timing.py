@@ -369,6 +369,53 @@ def _write_logic_segment_query(
     if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
         raise ValidationError("logic segment merged IR target is invalid")
     endpoints, _ = _boundary_maps(boundary_identity)
+    exact_contract = schedule.get("semantic_contract")
+    exact_contract_sha256 = None
+    exact_segment_by_key = {}
+    if isinstance(exact_contract, dict) and exact_contract.get("mode") == (
+        "static-exact-combinational"
+    ):
+        from .combinational_cut import semantic_contract_sha256
+
+        exact_contract_sha256 = semantic_contract_sha256(exact_contract)
+        if schedule.get("semantic_contract_sha256") != exact_contract_sha256:
+            raise ValidationError(
+                "logic segment exact contract digest disagrees"
+            )
+        captures = {
+            item["id"]: item for item in exact_contract["capture_requirements"]
+        }
+        for item in exact_contract["logic_segments"]:
+            if item["kind"] == "launch_to_tx":
+                key = (
+                    "launch",
+                    None,
+                    item["sink_cut_net"],
+                    item["fpga"],
+                    None,
+                )
+            elif item["kind"] == "rx_to_tx":
+                key = (
+                    "transition",
+                    item["source_cut_net"],
+                    item["sink_cut_net"],
+                    item["fpga"],
+                    None,
+                )
+            else:
+                capture = captures[item["capture_requirement"]]
+                key = (
+                    "capture",
+                    item["source_cut_net"],
+                    None,
+                    item["fpga"],
+                    capture["endpoint"],
+                )
+            if key in exact_segment_by_key:
+                raise ValidationError(
+                    "logic segment exact contract mapping is ambiguous"
+                )
+            exact_segment_by_key[key] = item["id"]
     object_index = sta_object_index(original_ir)
     database_paths = {item["id"]: item for item in path_database["paths"]}
     route_timing = {
@@ -584,6 +631,25 @@ def _write_logic_segment_query(
                         "start_pin": start_pin,
                         "end_pin": end_pin,
                     }
+                    if exact_contract_sha256 is not None:
+                        exact_key = (
+                            role,
+                            (
+                                None
+                                if cut_index == 0
+                                else record["cut_nets"][cut_index - 1]
+                            ),
+                            net,
+                            fpga,
+                            None,
+                        )
+                        exact_segment_id = exact_segment_by_key.get(exact_key)
+                        if exact_segment_id is None:
+                            raise ValidationError(
+                                "physical logic segment is absent from the "
+                                "static exact semantic contract"
+                            )
+                        segment["static_exact_segment_id"] = exact_segment_id
                     if object_provider == "vivado":
                         anchor_kind, anchor_pin = cone_anchor_object(net)
                         segment.update(
@@ -613,6 +679,29 @@ def _write_logic_segment_query(
                     "start_pin": start_pin,
                     "end_pin": end_pin,
                 }
+                if exact_contract_sha256 is not None:
+                    capture_endpoint_id = (
+                        end_instance
+                        if end_instance is not None
+                        else (
+                            f"top:{end_endpoint['port']}"
+                            f"[{end_endpoint['bit']}]"
+                        )
+                    )
+                    exact_key = (
+                        "capture",
+                        record["cut_nets"][-1],
+                        None,
+                        fpga,
+                        capture_endpoint_id,
+                    )
+                    exact_segment_id = exact_segment_by_key.get(exact_key)
+                    if exact_segment_id is None:
+                        raise ValidationError(
+                            "physical capture segment is absent from the "
+                            "static exact semantic contract"
+                        )
+                    segment["static_exact_segment_id"] = exact_segment_id
                 if object_provider == "vivado":
                     segment.update(
                         {
@@ -640,6 +729,11 @@ def _write_logic_segment_query(
             for member, reason in sorted(unsupported.items())
         ],
         "segments": segments,
+        **(
+            {"semantic_contract_sha256": exact_contract_sha256}
+            if exact_contract_sha256 is not None
+            else {}
+        ),
     }
     validate_logic_segment_identity(identity)
     identity_path.parent.mkdir(parents=True, exist_ok=True)
@@ -762,6 +856,13 @@ def validate_logic_segment_identity(
     fpga = database.get("fpga")
     if not isinstance(fpga, str) or not fpga:
         raise ValidationError("logic segment identity FPGA is invalid")
+    exact_digest = database.get("semantic_contract_sha256")
+    if exact_digest is not None and (
+        not isinstance(exact_digest, str)
+        or len(exact_digest) != 64
+        or any(character not in "0123456789abcdef" for character in exact_digest)
+    ):
+        raise ValidationError("logic segment exact contract digest is invalid")
     ids = set()
     members = set()
     paths = set()
@@ -779,6 +880,17 @@ def validate_logic_segment_identity(
         ):
             raise ValidationError(f"{context} identity is invalid")
         ids.add(segment_id)
+        exact_segment_id = segment.get("static_exact_segment_id")
+        if exact_digest is not None and (
+            not isinstance(exact_segment_id, str) or not exact_segment_id
+        ):
+            raise ValidationError(
+                f"{context}.static_exact_segment_id is invalid"
+            )
+        if exact_digest is None and exact_segment_id is not None:
+            raise ValidationError(
+                f"{context} has an unbound static exact segment identity"
+            )
         for field in ("system_path", "member_path", "start_pin", "end_pin"):
             if not isinstance(segment.get(field), str) or not segment[field]:
                 raise ValidationError(f"{context}.{field} is invalid")
@@ -877,6 +989,15 @@ def import_vpr_logic_segment_timing(
         "coverage": identity["coverage"],
         "unsupported_member_paths": identity["unsupported_member_paths"],
         "segments": records,
+        **(
+            {
+                "semantic_contract_sha256": identity[
+                    "semantic_contract_sha256"
+                ]
+            }
+            if "semantic_contract_sha256" in identity
+            else {}
+        ),
     }
     validation = validate_logic_segment_timing(database)
     write_json(output_path, database)
@@ -1030,6 +1151,15 @@ def import_vivado_logic_segment_timing(
             {**segment, **measurements[segment["id"]]}
             for segment in measured_segments
         ],
+        **(
+            {
+                "semantic_contract_sha256": identity[
+                    "semantic_contract_sha256"
+                ]
+            }
+            if "semantic_contract_sha256" in identity
+            else {}
+        ),
     }
     validation = validate_logic_segment_timing(database)
     write_json(output_path, database)
@@ -1059,6 +1189,10 @@ def validate_logic_segment_timing(
             "segments",
         )
     }
+    if "semantic_contract_sha256" in database:
+        identity["semantic_contract_sha256"] = database[
+            "semantic_contract_sha256"
+        ]
     identity["schema"] = LOGIC_SEGMENT_IDENTITY_SCHEMA
     identity["provider"] = "timing-validation"
     validate_logic_segment_identity(identity)

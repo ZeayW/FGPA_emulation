@@ -1535,6 +1535,24 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_compile.add_argument(
+        "--cut-mode",
+        choices=("sequential-only", "static-exact-combinational"),
+        default="sequential-only",
+        help=(
+            "partition boundary semantics; static exact combinational cuts "
+            "are opt-in and require the dependency-qualified Phase 4--7 path"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--max-cross-fpga-dependency-depth",
+        type=int,
+        choices=(1, 2),
+        default=1,
+    )
+    multi_fpga_compile.add_argument(
+        "--comb-segment-budget-slots", type=int, default=1
+    )
+    multi_fpga_compile.add_argument(
         "--timing-driven",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -4323,6 +4341,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.partition_repair_min_used_fpgas
             ),
             partition_repair_balance=args.partition_repair_balance,
+            cut_mode=args.cut_mode,
+            max_cross_fpga_dependency_depth=(
+                args.max_cross_fpga_dependency_depth
+            ),
+            comb_segment_budget_slots=args.comb_segment_budget_slots,
             timing_driven=args.timing_driven,
             timing_backend=args.timing_backend,
             clock_periods=(
