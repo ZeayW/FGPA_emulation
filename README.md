@@ -622,7 +622,10 @@ LUT6/DFF plus multiplier/RAM mapping, exact VPR packing, the checked
 packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
 routing, timing analysis, independent route/RR-graph verification, and
 endpoint-keyed interface timing extracted directly from VPR's routed Tatum
-graph. Additional architecture mapping profiles remain open gates.
+graph. The pinned VPR build keeps SDC edge arithmetic in 64 bits, so the long
+virtual DUT periods produced by large emulation frame ratios remain exact
+after VPR's nanosecond-to-picosecond scaling. Additional architecture mapping
+profiles remain open gates.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.

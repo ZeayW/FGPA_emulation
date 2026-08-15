@@ -10,6 +10,7 @@ from emuflow.io import write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
     _record_chimew_fixed_io_target,
+    _write_vpr_runtime_sdc,
     run_multi_fpga_physical_flow,
 )
 
@@ -65,6 +66,40 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_runtime_sdc_preserves_long_virtual_clock_period(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "runtime.sdc"
+            report = _write_vpr_runtime_sdc(
+                path,
+                {
+                    "clock_nets": {
+                        "fabric_clk": "fabric_clock_net",
+                        "dut_clk": "dut_clock_net",
+                    }
+                },
+                fabric_period_ns=20.0,
+                dut_period_ns=2_238_160.0,
+                cross_period_ns=2_237_980.0,
+            )
+
+            self.assertEqual(report["periods_ns"]["dut"], 2_238_160.0)
+            self.assertEqual(report["periods_ns"]["cross"], 2_237_980.0)
+            self.assertEqual(report["sha256"], _sha256(path))
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "# EmuFlow endpoint-complete Phase 7 timing contract.\n"
+                "create_clock -name emuflow_fabric_clk -period 20.000000000 "
+                "[get_ports {fabric_clock_net}]\n"
+                "create_clock -name emuflow_dut_clk_0 -period 2238160.000000000 "
+                "[get_ports {dut_clock_net}]\n"
+                "set_max_delay 2237980.000000000 -from "
+                "[get_clocks {emuflow_fabric_clk}] -to "
+                "[get_clocks {emuflow_dut_clk_0}]\n"
+                "set_max_delay 2237980.000000000 -from "
+                "[get_clocks {emuflow_dut_clk_0}] -to "
+                "[get_clocks {emuflow_fabric_clk}]\n",
+            )
+
     def test_chimew_fixed_io_targets_allow_only_intragroup_tdm_sharing(self):
         targets = {}
         packed_groups = {}
