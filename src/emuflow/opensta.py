@@ -888,6 +888,7 @@ def classify_through_net_timing_endpoints(
     reverse_edges: DefaultDict[str, set[str]] = defaultdict(set)
     direct_timed: set[str] = set()
     direct_timed_counts: DefaultDict[str, int] = defaultdict(int)
+    direct_timed_pins: DefaultDict[str, set[str]] = defaultdict(set)
     top_level_sink_counts: DefaultDict[str, int] = defaultdict(int)
     for net_id, net in net_by_id.items():
         for sink in net["sinks"]:
@@ -921,6 +922,7 @@ def classify_through_net_timing_endpoints(
                 if pin == cell["data"]:
                     direct_timed.add(net_id)
                     direct_timed_counts[net_id] += 1
+                    direct_timed_pins[net_id].add(f"{instance_id}/{pin}")
                 elif pin != cell["clock"] and pin not in cell["controls"]:
                     raise ValidationError(
                         f"OpenSTA FF sink pin is unmodelled: {cell_type}.{pin}"
@@ -929,6 +931,7 @@ def classify_through_net_timing_endpoints(
                 if pin in cell["inputs"]:
                     direct_timed.add(net_id)
                     direct_timed_counts[net_id] += 1
+                    direct_timed_pins[net_id].add(f"{instance_id}/{pin}")
                 elif pin != cell["clock"]:
                     raise ValidationError(
                         "OpenSTA sequential-bank sink pin is unmodelled: "
@@ -951,6 +954,7 @@ def classify_through_net_timing_endpoints(
         net: {
             "status": "timed" if net in reaches_timed else "no_timed_endpoint",
             "direct_timed_endpoints": direct_timed_counts[net],
+            "direct_timed_endpoint_pins": sorted(direct_timed_pins[net]),
             "direct_top_level_sinks": top_level_sink_counts[net],
         }
         for net in through_nets
@@ -1088,6 +1092,13 @@ def run_opensta_path_database(
     )
     clock_map = _clock_map(ir, clocks)
     opensta = resolve_native_executable("sta", executable)
+    structural = (
+        classify_through_net_timing_endpoints(
+            ir, model, through_net_ids, instance_cell_types
+        )
+        if through_net_ids
+        else {}
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="emuflow-opensta-") as temporary:
@@ -1098,6 +1109,7 @@ def run_opensta_path_database(
         clock_path = root / "clocks.tsv"
         raw_path = root / "paths.tsv"
         through_path = root / "through-nets.tsv"
+        through_endpoint_path = root / "through-endpoints.tsv"
         raw_through_coverage_path = root / "through-net-coverage.tsv"
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
@@ -1122,6 +1134,13 @@ def run_opensta_path_database(
                     stream.write(
                         f"{mapped.encode().hex()}\t{net.encode().hex()}\n"
                     )
+            with through_endpoint_path.open("w", encoding="utf-8") as stream:
+                stream.write("emuir_net_hex\tendpoint_pin_hex\n")
+                for net in through_net_ids:
+                    for pin in structural[net]["direct_timed_endpoint_pins"]:
+                        stream.write(
+                            f"{net.encode().hex()}\t{pin.encode().hex()}\n"
+                        )
         with clock_path.open("w", encoding="utf-8") as stream:
             stream.write("clock_hex\tperiod_ns\n")
             for name, period in clock_map.items():
@@ -1142,6 +1161,9 @@ def run_opensta_path_database(
                 ),
                 "EMUFLOW_STA_THROUGH_COVERAGE": (
                     str(raw_through_coverage_path) if through_net_ids else ""
+                ),
+                "EMUFLOW_STA_THROUGH_ENDPOINTS": (
+                    str(through_endpoint_path) if through_net_ids else ""
                 ),
             }
         )
@@ -1202,9 +1224,6 @@ def run_opensta_path_database(
             for path in database["paths"]
             for net in path["path_nets"]
         }
-        structural = classify_through_net_timing_endpoints(
-            ir, model, through_net_ids, instance_cell_types
-        )
         coverage_records = []
         for net in through_net_ids:
             query = through_query_records[net]

@@ -354,6 +354,25 @@ print("fake OpenSTA pass")
         self.assertEqual(by_class["register_input"], "timed")
         self.assertEqual(by_class["clock"], "no_timed_endpoint")
         self.assertEqual(by_class["reset"], "no_timed_endpoint")
+        timed = next(
+            net["id"]
+            for net in self.ir.value["nets"]
+            if net["cut_class"] == "register_input"
+        )
+        self.assertTrue(
+            all(
+                pin.endswith("/D")
+                for pin in classified[timed]["direct_timed_endpoint_pins"]
+            )
+        )
+        self.assertGreater(
+            len(classified[timed]["direct_timed_endpoint_pins"]), 0
+        )
+        for net in self.ir.value["nets"]:
+            if net["cut_class"] in {"clock", "reset"}:
+                self.assertEqual(
+                    classified[net["id"]]["direct_timed_endpoint_pins"], []
+                )
 
     def test_runner_certifies_explicit_zero_path_control_net(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -370,6 +389,10 @@ from pathlib import Path
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
 requested_hex = [row.split("\\t")[1] for row in requested]
+endpoints = Path(os.environ["EMUFLOW_STA_THROUGH_ENDPOINTS"]).read_text().splitlines()
+assert endpoints[0] == "emuir_net_hex\\tendpoint_pin_hex"
+assert any(row.split("\\t")[0] == requested_hex[0] for row in endpoints[1:])
+assert all(row.split("\\t")[0] != requested_hex[1] for row in endpoints[1:])
 header = (
     "path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
     "slack_ns\\tfixed_delay_ns\\tpath_nets_hex"
