@@ -116,6 +116,36 @@ def _validate_known_hosts_binding(value: Any) -> Dict[str, str]:
     return actual
 
 
+def _validate_worker_launcher_binding(value: Any) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValidationError(
+            "validation farm worker launcher binding must be an object"
+        )
+    path = Path(_require_string(value.get("path"), "worker launcher path"))
+    expected = _require_string(
+        value.get("sha256"), "worker launcher SHA-256"
+    )
+    if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise ValidationError(
+            "validation farm worker launcher SHA-256 is invalid"
+        )
+    if not path.is_absolute():
+        raise ValidationError(
+            "validation farm worker launcher path must be absolute"
+        )
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError(
+            "validation farm worker launcher must be a regular "
+            "non-symlink file"
+        )
+    resolved = path.resolve()
+    if _sha256(resolved) != expected:
+        raise ValidationError(
+            "validation farm worker launcher seal is broken"
+        )
+    return {"path": str(resolved), "sha256": expected}
+
+
 def _format_value(value: str, replacements: Mapping[str, str], label: str) -> str:
     placeholder = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
     fields = set(placeholder.findall(value))
@@ -236,6 +266,15 @@ def prepare_validation_farm(
             )
     worker_argv = spec.get("worker_argv", ["{install}/bin/emuflow"])
     worker_argv = _require_string_list(worker_argv, "worker_argv")
+    worker_launcher = None
+    if spec.get("worker_launcher") is not None:
+        worker_launcher = _validate_worker_launcher_binding(
+            spec["worker_launcher"]
+        )
+        if worker_argv[0] != worker_launcher["path"]:
+            raise ValidationError(
+                "validation farm worker_argv does not use its sealed launcher"
+            )
 
     tasks = spec.get("tasks")
     if not isinstance(tasks, list) or not tasks:
@@ -423,6 +462,8 @@ def prepare_validation_farm(
             "tasks": task_records,
             "created_at": _now(),
         }
+        if worker_launcher is not None:
+            manifest["worker_launcher"] = worker_launcher
         write_json(output_dir / "farm-manifest.json", manifest)
         return validate_validation_farm(output_dir)
     except BaseException:
@@ -446,6 +487,20 @@ def validate_validation_farm(farm_dir: Path) -> Dict[str, Any]:
         raise ValidationError("validation farm manifest schema is invalid")
     commit = _validate_commit(manifest.get("source_commit"))
     install = _validate_install(manifest.get("install_dir"), commit)
+    worker_launcher = None
+    if manifest.get("worker_launcher") is not None:
+        worker_launcher = _validate_worker_launcher_binding(
+            manifest["worker_launcher"]
+        )
+        worker_argv = manifest.get("worker_argv")
+        if (
+            not isinstance(worker_argv, list)
+            or not worker_argv
+            or worker_argv[0] != worker_launcher["path"]
+        ):
+            raise ValidationError(
+                "validation farm manifest does not use its sealed worker launcher"
+            )
     ssh = manifest.get("ssh")
     if not isinstance(ssh, dict):
         raise ValidationError("validation farm manifest SSH configuration is invalid")

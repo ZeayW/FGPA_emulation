@@ -1,3 +1,4 @@
+import hashlib
 import socket
 import subprocess
 import sys
@@ -169,6 +170,40 @@ class ValidationFarmTest(unittest.TestCase):
                     root / "farm",
                     ssh_known_hosts_file=Path("known_hosts"),
                 )
+
+    def test_prepare_content_seals_outer_worker_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, install = self._fixture(root, task_count=1)
+            launcher = root / "container-launcher"
+            launcher.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+            launcher.chmod(0o755)
+            value = read_json(spec)
+            value["worker_argv"] = [
+                str(launcher.resolve()),
+                "{install}/bin/emuflow",
+            ]
+            value["worker_launcher"] = {
+                "path": str(launcher.resolve()),
+                "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
+            }
+            write_json(spec, value)
+            farm = root / "farm"
+            prepare_validation_farm(spec, farm)
+            manifest = read_json(farm / "farm-manifest.json")
+            self.assertEqual(
+                manifest["worker_launcher"], value["worker_launcher"]
+            )
+            self.assertEqual(
+                manifest["worker_argv"],
+                [
+                    str(launcher.resolve()),
+                    str(install.resolve() / "bin" / "emuflow"),
+                ],
+            )
+            launcher.write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "seal is broken"):
+                validate_validation_farm(farm)
 
     def test_validation_rejects_tampered_task_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1204,12 +1204,21 @@ Compile only the current cache-miss frontier into the existing HPC farm:
 emuflow experiment-cache farm-spec \
   --plan /research/d4/gds/ziyiwang21/experiments/koios-case6.plan.json \
   --install-dir /research/d4/gds/ziyiwang21/emuflow/install/$COMMIT \
+  --worker-launcher /absolute/path/to/container-runtime-launcher \
   --experiment-node phase7-baseline-seed1 \
   --experiment-node phase7-placement-aware-seed1 \
   --node hpc1 --node hpc2 --node hpc3 --node hpc4 \
   --farm-id koios-case6-frontier1 \
   --out /research/d4/gds/ziyiwang21/experiments/koios-case6.frontier1.farm.json
 ```
+
+`--worker-launcher` is optional for native-compatible hosts.  When validation
+nodes require an outer container or environment launcher, the compiler places
+that launcher before the pinned install's `emuflow` command and records its
+absolute path and SHA-256 in the farm manifest.  Preparation, validation, and
+submission all reject a replaced launcher.  The launcher enters the worker
+runtime once; experiment-stage commands and independent validators execute
+inside that same worker rather than nesting containers per tool invocation.
 
 Omit `--experiment-node` to submit the complete ready/revalidate frontier.
 Repeat it to submit a storage-bounded subset of that same sealed frontier; a

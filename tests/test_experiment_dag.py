@@ -415,6 +415,46 @@ class ExperimentDagTest(unittest.TestCase):
             self.assertEqual([task["id"] for task in farm["tasks"]], ["shared-phase1-5"])
             self.assertIn("--expected-plan-sha256", farm["tasks"][0]["command"])
 
+    def test_farm_spec_content_seals_an_outer_worker_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install = root / "install" / COMMIT
+            install.mkdir(parents=True)
+            launcher = root / "worker-launcher"
+            launcher.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+            launcher.chmod(0o755)
+            spec = self._write_spec(root)
+            plan_path = root / "plan.json"
+            plan_experiment(spec, root / "cache", plan_path)
+            farm_path = root / "farm.json"
+            build_experiment_farm_spec(
+                plan_path,
+                install,
+                ["hpc1"],
+                "container-frontier",
+                farm_path,
+                worker_launcher=launcher.resolve(),
+            )
+            farm = read_json(farm_path)
+            self.assertEqual(
+                farm["worker_argv"],
+                [str(launcher.resolve()), "{install}/bin/emuflow"],
+            )
+            self.assertEqual(
+                farm["worker_launcher"]["sha256"],
+                hashlib.sha256(launcher.read_bytes()).hexdigest(),
+            )
+
+            with self.assertRaisesRegex(ValidationError, "must be absolute"):
+                build_experiment_farm_spec(
+                    plan_path,
+                    install,
+                    ["hpc1"],
+                    "relative-launcher",
+                    root / "relative.json",
+                    worker_launcher=Path("worker-launcher"),
+                )
+
     def test_farm_spec_can_submit_a_bounded_ready_subset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

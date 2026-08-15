@@ -1195,6 +1195,8 @@ def build_experiment_farm_spec(
     farm_id: str,
     output_path: Path,
     experiment_nodes: Optional[list[str]] = None,
+    *,
+    worker_launcher: Optional[Path] = None,
 ) -> Dict[str, Any]:
     plan = _load_plan(plan_path)
     ready = [
@@ -1226,6 +1228,22 @@ def build_experiment_farm_spec(
         raise ValidationError("experiment farm HPC nodes must be unique")
     plan_path = plan_path.resolve()
     plan_sha256 = _sha256(plan_path)
+    launcher_binding = None
+    if worker_launcher is not None:
+        if not worker_launcher.is_absolute():
+            raise ValidationError(
+                "experiment farm worker launcher must be absolute"
+            )
+        if worker_launcher.is_symlink() or not worker_launcher.is_file():
+            raise ValidationError(
+                "experiment farm worker launcher must be a regular "
+                "non-symlink file"
+            )
+        resolved_launcher = worker_launcher.resolve()
+        launcher_binding = {
+            "path": str(resolved_launcher),
+            "sha256": _sha256(resolved_launcher),
+        }
     spec = {
         "schema": FARM_SPEC_SCHEMA,
         "farm_id": _identifier(farm_id, "farm_id"),
@@ -1256,6 +1274,12 @@ def build_experiment_farm_spec(
             for item in ready
         ],
     }
+    if launcher_binding is not None:
+        spec["worker_argv"] = [
+            launcher_binding["path"],
+            "{install}/bin/emuflow",
+        ]
+        spec["worker_launcher"] = launcher_binding
     write_json(output_path, spec)
     return {
         "status": "pass",

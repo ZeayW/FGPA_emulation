@@ -469,6 +469,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="submit only this ready/revalidate experiment node; repeatable",
     )
     experiment_farm.add_argument("--farm-id", required=True)
+    experiment_farm.add_argument(
+        "--worker-launcher",
+        type=Path,
+        help=(
+            "absolute, content-sealed outer launcher used to enter the worker "
+            "runtime before invoking the pinned install"
+        ),
+    )
     experiment_farm.add_argument("--out", type=Path, required=True)
     experiment_run = experiment_subparsers.add_parser(
         "run-node", help=argparse.SUPPRESS
@@ -3518,6 +3526,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.farm_id,
                 args.out,
                 args.experiment_node,
+                worker_launcher=args.worker_launcher,
             )
         else:
             report = run_experiment_node(
