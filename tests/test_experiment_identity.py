@@ -48,6 +48,54 @@ class ExperimentIdentityTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "symlink"):
                 build_implementation_closure(root, ["link"])
 
+    def test_python_symbol_closure_ignores_unrelated_stage_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "stage.py").write_text(
+                "from math import sqrt\n"
+                "VALUE = 2\n"
+                "def helper(value):\n    return sqrt(value) + VALUE\n"
+                "def selected(value):\n    return helper(value)\n"
+                "def unrelated():\n    return 1\n",
+                encoding="utf-8",
+            )
+            component = "stage.py::selected"
+            closure = build_implementation_closure(root, [component])
+            (root / "stage.py").write_text(
+                "from math import sqrt\n"
+                "from math import ceil\n"
+                "VALUE = 2\n"
+                "def helper(value):\n    return sqrt(value) + VALUE\n"
+                "def selected(value):\n    return helper(value)\n"
+                "def unrelated():\n    return ceil(2.5)\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                closure["implementation_sha256"],
+                build_implementation_closure(root, [component])[
+                    "implementation_sha256"
+                ],
+            )
+            validate_implementation_closure(closure, root=root)
+
+            (root / "stage.py").write_text(
+                (root / "stage.py")
+                .read_text(encoding="utf-8")
+                .replace("sqrt(value) + VALUE", "sqrt(value) * VALUE"),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "source root"):
+                validate_implementation_closure(closure, root=root)
+
+    def test_python_symbol_components_are_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "stage.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "symbols are missing"):
+                build_implementation_closure(root, ["stage.py::absent"])
+            with self.assertRaisesRegex(ValidationError, "sorted unique"):
+                build_implementation_closure(root, ["stage.py::run,run"])
+
 
 if __name__ == "__main__":
     unittest.main()

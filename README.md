@@ -1008,6 +1008,13 @@ this substitution independently and rejects a claimed portable identity that
 does not match its runtime bindings. Stage-specific policy also lives in a
 stage-specific closure component, so a partition-only change cannot invalidate
 the frontend through an unrelated shared orchestration file.
+For Python orchestration modules that intentionally expose several independent
+stage runners, a component may use `path.py::entrypoint,...`.  EmuFlow hashes a
+recursive canonical-AST closure of those entry points, including referenced
+module helpers, constants, and imports.  A change to an unrelated runner or
+formatting therefore preserves the stage key, while a called helper change
+still invalidates it.  Directories, binaries, Tcl, and other components remain
+byte-exact whole-file closures.
 Changing any node input invalidates only that node and its descendants.  For
 example, a Chimew parameter invalidates only Chimew Phase 6 and its Phase 7
 descendants, while changing RTL or BoardDB invalidates the shared Phase 1--5
@@ -1155,6 +1162,7 @@ Build and verify the portable implementation closure used by a v2 node:
 ```bash
 emuflow experiment-cache implementation-closure \
   --root /path/to/versioned/source \
+  --component 'src/emuflow/experiment_upstream.py::run_route_checkpoint,validate_route_checkpoint' \
   --component src/emuflow/phase4.py \
   --component install/bin/emuflow-system-router \
   --out /research/d4/gds/ziyiwang21/experiments/phase4-implementation.json

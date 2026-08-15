@@ -54,6 +54,10 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   changing those bytes must change it.  Keep stage-specific producer and
   validator code in stage-specific closure components so a Phase 3-only edit
   cannot invalidate Phase 1 merely because both once shared a source file.
+  When independent stage entry points must remain in one Python module, seal a
+  recursive canonical-AST symbol closure (`path.py::entrypoint,...`), not the
+  whole module.  The closure must include referenced module helpers, constants,
+  and imports; unrelated symbols and formatting must not invalidate the stage.
 - The DAG implementation and experiment spec must support arbitrary named
   stages and multiple dependencies; it must not hard-code one current flow's
   phase sequence.  Physical lookahead, source preparation, qualification, and
