@@ -268,6 +268,14 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "--chimew-assigner",
             ):
                 self.assertIn(argument, nodes["phase6-chimew"]["command"])
+            self.assertIn(
+                "--reuse-validated-phase6-equivalence",
+                nodes["physical-lookahead"]["command"],
+            )
+            self.assertIn(
+                "--reuse-validated-phase6-equivalence",
+                nodes["physical-lookahead"]["validator"],
+            )
             terminals = [item for item in spec["nodes"] if item["stage"] == "phase7"]
             self.assertEqual(
                 {(item["provider"], item["physical_seed"]) for item in terminals},
@@ -275,6 +283,14 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertTrue(all(item["configuration"]["physical_workers"] == 8 for item in terminals))
             for terminal in terminals:
+                self.assertIn(
+                    "--reuse-validated-phase6-equivalence",
+                    terminal["command"],
+                )
+                self.assertIn(
+                    "--reuse-validated-phase6-equivalence",
+                    terminal["validator"],
+                )
                 roles = {
                     item["path"]: item["role"] for item in terminal["artifacts"]
                 }

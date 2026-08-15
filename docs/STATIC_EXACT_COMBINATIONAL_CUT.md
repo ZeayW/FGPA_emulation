@@ -214,3 +214,13 @@ Phase 5 certificate construction and Phase 6 macro-cycle replay index the
 `capture_requirement` relation once. They do not scan every logic segment for
 every terminal capture; a 100,000-capture regression enforces one segment-set
 scan, while the independent Phase 5 validator builds and checks its own index.
+The Phase 6 producer performs one full-design reference evaluation per checked
+macro-cycle and settles each partition from that reference snapshot with an
+event-driven local cone update; initialization, source sampling, and commit do
+not replay the full design. The managed checkpoint is then replayed once by the
+independent Experiment v2 validator before publication. Lookahead and Phase 7
+consumers may reuse that result only when the Phase 6 directory is an immutable,
+byte-sealed managed checkpoint with an independent validation certificate.
+They recheck the checkpoint and split-artifact seals but do not rerun the same
+functional simulation for every downstream seed. Standalone or unsealed Phase
+6 directories continue to require the complete replay.

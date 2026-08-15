@@ -1,3 +1,5 @@
+import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,7 @@ from emuflow.experiment_stages import (
     _prepare_empty_output,
     _projected_timing_paths,
     _timing_paths,
+    _validate_managed_phase6_checkpoint,
 )
 from emuflow.experiment_upstream import (
     run_frontend_checkpoint,
@@ -160,6 +163,7 @@ class ExperimentStagesTest(unittest.TestCase):
                 "lookahead",
                 "--phase6",
                 "phase6",
+                "--reuse-validated-phase6-equivalence",
                 "--platform",
                 "boarddb.json",
                 "--seed",
@@ -172,6 +176,7 @@ class ExperimentStagesTest(unittest.TestCase):
         )
         self.assertEqual(args.seed, 3)
         self.assertEqual(args.workers, 8)
+        self.assertTrue(args.reuse_validated_phase6_equivalence)
         validated = _build_parser().parse_args(
             [
                 "experiment-stage",
@@ -183,6 +188,7 @@ class ExperimentStagesTest(unittest.TestCase):
                 "lookahead",
                 "--phase6",
                 "phase6",
+                "--reuse-validated-phase6-equivalence",
                 "--platform",
                 "boarddb.json",
                 "--seed",
@@ -197,6 +203,62 @@ class ExperimentStagesTest(unittest.TestCase):
             (validated.seed, validated.workers, validated.route_channel_width),
             (3, 8, 300),
         )
+        self.assertTrue(validated.reuse_validated_phase6_equivalence)
+
+    def test_phase6_equivalence_reuse_requires_managed_validation_seal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            object_root = Path(temporary) / ("a" * 64)
+            output = object_root / "output"
+            output.mkdir(parents=True)
+            marker = output / "marker.json"
+            marker.write_text("{}\n", encoding="utf-8")
+            digest = hashlib.sha256(marker.read_bytes()).hexdigest()
+            checkpoint = {
+                "schema": "emuflow.experiment-checkpoint/v2",
+                "status": "pass",
+                "execution_key": "a" * 64,
+                "node_id": "phase6-baseline",
+                "stage": "phase6",
+                "provider": "baseline",
+                "physical_seed": None,
+                "dependency_keys": {},
+                "storage": "managed",
+                "output_immutable": True,
+                "output_dir": str(output.resolve()),
+                "expected_artifacts": [
+                    {
+                        "path": "marker.json",
+                        "role": "evidence-critical",
+                        "retention": "required",
+                    }
+                ],
+                "artifacts": {
+                    "marker.json": {
+                        "kind": "file",
+                        "sha256": digest,
+                        "bytes": marker.stat().st_size,
+                    }
+                },
+            }
+            write_json(object_root / "checkpoint.json", checkpoint)
+            validation_key = "b" * 64
+            write_json(
+                object_root / "validations" / f"{validation_key}.json",
+                {
+                    "schema": "emuflow.experiment-validation/v1",
+                    "execution_key": "a" * 64,
+                    "validation_key": validation_key,
+                    "status": "pass",
+                },
+            )
+            os.chmod(marker, 0o444)
+            os.chmod(output, 0o555)
+            self.assertEqual(
+                _validate_managed_phase6_checkpoint(output)["stage"], "phase6"
+            )
+            os.chmod(output, 0o755)
+            with self.assertRaisesRegex(Exception, "writable|immutable"):
+                _validate_managed_phase6_checkpoint(output)
 
     def test_cli_exposes_fine_grained_phase1_5_commands(self) -> None:
         parser = _build_parser()

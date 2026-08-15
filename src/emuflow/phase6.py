@@ -330,6 +330,8 @@ def validate_phase6(
     pin_plan_path: Optional[Path] = None,
     position_hints_path: Optional[Path] = None,
     electrical_binding_path: Optional[Path] = None,
+    *,
+    replay_equivalence: bool = True,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
@@ -391,7 +393,10 @@ def validate_phase6(
     validation = validate_split_artifacts(
         ir, assignment, schedule, platform, artifacts, pin_plan
     )
-    if schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER:
+    if (
+        replay_equivalence
+        and schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER
+    ):
         validation["static_exact_equivalence"] = (
             _static_exact_equivalence_evidence(
                 ir,

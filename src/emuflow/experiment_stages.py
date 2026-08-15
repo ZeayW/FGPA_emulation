@@ -38,6 +38,11 @@ EXPERIMENT_LOOKAHEAD_SCHEMA = "emuflow.experiment-physical-lookahead/v1"
 EXPERIMENT_PHASE6_SCHEMA = "emuflow.experiment-phase6-checkpoint/v1"
 EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
 _PROVIDERS = {"baseline", "placement-aware", "chimew"}
+_PHASE6_VALIDATION_MODES = {
+    "full-replay",
+    "producer-self-check",
+    "validated-checkpoint-reuse",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -46,6 +51,60 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _validate_managed_phase6_checkpoint(root: Path) -> Dict[str, Any]:
+    """Prove that *root* is an immutable, independently validated cache object.
+
+    Experiment DAG dependency expansion already performs this check before it
+    starts a consumer.  Repeating the byte seal here keeps the stage CLI safe
+    when it is invoked directly with the explicit reuse option, without
+    rerunning the much more expensive functional-equivalence simulation.
+    """
+
+    from .experiment_dag import (
+        EXPERIMENT_VALIDATION_SCHEMA,
+        validate_experiment_checkpoint,
+    )
+
+    root = root.resolve()
+    checkpoint_path = root.parent / "checkpoint.json"
+    if not checkpoint_path.is_file():
+        raise ValidationError(
+            "Phase 6 equivalence reuse requires a managed checkpoint"
+        )
+    checkpoint = validate_experiment_checkpoint(checkpoint_path)
+    if (
+        checkpoint.get("schema") != "emuflow.experiment-checkpoint/v2"
+        or checkpoint.get("stage") != "phase6"
+        or checkpoint.get("storage") != "managed"
+        or checkpoint.get("output_immutable") is not True
+        or Path(checkpoint.get("output_dir", "")).resolve() != root
+    ):
+        raise ValidationError(
+            "Phase 6 equivalence reuse requires an immutable Phase 6 checkpoint"
+        )
+    execution_key = checkpoint["execution_key"]
+    certificates = []
+    validation_root = root.parent / "validations"
+    if validation_root.is_dir():
+        for path in sorted(validation_root.glob("*.json")):
+            value = read_json(path)
+            if value != {
+                "schema": EXPERIMENT_VALIDATION_SCHEMA,
+                "execution_key": execution_key,
+                "validation_key": path.stem,
+                "status": "pass",
+            }:
+                raise ValidationError(
+                    "Phase 6 checkpoint validation certificate is invalid"
+                )
+            certificates.append(value)
+    if not certificates:
+        raise ValidationError(
+            "Phase 6 equivalence reuse requires an independent validation certificate"
+        )
+    return checkpoint
 
 
 def _require_file(root: Path, relative: str) -> Path:
@@ -222,6 +281,7 @@ def run_physical_lookahead(
     openparf_install: Path | None = None,
     openparf_python: Path | None = None,
     route_channel_width: int = 300,
+    reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
     shared = validate_shared_phase1_5(shared_root, platform_path)
     paths = _shared_paths(shared_root)
@@ -232,7 +292,15 @@ def run_physical_lookahead(
     )
     if baseline_phase6_root is not None:
         baseline = validate_phase6_checkpoint(
-            baseline_phase6_root, shared_root, None, platform_path
+            baseline_phase6_root,
+            shared_root,
+            None,
+            platform_path,
+            validation_mode=(
+                "validated-checkpoint-reuse"
+                if reuse_validated_phase6_equivalence
+                else "full-replay"
+            ),
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
@@ -297,7 +365,11 @@ def run_physical_lookahead(
     }
     write_json(output_dir / "experiment-lookahead-report.json", report)
     validate_physical_lookahead(
-        output_dir, shared_root, baseline_phase6_root, platform_path
+        output_dir,
+        shared_root,
+        baseline_phase6_root,
+        platform_path,
+        reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
     )
     return report
 
@@ -313,6 +385,7 @@ def validate_physical_lookahead(
     expected_region_count: int | None = None,
     expected_architecture: Path | None = None,
     expected_route_channel_width: int | None = None,
+    reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
     validate_shared_phase1_5(shared_root, platform_path)
     split_root = (
@@ -322,7 +395,15 @@ def validate_physical_lookahead(
     )
     if baseline_phase6_root is not None:
         baseline = validate_phase6_checkpoint(
-            baseline_phase6_root, shared_root, None, platform_path
+            baseline_phase6_root,
+            shared_root,
+            None,
+            platform_path,
+            validation_mode=(
+                "validated-checkpoint-reuse"
+                if reuse_validated_phase6_equivalence
+                else "full-replay"
+            ),
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
@@ -530,7 +611,13 @@ def run_phase6_checkpoint(
         "equivalence": phase6["equivalence"],
     }
     write_json(output_dir / "experiment-phase6-report.json", report)
-    validate_phase6_checkpoint(output_dir, shared_root, lookahead_root, platform_path)
+    validate_phase6_checkpoint(
+        output_dir,
+        shared_root,
+        lookahead_root,
+        platform_path,
+        validation_mode="producer-self-check",
+    )
     return report
 
 
@@ -541,7 +628,12 @@ def validate_phase6_checkpoint(
     platform_path: Path,
     *,
     expected_provider: str | None = None,
+    validation_mode: str = "full-replay",
 ) -> Dict[str, Any]:
+    if validation_mode not in _PHASE6_VALIDATION_MODES:
+        raise ValidationError("experiment Phase 6 validation mode is invalid")
+    if validation_mode == "validated-checkpoint-reuse":
+        _validate_managed_phase6_checkpoint(root)
     validate_shared_phase1_5(shared_root, platform_path)
     report = read_json(_require_file(root, "experiment-phase6-report.json"))
     provider = report.get("provider")
@@ -563,7 +655,12 @@ def validate_phase6_checkpoint(
     paths = _shared_paths(shared_root)
     manifest = _require_file(root, "split/manifest.json")
     validate_phase6(
-        paths["ir"], paths["assignment"], root / "schedule.json", platform_path, manifest
+        paths["ir"],
+        paths["assignment"],
+        root / "schedule.json",
+        platform_path,
+        manifest,
+        replay_equivalence=validation_mode == "full-replay",
     )
     if provider == "placement-aware":
         validate_pin_plan(
@@ -598,9 +695,18 @@ def run_phase7_checkpoint(
     openparf_install: Path | None = None,
     openparf_python: Path | None = None,
     route_channel_width: int = 300,
+    reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
     phase6 = validate_phase6_checkpoint(
-        phase6_root, shared_root, lookahead_root, platform_path
+        phase6_root,
+        shared_root,
+        lookahead_root,
+        platform_path,
+        validation_mode=(
+            "validated-checkpoint-reuse"
+            if reuse_validated_phase6_equivalence
+            else "full-replay"
+        ),
     )
     paths = _shared_paths(shared_root)
     output_dir = _prepare_empty_output(output_dir, "Phase 7 checkpoint")
@@ -664,7 +770,12 @@ def run_phase7_checkpoint(
     }
     write_json(output_dir / "experiment-phase7-report.json", report)
     validate_phase7_checkpoint(
-        output_dir, shared_root, lookahead_root, phase6_root, platform_path
+        output_dir,
+        shared_root,
+        lookahead_root,
+        phase6_root,
+        platform_path,
+        reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
     )
     return report
 
@@ -679,9 +790,18 @@ def validate_phase7_checkpoint(
     expected_seed: int | None = None,
     expected_workers: int | None = None,
     expected_route_channel_width: int | None = None,
+    reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
     phase6 = validate_phase6_checkpoint(
-        phase6_root, shared_root, lookahead_root, platform_path
+        phase6_root,
+        shared_root,
+        lookahead_root,
+        platform_path,
+        validation_mode=(
+            "validated-checkpoint-reuse"
+            if reuse_validated_phase6_equivalence
+            else "full-replay"
+        ),
     )
     report = read_json(_require_file(root, "experiment-phase7-report.json"))
     if (

@@ -338,7 +338,12 @@ identities, rejects hidden cross-FPGA bypasses, and validates each exact
 schedule with three event-driven macro-cycle traces. Small models additionally
 enumerate every architectural state and non-reset primary input for one
 macro-step. The report distinguishes randomized validation from exhaustive
-small-model proof. Phase 7C now independently reconstructs every exact
+small-model proof. Canonical Experiment v2 publication performs one independent
+Phase 6 replay after generation; downstream lookahead and Phase 7 nodes reuse
+that evidence only from an immutable byte-sealed checkpoint carrying a valid
+independent-validation certificate, instead of repeating the same replay for
+each physical seed. Unsealed standalone inputs remain full-replay by default.
+Phase 7C now independently reconstructs every exact
 segment's routed settle window and refuses missing evidence or a late
 source/capture even when aggregate virtual-runtime slack is positive. This is
 also reflected at the one-command CLI boundary: exact mode defaults slot

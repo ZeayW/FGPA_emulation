@@ -689,6 +689,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     lookahead_run.add_argument("--shared", type=Path, required=True)
     lookahead_run.add_argument("--baseline-phase6", type=Path)
+    lookahead_run.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
+    )
     lookahead_run.add_argument("--platform", type=Path, required=True)
     lookahead_run.add_argument("--seed", type=int, default=1)
     lookahead_run.add_argument("--workers", type=int, default=8)
@@ -712,6 +715,9 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_validate.add_argument("root", type=Path)
     lookahead_validate.add_argument("--shared", type=Path, required=True)
     lookahead_validate.add_argument("--baseline-phase6", type=Path)
+    lookahead_validate.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
+    )
     lookahead_validate.add_argument("--platform", type=Path, required=True)
     lookahead_validate.add_argument("--seed", type=int)
     lookahead_validate.add_argument("--workers", type=int)
@@ -753,6 +759,9 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7_run.add_argument("--shared", type=Path, required=True)
     phase7_run.add_argument("--lookahead", type=Path, required=True)
     phase7_run.add_argument("--phase6", type=Path, required=True)
+    phase7_run.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
+    )
     phase7_run.add_argument("--platform", type=Path, required=True)
     phase7_run.add_argument("--seed", type=int, required=True)
     phase7_run.add_argument("--workers", type=int, default=8)
@@ -772,6 +781,9 @@ def _build_parser() -> argparse.ArgumentParser:
     phase7_validate.add_argument("--shared", type=Path, required=True)
     phase7_validate.add_argument("--lookahead", type=Path, required=True)
     phase7_validate.add_argument("--phase6", type=Path, required=True)
+    phase7_validate.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
+    )
     phase7_validate.add_argument("--platform", type=Path, required=True)
     phase7_validate.add_argument("--seed", type=int)
     phase7_validate.add_argument("--workers", type=int)
@@ -3385,6 +3397,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
                 route_channel_width=args.route_channel_width,
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
             )
         elif args.experiment_stage_command == "lookahead-validate":
             report = validate_physical_lookahead(
@@ -3397,6 +3412,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_region_count=args.region_count,
                 expected_architecture=args.architecture,
                 expected_route_channel_width=args.route_channel_width,
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
             )
         elif args.experiment_stage_command == "phase6-run":
             report = run_phase6_checkpoint(
@@ -3438,6 +3456,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
                 route_channel_width=args.route_channel_width,
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
             )
         elif args.experiment_stage_command == "phase7-validate":
             report = validate_phase7_checkpoint(
@@ -3449,6 +3470,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_seed=args.seed,
                 expected_workers=args.workers,
                 expected_route_channel_width=args.route_channel_width,
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
             )
         elif args.experiment_stage_command == "qor-compare-run":
             report = run_canonical_qor_comparison(

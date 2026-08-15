@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.cli import main
 from emuflow.combinational_cut import (
@@ -1458,6 +1459,22 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(
                 validation["static_exact_equivalence"]["status"], "pass"
+            )
+            with patch(
+                "emuflow.phase6._static_exact_equivalence_evidence",
+                side_effect=AssertionError("equivalence replay was not reusable"),
+            ):
+                structural_validation = validate_phase6(
+                    ir_path,
+                    assignment_path,
+                    schedule_path,
+                    PLATFORM_PATH,
+                    output / "manifest.json",
+                    replay_equivalence=False,
+                )
+            self.assertEqual(structural_validation["status"], "pass")
+            self.assertNotIn(
+                "static_exact_equivalence", structural_validation
             )
 
     @unittest.skipUnless(shutil.which("yosys"), "yosys is not installed")
