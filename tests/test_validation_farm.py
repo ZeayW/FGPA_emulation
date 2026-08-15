@@ -232,7 +232,11 @@ class ValidationFarmTest(unittest.TestCase):
             argv = runner.call_args.args[0]
             self.assertEqual(argv[:4], ["ssh", "-o", "BatchMode=yes", "node-a"])
             self.assertIn(str(install / "bin" / "emuflow"), argv[-1])
+            self.assertTrue(argv[-1].startswith("nohup setsid "))
             self.assertIn("validation-farm worker", argv[-1])
+            self.assertNotIn("--detach", argv[-1])
+            self.assertIn("worker-bootstrap.log", argv[-1])
+            self.assertIn("</dev/null", argv[-1])
             with mock.patch(
                 "emuflow.validation_farm.subprocess.run", return_value=completed
             ) as second_runner:
