@@ -9,6 +9,8 @@ from emuflow.errors import ValidationError
 from emuflow.experiment_partition import validate_partition_checkpoint
 from emuflow.experiment_upstream import (
     EXPERIMENT_PARTITION_SCHEMA,
+    EXPERIMENT_TDM_SCHEMA,
+    validate_tdm_checkpoint,
 )
 
 
@@ -17,6 +19,41 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    def _tdm_fixture(
+        self,
+        root: Path,
+        *,
+        provider: str,
+        optimization_provider: str | None = None,
+    ) -> tuple[Path, Path, Path]:
+        route = root / "route"
+        tdm = root / "tdm"
+        platform = root / "platform.json"
+        route.mkdir()
+        tdm.mkdir()
+        (route / "routes.json").write_text("{}", encoding="utf-8")
+        platform.write_text("{}", encoding="utf-8")
+        (tdm / "schedule.json").write_text("{}", encoding="utf-8")
+        phase5 = {"provider": provider}
+        if optimization_provider is not None:
+            phase5["optimization_provider"] = optimization_provider
+        (tdm / "phase5_report.json").write_text(
+            json.dumps(phase5), encoding="utf-8"
+        )
+        report = {
+            "schema": EXPERIMENT_TDM_SCHEMA,
+            "status": "pass",
+            "routes_sha256": _sha256(route / "routes.json"),
+            "platform_sha256": _sha256(platform),
+            "schedule_sha256": _sha256(tdm / "schedule.json"),
+            "phase5_report_sha256": _sha256(tdm / "phase5_report.json"),
+            "phase5": phase5,
+        }
+        (tdm / "experiment-tdm-report.json").write_text(
+            json.dumps(report), encoding="utf-8"
+        )
+        return route, platform, tdm
+
     def _partition_fixture(self, root: Path) -> tuple[Path, Path, Path, Path]:
         frontend = root / "frontend"
         timing = root / "timing"
@@ -123,6 +160,53 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 validate_partition_checkpoint(
                     frontend, timing, platform, partition
                 )
+
+    @mock.patch("emuflow.experiment_upstream.validate_phase5")
+    def test_tdm_validator_binds_academic_optimization_provider(
+        self, validate_phase5
+    ) -> None:
+        validate_phase5.return_value = {"status": "pass"}
+        with tempfile.TemporaryDirectory() as temporary:
+            route, platform, tdm = self._tdm_fixture(
+                Path(temporary),
+                provider="lagrangian-kkt-ratio-aware-list-schedule-v1",
+                optimization_provider="aspdac26-timing-dag-lagrangian-v1",
+            )
+            checked = validate_tdm_checkpoint(
+                route,
+                platform,
+                tdm,
+                expected_provider="aspdac26-timing-dag-lagrangian-v1",
+            )
+            self.assertEqual(checked["status"], "pass")
+            with self.assertRaisesRegex(
+                ValidationError, "provider contract disagrees"
+            ):
+                validate_tdm_checkpoint(
+                    route,
+                    platform,
+                    tdm,
+                    expected_provider=(
+                        "lagrangian-kkt-ratio-aware-list-schedule-v1"
+                    ),
+                )
+
+    @mock.patch("emuflow.experiment_upstream.validate_phase5")
+    def test_tdm_validator_preserves_baseline_provider_contract(
+        self, validate_phase5
+    ) -> None:
+        validate_phase5.return_value = {"status": "pass"}
+        with tempfile.TemporaryDirectory() as temporary:
+            route, platform, tdm = self._tdm_fixture(
+                Path(temporary), provider="static-tdm-v2"
+            )
+            checked = validate_tdm_checkpoint(
+                route,
+                platform,
+                tdm,
+                expected_provider="static-tdm-v2",
+            )
+            self.assertEqual(checked["status"], "pass")
 
 
 if __name__ == "__main__":

@@ -891,7 +891,15 @@ def validate_tdm_checkpoint(
     phase5 = read_json(phase5_report)
     if report.get("phase5") != phase5:
         raise ValidationError("TDM checkpoint embedded Phase 5 report disagrees")
-    if expected_provider is not None and phase5.get("provider") != expected_provider:
+    # The Phase 5 provider selects the optimization policy.  Academic ratio
+    # providers materialize a schedule using a separate, explicitly recorded
+    # schedule provider, so bind the checkpoint contract to the former when it
+    # is present.  Baseline schedules have no optimization provider and retain
+    # the historical direct provider contract.
+    actual_provider = phase5.get(
+        "optimization_provider", phase5.get("provider")
+    )
+    if expected_provider is not None and actual_provider != expected_provider:
         raise ValidationError("TDM checkpoint provider contract disagrees")
     checked = validate_phase5(
         routes, platform_path, schedule, ratio_plan_path=ratio_plan if ratio_plan.is_file() else None
