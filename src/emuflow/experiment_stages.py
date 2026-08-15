@@ -73,6 +73,11 @@ def _timing_paths(root: Path) -> Path | None:
     return path if path.is_file() else None
 
 
+def _sta_path_database(root: Path) -> Path | None:
+    path = root / "timing/path-database.json"
+    return path if path.is_file() else None
+
+
 def _board_link_timing(root: Path) -> Path | None:
     path = root / "timing/board-link-timing.json"
     return path if path.is_file() else None
@@ -244,10 +249,16 @@ def run_physical_lookahead(
         seed=seed,
         route_channel_width=route_channel_width,
         workers=workers,
-        original_ir_path=paths["ir"] if _timing_paths(shared_root) else None,
-        assignment_path=paths["assignment"] if _timing_paths(shared_root) else None,
-        routes_path=paths["routes"] if _timing_paths(shared_root) else None,
-        path_database_path=_timing_paths(shared_root),
+        original_ir_path=(
+            paths["ir"] if _sta_path_database(shared_root) else None
+        ),
+        assignment_path=(
+            paths["assignment"] if _sta_path_database(shared_root) else None
+        ),
+        routes_path=(
+            paths["routes"] if _sta_path_database(shared_root) else None
+        ),
+        path_database_path=_sta_path_database(shared_root),
     )
     return _finish_physical_lookahead(
         shared_root,
@@ -726,10 +737,16 @@ def run_phase7_checkpoint(
             seed=seed,
             route_channel_width=route_channel_width,
             workers=workers,
-            original_ir_path=paths["ir"] if _timing_paths(shared_root) else None,
-            assignment_path=paths["assignment"] if _timing_paths(shared_root) else None,
-            routes_path=paths["routes"] if _timing_paths(shared_root) else None,
-            path_database_path=_timing_paths(shared_root),
+            original_ir_path=(
+                paths["ir"] if _sta_path_database(shared_root) else None
+            ),
+            assignment_path=(
+                paths["assignment"] if _sta_path_database(shared_root) else None
+            ),
+            routes_path=(
+                paths["routes"] if _sta_path_database(shared_root) else None
+            ),
+            path_database_path=_sta_path_database(shared_root),
         )
     runtime = run_phase7c(
         phase6_root / "schedule.json",

@@ -8,6 +8,7 @@ from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
     _placement_aware_positions,
     _prepare_empty_output,
+    _sta_path_database,
     _timing_paths,
     resume_physical_lookahead,
 )
@@ -25,8 +26,12 @@ class ExperimentStagesTest(unittest.TestCase):
             root = Path(temporary)
             timing = root / "timing"
             timing.mkdir()
+            self.assertIsNone(_sta_path_database(root))
             (timing / "path-database.json").write_text(
                 "{}", encoding="utf-8"
+            )
+            self.assertEqual(
+                _sta_path_database(root), timing / "path-database.json"
             )
             (timing / "cut-path-database.json").write_text(
                 "{}", encoding="utf-8"
