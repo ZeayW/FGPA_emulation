@@ -6,6 +6,7 @@ from unittest import mock
 from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
+    _physical_timing_databases,
     _placement_aware_positions,
     _prepare_empty_output,
     _sta_path_database,
@@ -36,11 +37,34 @@ class ExperimentStagesTest(unittest.TestCase):
             (timing / "cut-path-database.json").write_text(
                 "{}", encoding="utf-8"
             )
+            self.assertEqual(
+                _physical_timing_databases(root),
+                (
+                    timing / "path-database.json",
+                    timing / "cut-path-database.json",
+                ),
+            )
             self.assertIsNone(_timing_paths(root))
 
             projected = timing / "cut-timing-paths.json"
             projected.write_text("{}", encoding="utf-8")
             self.assertEqual(_timing_paths(root), projected)
+
+    def test_physical_timing_requires_both_sta_database_namespaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timing = root / "timing"
+            timing.mkdir()
+            self.assertEqual(_physical_timing_databases(root), (None, None))
+            (timing / "path-database.json").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "through-cut STA"):
+                _physical_timing_databases(root)
+            (timing / "path-database.json").unlink()
+            (timing / "cut-path-database.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(Exception, "complete original STA"):
+                _physical_timing_databases(root)
 
     def test_frontend_checkpoint_is_reusable_and_tamper_evident(self) -> None:
         repository = Path(__file__).resolve().parents[1]
@@ -304,6 +328,28 @@ class ExperimentStagesTest(unittest.TestCase):
         )
         self.assertEqual(args.experiment_stage_command, "lookahead-resume")
         self.assertEqual((args.seed, args.workers), (2, 6))
+
+    def test_cli_exposes_distinct_physical_timing_databases(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "multi-fpga",
+                "physical",
+                "--split",
+                "split",
+                "--platform",
+                "boarddb.json",
+                "--schedule",
+                "schedule.json",
+                "--path-database",
+                "full.json",
+                "--logic-path-database",
+                "through-cut.json",
+                "--out",
+                "physical",
+            ]
+        )
+        self.assertEqual(args.path_database, Path("full.json"))
+        self.assertEqual(args.logic_path_database, Path("through-cut.json"))
 
     def test_resumed_lookahead_requires_only_a_physical_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

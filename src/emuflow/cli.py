@@ -1784,7 +1784,15 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument(
         "--path-database",
         type=Path,
-        help="pre-partition STA path database with endpoint identity",
+        help="complete pre-partition STA path database for local paths",
+    )
+    multi_fpga_physical.add_argument(
+        "--logic-path-database",
+        type=Path,
+        help=(
+            "through-cut STA path database whose member identities feed "
+            "Phase-4 logic-segment reconstruction"
+        ),
     )
     multi_fpga_physical.add_argument(
         "--backend", choices=("open", "vivado"), default="open"
@@ -4255,6 +4263,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 assignment_path=args.assignment,
                 routes_path=args.routes,
                 path_database_path=args.path_database,
+                logic_path_database_path=args.logic_path_database,
                 workers=args.workers,
                 resume=args.resume,
             )

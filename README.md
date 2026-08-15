@@ -1790,6 +1790,14 @@ same value for both sides of an A/B comparison. For a 32-FPGA run, start from a
 measured value such as 8 and raise it only after checking memory and tool-token
 pressure.
 
+Endpoint-complete physical timing consumes two sealed STA namespaces with
+different roles. `--path-database` is the complete pre-partition database used
+for same-FPGA local paths; `--logic-path-database` is the through-cut database
+whose member IDs were routed by Phase 4 and are expanded into cross-FPGA logic
+segments. Canonical experiment stages bind both automatically and fail before
+P&R if either half of a timing-enabled checkpoint is missing; substituting the
+bounded full-path enumeration for the through-cut database is invalid.
+
 To use the identical flow boundary with a concrete Xilinx part, select the
 Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:
 

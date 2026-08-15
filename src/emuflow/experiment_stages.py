@@ -78,6 +78,30 @@ def _sta_path_database(root: Path) -> Path | None:
     return path if path.is_file() else None
 
 
+def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
+    """Return the full and through-cut STA databases used by physical timing.
+
+    Local intra-FPGA queries use the complete pre-partition database.  Logic
+    segments reconstructed from Phase 4 use the independently queried
+    through-cut database because the router's compressed member identities
+    are defined by that database, not by the bounded full-path enumeration.
+    """
+
+    full = _sta_path_database(root)
+    cut_path = root / "timing/cut-path-database.json"
+    cut = cut_path if cut_path.is_file() else None
+    if full is None and cut is not None:
+        raise ValidationError(
+            "physical timing has a through-cut STA database without the "
+            "complete original STA path database"
+        )
+    if full is not None and cut is None:
+        raise ValidationError(
+            "physical timing requires the through-cut STA path database"
+        )
+    return full, cut
+
+
 def _board_link_timing(root: Path) -> Path | None:
     path = root / "timing/board-link-timing.json"
     return path if path.is_file() else None
@@ -230,6 +254,7 @@ def run_physical_lookahead(
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
+    path_database, logic_path_database = _physical_timing_databases(shared_root)
     output_dir = _prepare_empty_output(output_dir, "physical-lookahead")
     physical = run_multi_fpga_physical_flow(
         split_root,
@@ -249,16 +274,11 @@ def run_physical_lookahead(
         seed=seed,
         route_channel_width=route_channel_width,
         workers=workers,
-        original_ir_path=(
-            paths["ir"] if _sta_path_database(shared_root) else None
-        ),
-        assignment_path=(
-            paths["assignment"] if _sta_path_database(shared_root) else None
-        ),
-        routes_path=(
-            paths["routes"] if _sta_path_database(shared_root) else None
-        ),
-        path_database_path=_sta_path_database(shared_root),
+        original_ir_path=(paths["ir"] if path_database else None),
+        assignment_path=(paths["assignment"] if path_database else None),
+        routes_path=(paths["routes"] if path_database else None),
+        path_database_path=path_database,
+        logic_path_database_path=logic_path_database,
     )
     return _finish_physical_lookahead(
         shared_root,
@@ -715,6 +735,7 @@ def run_phase7_checkpoint(
         phase6_root, shared_root, lookahead_root, platform_path
     )
     paths = _shared_paths(shared_root)
+    path_database, logic_path_database = _physical_timing_databases(shared_root)
     output_dir = _prepare_empty_output(output_dir, "Phase 7 checkpoint")
     lookahead_report = read_json(lookahead_root / "experiment-lookahead-report.json")
     if phase6["provider"] == "baseline" and seed == lookahead_report["seed"]:
@@ -737,16 +758,11 @@ def run_phase7_checkpoint(
             seed=seed,
             route_channel_width=route_channel_width,
             workers=workers,
-            original_ir_path=(
-                paths["ir"] if _sta_path_database(shared_root) else None
-            ),
-            assignment_path=(
-                paths["assignment"] if _sta_path_database(shared_root) else None
-            ),
-            routes_path=(
-                paths["routes"] if _sta_path_database(shared_root) else None
-            ),
-            path_database_path=_sta_path_database(shared_root),
+            original_ir_path=(paths["ir"] if path_database else None),
+            assignment_path=(paths["assignment"] if path_database else None),
+            routes_path=(paths["routes"] if path_database else None),
+            path_database_path=path_database,
+            logic_path_database_path=logic_path_database,
         )
     runtime = run_phase7c(
         phase6_root / "schedule.json",
