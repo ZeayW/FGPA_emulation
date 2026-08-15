@@ -31,6 +31,7 @@ from .lowering import run_placement_ir_lowering
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
 from .packed_placement import run_packed_openparf_placement
+from .openparf import validate_openparf_runtime
 from .physical_backend import (
     PHYSICAL_PARTITION_RESULT_SCHEMA,
     physical_backend_descriptor,
@@ -464,6 +465,13 @@ def run_multi_fpga_physical_flow(
     output_dir.mkdir(parents=True, exist_ok=True)
     architecture_path = None
     if backend == "open":
+        # Import the exact analytical-placement dependency chain before any
+        # expensive per-FPGA synthesis or VPR work.  A wrong Python environment
+        # must fail fast rather than after all pack/place checkpoints finish.
+        validate_openparf_runtime(
+            install_root=openparf_install,
+            python_executable=openparf_python,
+        )
         architecture_root = output_dir / "architecture"
         architecture_root.mkdir(parents=True, exist_ok=True)
         if architecture is None:

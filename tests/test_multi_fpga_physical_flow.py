@@ -339,6 +339,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     side_effect=fake_placement,
                 ),
                 patch(
+                    "emuflow.multi_fpga_physical_flow.validate_openparf_runtime",
+                    return_value={"status": "pass"},
+                ),
+                patch(
                     "emuflow.multi_fpga_physical_flow.run_vpr_route_packed",
                     side_effect=fake_route,
                 ),

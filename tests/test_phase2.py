@@ -12,6 +12,7 @@ from emuflow.openparf import (
     openparf_instance_names,
     resolve_openparf_install,
     run_openparf,
+    validate_openparf_runtime,
 )
 from emuflow.phase2 import run_phase2
 from emuflow.placement import Placement, _vivado_regexp_literal
@@ -24,6 +25,23 @@ IR_FIXTURE = ROOT / "examples/yosys/counter.json"
 
 
 class ArchitectureDBTest(unittest.TestCase):
+    def test_openparf_runtime_preflight_rejects_broken_python(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            installation = root / "openparf-install"
+            (installation / "openparf").mkdir(parents=True)
+            (installation / "openparf.py").write_text("", encoding="utf-8")
+            python = root / "broken-python"
+            python.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+            python.chmod(0o700)
+            with self.assertRaisesRegex(
+                Exception, "runtime preflight failed"
+            ):
+                validate_openparf_runtime(
+                    install_root=installation,
+                    python_executable=python,
+                )
+
     def test_secondary_ultrascale_ff_bel_is_supported(self) -> None:
         self.assertEqual(
             compatible_cells_for_bel("AFF2", "FF"),
