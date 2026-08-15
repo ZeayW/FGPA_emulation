@@ -46,6 +46,7 @@ from emuflow.tdm import (
     build_tdm_schedule,
     validate_tdm_schedule,
 )
+from emuflow.timing_routing import route_system_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,6 +183,109 @@ def _wide_fanout_ir(width=32):
     )
 
 
+def _reconvergent_ir():
+    instances = [
+        {"id": "qa", "type": "FDRE", "resources": {"ff": 1}},
+        {"id": "qb", "type": "FDRE", "resources": {"ff": 1}},
+        {"id": "la", "type": "LUT2", "resources": {"lut": 1}},
+        {"id": "lb", "type": "LUT2", "resources": {"lut": 1}},
+        {
+            "id": "merge",
+            "type": "LUT2",
+            "parameters": {"INIT": "1000"},
+            "resources": {"lut": 1},
+        },
+        {"id": "after", "type": "LUT2", "resources": {"lut": 1}},
+        {"id": "qout", "type": "FDRE", "resources": {"ff": 1}},
+    ]
+    nets = [
+        {
+            "id": "qa_q",
+            "name": "qa_q",
+            "cut_class": "register_output",
+            "drivers": [_endpoint("qa", "Q")],
+            "sinks": [_endpoint("la", "I0")],
+        },
+        {
+            "id": "qb_q",
+            "name": "qb_q",
+            "cut_class": "register_output",
+            "drivers": [_endpoint("qb", "Q")],
+            "sinks": [_endpoint("lb", "I0")],
+        },
+        {
+            "id": "a",
+            "name": "a",
+            "cut_class": "combinational",
+            "drivers": [_endpoint("la", "O")],
+            "sinks": [_endpoint("merge", "I0")],
+        },
+        {
+            "id": "b",
+            "name": "b",
+            "cut_class": "combinational",
+            "drivers": [_endpoint("lb", "O")],
+            "sinks": [_endpoint("merge", "I1")],
+        },
+        {
+            "id": "c",
+            "name": "c",
+            "cut_class": "combinational",
+            "drivers": [_endpoint("merge", "O")],
+            "sinks": [_endpoint("after", "I0")],
+        },
+        {
+            "id": "d",
+            "name": "d",
+            "cut_class": "register_input",
+            "drivers": [_endpoint("after", "O")],
+            "sinks": [_endpoint("qout", "D")],
+        },
+    ]
+    return EmuIR(
+        {
+            "schema": "emuflow.emuir/v1",
+            "design": {
+                "name": "reconvergent_cut",
+                "top": "reconvergent_cut",
+                "source_format": "test",
+            },
+            "ports": [],
+            "instances": instances,
+            "nets": nets,
+            "clocks": [],
+            "warnings": [],
+        }
+    )
+
+
+def _three_fpga_platform(topology="line"):
+    value = json.loads(PLATFORM_PATH.read_text(encoding="utf-8"))
+    value["platform"]["name"] = f"static_exact_three_fpga_{topology}"
+    fpga2 = copy.deepcopy(value["fpgas"][1])
+    fpga2["id"] = "fpga2"
+    value["fpgas"].append(fpga2)
+    if topology == "line":
+        value["links"].append(
+            {
+                **copy.deepcopy(value["links"][0]),
+                "id": "link_1_2",
+                "endpoints": ["fpga1", "fpga2"],
+            }
+        )
+    elif topology == "star":
+        value["links"].append(
+            {
+                **copy.deepcopy(value["links"][0]),
+                "id": "link_0_2",
+                "endpoints": ["fpga0", "fpga2"],
+            }
+        )
+    else:
+        raise AssertionError("unknown fixture topology")
+    return Platform.from_dict(value)
+
+
 class CombinationalCutCharacterizationTest(unittest.TestCase):
     def test_chain_has_stable_dependency_depth_and_split_upper_bounds(self):
         ir = _chain_ir()
@@ -231,6 +335,36 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             for item in report["ineligible_combinational_cuts"]
         }
         self.assertIn("driver-not-supported-soft-logic", reasons["n0"])
+
+    def test_multi_driver_async_control_and_latch_sinks_fail_closed(self):
+        value = _chain_ir().to_dict()
+        value["nets"][1]["drivers"].append(_endpoint("l1", "O"))
+        value["nets"][2]["sinks"] = [_endpoint("q1", "CLR")]
+        value["instances"].append(
+            {"id": "lat", "type": "DLATCH", "resources": {"ff": 1}}
+        )
+        value["nets"].append(
+            {
+                "id": "latch_control",
+                "name": "latch_control",
+                "cut_class": "combinational",
+                "drivers": [_endpoint("l2", "O")],
+                "sinks": [_endpoint("lat", "G")],
+            }
+        )
+        report = characterize_combinational_cuts(EmuIR(value))
+        reasons = {
+            item["net"]: item["reasons"]
+            for item in report["ineligible_combinational_cuts"]
+        }
+        self.assertIn("not-single-instance-driver", reasons["n0"])
+        self.assertIn(
+            "unsupported-sequential-control-or-memory-sink", reasons["n1"]
+        )
+        self.assertIn(
+            "unsupported-sequential-control-or-memory-sink",
+            reasons["latch_control"],
+        )
 
     def test_tampered_report_is_rejected(self):
         ir = _chain_ir()
@@ -546,6 +680,322 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 cut_mode=CUT_MODE_STATIC_EXACT,
                 max_cross_fpga_dependency_depth=3,
             )
+
+    def test_reconvergent_depth_two_waits_for_every_predecessor(self):
+        ir = _reconvergent_ir()
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+            },
+            ir,
+            self.platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=2,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        instance_targets = {
+            "qa": "fpga0",
+            "qb": "fpga0",
+            "la": "fpga0",
+            "lb": "fpga0",
+            "merge": "fpga1",
+            "after": "fpga0",
+            "qout": "fpga0",
+        }
+        cluster_targets = {}
+        for instance, target in instance_targets.items():
+            cluster_id = cluster_for[instance]
+            self.assertNotIn(cluster_id, cluster_targets)
+            cluster_targets[cluster_id] = target
+        assignment = build_partition_assignment(
+            ir,
+            self.platform,
+            clusters,
+            constraints,
+            cluster_targets,
+            provider="test-reconvergent-static-exact-v1",
+            seed=0,
+        )
+        node_by_net = {
+            item["net"]: item
+            for item in assignment["semantic_contract"]["cut_nodes"]
+        }
+        self.assertEqual(node_by_net["c"]["predecessor_cut_nets"], ["a", "b"])
+        routes = self._exact_routes(assignment)
+        schedule = build_tdm_schedule(routes, self.platform)
+        readiness = {
+            item["net"]: item
+            for item in schedule["schedule_dependency_certificate"][
+                "demand_readiness"
+            ]
+        }
+        evidence = readiness["c"]["evidence"]
+        self.assertEqual(
+            [item["predecessor_cut_net"] for item in evidence], ["a", "b"]
+        )
+        self.assertEqual(
+            readiness["c"]["source_ready_slot"],
+            max(item["ready_slot"] for item in evidence),
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, schedule)["status"],
+            "pass",
+        )
+
+    def test_one_logical_cut_can_use_two_route_hops_without_depth_inflation(self):
+        platform = _three_fpga_platform("line")
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+            },
+            self.ir,
+            platform,
+        )
+        clusters = build_clusters(
+            self.ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=1,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        targets = {
+            cluster_for["q0"]: "fpga0",
+            cluster_for["l0"]: "fpga0",
+            cluster_for["l1"]: "fpga2",
+            cluster_for["q1"]: "fpga2",
+        }
+        assignment = build_partition_assignment(
+            self.ir,
+            platform,
+            clusters,
+            constraints,
+            targets,
+            provider="test-multihop-static-exact-v1",
+            seed=0,
+        )
+        route_constraints = normalize_route_constraints(
+            None, platform, frame_slots=16
+        )
+        routes = route_system_native(
+            assignment, platform, route_constraints
+        )
+        self.assertEqual(len(routes["routes"]), 1)
+        self.assertEqual(len(routes["routes"][0]["tree_edges"]), 2)
+        self.assertEqual(
+            assignment["semantic_contract"]["metrics"][
+                "maximum_combinational_dependency_depth"
+            ],
+            1,
+        )
+        schedule = build_tdm_schedule(routes, platform)
+        entries = sorted(
+            schedule["entries"], key=lambda item: item["hop"]
+        )
+        self.assertEqual([item["hop"] for item in entries], [0, 1])
+        self.assertGreaterEqual(
+            entries[1]["slot"], entries[0]["arrival_slot"] + 1
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, platform, schedule)["status"],
+            "pass",
+        )
+
+    def test_multicast_cut_checks_every_sink_arrival_and_capture(self):
+        ir = _wide_fanout_ir(width=2)
+        platform = _three_fpga_platform("star")
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=1,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        instance_targets = {
+            "q0": "fpga0",
+            "source_lut": "fpga0",
+            "sink_lut_000": "fpga1",
+            "sink_ff_000": "fpga1",
+            "sink_lut_001": "fpga2",
+            "sink_ff_001": "fpga2",
+        }
+        cluster_targets = {}
+        for instance, target in instance_targets.items():
+            cluster_id = cluster_for[instance]
+            if cluster_id in cluster_targets:
+                self.assertEqual(cluster_targets[cluster_id], target)
+            cluster_targets[cluster_id] = target
+        assignment = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            cluster_targets,
+            provider="test-multicast-static-exact-v1",
+            seed=0,
+        )
+        route_constraints = normalize_route_constraints(
+            None, platform, frame_slots=16
+        )
+        routes = route_system_native(
+            assignment, platform, route_constraints
+        )
+        self.assertEqual(len(routes["routes"]), 1)
+        self.assertEqual(routes["routes"][0]["sinks"], ["fpga1", "fpga2"])
+        self.assertEqual(len(routes["routes"][0]["tree_edges"]), 2)
+        schedule = build_tdm_schedule(routes, platform)
+        completion = schedule["demand_completions"][0]
+        self.assertEqual(
+            set(completion["sink_arrival_slots"]), {"fpga1", "fpga2"}
+        )
+        capture_records = schedule["schedule_dependency_certificate"][
+            "capture_readiness"
+        ]
+        self.assertEqual(
+            {item["fpga"] for item in capture_records}, {"fpga1", "fpga2"}
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, platform, schedule)["status"],
+            "pass",
+        )
+
+    def test_unrelated_slow_level_one_demand_does_not_gate_ready_chain(self):
+        value = self.ir.to_dict()
+        value["design"]["name"] = "path_local_readiness"
+        value["instances"].extend(
+            [
+                {"id": "qu", "type": "FDRE", "resources": {"ff": 1}},
+                {"id": "lu0", "type": "LUT2", "resources": {"lut": 1}},
+                {"id": "lu1", "type": "LUT2", "resources": {"lut": 1}},
+                {"id": "quout", "type": "FDRE", "resources": {"ff": 1}},
+            ]
+        )
+        value["nets"].extend(
+            [
+                {
+                    "id": "qu_q",
+                    "name": "qu_q",
+                    "cut_class": "register_output",
+                    "drivers": [_endpoint("qu", "Q")],
+                    "sinks": [_endpoint("lu0", "I0")],
+                },
+                {
+                    "id": "u",
+                    "name": "u",
+                    "cut_class": "combinational",
+                    "drivers": [_endpoint("lu0", "O")],
+                    "sinks": [_endpoint("lu1", "I0")],
+                },
+                {
+                    "id": "u_d",
+                    "name": "u_d",
+                    "cut_class": "register_input",
+                    "drivers": [_endpoint("lu1", "O")],
+                    "sinks": [_endpoint("quout", "D")],
+                },
+            ]
+        )
+        ir = EmuIR(value)
+        platform = _three_fpga_platform("line")
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_tolerance": 1.0,
+            },
+            ir,
+            platform,
+        )
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=2,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        instance_targets = {
+            "q0": "fpga0",
+            "l0": "fpga0",
+            "l1": "fpga1",
+            "l2": "fpga0",
+            "q1": "fpga0",
+            "qu": "fpga0",
+            "lu0": "fpga0",
+            "lu1": "fpga2",
+            "quout": "fpga2",
+        }
+        cluster_targets = {}
+        for instance, target in instance_targets.items():
+            cluster_id = cluster_for[instance]
+            if cluster_id in cluster_targets:
+                self.assertEqual(cluster_targets[cluster_id], target)
+            cluster_targets[cluster_id] = target
+        assignment = build_partition_assignment(
+            ir,
+            platform,
+            clusters,
+            constraints,
+            cluster_targets,
+            provider="test-path-local-static-exact-v1",
+            seed=0,
+        )
+        routes = route_system_native(
+            assignment,
+            platform,
+            normalize_route_constraints(None, platform, frame_slots=16),
+        )
+        schedule = build_tdm_schedule(routes, platform)
+        readiness = {
+            item["net"]: item["source_ready_slot"]
+            for item in schedule["schedule_dependency_certificate"][
+                "demand_readiness"
+            ]
+        }
+        completions = {
+            item["net"]: item["completion_slot"]
+            for item in schedule["demand_completions"]
+        }
+        self.assertLess(readiness["n1"], completions["u"])
+        self.assertEqual(
+            validate_tdm_schedule(routes, platform, schedule)["status"],
+            "pass",
+        )
 
     def test_wide_cone_splits_and_improves_checked_balance(self):
         ir = _wide_fanout_ir()
