@@ -293,6 +293,9 @@ emuflow combinational-cut validate \
 It independently reconstructs combinational SCCs, a conservative
 single-driver LUT-only potential-cut set, complete potential-cut dependencies,
 depth-1/depth-2 distributions, and theoretical atomic-component reductions.
+Graph construction uses indexed instance membership rather than repeated
+linear scans; a regression guard prevents sparse large-netlist
+characterization from falling back to quadratic membership work.
 Its qualification is explicitly
 `analysis-only-no-partition-or-equivalence-claim`: it does not change Phase 3
 output or any default provider. An explicit Phase 3 depth-1 or depth-2

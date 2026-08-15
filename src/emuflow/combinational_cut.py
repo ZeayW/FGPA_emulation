@@ -259,6 +259,12 @@ def characterize_combinational_cuts(
         for instance_id, classification in classes.items()
         if classification != "architectural-state-or-memory"
     )
+    # The ordered list is retained for deterministic SCC traversal, while
+    # graph construction must use a set for membership.  Real synthesized
+    # designs contain hundreds of thousands of instances and nets; testing
+    # membership in ``combinational_nodes`` directly would turn this otherwise
+    # linear scan into O(|nets| * |instances|).
+    combinational_set = set(combinational_nodes)
     adjacency: Dict[str, Set[str]] = defaultdict(set)
     self_loops: Set[str] = set()
     incoming_by_instance: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
@@ -283,10 +289,10 @@ def characterize_combinational_cuts(
         if len(driver_instances) != 1 or net["cut_class"] in {"clock", "reset"}:
             continue
         source = driver_instances[0]
-        if source not in combinational_nodes:
+        if source not in combinational_set:
             continue
         for sink in sink_instances:
-            if sink not in combinational_nodes:
+            if sink not in combinational_set:
                 continue
             adjacency[source].add(sink)
             if source == sink:

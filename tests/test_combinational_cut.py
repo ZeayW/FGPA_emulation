@@ -287,6 +287,51 @@ def _three_fpga_platform(topology="line"):
 
 
 class CombinationalCutCharacterizationTest(unittest.TestCase):
+    def test_sparse_graph_membership_is_not_quadratic(self):
+        class CountingString(str):
+            comparisons = 0
+
+            def __eq__(self, other):
+                type(self).comparisons += 1
+                return super().__eq__(other)
+
+            __hash__ = str.__hash__
+
+        instance_ids = [
+            CountingString(f"lut_{index:04d}") for index in range(256)
+        ]
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "sparse_membership",
+                    "top": "sparse_membership",
+                    "source_format": "test",
+                },
+                "ports": [],
+                "instances": [
+                    {"id": instance_id, "type": "LUT2", "resources": {"lut": 1}}
+                    for instance_id in instance_ids
+                ],
+                "nets": [
+                    {
+                        "id": CountingString(f"net_{index:04d}"),
+                        "name": f"net_{index:04d}",
+                        "cut_class": "combinational",
+                        "drivers": [_endpoint(instance_id, "O")],
+                        "sinks": [],
+                    }
+                    for index, instance_id in enumerate(instance_ids)
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        CountingString.comparisons = 0
+        report = characterize_combinational_cuts(ir, (1,))
+        self.assertEqual(report["metrics"]["instances"], len(instance_ids))
+        self.assertLess(CountingString.comparisons, len(instance_ids))
+
     def test_chain_has_stable_dependency_depth_and_split_upper_bounds(self):
         ir = _chain_ir()
         report = characterize_combinational_cuts(ir)
