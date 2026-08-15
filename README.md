@@ -341,6 +341,9 @@ macro-step. The report distinguishes randomized validation from exhaustive
 small-model proof. Phase 7C now independently reconstructs every exact
 segment's routed settle window and refuses missing evidence or a late
 source/capture even when aggregate virtual-runtime slack is positive. This is
+also reflected at the one-command CLI boundary: exact mode defaults slot
+refinement to zero, while an explicit nonzero request remains fail-closed until
+that optimizer is dependency-qualified. This is
 implemented qualification machinery; a real routed complete Phase 1--7 result
 is still pending and the mode remains opt-in.
 

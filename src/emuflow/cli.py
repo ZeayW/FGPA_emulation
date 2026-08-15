@@ -1702,7 +1702,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--post-refinement-iterations", type=int, default=200
     )
     multi_fpga_compile.add_argument(
-        "--slot-refinement-iterations", type=int, default=200
+        "--slot-refinement-iterations",
+        type=int,
+        default=None,
+        help=(
+            "explicit slot-refinement iteration count; defaults to 0 for "
+            "static exact combinational cuts and 200 otherwise"
+        ),
     )
     multi_fpga_compile.add_argument(
         "--cross-stage-iterations",
@@ -4344,6 +4350,16 @@ def _dispatch(args: argparse.Namespace) -> int:
             return 0
         if args.archive_cleanup and args.archive_out is None:
             raise EmuFlowError("--archive-cleanup requires --archive-out")
+        # Exact-mode list scheduling is already the concrete dependency-aware
+        # realization.  Do not silently opt it into the ordinary CLI's slot
+        # optimizer default.  An explicitly supplied nonzero value remains
+        # visible and is rejected by run_multi_fpga_flow's exact-mode gate.
+        if args.slot_refinement_iterations is None:
+            args.slot_refinement_iterations = (
+                0
+                if args.cut_mode == "static-exact-combinational"
+                else 200
+            )
         report = run_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,

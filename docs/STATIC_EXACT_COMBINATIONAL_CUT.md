@@ -189,7 +189,10 @@ Experiment v2 compiler by adding these fields to the case config:
 Those values are part of the Phase 3 producer and validator identities.  The
 compiler fixes Phase 4 to the native route tree with post-route timing
 annotation, Phase 5 to the exact dependency scheduler, omits ratio optimizers,
-and produces three independently sealed physical Phase 7 terminals.  This is
+and makes the ordinary CLI slot-refinement default zero for this mode. An
+explicit nonzero request is still rejected until that optimizer is dependency-
+qualified. The compiler produces three independently sealed physical Phase 7
+terminals. This is
 the evidence path; the one-command flow above remains a convenience path.
 
 Characterization is deterministic and near-linear apart from sorting. The

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.board_link_timing import build_board_link_timing_model
-from emuflow.cli import _build_parser
+from emuflow.cli import _build_parser, _dispatch
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
@@ -92,6 +92,71 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 [*base, "--no-timing-driven"]
             ).timing_driven
         )
+
+    def test_cli_exact_mode_does_not_inherit_slot_refinement_default(self):
+        base = [
+            "multi-fpga",
+            "compile",
+            "--yosys-json",
+            str(ROOT / "examples/yosys/counter.json"),
+            "--platform",
+            str(PLATFORM),
+            "--out",
+            "unused",
+        ]
+        parser = _build_parser()
+        exact = parser.parse_args(
+            [*base, "--cut-mode", "static-exact-combinational"]
+        )
+        safe = parser.parse_args(base)
+        with (
+            patch("emuflow.cli.run_multi_fpga_flow") as run,
+            patch("emuflow.cli._print_json"),
+        ):
+            run.return_value = {"status": "pass"}
+            self.assertEqual(_dispatch(exact), 0)
+            self.assertEqual(
+                run.call_args.kwargs["slot_refinement_iterations"], 0
+            )
+            run.reset_mock()
+            self.assertEqual(_dispatch(safe), 0)
+            self.assertEqual(
+                run.call_args.kwargs["slot_refinement_iterations"], 200
+            )
+
+        explicit = parser.parse_args(
+            [
+                *base,
+                "--cut-mode",
+                "static-exact-combinational",
+                "--slot-refinement-iterations",
+                "7",
+            ]
+        )
+        with (
+            patch("emuflow.cli.run_multi_fpga_flow") as run,
+            patch("emuflow.cli._print_json"),
+        ):
+            run.return_value = {"status": "pass"}
+            self.assertEqual(_dispatch(explicit), 0)
+            self.assertEqual(
+                run.call_args.kwargs["slot_refinement_iterations"], 7
+            )
+
+    def test_exact_mode_still_rejects_explicit_slot_refinement(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                EmuFlowError, "does not accept unqualified ratio/slot"
+            ):
+                run_multi_fpga_flow(
+                    platform_path=PLATFORM,
+                    output_dir=Path(temporary_directory) / "exact",
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    top="counter",
+                    clocks=["clk"],
+                    cut_mode="static-exact-combinational",
+                    slot_refinement_iterations=7,
+                )
 
     def test_physical_baseline_still_materializes_timing_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
