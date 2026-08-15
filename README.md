@@ -229,7 +229,11 @@ EmuIR connectivity plus the selected timing-cell model. A net may be absent
 only when OpenSTA reports zero paths and that independent graph proves there
 is no reachable sequential data/setup endpoint; a queried path whose launch
 net was omitted from OpenSTA's point list retains the uniquely bound launch-net
-identity explicitly. The physical stage likewise keeps the
+identity explicitly. If an internal LUT output is not accepted as an OpenSTA
+startpoint but directly drives a structurally proven sequential data pin, the
+extractor queries that exact endpoint instead; it does not weaken the final
+per-net coverage check or treat arbitrary internal pins as timing starts. The
+physical stage likewise keeps the
 complete database for same-FPGA and final set-hash coverage, while using the
 projected member identities for routed cross-FPGA logic-segment queries.
 Both original-target-clock and virtual-runtime-clock system slack are
@@ -720,6 +724,15 @@ PyTorch installation is insufficient. Set
 `EMUFLOW_OPENPARF_ENABLE_CUDA=ON` only when that PyTorch installation and the
 CUDA toolkit are compatible. See the upstream links and license information in
 [Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md).
+
+The bundled OpenPARF integration keeps utilization reporting masks separate
+from the live optimization subspace. Once a resource type is legalized and
+locked, its density remains reportable but it is removed from the electric
+potential solve, multiplier normalization, and position-gradient updates. An
+empty active subspace is a finite no-op and terminates global optimization;
+zero-curvature Nesterov estimates retain the previous finite step instead of
+evaluating a zero-gradient division. Non-finite inputs remain hard failures
+rather than being hidden by an arbitrary epsilon.
 
 For fast work on EmuFlow's first-party kernels and artifact contracts, a
 developer may explicitly disable the large imported engines. This is a partial

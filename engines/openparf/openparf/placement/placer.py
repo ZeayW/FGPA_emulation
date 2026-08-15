@@ -40,6 +40,7 @@ import torch.nn as nn
 from .data_collections import DataCollections
 from .op_collections import OpCollections
 from .nesterov import NesterovAcceleratedGradientOptimizer
+from .numerical import masked_l2_normalize, safe_l2_step_size
 from .metric import OptIter, EvalMetric, array2str, iarray2str
 from .place_model import PlaceModel, FenceRegionPlaceModel
 from .draw_place import (
@@ -1067,7 +1068,7 @@ class Placer(nn.Module):
             self.data_cls.inst_lock_mask[
                 self.data_cls.area_type_inst_groups[io_at_id]
             ] = 1
-            self.data_cls.area_type_lock_mask[io_at_id] = 1
+            self.data_cls.lock_area_types([io_at_id])
         # reset optimizer
         self.reset_optimizer(opt_iter, sll_flag)
         # self.plot(os.path.join(self.params.plot_dir, "iter%s_after_io_rough_legalizaion.bmp" % ('{:04}'.format(opt_iter.iteration))),
@@ -2027,6 +2028,13 @@ class Placer(nn.Module):
                 avg_at_grad_norm = at_grad.norm(dim=1).mean()
                 logger.info("at_type: %d, avg-norm: %g", at_type, avg_at_grad_norm)
 
+    def _project_active_gradient(self, gradient):
+        """Project a position gradient onto currently unlocked instances."""
+
+        return gradient.masked_fill(
+            self.data_cls.inst_lock_mask.view([-1, 1]).bool(), 0
+        )
+
     def one_step(self, optimizer, eval_ops, opt_iter, sll_flag=False):
         """@brief forward one step"""
         pos = self.data_cls.pos[0]
@@ -2233,7 +2241,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         wirelength.backward()
-        wirelength_grad = pos.grad.clone()
+        wirelength_grad = self._project_active_gradient(pos.grad.clone())
 
         # Backup initial wirelength
         self.data_cls.wl_0 = wirelength.data.clone()
@@ -2257,7 +2265,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         density.backward()
-        density_grad = pos.grad.clone()
+        density_grad = self._project_active_gradient(pos.grad.clone())
 
         # Backup initial density term
         self.data_cls.density_0 = density.data.clone()
@@ -2268,7 +2276,7 @@ class Placer(nn.Module):
             if pos.grad is not None:
                 pos.grad.zero_()
             wasll.backward()
-            sll_grad = pos.grad.clone()
+            sll_grad = self._project_active_gradient(pos.grad.clone())
             self.data_cls.multiplier.lambdas, self.data_cls.multiplier.psi = self._compute_update_lambdas_withSll(
                 phi=phi,
                 density_term_grad=density_grad,
@@ -2304,7 +2312,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         wirelength.backward()
-        wirelength_grad = pos.grad.clone()
+        wirelength_grad = self._project_active_gradient(pos.grad.clone())
 
         # Compute potential energy vector
         phi = self.op_cls.density_op(pos)
@@ -2316,7 +2324,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         density_term.backward()
-        density_term_grad = pos.grad.clone()
+        density_term_grad = self._project_active_gradient(pos.grad.clone())
 
         # Get sll gradient and init/reset_lambdas 
         if sll_flag:
@@ -2324,7 +2332,7 @@ class Placer(nn.Module):
             if pos.grad is not None:
                 pos.grad.zero_()
             wasll.backward()
-            sll_grad = pos.grad.clone()
+            sll_grad = self._project_active_gradient(pos.grad.clone())
             self.data_cls.multiplier.lambdas, self.data_cls.multiplier.psi = self._compute_update_lambdas_withSll(
                 phi=phi,
                 density_term_grad=density_term_grad,
@@ -2357,7 +2365,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         wirelength.backward()
-        wirelength_grad = pos.grad.clone()
+        wirelength_grad = self._project_active_gradient(pos.grad.clone())
 
         # Compute potential energy vector
         phi = self.op_cls.density_op(pos)
@@ -2370,7 +2378,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         density.backward()
-        density_grad = pos.grad.clone()
+        density_grad = self._project_active_gradient(pos.grad.clone())
 
         # Get sll gradient
         if sll_flag:
@@ -2378,7 +2386,7 @@ class Placer(nn.Module):
             if pos.grad is not None:
                 pos.grad.zero_()
             wasll.backward()
-            sll_grad = pos.grad.clone()
+            sll_grad = self._project_active_gradient(pos.grad.clone())
         else:
             sll_grad = None
 
@@ -2392,7 +2400,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         fence_region_cost.backward()
-        fence_region_cost_grad = pos.grad.clone()
+        fence_region_cost_grad = self._project_active_gradient(pos.grad.clone())
         fence_region_cost_grad[0 : self.data_cls.movable_range[0]] = 0
         fence_region_cost_grad[self.data_cls.movable_range[1] :] = 0
 
@@ -2425,7 +2433,7 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         wirelength.backward()
-        wirelength_grad = pos.grad.clone()
+        wirelength_grad = self._project_active_gradient(pos.grad.clone())
 
         # Compute potential energy vector
         phi = self.op_cls.density_op(pos)
@@ -2438,14 +2446,14 @@ class Placer(nn.Module):
         if pos.grad is not None:
             pos.grad.zero_()
         density.backward()
-        density_grad = pos.grad.clone()
+        density_grad = self._project_active_gradient(pos.grad.clone())
 
         # Get sll gradient
         wasll = self.data_cls.multiplier.psi * self.op_cls.wasll_op(pos)
         if pos.grad is not None:
             pos.grad.zero_()
         wasll.backward()
-        sll_grad = pos.grad.clone()
+        sll_grad = self._project_active_gradient(pos.grad.clone())
 
         # Compute fence region cost. Note that fence region cost only makes senses to movable instances.
         movable_pos = pos[
@@ -2459,7 +2467,7 @@ class Placer(nn.Module):
         fence_region_cost.backward()
         pos.grad[0 : self.data_cls.movable_range[0]] = 0
         pos.grad[self.data_cls.movable_range[1] :] = 0
-        fence_region_cost_grad = pos.grad.clone()
+        fence_region_cost_grad = self._project_active_gradient(pos.grad.clone())
 
         # Update clock region cost multipliers
         self.data_cls.fence_region_cost_parameters.eta = self._compute_initial_eta(
@@ -2534,8 +2542,9 @@ class Placer(nn.Module):
             phi = self.data_cls.phi
             phi_hat = self._compute_relative_potential_energy(phi)
             subgrad = phi_hat + 0.5 * self.params.lambda_beta * phi_hat.pow(2)
-            subgrad_normalized = subgrad / subgrad.norm(p=2)
-            subgrad_normalized.masked_fill_(self.data_cls.area_type_lock_mask, 0)
+            subgrad_normalized = masked_l2_normalize(
+                subgrad, ~self.data_cls.optimization_area_type_mask
+            )
             # print("subgrad_normalized1 = ", subgrad_normalized)
 
             # Equation (21) in elfplace's paper
@@ -2605,7 +2614,7 @@ class Placer(nn.Module):
         x_k_1 = torch.autograd.Variable(x_k - lr * g_k, requires_grad=True)
         obj_k_1, g_k_1, grad_dicts = model.obj_and_grad_fn(x_k_1, sll_flag)
 
-        learning_rate = (x_k - x_k_1).norm(p=2) / (g_k - g_k_1).norm(p=2)
+        learning_rate = safe_l2_step_size(x_k - x_k_1, g_k - g_k_1, lr)
         # update learning rate
         for param_group in optimizer.param_groups:
             param_group["lr"] = learning_rate.data
@@ -2617,6 +2626,13 @@ class Placer(nn.Module):
             len(metrics) > 1
             and metrics[-1].opt_iter.iteration >= self.params.max_global_place_iters
         ):
+            return True
+
+        # Once every resource type has been legalized and removed from the
+        # active subspace there is no continuous variable left to optimize.
+        # Waiting out the historical lock interval would only perform zero-
+        # gradient Nesterov iterations and cannot improve the placement.
+        if not torch.any(self.data_cls.optimization_area_type_mask):
             return True
 
             # do not stop if HPWL is still improving

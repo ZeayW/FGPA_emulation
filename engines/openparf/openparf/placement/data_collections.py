@@ -185,6 +185,10 @@ class DataCollections(object):
             # 1 for area type with movable types, 0 for without
             # record the area types we really care
             self.area_type_mask = (self.total_movable_areas > 0)
+            # Keep reporting/overflow coverage separate from the live
+            # optimization subspace.  Legalizers remove whole resource types
+            # from the latter while their utilization must remain reportable.
+            self.optimization_area_type_mask = self.area_type_mask.clone()
             total_fixed_areas = np.array(placedb.totalFixedInstAreas(),
                                          dtype=ntype)
             self.total_fixed_areas = torch.from_numpy(
@@ -514,6 +518,12 @@ class DataCollections(object):
                          (self.bin_map_dims.tolist()))
             logging.info("bin sizes %s" % (array2d2str(self.bin_map_sizes)))
             logging.info("#clock nets: %d" % (self.num_clocks))
+
+    def lock_area_types(self, area_types):
+        """Remove legalized resource types from the optimization subspace."""
+
+        self.area_type_lock_mask[area_types] = True
+        self.optimization_area_type_mask[area_types] = False
 
     @property
     def total_insts(self):

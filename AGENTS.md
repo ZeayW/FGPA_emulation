@@ -360,6 +360,10 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   EmuIR-plus-timing-model endpoint-reachability classification.  Never silence
   a missing cut net by dropping the coverage assertion or by treating a
   producer-reported zero-path result as self-authenticating.
+- OpenPARF legalization locks must project through the electric-potential,
+  multiplier, gradient, and step-size calculations.  An empty active
+  placement subspace is a no-op/termination condition, not a reason to divide
+  a zero gradient or to hide NaN with a broad epsilon clamp.
 - Existing pre-cache results should be registered with `experiment-cache
   import` only after the node's independent semantic validator passes and all
   declared artifacts pass hash sealing.  New node executions use the same
