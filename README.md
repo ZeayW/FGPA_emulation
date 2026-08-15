@@ -1139,6 +1139,27 @@ emuflow experiment-cache farm-spec \
   --out /research/d4/gds/ziyiwang21/experiments/koios-case6.frontier1.farm.json
 ```
 
+When workers require a container or runtime launcher, seal that launcher into
+the generated farm specification instead of editing the specification after
+planning. Repeat `--worker-arg` in exact argv order; `{install}` is expanded by
+the validation farm on the selected node. For example:
+
+```bash
+emuflow experiment-cache farm-spec \
+  --plan /research/project/experiments/design.plan.json \
+  --install-dir /research/project/install/$COMMIT \
+  --node hpc1 --farm-id wrapped-frontier \
+  --worker-arg /research/project/bin/emuflow-run \
+  --worker-arg env \
+  --worker-arg 'PYTHONPATH={install}/lib' \
+  --worker-arg '{install}/bin/emuflow' \
+  --out /research/project/experiments/design.frontier.farm.json
+```
+
+Omitting `--worker-arg` retains the direct-install worker used by
+self-contained installations. An explicitly requested wrapper must contain at
+least one non-empty argument and becomes part of the sealed farm manifest.
+
 Omit `--experiment-node` to submit the complete ready/revalidate frontier.
 Repeat it to submit a storage-bounded subset of that same sealed frontier; a
 waiting, reused, unknown, or duplicate selection is rejected.  This is the

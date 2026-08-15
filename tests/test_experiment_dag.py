@@ -480,6 +480,49 @@ class ExperimentDagTest(unittest.TestCase):
             self.assertEqual([task["id"] for task in farm["tasks"]], ["shared-phase1-5"])
             self.assertIn("--expected-plan-sha256", farm["tasks"][0]["command"])
 
+    def test_farm_spec_seals_explicit_worker_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install = root / "install" / COMMIT
+            install.mkdir(parents=True)
+            plan_path = root / "plan.json"
+            plan_experiment(self._write_spec(root), root / "cache", plan_path)
+            farm_path = root / "farm.json"
+            wrapper = [
+                "/usr/bin/env",
+                "PYTHONPATH={install}/lib",
+                "/runtime/emuflow-run",
+                "{install}/bin/emuflow",
+            ]
+            build_experiment_farm_spec(
+                plan_path,
+                install,
+                ["hpc1"],
+                "wrapped-frontier",
+                farm_path,
+                worker_argv=wrapper,
+            )
+            self.assertEqual(read_json(farm_path)["worker_argv"], wrapper)
+
+            with self.assertRaisesRegex(ValidationError, "non-empty string list"):
+                build_experiment_farm_spec(
+                    plan_path,
+                    install,
+                    ["hpc1"],
+                    "empty-wrapper",
+                    root / "empty.json",
+                    worker_argv=[],
+                )
+            with self.assertRaisesRegex(ValidationError, "non-empty strings"):
+                build_experiment_farm_spec(
+                    plan_path,
+                    install,
+                    ["hpc1"],
+                    "invalid-wrapper",
+                    root / "invalid.json",
+                    worker_argv=["/runtime/emuflow-run", ""],
+                )
+
     def test_farm_spec_can_submit_a_bounded_ready_subset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

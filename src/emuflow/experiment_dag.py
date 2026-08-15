@@ -1280,6 +1280,7 @@ def build_experiment_farm_spec(
     farm_id: str,
     output_path: Path,
     experiment_nodes: Optional[list[str]] = None,
+    worker_argv: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     plan = _load_plan(plan_path)
     ready = [
@@ -1309,6 +1310,15 @@ def build_experiment_farm_spec(
         _identifier(node, "HPC node")
     if len(nodes) != len(set(nodes)):
         raise ValidationError("experiment farm HPC nodes must be unique")
+    if worker_argv is not None:
+        if not isinstance(worker_argv, list) or not worker_argv:
+            raise ValidationError(
+                "experiment farm worker argv must be a non-empty string list"
+            )
+        if any(not isinstance(item, str) or not item.strip() for item in worker_argv):
+            raise ValidationError(
+                "experiment farm worker argv must contain non-empty strings"
+            )
     plan_path = plan_path.resolve()
     plan_sha256 = _sha256(plan_path)
     spec = {
@@ -1341,6 +1351,8 @@ def build_experiment_farm_spec(
             for item in ready
         ],
     }
+    if worker_argv is not None:
+        spec["worker_argv"] = list(worker_argv)
     write_json(output_path, spec)
     return {
         "status": "pass",

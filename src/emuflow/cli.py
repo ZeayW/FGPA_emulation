@@ -465,6 +465,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="submit only this ready/revalidate experiment node; repeatable",
     )
+    experiment_farm.add_argument(
+        "--worker-arg",
+        action="append",
+        default=[],
+        help=(
+            "seal one validation-farm worker wrapper argument; repeat in argv "
+            "order (supports {install})"
+        ),
+    )
     experiment_farm.add_argument("--farm-id", required=True)
     experiment_farm.add_argument("--out", type=Path, required=True)
     experiment_run = experiment_subparsers.add_parser(
@@ -3454,6 +3463,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.farm_id,
                 args.out,
                 args.experiment_node,
+                args.worker_arg or None,
             )
         else:
             report = run_experiment_node(
