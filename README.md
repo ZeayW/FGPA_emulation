@@ -229,8 +229,14 @@ EmuIR connectivity plus the selected timing-cell model. A net may be absent
 only when OpenSTA reports zero paths and that independent graph proves there
 is no reachable sequential data/setup endpoint; a queried path whose launch
 net was omitted from OpenSTA's point list retains the uniquely bound launch-net
-identity explicitly. The physical stage likewise keeps the
-complete database for same-FPGA and final set-hash coverage, while using the
+identity explicitly. If OpenSTA declines to treat an internal cut-net driver
+as a timing startpoint but the independent model proves that the net directly
+feeds a sequential data/setup pin, directed extraction queries that exact
+endpoint instead and preserves the proven cut net at the tail of the ordered
+path. This fallback is restricted to structurally identified direct timing
+endpoints; it does not guess endpoint reachability. The physical stage
+likewise keeps the complete database for same-FPGA and final set-hash coverage,
+while using the
 projected member identities for routed cross-FPGA logic-segment queries.
 Both original-target-clock and virtual-runtime-clock system slack are
 reported.
