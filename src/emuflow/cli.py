@@ -1157,7 +1157,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--max-ratio", type=int)
     multi_fpga_compile.add_argument(
-        "--ratio-quantum", type=int, default=8
+        "--ratio-quantum",
+        type=int,
+        help=(
+            "explicit comparison override; defaults to the frozen Phase 4 "
+            "route constraints"
+        ),
     )
     multi_fpga_compile.add_argument(
         "--post-refinement-iterations", type=int, default=200
@@ -2291,7 +2296,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_stage_optimize.add_argument("--max-ratio", type=int)
     cross_stage_optimize.add_argument(
-        "--ratio-quantum", type=int, default=8
+        "--ratio-quantum",
+        type=int,
+        help=(
+            "explicit comparison override; defaults to the frozen Phase 4 "
+            "route constraints"
+        ),
     )
     cross_stage_optimize.add_argument(
         "--post-refinement-iterations", type=int, default=200

@@ -755,6 +755,72 @@ class TdmFeedbackTest(unittest.TestCase):
                     canonical_phase5_dir=root / "tdm",
                 )
 
+    def test_phase45_loop_inherits_frozen_ratio_quantum(self) -> None:
+        (
+            platform,
+            assignment,
+            timing_source,
+            timing,
+            constraints,
+        ) = self._timing_fixture()
+        constraints["tdm_min_ratio"] = 4
+        constraints["tdm_ratio_quantum"] = 4
+        database = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": assignment["design"],
+            "source": {"provider": "fixture", "input": "fixture"},
+            "normalization": timing["normalization"],
+            "paths": [
+                {
+                    "id": path["id"],
+                    "clock_domain": path["clock_domain"],
+                    "clock_period_ns": path["clock_period_ns"],
+                    "slack_ns": path["slack_ns"],
+                    "fixed_delay_ns": path["fixed_delay_ns"],
+                    "path_nets": list(path["cut_nets"]),
+                    "normalized_slack": path["normalized_slack"],
+                }
+                for path in timing["paths"]
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, value in {
+                "assignment.json": assignment,
+                "platform.json": platform.to_dict(),
+                "timing.json": timing_source,
+                "database.json": database,
+                "constraints.json": constraints,
+            }.items():
+                (root / name).write_text(
+                    json.dumps(value), encoding="utf-8"
+                )
+            report = run_phase45_feedback_loop(
+                database_path=root / "database.json",
+                assignment_path=root / "assignment.json",
+                platform_path=root / "platform.json",
+                timing_paths_path=root / "timing.json",
+                output_dir=root / "phase45",
+                canonical_phase4_dir=root / "system-route",
+                canonical_phase5_dir=root / "tdm",
+                max_iterations=0,
+                route_constraints_path=root / "constraints.json",
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                simulation_frames=2,
+                ratio_max_iterations=20,
+                post_refinement_iterations=10,
+            )
+            ratio_plan = json.loads(
+                (root / "tdm/ratio_plan.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(ratio_plan["configuration"]["min_ratio"], 4)
+            self.assertEqual(
+                ratio_plan["configuration"]["ratio_quantum"], 4
+            )
+            self.assertEqual(report["selected_candidate"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

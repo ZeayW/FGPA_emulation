@@ -193,7 +193,7 @@ def run_frame_length_search(
     simulation_frames: int = 16,
     ratio_max_iterations: int = 500,
     max_ratio: Optional[int] = None,
-    ratio_quantum: int = 8,
+    ratio_quantum: Optional[int] = None,
     post_refinement_iterations: int = 200,
     slot_refinement_iterations: int = 0,
     ratio_convergence: float = 1.0e-9,
@@ -317,6 +317,23 @@ def run_frame_length_search(
             chosen -= 1
 
     selected_root = search_root / f"frame-{chosen:08d}"
+    selected_ratio_plan = read_json(selected_root / "tdm/ratio_plan.json")
+    selected_ratio_configuration = selected_ratio_plan.get("configuration")
+    if not isinstance(selected_ratio_configuration, dict):
+        raise ValidationError(
+            "selected frame-search ratio configuration is invalid"
+        )
+    effective_ratio_quantum = selected_ratio_configuration.get(
+        "ratio_quantum"
+    )
+    if (
+        isinstance(effective_ratio_quantum, bool)
+        or not isinstance(effective_ratio_quantum, int)
+        or effective_ratio_quantum <= 0
+    ):
+        raise ValidationError(
+            "selected frame-search ratio quantum is invalid"
+        )
     shutil.copytree(selected_root / "system-route", route_output_dir)
     shutil.copytree(selected_root / "tdm", tdm_output_dir)
     report = {
@@ -331,7 +348,7 @@ def run_frame_length_search(
         "configuration": {
             "ratio_max_iterations": ratio_max_iterations,
             "max_ratio": max_ratio,
-            "ratio_quantum": ratio_quantum,
+            "ratio_quantum": effective_ratio_quantum,
             "post_refinement_iterations": post_refinement_iterations,
             "slot_refinement_iterations": slot_refinement_iterations,
             "tdm_provider": tdm_provider,
