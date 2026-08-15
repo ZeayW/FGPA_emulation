@@ -1,4 +1,5 @@
 import hashlib
+import heapq
 import json
 from collections import defaultdict
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
@@ -189,6 +190,117 @@ class _MappedModel:
             for instance_id, instance in self.instances.items()
             if _is_ram_type(instance["type"])
         )
+        self.combinational_ids = sorted(self.lut_ids + self.multiply_ids)
+        self.combinational_id_set = frozenset(self.combinational_ids)
+        output_nets_by_instance: Dict[str, List[str]] = defaultdict(list)
+        for (owner, _port, _bit_index), net in self.output_net.items():
+            output_nets_by_instance[owner].append(net)
+        self.combinational_output_nets: Dict[str, Tuple[str, ...]] = {
+            instance_id: tuple(sorted(output_nets_by_instance[instance_id]))
+            for instance_id in self.combinational_ids
+        }
+        driver_by_net = {
+            net: instance_id
+            for instance_id, nets in self.combinational_output_nets.items()
+            for net in nets
+        }
+        dependencies: Dict[str, Set[str]] = {
+            instance_id: set() for instance_id in self.combinational_ids
+        }
+        dependents: Dict[str, Set[str]] = defaultdict(set)
+        for (instance_id, _port, _bit_index), net in self.input_net.items():
+            if instance_id not in self.combinational_id_set:
+                continue
+            driver = driver_by_net.get(net)
+            if driver is None:
+                continue
+            dependencies[instance_id].add(driver)
+            dependents[driver].add(instance_id)
+        indegree = {
+            instance_id: len(items)
+            for instance_id, items in dependencies.items()
+        }
+        ready = [
+            instance_id
+            for instance_id in self.combinational_ids
+            if indegree[instance_id] == 0
+        ]
+        heapq.heapify(ready)
+        order = []
+        while ready:
+            instance_id = heapq.heappop(ready)
+            order.append(instance_id)
+            for dependent in sorted(dependents.get(instance_id, ())):
+                indegree[dependent] -= 1
+                if indegree[dependent] == 0:
+                    heapq.heappush(ready, dependent)
+        if len(order) != len(self.combinational_ids):
+            unresolved = sorted(
+                set(self.combinational_ids) - set(order)
+            )
+            raise ValidationError(
+                "mapped primitive simulation found unresolved combinational "
+                f"cells {unresolved[:8]}"
+            )
+        self.combinational_order = tuple(order)
+        self.combinational_order_index = {
+            instance_id: index
+            for index, instance_id in enumerate(self.combinational_order)
+        }
+
+    def _evaluate_combinational_instance(
+        self,
+        values: Dict[str, int],
+        instance_id: str,
+        overrides: Optional[Mapping[Tuple[str, str], int]] = None,
+    ) -> None:
+        instance = self.instances[instance_id]
+        if _is_multiply_type(instance["type"]):
+            a_width = _parameter_int(instance, "A_WIDTH")
+            b_width = _parameter_int(instance, "B_WIDTH")
+            output_width = _parameter_int(instance, "Y_WIDTH")
+            left = self._bus(
+                values, instance_id, "a", a_width, overrides
+            )
+            right = self._bus(
+                values, instance_id, "b", b_width, overrides
+            )
+            if left is None or right is None:
+                raise ValidationError(
+                    "mapped primitive simulation found unresolved "
+                    f"combinational cells {[instance_id]}"
+                )
+            self._drive_bus(
+                values,
+                instance_id,
+                "out",
+                (left * right) & ((1 << output_width) - 1),
+                output_width,
+            )
+            return
+        width, input_port, output_port, truth = _lut_definition(instance)
+        inputs = [
+            self._pin(
+                values,
+                instance_id,
+                f"I{index}" if input_port == "I" else input_port,
+                bit=0 if input_port == "I" else index,
+                overrides=overrides,
+            )
+            for index in range(width)
+        ]
+        if any(value is None for value in inputs):
+            raise ValidationError(
+                "mapped primitive simulation found unresolved combinational "
+                f"cells {[instance_id]}"
+            )
+        address = sum(
+            int(value) << offset
+            for offset, value in enumerate(inputs)
+        )
+        output_net = self.output_net.get((instance_id, output_port, 0))
+        if output_net is not None:
+            values[output_net] = (truth >> address) & 1
 
     def initial_state(self) -> Dict[str, Any]:
         state: Dict[str, Any] = {
@@ -309,75 +421,10 @@ class _MappedModel:
                         width,
                     )
 
-        pending: Set[str] = set(self.lut_ids) | set(self.multiply_ids)
-        while pending:
-            progressed = False
-            for instance_id in sorted(pending):
-                instance = self.instances[instance_id]
-                if _is_multiply_type(instance["type"]):
-                    a_width = _parameter_int(instance, "A_WIDTH")
-                    b_width = _parameter_int(instance, "B_WIDTH")
-                    output_width = _parameter_int(instance, "Y_WIDTH")
-                    left = self._bus(
-                        values,
-                        instance_id,
-                        "a",
-                        a_width,
-                        overrides,
-                    )
-                    right = self._bus(
-                        values,
-                        instance_id,
-                        "b",
-                        b_width,
-                        overrides,
-                    )
-                    if left is None or right is None:
-                        continue
-                    self._drive_bus(
-                        values,
-                        instance_id,
-                        "out",
-                        (left * right) & ((1 << output_width) - 1),
-                        output_width,
-                    )
-                else:
-                    width, input_port, output_port, truth = _lut_definition(
-                        instance
-                    )
-                    inputs = [
-                        self._pin(
-                            values,
-                            instance_id,
-                            (
-                                f"I{index}"
-                                if input_port == "I"
-                                else input_port
-                            ),
-                            bit=(0 if input_port == "I" else index),
-                            overrides=overrides,
-                        )
-                        for index in range(width)
-                    ]
-                    if any(value is None for value in inputs):
-                        continue
-                    index = sum(
-                        int(value) << offset
-                        for offset, value in enumerate(inputs)
-                    )
-                    output = (truth >> index) & 1
-                    output_net = self.output_net.get(
-                        (instance_id, output_port, 0)
-                    )
-                    if output_net is not None:
-                        values[output_net] = output
-                pending.remove(instance_id)
-                progressed = True
-            if not progressed:
-                raise ValidationError(
-                    "mapped primitive simulation found unresolved "
-                    f"combinational cells {sorted(pending)[:8]}"
-                )
+        for instance_id in self.combinational_order:
+            self._evaluate_combinational_instance(
+                values, instance_id, overrides
+            )
 
         next_state: Dict[str, Any] = {}
         for instance_id in self.ff_ids:
@@ -743,6 +790,48 @@ def _static_exact_equivalence_context(
     net_by_id = {item["id"]: item for item in ir.value["nets"]}
     if set(route_by_net) - set(net_by_id):
         raise ValidationError("static exact routes reference unknown EmuIR nets")
+    combinational_ids = {
+        item["id"]
+        for item in ir.value["instances"]
+        if _is_lut_type(item["type"]) or _is_multiply_type(item["type"])
+    }
+    override_pins_by_shadow: Dict[
+        Tuple[str, str], List[Tuple[str, str]]
+    ] = defaultdict(list)
+    local_comb_dependents_by_net: Dict[str, List[str]] = defaultdict(list)
+    route_sink_sets = {
+        net_id: frozenset(route["sinks"])
+        for net_id, route in route_by_net.items()
+    }
+    for net_id, net in net_by_id.items():
+        drivers = [
+            endpoint["instance"]
+            for endpoint in net["drivers"]
+            if endpoint["instance"] is not None
+        ]
+        driver = drivers[0] if len(drivers) == 1 else None
+        driver_fpga = assignment_map.get(driver) if driver is not None else None
+        route = route_by_net.get(net_id)
+        for endpoint in net["sinks"]:
+            instance_id = endpoint["instance"]
+            if instance_id is None:
+                continue
+            sink_fpga = assignment_map[instance_id]
+            if route is not None and sink_fpga != route["source"]:
+                if sink_fpga not in route_sink_sets[net_id]:
+                    raise ValidationError(
+                        f"static exact cut {net_id!r} omits sink FPGA "
+                        f"{sink_fpga!r}"
+                    )
+                override_pins_by_shadow[(route["id"], sink_fpga)].append(
+                    (instance_id, net_id)
+                )
+                continue
+            if (
+                instance_id in combinational_ids
+                and (driver_fpga is None or driver_fpga == sink_fpga)
+            ):
+                local_comb_dependents_by_net[net_id].append(instance_id)
     return {
         "contract": contract,
         "assignment_map": assignment_map,
@@ -756,6 +845,14 @@ def _static_exact_equivalence_context(
         "entries": entries,
         "frame_slots": frame_slots,
         "commit_slot": commit_slot,
+        "override_pins_by_shadow": {
+            key: tuple(sorted(set(value)))
+            for key, value in override_pins_by_shadow.items()
+        },
+        "local_comb_dependents_by_net": {
+            key: tuple(sorted(set(value)))
+            for key, value in local_comb_dependents_by_net.items()
+        },
     }
 
 
@@ -764,30 +861,101 @@ def _static_exact_sink_overrides(
     shadow_values: Mapping[Tuple[str, str], int],
 ) -> Dict[Tuple[str, str], int]:
     overrides: Dict[Tuple[str, str], int] = {}
-    assignment_map = context["assignment_map"]
-    for net_id, route in context["route_by_net"].items():
-        demand = route["id"]
-        source = route["source"]
-        sinks = set(route["sinks"])
-        for endpoint in context["net_by_id"][net_id]["sinks"]:
-            instance_id = endpoint["instance"]
-            if instance_id is None:
-                continue
-            fpga = assignment_map[instance_id]
-            if fpga == source:
-                continue
-            if fpga not in sinks:
-                raise ValidationError(
-                    f"static exact cut {net_id!r} omits sink FPGA {fpga!r}"
-                )
-            # An unavailable current-frame shadow is deliberately forced to a
-            # local reset value.  This prevents the monolithic evaluator from
-            # creating a hidden cross-FPGA bypass; readiness checks below must
-            # prove that no TX/capture consumes this placeholder.
-            overrides[(instance_id, net_id)] = int(
-                shadow_values.get((demand, fpga), 0)
-            )
+    for shadow_key, pins in context["override_pins_by_shadow"].items():
+        # An unavailable current-frame shadow is deliberately forced to a
+        # local reset value.  This prevents the monolithic evaluator from
+        # creating a hidden cross-FPGA bypass; readiness checks below must
+        # prove that no TX/capture consumes this placeholder.
+        value = int(shadow_values.get(shadow_key, 0))
+        for pin in pins:
+            overrides[pin] = value
     return overrides
+
+
+class _StaticExactIncrementalValues:
+    """Maintain local combinational values as transport shadows arrive."""
+
+    def __init__(
+        self,
+        model: _MappedModel,
+        context: Mapping[str, Any],
+        state: Mapping[str, Any],
+        cycle: int,
+        seed: int,
+        shadow_values: Mapping[Tuple[str, str], int],
+        input_values: Optional[Mapping[Tuple[str, int], int]],
+    ) -> None:
+        self.model = model
+        self.context = context
+        self.overrides = _static_exact_sink_overrides(
+            context, shadow_values
+        )
+        self.values, _, _ = model.evaluate(
+            state,
+            cycle,
+            seed,
+            overrides=self.overrides,
+            input_values=input_values,
+        )
+        self.incremental_cell_evaluations = 0
+        self.shadow_pin_updates = 0
+
+    def value(self, net_id: str) -> int:
+        if net_id not in self.values:
+            raise ValidationError(
+                f"static exact TX source {net_id!r} is unresolved"
+            )
+        return int(self.values[net_id])
+
+    def apply_shadow_updates(
+        self,
+        updates: List[Tuple[Tuple[str, str], int]],
+    ) -> None:
+        dirty = set()
+        for shadow_key, value in updates:
+            for pin in self.context["override_pins_by_shadow"].get(
+                shadow_key, ()
+            ):
+                if self.overrides.get(pin) == int(value):
+                    continue
+                self.overrides[pin] = int(value)
+                self.shadow_pin_updates += 1
+                if pin[0] in self.model.combinational_id_set:
+                    dirty.add(pin[0])
+        pending = [
+            (self.model.combinational_order_index[item], item)
+            for item in dirty
+        ]
+        heapq.heapify(pending)
+        queued = set(dirty)
+        while pending:
+            _index, instance_id = heapq.heappop(pending)
+            queued.remove(instance_id)
+            output_nets = self.model.combinational_output_nets[instance_id]
+            before = tuple(self.values.get(net) for net in output_nets)
+            self.model._evaluate_combinational_instance(
+                self.values, instance_id, self.overrides
+            )
+            self.incremental_cell_evaluations += 1
+            after = tuple(self.values.get(net) for net in output_nets)
+            for net, old_value, new_value in zip(
+                output_nets, before, after
+            ):
+                if old_value == new_value:
+                    continue
+                for dependent in self.context[
+                    "local_comb_dependents_by_net"
+                ].get(net, ()):
+                    if dependent in queued:
+                        continue
+                    heapq.heappush(
+                        pending,
+                        (
+                            self.model.combinational_order_index[dependent],
+                            dependent,
+                        ),
+                    )
+                    queued.add(dependent)
 
 
 def _static_exact_source_ready_slot(
@@ -880,6 +1048,8 @@ def _simulate_static_exact_macro_step(
     seed: int,
     shadow_values: Mapping[Tuple[str, str], int],
     input_values: Optional[Mapping[Tuple[str, int], int]] = None,
+    *,
+    full_replay_source_values: bool = False,
 ) -> Dict[str, Any]:
     reference_values, reference_next, reference_outputs = model.evaluate(
         state,
@@ -889,6 +1059,19 @@ def _simulate_static_exact_macro_step(
     )
     del reference_values  # TX must never consume the reference final-net map.
     shadows = dict(shadow_values)
+    incremental_values = (
+        None
+        if full_replay_source_values
+        else _StaticExactIncrementalValues(
+            model,
+            context,
+            state,
+            cycle,
+            seed,
+            shadows,
+            input_values,
+        )
+    )
     current_arrivals: Dict[Tuple[str, str], int] = {}
     current_shadow_generation: Set[Tuple[str, str]] = set()
     arrivals_by_slot: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
@@ -899,6 +1082,7 @@ def _simulate_static_exact_macro_step(
     source_ready_checks = 0
     relay_ready_checks = 0
     uninitialized_shadow_reads = 0
+    source_full_evaluations = 0
     for slot in range(context["frame_slots"]):
         source_value_cache: Dict[str, int] = {}
         for entry in sorted(
@@ -920,24 +1104,31 @@ def _simulate_static_exact_macro_step(
                         f"{entry['net']!r} at slot {slot}, before source-ready "
                         f"slot {ready_slot}"
                     )
-                if entry["net"] not in source_value_cache:
-                    overrides = _static_exact_sink_overrides(context, shadows)
-                    local_values, _, _ = model.evaluate(
-                        state,
-                        cycle,
-                        seed,
-                        overrides=overrides,
-                        input_values=input_values,
-                    )
-                    if entry["net"] not in local_values:
-                        raise ValidationError(
-                            f"static exact TX source {entry['net']!r} is "
-                            "unresolved"
+                if full_replay_source_values:
+                    if entry["net"] not in source_value_cache:
+                        overrides = _static_exact_sink_overrides(
+                            context, shadows
                         )
-                    source_value_cache[entry["net"]] = local_values[
-                        entry["net"]
-                    ]
-                value = source_value_cache[entry["net"]]
+                        local_values, _, _ = model.evaluate(
+                            state,
+                            cycle,
+                            seed,
+                            overrides=overrides,
+                            input_values=input_values,
+                        )
+                        source_full_evaluations += 1
+                        if entry["net"] not in local_values:
+                            raise ValidationError(
+                                f"static exact TX source {entry['net']!r} "
+                                "is unresolved"
+                            )
+                        source_value_cache[entry["net"]] = local_values[
+                            entry["net"]
+                        ]
+                    value = source_value_cache[entry["net"]]
+                else:
+                    assert incremental_values is not None
+                    value = incremental_values.value(entry["net"])
                 evidence = readiness
             else:
                 key = (entry["demand"], entry["from"])
@@ -984,6 +1175,7 @@ def _simulate_static_exact_macro_step(
             )
         # TX samples the pre-edge shadow state. RX nonblocking updates at the
         # same labelled edge become visible only after all TX samples here.
+        shadow_updates = []
         for event in sorted(
             arrivals_by_slot.pop(slot, []),
             key=lambda item: item["entry"]["id"],
@@ -996,8 +1188,11 @@ def _simulate_static_exact_macro_step(
                     f"current-frame arrivals at {entry['to']!r}"
                 )
             shadows[shadow_key] = event["value"]
+            shadow_updates.append((shadow_key, int(event["value"])))
             current_shadow_generation.add(shadow_key)
             current_arrivals[(entry["net"], entry["to"])] = slot
+        if incremental_values is not None and shadow_updates:
+            incremental_values.apply_shadow_updates(shadow_updates)
     if arrivals_by_slot:
         raise ValidationError("static exact schedule has arrivals after frame end")
 
@@ -1049,6 +1244,17 @@ def _simulate_static_exact_macro_step(
         "relay_ready_checks": relay_ready_checks,
         "capture_checks": capture_checks,
         "uninitialized_shadow_reads": uninitialized_shadow_reads,
+        "source_full_evaluations": source_full_evaluations,
+        "incremental_cell_evaluations": (
+            0
+            if incremental_values is None
+            else incremental_values.incremental_cell_evaluations
+        ),
+        "shadow_pin_updates": (
+            0
+            if incremental_values is None
+            else incremental_values.shadow_pin_updates
+        ),
     }
 
 
@@ -1072,6 +1278,9 @@ def simulate_static_exact_partition_equivalence(
     relay_ready_checks = 0
     capture_checks = 0
     uninitialized_shadow_reads = 0
+    source_full_evaluations = 0
+    incremental_cell_evaluations = 0
+    shadow_pin_updates = 0
     compared_outputs = 0
     compared_state_bits = 0
     # Start after the deterministic reset stimulus interval. Shadow validity
@@ -1094,6 +1303,11 @@ def simulate_static_exact_partition_equivalence(
         relay_ready_checks += result["relay_ready_checks"]
         capture_checks += result["capture_checks"]
         uninitialized_shadow_reads += result["uninitialized_shadow_reads"]
+        source_full_evaluations += result["source_full_evaluations"]
+        incremental_cell_evaluations += result[
+            "incremental_cell_evaluations"
+        ]
+        shadow_pin_updates += result["shadow_pin_updates"]
         compared_outputs += len(result["outputs"])
         compared_state_bits += model.state_bit_count()
         trace.update(
@@ -1125,6 +1339,11 @@ def simulate_static_exact_partition_equivalence(
         "relay_ready_checks": relay_ready_checks,
         "capture_checks": capture_checks,
         "startup_uninitialized_shadow_reads": uninitialized_shadow_reads,
+        "source_full_evaluations": source_full_evaluations,
+        "incremental_combinational_cell_evaluations": (
+            incremental_cell_evaluations
+        ),
+        "shadow_pin_updates": shadow_pin_updates,
         "compared_state_bits": compared_state_bits,
         "compared_output_bits": compared_outputs,
         "mismatches": 0,
@@ -1175,6 +1394,10 @@ def exhaustively_verify_static_exact_partition_equivalence(
     relay_ready_checks = 0
     capture_checks = 0
     tx_samples = 0
+    full_replay_cross_checks = 0
+    source_full_evaluations = 0
+    incremental_cell_evaluations = 0
+    shadow_pin_updates = 0
     for vector in range(cases):
         bits = [(vector >> index) & 1 for index in range(variables)]
         state = {
@@ -1195,6 +1418,36 @@ def exhaustively_verify_static_exact_partition_equivalence(
             {},
             input_values=input_values,
         )
+        full_replay = _simulate_static_exact_macro_step(
+            model,
+            context,
+            state,
+            0,
+            0,
+            {},
+            input_values=input_values,
+            full_replay_source_values=True,
+        )
+        for field in (
+            "next_state",
+            "outputs",
+            "shadow_values",
+            "tx_samples",
+            "source_ready_checks",
+            "relay_ready_checks",
+            "capture_checks",
+        ):
+            if result[field] != full_replay[field]:
+                raise ValidationError(
+                    "incremental static exact event model disagrees with "
+                    f"full-replay oracle for vector {vector} field {field!r}"
+                )
+        full_replay_cross_checks += 1
+        source_full_evaluations += result["source_full_evaluations"]
+        incremental_cell_evaluations += result[
+            "incremental_cell_evaluations"
+        ]
+        shadow_pin_updates += result["shadow_pin_updates"]
         source_ready_checks += result["source_ready_checks"]
         relay_ready_checks += result["relay_ready_checks"]
         capture_checks += result["capture_checks"]
@@ -1233,6 +1486,12 @@ def exhaustively_verify_static_exact_partition_equivalence(
         "relay_ready_checks": relay_ready_checks,
         "capture_checks": capture_checks,
         "tx_samples": tx_samples,
+        "full_replay_cross_checks": full_replay_cross_checks,
+        "source_full_evaluations": source_full_evaluations,
+        "incremental_combinational_cell_evaluations": (
+            incremental_cell_evaluations
+        ),
+        "shadow_pin_updates": shadow_pin_updates,
         "mismatches": 0,
         "trace_sha256": trace.hexdigest(),
     }

@@ -16,6 +16,7 @@ from emuflow.combinational_cut import (
 )
 from emuflow.errors import ValidationError
 from emuflow.equivalence import (
+    _MappedModel,
     exhaustively_verify_static_exact_partition_equivalence,
     simulate_static_exact_partition_equivalence,
 )
@@ -287,6 +288,75 @@ def _three_fpga_platform(topology="line"):
 
 
 class CombinationalCutCharacterizationTest(unittest.TestCase):
+    def test_mapped_model_evaluates_reverse_named_chain_once_per_cell(self):
+        width = 256
+        instance_ids = [f"lut_{index:04d}" for index in reversed(range(width))]
+        nets = [
+            {
+                "id": "input_net",
+                "name": "input_net",
+                "cut_class": "combinational",
+                "drivers": [_endpoint(None, "input")],
+                "sinks": [_endpoint(instance_ids[0], "I0")],
+            }
+        ]
+        for index, instance_id in enumerate(instance_ids):
+            sink = (
+                _endpoint(instance_ids[index + 1], "I0")
+                if index + 1 < width
+                else _endpoint(None, "output")
+            )
+            nets.append(
+                {
+                    "id": f"net_{index:04d}",
+                    "name": f"net_{index:04d}",
+                    "cut_class": "combinational",
+                    "drivers": [_endpoint(instance_id, "O")],
+                    "sinks": [sink],
+                }
+            )
+        model = _MappedModel(
+            EmuIR(
+                {
+                    "schema": "emuflow.emuir/v1",
+                    "design": {
+                        "name": "reverse_named_chain",
+                        "top": "reverse_named_chain",
+                        "source_format": "test",
+                    },
+                    "ports": [
+                        {"id": "input", "direction": "input", "width": 1},
+                        {"id": "output", "direction": "output", "width": 1},
+                    ],
+                    "instances": [
+                        {
+                            "id": instance_id,
+                            "type": "LUT1",
+                            "parameters": {"INIT": "10"},
+                            "resources": {"lut": 1},
+                        }
+                        for instance_id in instance_ids
+                    ],
+                    "nets": nets,
+                    "clocks": [],
+                    "warnings": [],
+                }
+            )
+        )
+        evaluations = []
+        original = model._evaluate_combinational_instance
+
+        def counted(values, instance_id, overrides=None):
+            evaluations.append(instance_id)
+            return original(values, instance_id, overrides)
+
+        model._evaluate_combinational_instance = counted
+        values, _, outputs = model.evaluate({}, 0, 17)
+        self.assertEqual(evaluations, instance_ids)
+        self.assertEqual(len(evaluations), width)
+        self.assertIn(f"net_{width - 1:04d}", values)
+        self.assertEqual(outputs, {"output[0]": values[f"net_{width - 1:04d}"]})
+
     def test_sparse_graph_membership_is_not_quadratic(self):
         class CountingString(str):
             comparisons = 0
@@ -1255,6 +1325,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual(
             random_evidence["startup_uninitialized_shadow_reads"], 0
         )
+        self.assertEqual(random_evidence["source_full_evaluations"], 0)
+        self.assertGreaterEqual(
+            random_evidence["incremental_combinational_cell_evaluations"], 0
+        )
         exhaustive = exhaustively_verify_static_exact_partition_equivalence(
             self.ir,
             assignment,
@@ -1263,6 +1337,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual(exhaustive["status"], "pass")
         self.assertEqual(exhaustive["evidence_type"], "exhaustive-small-model")
         self.assertEqual(exhaustive["cases"], 4)
+        self.assertEqual(exhaustive["full_replay_cross_checks"], 4)
+        self.assertEqual(exhaustive["source_full_evaluations"], 0)
 
     def test_phase6_event_model_rejects_tx_before_local_source_ready(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
@@ -1356,6 +1432,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertEqual(evidence["status"], "pass")
             self.assertEqual(evidence["random_trace_count"], 3)
             self.assertEqual(evidence["random_macro_cycles"], 12)
+            self.assertEqual(evidence["source_full_evaluations"], 0)
             self.assertEqual(
                 evidence["exhaustive_macro_step"]["evidence_type"],
                 "exhaustive-small-model",

@@ -81,6 +81,16 @@ def _static_exact_equivalence_evidence(
         "compared_output_bits": sum(
             item["compared_output_bits"] for item in random_traces
         ),
+        "source_full_evaluations": sum(
+            item["source_full_evaluations"] for item in random_traces
+        ),
+        "incremental_combinational_cell_evaluations": sum(
+            item["incremental_combinational_cell_evaluations"]
+            for item in random_traces
+        ),
+        "shadow_pin_updates": sum(
+            item["shadow_pin_updates"] for item in random_traces
+        ),
         "mismatches": 0,
         "trace_sha256": hashlib.sha256(
             json.dumps(
