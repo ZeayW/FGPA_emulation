@@ -31,9 +31,12 @@ Multi-clock designs, runtime packet switching, partial reconfiguration, and
 transparent encrypted-IP partitioning are later extensions. Controlled static
 exact combinational cuts are an active opt-in extension. Characterization,
 depth-1 partition legality, native-route contract propagation, and dependency-
-aware Phase 5 scheduling are implemented. Phase 6 macro-cycle equivalence and
-Phase 7C physical-deadline gates remain pending; the production default
-therefore remains sequential-only.
+aware Phase 5 scheduling, Phase 6 exact boundary materialization, and event-
+driven macro-cycle equivalence are implemented. Small LUT/FF models receive
+complete one-step state/input enumeration, while larger models are honestly
+qualified as multi-seed trace validation rather than proof. Phase 7C physical-
+deadline gates remain pending; the production default therefore remains
+sequential-only.
 
 ## 2. Architectural layers
 
@@ -492,9 +495,13 @@ with a precise fixed-frame infeasibility diagnostic when any arrival or
 capture cannot precede commit. The builder emits a versioned dependency
 certificate; the standalone checker reconstructs readiness, arrivals,
 collisions, captures, metrics, and the certificate without calling the
-scheduler's readiness/capture routines. Transport simulation is supplemental:
-functional cycle equivalence remains a Phase 6 gate and exact schedules are
-rejected there until that gate is implemented.
+scheduler's readiness/capture routines. Phase 6 independently reconstructs
+the contract-bound split, preserved boundary identities, shadow-only consumer
+connectivity, reset/startup policy, and event-driven macro-cycle behavior.
+Three deterministic random traces are required for every run. Small LUT/FF
+models also receive complete one-step state/input enumeration; a checked-in
+Yosys formal miter is a canonical regression and does not by itself claim
+arbitrary-design formal closure.
 
 The initial dependency-free list schedule is refined by an in-tree C++ engine.
 It exhaustively reorders bounded neighborhoods containing a delayed worst-path

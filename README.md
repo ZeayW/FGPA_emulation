@@ -330,8 +330,22 @@ emuflow phase5 \
 
 Those gates are qualified as `route-contract-propagation-pass` and
 `dependency-schedule-readiness-pass`; neither is a functional-equivalence or
-physical-timing claim. Phase 6 and Phase 7 remain fail-closed until the event-
-driven macro-cycle and routed segment-deadline gates are implemented.
+physical-timing claim. Phase 6 now materializes preserved TX/RX boundary
+identities, rejects hidden cross-FPGA bypasses, and validates each exact
+schedule with three event-driven macro-cycle traces. Small models additionally
+enumerate every architectural state and non-reset primary input for one
+macro-step. The report distinguishes randomized validation from exhaustive
+small-model proof; Phase 7 still remains fail-closed until routed segment-
+deadline evidence is implemented.
+
+```bash
+emuflow phase6 \
+  --ir build/phase1/design.emuir.json \
+  --assignment build/phase3-exact/assignment.json \
+  --schedule build/phase5-exact/schedule.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --out build/phase6-exact
+```
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).

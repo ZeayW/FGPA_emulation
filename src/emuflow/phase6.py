@@ -1,7 +1,11 @@
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from .equivalence import simulate_partition_equivalence
+from .equivalence import (
+    exhaustively_verify_static_exact_partition_equivalence,
+    simulate_partition_equivalence,
+    simulate_static_exact_partition_equivalence,
+)
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
@@ -17,15 +21,83 @@ from .runtime import virtual_runtime_controller_to_systemverilog
 
 
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
+STATIC_EXACT_SCHEDULE_PROVIDER = "deterministic-static-exact-list-schedule-v1"
 
 
-def _reject_unqualified_exact_schedule(schedule: Mapping[str, Any]) -> None:
-    if schedule.get("provider") == "deterministic-static-exact-list-schedule-v1":
-        raise ValidationError(
-            "static exact combinational cuts currently stop after the "
-            "Phase 5 dependency-readiness gate; Phase 6 event-driven "
-            "macro-cycle equivalence is not yet qualified"
+def _static_exact_equivalence_evidence(
+    ir: EmuIR,
+    assignment: Mapping[str, Any],
+    schedule: Mapping[str, Any],
+    *,
+    cycles: int,
+    seed: int,
+) -> Dict[str, Any]:
+    random_traces = [
+        simulate_static_exact_partition_equivalence(
+            ir,
+            assignment,
+            schedule,
+            cycles=cycles,
+            seed=seed + offset,
         )
+        for offset in range(3)
+    ]
+    exhaustive = None
+    exhaustive_skip = None
+    try:
+        exhaustive = exhaustively_verify_static_exact_partition_equivalence(
+            ir,
+            assignment,
+            schedule,
+            max_variables=12,
+        )
+    except ValidationError as error:
+        message = str(error)
+        if (
+            "variable limit exceeded" not in message
+            and "does not support memory state" not in message
+        ):
+            raise
+        exhaustive_skip = {
+            "status": "not-run",
+            "reason": message,
+            "qualification": "large-model-boundary-not-a-proof",
+        }
+    evidence = {
+        "status": "pass",
+        "provider": "static-exact-event-driven-macro-cycle-equivalence-v1",
+        "semantic_contract_sha256": schedule[
+            "semantic_contract_sha256"
+        ],
+        "random_traces": random_traces,
+        "random_trace_count": len(random_traces),
+        "random_macro_cycles": sum(item["cycles"] for item in random_traces),
+        "mismatches": 0,
+        "assumptions": [
+            "one-commit macro-step semantics",
+            "reset is deasserted during each checked macro-step",
+            "transport shadows begin unavailable and must be produced in-frame",
+        ],
+    }
+    if exhaustive is not None:
+        evidence.update(
+            {
+                "qualification": (
+                    "exhaustive-small-model-proof-plus-random-traces"
+                ),
+                "exhaustive_macro_step": exhaustive,
+            }
+        )
+    else:
+        evidence.update(
+            {
+                "qualification": (
+                    "multi-seed-random-trace-validation-not-proof"
+                ),
+                "exhaustive_macro_step": exhaustive_skip,
+            }
+        )
+    return evidence
 
 
 def _load_artifacts(root: Path, manifest: Mapping[str, Any]) -> Dict[str, Any]:
@@ -62,7 +134,6 @@ def run_phase6(
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
     schedule = read_json(schedule_path)
-    _reject_unqualified_exact_schedule(schedule)
     platform = Platform.load(platform_path)
     pin_plan = read_json(pin_plan_path) if pin_plan_path is not None else None
     position_hints = (
@@ -114,13 +185,22 @@ def run_phase6(
     validation = validate_split_artifacts(
         ir, assignment, schedule, platform, artifacts, pin_plan
     )
-    equivalence = simulate_partition_equivalence(
-        ir,
-        assignment,
-        schedule,
-        cycles=equivalence_cycles,
-        seed=equivalence_seed,
-    )
+    if schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER:
+        equivalence = _static_exact_equivalence_evidence(
+            ir,
+            assignment,
+            schedule,
+            cycles=equivalence_cycles,
+            seed=equivalence_seed,
+        )
+    else:
+        equivalence = simulate_partition_equivalence(
+            ir,
+            assignment,
+            schedule,
+            cycles=equivalence_cycles,
+            seed=equivalence_seed,
+        )
     if electrical_binding is not None:
         artifacts["manifest"]["electrical_binding"] = "electrical_binding.json"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -219,7 +299,6 @@ def validate_phase6(
     ir = EmuIR.load(ir_path)
     assignment = read_json(assignment_path)
     schedule = read_json(schedule_path)
-    _reject_unqualified_exact_schedule(schedule)
     platform = Platform.load(platform_path)
     manifest = read_json(manifest_path)
     artifacts = _load_artifacts(manifest_path.parent, manifest)
@@ -274,6 +353,17 @@ def validate_phase6(
             "electrical_binding_path"
         )
     artifacts["manifest"].pop("electrical_binding", None)
-    return validate_split_artifacts(
+    validation = validate_split_artifacts(
         ir, assignment, schedule, platform, artifacts, pin_plan
     )
+    if schedule.get("provider") == STATIC_EXACT_SCHEDULE_PROVIDER:
+        validation["static_exact_equivalence"] = (
+            _static_exact_equivalence_evidence(
+                ir,
+                assignment,
+                schedule,
+                cycles=16,
+                seed=20260727,
+            )
+        )
+    return validation

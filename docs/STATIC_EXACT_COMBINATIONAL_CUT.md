@@ -17,10 +17,14 @@ The opt-in Phase 3 mode `static-exact-combinational` implements the first
 legality gate for dependency depth 1 and emits an independently reconstructed
 semantic contract. Phase 4 binds that contract through native routing. Phase 5
 uses it to prove when downstream combinational values become available and
-when terminal captures are ready. Phase 6 still rejects exact schedules until
-its event-driven macro-cycle equivalence gate is implemented, so these
-artifacts must not yet be split or used for physical timing claims. Merely
-adding `combinational` to the old legal-cut constant remains invalid.
+when terminal captures are ready. Phase 6 now materializes contract-bound,
+preserved TX/RX boundaries and shadow-only consumer nets, then evaluates TX
+values from the state, primary inputs, and shadows visible at the scheduled
+slot. It requires three deterministic random traces and, for models within a
+12-variable limit, complete one-step state/input enumeration. This is
+functional evidence, not physical timing closure: Phase 7C routed segment
+deadlines remain required. Merely adding `combinational` to the old legal-cut
+constant remains invalid.
 
 ## Slot-edge convention
 
@@ -105,8 +109,11 @@ feasibility, and physical segment deadlines.
    canonical contract digest binding, deterministic
    dependency-aware list scheduling, source-ready/capture certificate, fixed
    frame fail-closed diagnostics, and tamper tests.
-4. **Phase 6.** Event-driven macro-cycle simulation and exhaustive/formal
-   small-design equivalence without reading reference final net values at TX.
+4. **Phase 6 (implemented, opt-in).** Contract-bound exact boundaries,
+   hidden-bypass rejection, deterministic shadow startup, event-driven
+   macro-cycle simulation, complete small-model one-step enumeration, and a
+   canonical Yosys formal miter fixture. General-design formal closure is not
+   claimed.
 5. **Phase 7C.** Routed `launch_to_tx`, `rx_to_tx`, and `rx_to_capture`
    deadlines plus global target-clock and virtual-runtime WNS/TNS.
 6. **Depth 2 and optimizer integration.** Path-local readiness precedes any
@@ -148,6 +155,13 @@ emuflow schedule validate \
   build/phase5-exact/schedule.json \
   --routes build/phase4-exact/routes.json \
   --platform platforms/virtual/xcvu3p_2fpga_p2p.json
+
+emuflow phase6 \
+  --ir build/phase1/design.emuir.json \
+  --assignment build/phase3-exact/assignment.json \
+  --schedule build/phase5-exact/schedule.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --out build/phase6-exact
 ```
 
 Characterization is deterministic and near-linear apart from sorting. The
@@ -158,5 +172,7 @@ semantic contract from EmuIR, PlatformDB, normalized constraints, and the
 instance assignment; provider output cannot self-declare eligibility.
 The Phase 4 checker additionally binds every routed demand to the exact cut
 node, and the Phase 5 checker independently reconstructs the complete
-dependency/capture certificate. Phase 6 intentionally rejects this schedule
-until the next delivery increment closes functional macro-cycle equivalence.
+dependency/capture certificate. Phase 6 independently rebuilds the split and
+replays event-driven macro-steps; its report keeps random, exhaustive, and
+formal evidence types distinct. Physical qualification is still withheld
+until Phase 7C checks routed source-ready and capture deadlines.

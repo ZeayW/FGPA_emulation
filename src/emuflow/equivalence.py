@@ -1,6 +1,7 @@
 import hashlib
 import json
-from typing import Any, Dict, Mapping, Optional, Set, Tuple
+from collections import defaultdict
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from .errors import ValidationError
 from .ir import EmuIR
@@ -33,6 +34,15 @@ def _stimulus(seed: int, cycle: int, port: str, bit: int) -> int:
         f"{seed}:{cycle}:{port}:{bit}".encode("utf-8")
     ).digest()
     return digest[0] & 1
+
+
+def _reset_deasserted_value(port: str) -> Optional[int]:
+    lower = port.lower()
+    if lower.endswith(("resetn", "reset_n", "rstn", "rst_n")):
+        return 1
+    if lower in {"reset", "rst", "areset"}:
+        return 0
+    return None
 
 
 def _is_lut_type(cell_type: str) -> bool:
@@ -259,10 +269,14 @@ class _MappedModel:
         cycle: int,
         seed: int,
         overrides: Optional[Mapping[Tuple[str, str], int]] = None,
+        input_values: Optional[Mapping[Tuple[str, int], int]] = None,
     ) -> Tuple[Dict[str, int], Dict[str, Any], Dict[str, int]]:
         values: Dict[str, int] = {}
         for (port, bit), net in self.top_input_net.items():
-            values[net] = _stimulus(seed, cycle, port, bit)
+            if input_values is not None and (port, bit) in input_values:
+                values[net] = _bit(input_values[(port, bit)])
+            else:
+                values[net] = _stimulus(seed, cycle, port, bit)
         for instance_id in self.ff_ids:
             q_net = self.output_net.get((instance_id, "Q", 0))
             if q_net is not None:
@@ -595,6 +609,624 @@ class _MappedModel:
                     f"LUTs {sorted(pending)[:8]}"
                 )
         return values
+
+
+def _static_exact_equivalence_context(
+    ir: EmuIR,
+    assignment: Mapping[str, Any],
+    schedule: Mapping[str, Any],
+) -> Dict[str, Any]:
+    from .combinational_cut import semantic_contract_sha256
+    from .routing import static_exact_contract_from_assignment
+    from .tdm import TDM_STATIC_EXACT_PROVIDER
+
+    contract = static_exact_contract_from_assignment(assignment)
+    if contract is None:
+        raise ValidationError(
+            "static exact macro-cycle equivalence requires an assignment "
+            "semantic contract"
+        )
+    if schedule.get("provider") != TDM_STATIC_EXACT_PROVIDER:
+        raise ValidationError(
+            "static exact macro-cycle equivalence requires the dependency-"
+            "aware schedule provider"
+        )
+    digest = semantic_contract_sha256(contract)
+    if (
+        schedule.get("semantic_contract") != contract
+        or schedule.get("semantic_contract_sha256") != digest
+    ):
+        raise ValidationError(
+            "static exact schedule is not bound to the assignment contract"
+        )
+    assignment_map = assignment.get("instance_assignment")
+    if not isinstance(assignment_map, dict):
+        raise ValidationError("assignment.instance_assignment must be an object")
+    instance_ids = {item["id"] for item in ir.value["instances"]}
+    if set(assignment_map) != instance_ids:
+        raise ValidationError(
+            "static exact assignment does not cover every EmuIR instance"
+        )
+    routes = schedule.get("routes")
+    entries = schedule.get("entries")
+    if not isinstance(routes, list) or not isinstance(entries, list):
+        raise ValidationError("static exact schedule routes/entries must be arrays")
+    if not all(
+        isinstance(item, dict)
+        and isinstance(item.get("net"), str)
+        and isinstance(item.get("id"), str)
+        for item in routes
+    ):
+        raise ValidationError("static exact schedule route metadata is malformed")
+    route_by_net = {item["net"]: item for item in routes}
+    route_by_id = {item["id"]: item for item in routes}
+    if len(route_by_net) != len(routes) or len(route_by_id) != len(routes):
+        raise ValidationError("static exact schedule route identities are not unique")
+    cut_nodes = contract.get("cut_nodes")
+    segments = contract.get("logic_segments")
+    captures = contract.get("capture_requirements")
+    if not all(isinstance(value, list) for value in (cut_nodes, segments, captures)):
+        raise ValidationError("static exact contract arrays are malformed")
+    if not all(isinstance(item, dict) for item in cut_nodes + segments + captures):
+        raise ValidationError("static exact contract records must be objects")
+    node_by_net = {item.get("net"): item for item in cut_nodes}
+    segment_by_id = {item.get("id"): item for item in segments}
+    capture_by_id = {item.get("id"): item for item in captures}
+    if (
+        None in node_by_net
+        or None in segment_by_id
+        or None in capture_by_id
+        or len(node_by_net) != len(cut_nodes)
+        or len(segment_by_id) != len(segments)
+        or len(capture_by_id) != len(captures)
+        or set(node_by_net) != set(route_by_net)
+    ):
+        raise ValidationError(
+            "static exact contract identities/route coverage are invalid"
+        )
+    frame_slots = schedule.get("metrics", {}).get("frame_slots")
+    commit_slot = contract.get("commit_slot")
+    if (
+        isinstance(frame_slots, bool)
+        or not isinstance(frame_slots, int)
+        or frame_slots <= 1
+        or contract.get("frame_slots") != frame_slots
+        or commit_slot != frame_slots - 1
+    ):
+        raise ValidationError("static exact frame/commit contract is invalid")
+    entry_ids = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValidationError(
+                f"static exact schedule entry {index} is not an object"
+            )
+        entry_id = entry.get("id")
+        demand = entry.get("demand")
+        if (
+            not isinstance(entry_id, str)
+            or entry_id in entry_ids
+            or demand not in route_by_id
+            or entry.get("net") != route_by_id[demand]["net"]
+        ):
+            raise ValidationError(
+                f"static exact schedule entry {index} identity is invalid"
+            )
+        entry_ids.add(entry_id)
+        for field in ("slot", "ready_slot", "arrival_slot"):
+            value = entry.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValidationError(
+                    f"static exact schedule entry {entry_id!r}.{field} is invalid"
+                )
+        if entry["slot"] >= frame_slots or entry["arrival_slot"] >= commit_slot:
+            raise ValidationError(
+                f"static exact schedule entry {entry_id!r} misses commit"
+            )
+    net_by_id = {item["id"]: item for item in ir.value["nets"]}
+    if set(route_by_net) - set(net_by_id):
+        raise ValidationError("static exact routes reference unknown EmuIR nets")
+    return {
+        "contract": contract,
+        "assignment_map": assignment_map,
+        "route_by_net": route_by_net,
+        "route_by_id": route_by_id,
+        "node_by_net": node_by_net,
+        "segment_by_id": segment_by_id,
+        "capture_by_id": capture_by_id,
+        "net_by_id": net_by_id,
+        "entries": entries,
+        "frame_slots": frame_slots,
+        "commit_slot": commit_slot,
+    }
+
+
+def _static_exact_sink_overrides(
+    context: Mapping[str, Any],
+    shadow_values: Mapping[Tuple[str, str], int],
+) -> Dict[Tuple[str, str], int]:
+    overrides: Dict[Tuple[str, str], int] = {}
+    assignment_map = context["assignment_map"]
+    for net_id, route in context["route_by_net"].items():
+        demand = route["id"]
+        source = route["source"]
+        sinks = set(route["sinks"])
+        for endpoint in context["net_by_id"][net_id]["sinks"]:
+            instance_id = endpoint["instance"]
+            if instance_id is None:
+                continue
+            fpga = assignment_map[instance_id]
+            if fpga == source:
+                continue
+            if fpga not in sinks:
+                raise ValidationError(
+                    f"static exact cut {net_id!r} omits sink FPGA {fpga!r}"
+                )
+            # An unavailable current-frame shadow is deliberately forced to a
+            # local reset value.  This prevents the monolithic evaluator from
+            # creating a hidden cross-FPGA bypass; readiness checks below must
+            # prove that no TX/capture consumes this placeholder.
+            overrides[(instance_id, net_id)] = int(
+                shadow_values.get((demand, fpga), 0)
+            )
+    return overrides
+
+
+def _static_exact_source_ready_slot(
+    node: Mapping[str, Any],
+    segment_by_id: Mapping[str, Mapping[str, Any]],
+    current_arrivals: Mapping[Tuple[str, str], int],
+) -> Tuple[int, List[Dict[str, Any]]]:
+    evidence = []
+    predecessor_coverage = []
+    source_fpgas = node.get("source_fpgas")
+    if not isinstance(source_fpgas, list) or len(source_fpgas) != 1:
+        raise ValidationError(
+            f"static exact cut {node.get('net')!r} has invalid source FPGA"
+        )
+    for segment_id in node.get("source_segment_ids", []):
+        segment = segment_by_id.get(segment_id)
+        if segment is None:
+            raise ValidationError(
+                f"static exact cut {node.get('net')!r} references unknown "
+                f"segment {segment_id!r}"
+            )
+        budget = segment.get("budget_slots")
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, int)
+            or budget < 0
+        ):
+            raise ValidationError(
+                f"static exact segment {segment_id!r} has invalid budget"
+            )
+        if segment.get("kind") == "launch_to_tx":
+            if segment.get("sink_cut_net") != node.get("net"):
+                raise ValidationError(
+                    f"static exact launch segment {segment_id!r} is misbound"
+                )
+            evidence.append(
+                {
+                    "segment": segment_id,
+                    "kind": "launch_to_tx",
+                    "ready_slot": budget,
+                }
+            )
+            continue
+        if segment.get("kind") != "rx_to_tx":
+            raise ValidationError(
+                f"static exact source segment {segment_id!r} has invalid kind"
+            )
+        predecessor = segment.get("source_cut_net")
+        key = (predecessor, source_fpgas[0])
+        if (
+            segment.get("sink_cut_net") != node.get("net")
+            or segment.get("fpga") != source_fpgas[0]
+            or predecessor not in node.get("predecessor_cut_nets", [])
+            or key not in current_arrivals
+        ):
+            raise ValidationError(
+                f"static exact dependency {segment_id!r} is not ready in the "
+                "current macro-cycle"
+            )
+        arrival = current_arrivals[key]
+        predecessor_coverage.append(predecessor)
+        evidence.append(
+            {
+                "segment": segment_id,
+                "kind": "rx_to_tx",
+                "predecessor_cut_net": predecessor,
+                "arrival_slot": arrival,
+                "ready_slot": arrival + budget,
+            }
+        )
+    if not evidence:
+        raise ValidationError(
+            f"static exact cut {node.get('net')!r} has no readiness evidence"
+        )
+    if sorted(predecessor_coverage) != sorted(
+        node.get("predecessor_cut_nets", [])
+    ):
+        raise ValidationError(
+            f"static exact cut {node.get('net')!r} predecessor coverage is "
+            "incomplete"
+        )
+    return max(item["ready_slot"] for item in evidence), evidence
+
+
+def _simulate_static_exact_macro_step(
+    model: _MappedModel,
+    context: Mapping[str, Any],
+    state: Mapping[str, Any],
+    cycle: int,
+    seed: int,
+    shadow_values: Mapping[Tuple[str, str], int],
+    input_values: Optional[Mapping[Tuple[str, int], int]] = None,
+) -> Dict[str, Any]:
+    reference_values, reference_next, reference_outputs = model.evaluate(
+        state,
+        cycle,
+        seed,
+        input_values=input_values,
+    )
+    del reference_values  # TX must never consume the reference final-net map.
+    shadows = dict(shadow_values)
+    current_arrivals: Dict[Tuple[str, str], int] = {}
+    current_shadow_generation: Set[Tuple[str, str]] = set()
+    arrivals_by_slot: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    entries_by_slot: Dict[int, List[Mapping[str, Any]]] = defaultdict(list)
+    for entry in context["entries"]:
+        entries_by_slot[entry["slot"]].append(entry)
+    tx_samples = []
+    source_ready_checks = 0
+    relay_ready_checks = 0
+    uninitialized_shadow_reads = 0
+    for slot in range(context["frame_slots"]):
+        source_value_cache: Dict[str, int] = {}
+        for entry in sorted(
+            entries_by_slot.get(slot, []),
+            key=lambda item: (item["hop"], item["id"]),
+        ):
+            route = context["route_by_id"][entry["demand"]]
+            if entry["from"] == route["source"]:
+                node = context["node_by_net"][entry["net"]]
+                ready_slot, readiness = _static_exact_source_ready_slot(
+                    node,
+                    context["segment_by_id"],
+                    current_arrivals,
+                )
+                source_ready_checks += 1
+                if entry["ready_slot"] != ready_slot or slot < ready_slot:
+                    raise ValidationError(
+                        f"static exact TX {entry['id']!r} samples net "
+                        f"{entry['net']!r} at slot {slot}, before source-ready "
+                        f"slot {ready_slot}"
+                    )
+                if entry["net"] not in source_value_cache:
+                    overrides = _static_exact_sink_overrides(context, shadows)
+                    local_values, _, _ = model.evaluate(
+                        state,
+                        cycle,
+                        seed,
+                        overrides=overrides,
+                        input_values=input_values,
+                    )
+                    if entry["net"] not in local_values:
+                        raise ValidationError(
+                            f"static exact TX source {entry['net']!r} is "
+                            "unresolved"
+                        )
+                    source_value_cache[entry["net"]] = local_values[
+                        entry["net"]
+                    ]
+                value = source_value_cache[entry["net"]]
+                evidence = readiness
+            else:
+                key = (entry["demand"], entry["from"])
+                logical_key = (entry["net"], entry["from"])
+                if (
+                    key not in current_shadow_generation
+                    or logical_key not in current_arrivals
+                ):
+                    uninitialized_shadow_reads += 1
+                    raise ValidationError(
+                        f"static exact relay {entry['id']!r} consumes a stale "
+                        "or unavailable shadow"
+                    )
+                ready_slot = current_arrivals[logical_key] + 1
+                relay_ready_checks += 1
+                if entry["ready_slot"] != ready_slot or slot < ready_slot:
+                    raise ValidationError(
+                        f"static exact relay {entry['id']!r} samples before "
+                        f"ready slot {ready_slot}"
+                    )
+                value = shadows[key]
+                evidence = [
+                    {
+                        "kind": "route_tree_relay",
+                        "arrival_slot": current_arrivals[logical_key],
+                        "ready_slot": ready_slot,
+                    }
+                ]
+            arrivals_by_slot[entry["arrival_slot"]].append(
+                {
+                    "entry": entry,
+                    "value": int(value),
+                }
+            )
+            tx_samples.append(
+                {
+                    "entry": entry["id"],
+                    "net": entry["net"],
+                    "fpga": entry["from"],
+                    "slot": slot,
+                    "value": int(value),
+                    "readiness": evidence,
+                }
+            )
+        # TX samples the pre-edge shadow state. RX nonblocking updates at the
+        # same labelled edge become visible only after all TX samples here.
+        for event in sorted(
+            arrivals_by_slot.pop(slot, []),
+            key=lambda item: item["entry"]["id"],
+        ):
+            entry = event["entry"]
+            shadow_key = (entry["demand"], entry["to"])
+            if shadow_key in current_shadow_generation:
+                raise ValidationError(
+                    f"static exact demand {entry['demand']!r} has multiple "
+                    f"current-frame arrivals at {entry['to']!r}"
+                )
+            shadows[shadow_key] = event["value"]
+            current_shadow_generation.add(shadow_key)
+            current_arrivals[(entry["net"], entry["to"])] = slot
+    if arrivals_by_slot:
+        raise ValidationError("static exact schedule has arrivals after frame end")
+
+    capture_checks = 0
+    for capture_id, capture in sorted(context["capture_by_id"].items()):
+        matching = [
+            segment
+            for segment in context["segment_by_id"].values()
+            if segment.get("kind") == "rx_to_capture"
+            and segment.get("capture_requirement") == capture_id
+        ]
+        if len(matching) != 1:
+            raise ValidationError(
+                f"static exact capture {capture_id!r} lacks one segment"
+            )
+        segment = matching[0]
+        key = (capture.get("cut_net"), capture.get("fpga"))
+        if key not in current_arrivals:
+            raise ValidationError(
+                f"static exact capture {capture_id!r} consumes no current-"
+                "frame arrival"
+            )
+        ready_slot = current_arrivals[key] + segment["budget_slots"]
+        if ready_slot > context["commit_slot"]:
+            raise ValidationError(
+                f"static exact capture {capture_id!r} is ready at "
+                f"{ready_slot}, after commit {context['commit_slot']}"
+            )
+        capture_checks += 1
+
+    final_overrides = _static_exact_sink_overrides(context, shadows)
+    _, partition_next, partition_outputs = model.evaluate(
+        state,
+        cycle,
+        seed,
+        overrides=final_overrides,
+        input_values=input_values,
+    )
+    if partition_next != reference_next:
+        mismatch = next(
+            instance_id
+            for instance_id in sorted(reference_next)
+            if partition_next.get(instance_id) != reference_next[instance_id]
+        )
+        raise ValidationError(
+            f"macro-cycle {cycle}: static exact partition state mismatch at "
+            f"{mismatch!r}"
+        )
+    if partition_outputs != reference_outputs:
+        raise ValidationError(
+            f"macro-cycle {cycle}: static exact partition top-output mismatch"
+        )
+    return {
+        "next_state": reference_next,
+        "outputs": reference_outputs,
+        "shadow_values": shadows,
+        "tx_samples": tx_samples,
+        "source_ready_checks": source_ready_checks,
+        "relay_ready_checks": relay_ready_checks,
+        "capture_checks": capture_checks,
+        "uninitialized_shadow_reads": uninitialized_shadow_reads,
+    }
+
+
+def simulate_static_exact_partition_equivalence(
+    ir: EmuIR,
+    assignment: Mapping[str, Any],
+    schedule: Mapping[str, Any],
+    cycles: int = 16,
+    seed: int = 20260727,
+) -> Dict[str, Any]:
+    """Random-trace exact-cut equivalence with slot-accurate local TX values."""
+    if isinstance(cycles, bool) or not isinstance(cycles, int) or cycles <= 0:
+        raise ValidationError("equivalence cycles must be positive")
+    model = _MappedModel(ir)
+    context = _static_exact_equivalence_context(ir, assignment, schedule)
+    state = model.initial_state()
+    shadow_values: Dict[Tuple[str, str], int] = {}
+    trace = hashlib.sha256()
+    tx_samples = 0
+    source_ready_checks = 0
+    relay_ready_checks = 0
+    capture_checks = 0
+    uninitialized_shadow_reads = 0
+    compared_outputs = 0
+    compared_state_bits = 0
+    # Start after the deterministic reset stimulus interval. Shadow validity
+    # is still empty, so the first post-reset frame proves it consumes only
+    # current-frame arrivals rather than reset/stale implementation state.
+    for macro_cycle in range(cycles):
+        stimulus_cycle = macro_cycle + 3
+        result = _simulate_static_exact_macro_step(
+            model,
+            context,
+            state,
+            stimulus_cycle,
+            seed,
+            shadow_values,
+        )
+        state = result["next_state"]
+        shadow_values = result["shadow_values"]
+        tx_samples += len(result["tx_samples"])
+        source_ready_checks += result["source_ready_checks"]
+        relay_ready_checks += result["relay_ready_checks"]
+        capture_checks += result["capture_checks"]
+        uninitialized_shadow_reads += result["uninitialized_shadow_reads"]
+        compared_outputs += len(result["outputs"])
+        compared_state_bits += model.state_bit_count()
+        trace.update(
+            json.dumps(
+                {
+                    "cycle": macro_cycle,
+                    "next_state": result["next_state"],
+                    "outputs": result["outputs"],
+                    "tx_samples": result["tx_samples"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    return {
+        "status": "pass",
+        "provider": "static-exact-event-driven-macro-cycle-model-v1",
+        "evidence_type": "random-simulation",
+        "qualification": "randomized-trace-validation-not-proof",
+        "cycles": cycles,
+        "seed": seed,
+        "primitive_instances": len(model.instances),
+        "flip_flops": len(model.ff_ids),
+        "luts": len(model.lut_ids),
+        "multipliers": len(model.multiply_ids),
+        "memory_macros": len(model.ram_ids),
+        "tx_samples": tx_samples,
+        "source_ready_checks": source_ready_checks,
+        "relay_ready_checks": relay_ready_checks,
+        "capture_checks": capture_checks,
+        "startup_uninitialized_shadow_reads": uninitialized_shadow_reads,
+        "compared_state_bits": compared_state_bits,
+        "compared_output_bits": compared_outputs,
+        "mismatches": 0,
+        "trace_sha256": trace.hexdigest(),
+    }
+
+
+def exhaustively_verify_static_exact_partition_equivalence(
+    ir: EmuIR,
+    assignment: Mapping[str, Any],
+    schedule: Mapping[str, Any],
+    *,
+    max_variables: int = 12,
+) -> Dict[str, Any]:
+    """Exhaust every FF state and non-clock primary input for a small model."""
+    if (
+        isinstance(max_variables, bool)
+        or not isinstance(max_variables, int)
+        or max_variables <= 0
+    ):
+        raise ValidationError("exhaustive max_variables must be positive")
+    model = _MappedModel(ir)
+    if model.ram_ids:
+        raise ValidationError(
+            "exhaustive static exact proof does not support memory state"
+        )
+    context = _static_exact_equivalence_context(ir, assignment, schedule)
+    reset_values = {
+        key: value
+        for key in model.top_input_net
+        if (value := _reset_deasserted_value(key[0])) is not None
+    }
+    input_keys = sorted(
+        key
+        for key in model.top_input_net
+        if key[0].lower() not in {"clk", "clock"}
+        and key not in reset_values
+    )
+    variables = len(model.ff_ids) + len(input_keys)
+    if variables > max_variables:
+        raise ValidationError(
+            "exhaustive static exact proof variable limit exceeded: "
+            f"{variables} > {max_variables}"
+        )
+    cases = 1 << variables
+    trace = hashlib.sha256()
+    source_ready_checks = 0
+    relay_ready_checks = 0
+    capture_checks = 0
+    tx_samples = 0
+    for vector in range(cases):
+        bits = [(vector >> index) & 1 for index in range(variables)]
+        state = {
+            instance_id: bits[index]
+            for index, instance_id in enumerate(model.ff_ids)
+        }
+        input_values = {
+            key: bits[len(model.ff_ids) + index]
+            for index, key in enumerate(input_keys)
+        }
+        input_values.update(reset_values)
+        result = _simulate_static_exact_macro_step(
+            model,
+            context,
+            state,
+            0,
+            0,
+            {},
+            input_values=input_values,
+        )
+        source_ready_checks += result["source_ready_checks"]
+        relay_ready_checks += result["relay_ready_checks"]
+        capture_checks += result["capture_checks"]
+        tx_samples += len(result["tx_samples"])
+        trace.update(
+            json.dumps(
+                {
+                    "state": state,
+                    "inputs": {
+                        f"{port}[{bit}]": value
+                        for (port, bit), value in input_values.items()
+                    },
+                    "next_state": result["next_state"],
+                    "outputs": result["outputs"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    return {
+        "status": "pass",
+        "provider": "static-exact-exhaustive-macro-step-v1",
+        "evidence_type": "exhaustive-small-model",
+        "qualification": "complete-enumeration-proof-for-declared-model",
+        "state_bits": len(model.ff_ids),
+        "primary_input_bits": len(input_keys),
+        "constrained_reset_bits": len(reset_values),
+        "assumptions": [
+            "one-commit macro-step semantics",
+            "reset inputs constrained to their deasserted values",
+            "transport shadows begin unavailable and must be produced in-frame",
+        ],
+        "variables": variables,
+        "cases": cases,
+        "source_ready_checks": source_ready_checks,
+        "relay_ready_checks": relay_ready_checks,
+        "capture_checks": capture_checks,
+        "tx_samples": tx_samples,
+        "mismatches": 0,
+        "trace_sha256": trace.hexdigest(),
+    }
 
 
 def simulate_partition_equivalence(

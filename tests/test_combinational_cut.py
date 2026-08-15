@@ -1,6 +1,8 @@
 import copy
 import io
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -13,7 +15,16 @@ from emuflow.combinational_cut import (
     validate_combinational_cut_characterization,
 )
 from emuflow.errors import ValidationError
+from emuflow.equivalence import (
+    exhaustively_verify_static_exact_partition_equivalence,
+    simulate_static_exact_partition_equivalence,
+)
 from emuflow.ir import EmuIR
+from emuflow.netlist import (
+    build_split_artifacts,
+    transport_to_systemverilog,
+    validate_split_artifacts,
+)
 from emuflow.partition import (
     CUT_MODE_STATIC_EXACT,
     assign_clusters,
@@ -23,6 +34,7 @@ from emuflow.partition import (
     validate_partition_artifacts,
 )
 from emuflow.platform import Platform
+from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.routing import (
     demands_from_assignment,
     normalize_route_constraints,
@@ -47,9 +59,24 @@ def _endpoint(instance, port):
 def _chain_ir():
     instances = [
         {"id": "q0", "type": "FDRE", "resources": {"ff": 1}},
-        {"id": "l0", "type": "LUT2", "resources": {"lut": 1}},
-        {"id": "l1", "type": "LUT2", "resources": {"lut": 1}},
-        {"id": "l2", "type": "LUT2", "resources": {"lut": 1}},
+        {
+            "id": "l0",
+            "type": "LUT2",
+            "parameters": {"INIT": "1010"},
+            "resources": {"lut": 1},
+        },
+        {
+            "id": "l1",
+            "type": "LUT2",
+            "parameters": {"INIT": "1010"},
+            "resources": {"lut": 1},
+        },
+        {
+            "id": "l2",
+            "type": "LUT2",
+            "parameters": {"INIT": "1010"},
+            "resources": {"lut": 1},
+        },
         {"id": "q1", "type": "FDRE", "resources": {"ff": 1}},
     ]
     nets = [
@@ -639,6 +666,166 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         routes = self._exact_routes(assignment, frame_slots=4)
         with self.assertRaisesRegex(ValidationError, "infeasible"):
             build_tdm_schedule(routes, self.platform)
+
+    def test_phase6_event_model_uses_local_slot_values_and_is_equivalent(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
+        schedule = build_tdm_schedule(routes, self.platform)
+        random_evidence = simulate_static_exact_partition_equivalence(
+            self.ir,
+            assignment,
+            schedule,
+            cycles=8,
+            seed=19,
+        )
+        self.assertEqual(random_evidence["status"], "pass")
+        self.assertEqual(
+            random_evidence["evidence_type"], "random-simulation"
+        )
+        self.assertEqual(
+            random_evidence["startup_uninitialized_shadow_reads"], 0
+        )
+        exhaustive = exhaustively_verify_static_exact_partition_equivalence(
+            self.ir,
+            assignment,
+            schedule,
+        )
+        self.assertEqual(exhaustive["status"], "pass")
+        self.assertEqual(exhaustive["evidence_type"], "exhaustive-small-model")
+        self.assertEqual(exhaustive["cases"], 4)
+
+    def test_phase6_event_model_rejects_tx_before_local_source_ready(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
+        schedule = build_tdm_schedule(routes, self.platform)
+        tampered = copy.deepcopy(schedule)
+        first = next(item for item in tampered["entries"] if item["net"] == "n0")
+        first["slot"] = 0
+        first["ready_slot"] = 0
+        with self.assertRaisesRegex(ValidationError, "before source-ready"):
+            simulate_static_exact_partition_equivalence(
+                self.ir,
+                assignment,
+                tampered,
+                cycles=1,
+            )
+
+    def test_phase6_materializes_preserved_exact_boundaries_without_bypass(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        schedule = build_tdm_schedule(
+            self._exact_routes(assignment), self.platform
+        )
+        artifacts = build_split_artifacts(
+            self.ir, assignment, schedule, self.platform
+        )
+        validation = validate_split_artifacts(
+            self.ir,
+            assignment,
+            schedule,
+            self.platform,
+            artifacts,
+        )
+        self.assertEqual(validation["cut_mode"], "static-exact-combinational")
+        self.assertEqual(validation["hidden_cross_fpga_bypass_errors"], 0)
+        self.assertEqual(
+            validation["exact_boundary_identities"],
+            2 * len(schedule["entries"]),
+        )
+        boundaries = [
+            endpoint["boundary_identity"]
+            for transport in artifacts["transports"].values()
+            for endpoint in transport["endpoints"]
+        ]
+        self.assertEqual(len(boundaries), len(set(boundaries)))
+        for fpga_id, transport in artifacts["transports"].items():
+            rtl = transport_to_systemverilog(transport, self.platform)
+            self.assertIn('(* KEEP = "yes", DONT_TOUCH = "yes" *)', rtl)
+            self.assertIn(fpga_id, artifacts["netlists"])
+
+        tampered = copy.deepcopy(artifacts)
+        shadow = next(
+            segment
+            for netlist in tampered["netlists"].values()
+            for segment in netlist["nets"]
+            if segment["source_kind"] == "transport_shadow"
+        )
+        shadow["drivers"] = [_endpoint("l0", "O")]
+        with self.assertRaises(ValidationError):
+            validate_split_artifacts(
+                self.ir,
+                assignment,
+                schedule,
+                self.platform,
+                tampered,
+            )
+
+    def test_phase6_run_and_independent_validate_use_exact_macro_model(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        schedule = build_tdm_schedule(
+            self._exact_routes(assignment), self.platform
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.json"
+            assignment_path = root / "assignment.json"
+            schedule_path = root / "schedule.json"
+            output = root / "phase6"
+            ir_path.write_text(json.dumps(self.ir.to_dict()), encoding="utf-8")
+            assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            report = run_phase6(
+                ir_path,
+                assignment_path,
+                schedule_path,
+                PLATFORM_PATH,
+                output,
+                equivalence_cycles=4,
+                equivalence_seed=31,
+            )
+            evidence = report["equivalence"]
+            self.assertEqual(evidence["status"], "pass")
+            self.assertEqual(evidence["random_trace_count"], 3)
+            self.assertEqual(evidence["random_macro_cycles"], 12)
+            self.assertEqual(
+                evidence["exhaustive_macro_step"]["evidence_type"],
+                "exhaustive-small-model",
+            )
+            validation = validate_phase6(
+                ir_path,
+                assignment_path,
+                schedule_path,
+                PLATFORM_PATH,
+                output / "manifest.json",
+            )
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(
+                validation["static_exact_equivalence"]["status"], "pass"
+            )
+
+    @unittest.skipUnless(shutil.which("yosys"), "yosys is not installed")
+    def test_phase6_canonical_macro_step_formal_miter(self):
+        fixture = (
+            ROOT
+            / "tests"
+            / "fixtures"
+            / "static_exact_macro_step_miter.sv"
+        )
+        command = (
+            f"read_verilog -formal -sv {fixture}; "
+            "prep -top static_exact_macro_step_miter; "
+            "sat -verify -prove-asserts"
+        )
+        completed = subprocess.run(
+            [shutil.which("yosys"), "-q", "-p", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=completed.stdout + completed.stderr,
+        )
 
 
 if __name__ == "__main__":

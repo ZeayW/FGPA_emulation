@@ -83,6 +83,40 @@ def build_split_artifacts(
         raise ValidationError("assignment.platform does not match BoardDB")
     if schedule.get("platform") != platform.name:
         raise ValidationError("schedule.platform does not match BoardDB")
+    exact_contract = None
+    exact_contract_sha256 = None
+    exact_node_by_net: Dict[str, Mapping[str, Any]] = {}
+    exact_segments_by_cut_fpga: Dict[
+        Tuple[str, str], List[Mapping[str, Any]]
+    ] = defaultdict(list)
+    if assignment.get("semantic_contract") is not None:
+        from .combinational_cut import semantic_contract_sha256
+        from .routing import static_exact_contract_from_assignment
+        from .tdm import TDM_STATIC_EXACT_PROVIDER
+
+        exact_contract = static_exact_contract_from_assignment(assignment)
+        if exact_contract is None:
+            raise ValidationError("exact assignment contract is missing")
+        exact_contract_sha256 = semantic_contract_sha256(exact_contract)
+        if (
+            schedule.get("provider") != TDM_STATIC_EXACT_PROVIDER
+            or schedule.get("semantic_contract") != exact_contract
+            or schedule.get("semantic_contract_sha256")
+            != exact_contract_sha256
+        ):
+            raise ValidationError(
+                "exact split inputs do not share one semantic contract"
+            )
+        exact_node_by_net = {
+            item["net"]: item for item in exact_contract["cut_nodes"]
+        }
+        for segment in exact_contract["logic_segments"]:
+            source_cut = segment.get("source_cut_net")
+            fpga = segment.get("fpga")
+            if isinstance(source_cut, str) and isinstance(fpga, str):
+                exact_segments_by_cut_fpga[(source_cut, fpga)].append(
+                    segment
+                )
     physical_lane_by_entry: Dict[str, int] = {}
     if pin_plan is not None:
         if pin_plan.get("schema") != "emuflow.placement-aware-pin-plan/v1":
@@ -167,6 +201,35 @@ def build_split_artifacts(
             "lane": physical_lane_by_entry.get(entry["id"], entry["lane"]),
             "logical_lane": entry["lane"],
         }
+        exact_tx = {}
+        exact_rx = {}
+        if exact_contract is not None:
+            node = exact_node_by_net[entry["net"]]
+            source_entry = entry["from"] == route["source"]
+            exact_tx = {
+                "boundary_identity": f"static_exact:tx:{entry['id']}",
+                "semantic_contract_sha256": exact_contract_sha256,
+                "source_role": (
+                    "cut_source" if source_entry else "route_tree_relay"
+                ),
+                "source_logic_segment_ids": (
+                    list(node["source_segment_ids"])
+                    if source_entry
+                    else []
+                ),
+                "preserve": True,
+            }
+            exact_rx = {
+                "boundary_identity": f"static_exact:rx:{entry['id']}",
+                "semantic_contract_sha256": exact_contract_sha256,
+                "consumer_logic_segment_ids": sorted(
+                    segment["id"]
+                    for segment in exact_segments_by_cut_fpga.get(
+                        (entry["net"], entry["to"]), []
+                    )
+                ),
+                "preserve": True,
+            }
         endpoints_by_fpga[entry["from"]].append(
             {
                 "id": tx_id,
@@ -175,6 +238,7 @@ def build_split_artifacts(
                 "peer": entry["to"],
                 "signal": tx_signal,
                 **common,
+                **exact_tx,
             }
         )
         endpoints_by_fpga[entry["to"]].append(
@@ -185,6 +249,7 @@ def build_split_artifacts(
                 "peer": entry["from"],
                 "signal": rx_signal,
                 **common,
+                **exact_rx,
             }
         )
         lane_entries.append(
@@ -296,6 +361,46 @@ def build_split_artifacts(
                     "source_kind": source_kind,
                     "drivers": drivers,
                     "sinks": sinks,
+                    **(
+                        {
+                            "static_exact_boundary": {
+                                "semantic_contract_sha256": (
+                                    exact_contract_sha256
+                                ),
+                                "role": (
+                                    "transport_shadow_sink"
+                                    if source_kind == "transport_shadow"
+                                    else "cut_source"
+                                    if demand is not None
+                                    and fpga_id
+                                    == route_by_demand[demand]["source"]
+                                    else "local_logic"
+                                ),
+                                "logic_segment_ids": (
+                                    sorted(
+                                        segment["id"]
+                                        for segment in (
+                                            exact_segments_by_cut_fpga.get(
+                                                (net["id"], fpga_id), []
+                                            )
+                                        )
+                                    )
+                                    if source_kind == "transport_shadow"
+                                    else list(
+                                        exact_node_by_net[net["id"]][
+                                            "source_segment_ids"
+                                        ]
+                                    )
+                                    if demand is not None
+                                    and fpga_id
+                                    == route_by_demand[demand]["source"]
+                                    else []
+                                ),
+                            }
+                        }
+                        if exact_contract is not None and demand is not None
+                        else {}
+                    ),
                 }
             )
 
@@ -326,6 +431,11 @@ def build_split_artifacts(
                 key=lambda item: item["original_net"],
             ),
             "resources": local_resources,
+            **(
+                {"semantic_contract_sha256": exact_contract_sha256}
+                if exact_contract is not None
+                else {}
+            ),
         }
         local_endpoints = sorted(
             endpoints_by_fpga[fpga_id], key=lambda item: item["id"]
@@ -360,6 +470,16 @@ def build_split_artifacts(
                 for index, signal in enumerate(shadow_signals)
             ],
             "endpoints": local_endpoints,
+            **(
+                {
+                    "cut_mode": "static-exact-combinational",
+                    "semantic_contract_sha256": exact_contract_sha256,
+                    "shadow_reset_value": 0,
+                    "startup_policy": "first-post-reset-frame-current-arrivals",
+                }
+                if exact_contract is not None
+                else {}
+            ),
         }
         anchors[fpga_id] = _build_virtual_anchors(
             fpga_id, platform, local_endpoints
@@ -372,6 +492,14 @@ def build_split_artifacts(
         "frame_slots": schedule["metrics"]["frame_slots"],
         "binding_status": "logical_only",
         "entries": sorted(lane_entries, key=lambda item: item["id"]),
+        **(
+            {
+                "cut_mode": "static-exact-combinational",
+                "semantic_contract_sha256": exact_contract_sha256,
+            }
+            if exact_contract is not None
+            else {}
+        ),
     }
     manifest = {
         "schema": SPLIT_MANIFEST_SCHEMA,
@@ -406,6 +534,16 @@ def build_split_artifacts(
         ],
         "lane_map": "lane_map.json",
         "runtime_controller_rtl": "virtual_runtime_controller.sv",
+        **(
+            {
+                "cut_mode": "static-exact-combinational",
+                "qualification": "exact-boundary-materialization-pass",
+                "semantic_contract": exact_contract,
+                "semantic_contract_sha256": exact_contract_sha256,
+            }
+            if exact_contract is not None
+            else {}
+        ),
         **(
             {
                 "pin_plan": "pin_plan.json",
@@ -509,6 +647,11 @@ def transport_to_systemverilog(
         ");",
         "",
         "  logic [SLOT_BITS-1:0] slot;",
+        *(
+            ['  (* KEEP = "yes", DONT_TOUCH = "yes" *)']
+            if transport.get("cut_mode") == "static-exact-combinational"
+            else []
+        ),
         "  logic [SHADOW_COUNT-1:0] shadow_regs;",
         "  emuflow_virtual_runtime_controller #(",
         "    .FRAME_SLOTS(FRAME_SLOTS),",
@@ -748,6 +891,104 @@ def validate_split_artifacts(
     if endpoint_ids != lane_endpoint_ids:
         raise ValidationError("logical lane map endpoint agreement failed")
 
+    exact_boundary_count = 0
+    hidden_bypass_errors = 0
+    exact_contract = assignment.get("semantic_contract")
+    if exact_contract is not None:
+        from .combinational_cut import semantic_contract_sha256
+        from .routing import static_exact_contract_from_assignment
+
+        exact_contract = static_exact_contract_from_assignment(assignment)
+        exact_digest = semantic_contract_sha256(exact_contract)
+        manifest = artifacts["manifest"]
+        if (
+            manifest.get("cut_mode") != "static-exact-combinational"
+            or manifest.get("qualification")
+            != "exact-boundary-materialization-pass"
+            or manifest.get("semantic_contract") != exact_contract
+            or manifest.get("semantic_contract_sha256") != exact_digest
+        ):
+            raise ValidationError(
+                "exact split manifest is not bound to the semantic contract"
+            )
+        node_by_net = {
+            item["net"]: item for item in exact_contract["cut_nodes"]
+        }
+        consumers: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+        for segment in exact_contract["logic_segments"]:
+            source_cut = segment.get("source_cut_net")
+            fpga = segment.get("fpga")
+            if isinstance(source_cut, str) and isinstance(fpga, str):
+                consumers[(source_cut, fpga)].append(segment["id"])
+        boundary_ids = set()
+        for transport in artifacts["transports"].values():
+            if (
+                transport.get("semantic_contract_sha256") != exact_digest
+                or transport.get("shadow_reset_value") != 0
+                or transport.get("startup_policy")
+                != "first-post-reset-frame-current-arrivals"
+            ):
+                raise ValidationError(
+                    "exact transport is missing reset/contract binding"
+                )
+            for endpoint in transport["endpoints"]:
+                boundary = endpoint.get("boundary_identity")
+                if (
+                    not isinstance(boundary, str)
+                    or boundary in boundary_ids
+                    or endpoint.get("semantic_contract_sha256") != exact_digest
+                    or endpoint.get("preserve") is not True
+                ):
+                    raise ValidationError(
+                        "exact transport boundary identity is invalid"
+                    )
+                boundary_ids.add(boundary)
+                exact_boundary_count += 1
+                if endpoint["kind"] == "tx":
+                    source_entry = endpoint["signal"].startswith("net:")
+                    expected_role = (
+                        "cut_source" if source_entry else "route_tree_relay"
+                    )
+                    expected_segments = (
+                        list(node_by_net[endpoint["net"]]["source_segment_ids"])
+                        if source_entry
+                        else []
+                    )
+                    if (
+                        endpoint.get("source_role") != expected_role
+                        or endpoint.get("source_logic_segment_ids")
+                        != expected_segments
+                    ):
+                        raise ValidationError(
+                            "exact TX boundary source binding is invalid"
+                        )
+                elif endpoint.get("consumer_logic_segment_ids") != sorted(
+                    consumers.get((endpoint["net"], endpoint["fpga"]), [])
+                ):
+                    raise ValidationError(
+                        "exact RX boundary consumer binding is invalid"
+                    )
+        for netlist in artifacts["netlists"].values():
+            if netlist.get("semantic_contract_sha256") != exact_digest:
+                raise ValidationError(
+                    "exact split netlist lacks semantic contract binding"
+                )
+            for segment in netlist["nets"]:
+                if segment["source_kind"] != "transport_shadow":
+                    continue
+                drivers = segment["drivers"]
+                if (
+                    len(drivers) != 1
+                    or not isinstance(drivers[0].get("instance"), str)
+                    or not drivers[0]["instance"].startswith("__emuflow_rx_")
+                    or drivers[0].get("port") != "shadow_out"
+                ):
+                    hidden_bypass_errors += 1
+        if hidden_bypass_errors:
+            raise ValidationError(
+                "exact split netlists contain a hidden cross-FPGA bypass"
+            )
+
     cut_sink_endpoints = sum(
         sum(
             endpoint["instance"] is not None
@@ -789,4 +1030,14 @@ def validate_split_artifacts(
         ),
         "instance_coverage_errors": 0,
         "endpoint_agreement_errors": 0,
+        **(
+            {
+                "cut_mode": "static-exact-combinational",
+                "exact_boundary_identities": exact_boundary_count,
+                "hidden_cross_fpga_bypass_errors": hidden_bypass_errors,
+                "startup_uninitialized_shadow_reads": 0,
+            }
+            if exact_contract is not None
+            else {}
+        ),
     }
