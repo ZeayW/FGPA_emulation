@@ -10,6 +10,7 @@ from emuflow.experiment_partition import validate_partition_checkpoint
 from emuflow.experiment_upstream import (
     EXPERIMENT_PARTITION_SCHEMA,
     EXPERIMENT_TDM_SCHEMA,
+    _portable_cut_timing_projection,
     validate_tdm_checkpoint,
 )
 
@@ -19,6 +20,56 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    def test_cut_timing_projection_provenance_is_relocation_portable(
+        self,
+    ) -> None:
+        artifact = {
+            "schema": "emuflow.sta-paths/v1",
+            "source": {
+                "provider": "partition-projected-sta-paths-v1",
+                "input": "/cache/staging/key/output/cut-path-database.json",
+            },
+            "paths": [{"id": "p0"}],
+        }
+        relocated = {
+            **artifact,
+            "source": {
+                **artifact["source"],
+                "input": "/cache/objects/key/output/cut-path-database.json",
+            },
+        }
+        self.assertEqual(
+            _portable_cut_timing_projection(
+                artifact, "cut-path-database.json"
+            ),
+            _portable_cut_timing_projection(
+                relocated, "cut-path-database.json"
+            ),
+        )
+
+        tampered = {**relocated, "paths": [{"id": "different"}]}
+        self.assertNotEqual(
+            _portable_cut_timing_projection(
+                artifact, "cut-path-database.json"
+            ),
+            _portable_cut_timing_projection(
+                tampered, "cut-path-database.json"
+            ),
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "projection source is invalid"
+        ):
+            _portable_cut_timing_projection(
+                {
+                    **artifact,
+                    "source": {
+                        **artifact["source"],
+                        "input": "/cache/staging/key/output/other.json",
+                    },
+                },
+                "cut-path-database.json",
+            )
+
     def _tdm_fixture(
         self,
         root: Path,
