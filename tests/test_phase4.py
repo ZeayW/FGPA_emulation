@@ -157,6 +157,14 @@ class Phase4Test(unittest.TestCase):
             )
             self.assertEqual(len(routes["timing"]["paths"]), 1)
             self.assertEqual(report["validation"]["timing_paths_original"], 1)
+            self.assertEqual(
+                report["candidate_generation"],
+                {
+                    "requested_workers": 1,
+                    "ordering": "demand-index-then-generator-index",
+                    "route_artifact_deterministic": True,
+                },
+            )
             normalized = load_sta_paths(timing_path, routes["demands"])
             self.assertEqual(
                 validate_native_system_routes(

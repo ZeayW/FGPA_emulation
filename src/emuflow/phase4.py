@@ -255,12 +255,16 @@ def run_phase4(
         report["qualification"] = "route-contract-propagation-pass"
     if timing_paths is not None:
         report["artifacts"]["timing_paths"] = "timing_paths.normalized.json"
-    if provider == GLOBAL_CANDIDATE_PROVIDER:
-        report["candidate_generation"] = {
-            "requested_workers": candidate_workers,
-            "ordering": "demand-index-then-generator-index",
-            "route_artifact_deterministic": True,
-        }
+    # Seal the execution contract for every native provider.  The experiment
+    # checkpoint validator must be able to distinguish a deterministic
+    # single-worker exact-cut route from a differently configured run even
+    # when Phase 4 only annotates timing after routing and therefore has no
+    # persisted candidate pool.
+    report["candidate_generation"] = {
+        "requested_workers": candidate_workers,
+        "ordering": "demand-index-then-generator-index",
+        "route_artifact_deterministic": True,
+    }
     if candidate_pool_path.is_file():
         report["artifacts"]["candidate_pool"] = "route_candidate_pool.json"
     if tdm_feedback is not None:

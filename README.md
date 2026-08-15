@@ -1152,6 +1152,10 @@ route node configuration and command, and is independently checked against the
 Phase 4 candidate-generation certificate. Changing either provider or worker
 count therefore changes the route checkpoint identity and every descendant,
 without invalidating frontend, timing, or partition checkpoints.
+All native Phase 4 providers emit this certificate, including the single-worker
+post-route timing annotation used by static exact combinational cuts; a route
+checkpoint is rejected if its recorded worker contract disagrees with the
+planned command.
 The workload run spec also fixes the target clock period (10 ns for the
 canonical Koios DLA-medium study); an experiment config with another period is
 rejected rather than producing incomparable WNS/TNS.
