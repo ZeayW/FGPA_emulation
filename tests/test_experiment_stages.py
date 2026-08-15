@@ -7,6 +7,7 @@ from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
     _placement_aware_positions,
     _prepare_empty_output,
+    _timing_paths,
 )
 from emuflow.experiment_upstream import (
     run_frontend_checkpoint,
@@ -17,6 +18,23 @@ from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
+    def test_shared_timing_uses_partition_projected_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timing = root / "timing"
+            timing.mkdir()
+            (timing / "path-database.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (timing / "cut-path-database.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            self.assertIsNone(_timing_paths(root))
+
+            projected = timing / "cut-timing-paths.json"
+            projected.write_text("{}", encoding="utf-8")
+            self.assertEqual(_timing_paths(root), projected)
+
     def test_frontend_checkpoint_is_reusable_and_tamper_evident(self) -> None:
         repository = Path(__file__).resolve().parents[1]
         platform = repository / "platforms/virtual/xcvu3p_2fpga_p2p.json"

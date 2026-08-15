@@ -75,6 +75,26 @@ def _float_equal(left: float, right: float) -> bool:
     return math.isclose(float(left), float(right), rel_tol=1.0e-12, abs_tol=1.0e-12)
 
 
+def _portable_cut_timing_projection(
+    artifact: Mapping[str, Any], database_name: str
+) -> Dict[str, Any]:
+    """Canonicalize the location-only provenance in a projected STA artifact."""
+    source = artifact.get("source")
+    if not isinstance(source, dict):
+        raise ValidationError("cut-timing projection source is invalid")
+    input_path = source.get("input")
+    if (
+        source.get("provider") != "partition-projected-sta-paths-v1"
+        or not isinstance(input_path, str)
+        or not input_path
+        or Path(input_path).name != database_name
+    ):
+        raise ValidationError("cut-timing projection source is invalid")
+    portable = dict(artifact)
+    portable["source"] = {**source, "input": database_name}
+    return portable
+
+
 def run_frontend_checkpoint(
     platform_path: Path,
     output_dir: Path,
@@ -688,7 +708,9 @@ def validate_cut_timing_checkpoint(
     with tempfile.TemporaryDirectory(prefix="emuflow-cut-timing-validate-") as temporary:
         rebuilt = Path(temporary) / "projected.json"
         project_sta_path_database(database, assignment_path, rebuilt)
-        if read_json(rebuilt) != read_json(projected):
+        if _portable_cut_timing_projection(
+            read_json(rebuilt), database.name
+        ) != _portable_cut_timing_projection(read_json(projected), database.name):
             raise ValidationError("cut-timing projection reconstruction failed")
     return {
         "status": "pass",
@@ -891,7 +913,15 @@ def validate_tdm_checkpoint(
     phase5 = read_json(phase5_report)
     if report.get("phase5") != phase5:
         raise ValidationError("TDM checkpoint embedded Phase 5 report disagrees")
-    if expected_provider is not None and phase5.get("provider") != expected_provider:
+    # The Phase 5 provider selects the optimization policy.  Academic ratio
+    # providers materialize a schedule using a separate, explicitly recorded
+    # schedule provider, so bind the checkpoint contract to the former when it
+    # is present.  Baseline schedules have no optimization provider and retain
+    # the historical direct provider contract.
+    actual_provider = phase5.get(
+        "optimization_provider", phase5.get("provider")
+    )
+    if expected_provider is not None and actual_provider != expected_provider:
         raise ValidationError("TDM checkpoint provider contract disagrees")
     checked = validate_phase5(
         routes, platform_path, schedule, ratio_plan_path=ratio_plan if ratio_plan.is_file() else None
