@@ -1200,11 +1200,26 @@ emuflow experiment-cache gc-apply --plan /research/d4/gds/ziyiwang21/experiments
   --expected-plan-sha256 "$GC_PLAN_SHA256"
 ```
 
+The migration plan reports logical and allocated size separately, plus
+`exclusive_reclaimable_bytes` after accounting for hard links outside each
+tree; deleting a second pathname to shared blocks must not be advertised as
+newly freed capacity.  Its totals also distinguish bytes reclaimable by
+retiring one entry from bytes freed only when the complete inventoried root is
+retired.
+
 Retirement is only for an explicitly selected noncanonical legacy tree.  It
 content-seals the complete tree, revalidates all candidates before deleting the
 first byte, rejects evidence/archive candidates, and retains marker tombstones
 with a receipt labelled as non-evidence.  It is not a substitute for importing
-reusable checkpoints or building replay-complete evidence.
+reusable checkpoints or building replay-complete evidence.  A legacy farm is
+also protected while any task is prepared, submitting, waiting, running,
+retryable, storage-blocked, submit-failed, malformed, or otherwise
+unreconciled.  An expired lease is still protected: run the normal farm
+reconciler, which probes the pinned worker, rather than inferring process death
+from time.  Retirement accepts only farms whose task states are all final
+`pass` or `failed`, requires every farm to have a safe `launch.lock`, and holds
+all such locks continuously while sealing and applying the approved plan so a
+concurrent launch cannot race cleanup.
 
 On linux10/hpc1--hpc8 all controlled writes and temporary files are
 code-enforced below `/research/d4/gds/ziyiwang21`. Every v2 node supplies a peak

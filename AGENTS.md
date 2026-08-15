@@ -132,6 +132,11 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   before any mutation, refuses evidence/archive candidates, and preserves
   marker tombstones plus a non-evidence receipt outside `runs`.  Direct
   age/name/glob-based deletion remains forbidden.
+- Legacy validation farms remain retirement-protected while any task state can
+  still run or retry, is malformed, or has not been reconciled. An expired
+  lease alone never permits cleanup. Only farms whose task states are all final
+  `pass` or `failed` may enter a retirement plan, and the planner/apply path
+  must hold every farm `launch.lock` while sealing or removing the tree.
 - A final evidence bundle recursively contains every required artifact for its
   terminal nodes and ancestors and must validate after the source cache is
   unavailable.  A legacy archive containing any hash-only run file is not
