@@ -502,6 +502,15 @@ fresh inner routing loop inside every outer partition candidate; feedback is
 never reused after an assignment changes.  Both iteration counts default to
 zero, so neither loop is entered unless requested.
 
+Phase 5 normally compares exact-displacement and scalable minimum-wire
+legalization before an inner-loop candidate can be accepted.  On a scale case
+where the first result certifies that zero capacity domains used exact DP and
+every domain used the same scalable fallback, the second solve is skipped as
+mathematically identical.  The candidate-selection report still records both
+strategies and carries a `zero-exact-domain-fallback` equivalence certificate;
+small and medium cases with any exact-legalized domain continue to execute
+both strategies independently.
+
 The same command can continue through the checked serial BSP boundary after a
 provider recipe has been materialized. It then runs Phase 6B, constructs the
 runtime synchronization tree, derives GT sites when needed, runs Phase 6C, and

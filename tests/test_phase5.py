@@ -11,7 +11,11 @@ from unittest import mock
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
-from emuflow.phase5 import run_phase5, validate_phase5
+from emuflow.phase5 import (
+    _build_strategy_candidates,
+    run_phase5,
+    validate_phase5,
+)
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import (
@@ -24,6 +28,7 @@ from emuflow.tdm import (
     validate_tdm_schedule,
 )
 from emuflow.tdm_ratio import (
+    DEFAULT_EXACT_DOMAIN_LIMIT,
     TDM_TIMING_DAG_RATIO_PROVIDER,
     _prepare_model,
     _round_barrier_legalize,
@@ -130,6 +135,86 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_strategy_candidate_reuses_certified_scalable_fallback(
+        self,
+    ) -> None:
+        calls = []
+
+        def build_candidate(strategy, exact_domain_limit):
+            calls.append((strategy, exact_domain_limit))
+            return {
+                "strategy": strategy,
+                "evaluation": "executed",
+                "score": (10.0, 9.0, 8.0, -7, 6.0, 1),
+                "ratio_plan": {
+                    "domains": [{"key": "a"}, {"key": "b"}],
+                    "metrics": {
+                        "dp_legalized_domains": 0,
+                        "greedy_legalized_domains": 2,
+                    },
+                },
+            }
+
+        candidates = _build_strategy_candidates(build_candidate)
+
+        self.assertEqual(
+            calls,
+            [("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT)],
+        )
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(
+            candidates[1]["evaluation"],
+            "certified-equivalent-reuse",
+        )
+        self.assertEqual(
+            candidates[1]["reused_from"], "exact-displacement-dp"
+        )
+        self.assertIs(
+            candidates[1]["ratio_plan"], candidates[0]["ratio_plan"]
+        )
+        self.assertEqual(candidates[1]["score"][-1], 0)
+
+    def test_strategy_candidate_executes_scalable_when_exact_is_used(
+        self,
+    ) -> None:
+        calls = []
+
+        def build_candidate(strategy, exact_domain_limit):
+            calls.append((strategy, exact_domain_limit))
+            return {
+                "strategy": strategy,
+                "evaluation": "executed",
+                "score": (1.0, 1.0, 1.0, -1, 1.0, 1),
+                "ratio_plan": {
+                    "domains": [{"key": "a"}, {"key": "b"}],
+                    "metrics": {
+                        "dp_legalized_domains": (
+                            1 if exact_domain_limit else 0
+                        ),
+                        "greedy_legalized_domains": (
+                            1 if exact_domain_limit else 2
+                        ),
+                    },
+                },
+            }
+
+        candidates = _build_strategy_candidates(build_candidate)
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "exact-displacement-dp",
+                    DEFAULT_EXACT_DOMAIN_LIMIT,
+                ),
+                ("scalable-minimum-wire", 0),
+            ],
+        )
+        self.assertEqual(
+            [candidate["evaluation"] for candidate in candidates],
+            ["executed", "executed"],
+        )
+
     def test_native_slot_optimizer_compacts_sparse_lane_ids(self) -> None:
         source = (
             ROOT / "src" / "native" / "tdm_slot_optimizer.cpp"

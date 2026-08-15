@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .io import read_json, write_json
 from .platform import Platform
@@ -27,6 +27,50 @@ from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
 
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
+
+
+def _build_strategy_candidates(
+    build_candidate: Callable[[str, int], Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Evaluate the two legalization strategies without redundant work.
+
+    The exact-displacement strategy already falls back to the scalable
+    minimum-wire legalizer for every domain that exceeds the exact-domain
+    limit.  If its result certifies that *all* domains took that fallback,
+    rerunning the same optimizer with an exact-domain limit of zero is
+    mathematically redundant.  Preserve the two-strategy selection record,
+    but reuse the certified result and identify the reuse explicitly.
+    """
+
+    exact = build_candidate(
+        "exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT
+    )
+    candidates = [exact]
+    plan = exact["ratio_plan"]
+    metrics = plan["metrics"]
+    domains = plan["domains"]
+    if (
+        metrics["dp_legalized_domains"] == 0
+        and metrics["greedy_legalized_domains"] == len(domains)
+    ):
+        candidates.append(
+            {
+                **exact,
+                "strategy": "scalable-minimum-wire",
+                "score": (*exact["score"][:-1], 0),
+                "evaluation": "certified-equivalent-reuse",
+                "reused_from": "exact-displacement-dp",
+                "equivalence_certificate": {
+                    "kind": "zero-exact-domain-fallback",
+                    "domains": len(domains),
+                    "dp_legalized_domains": 0,
+                    "greedy_legalized_domains": len(domains),
+                },
+            }
+        )
+    else:
+        candidates.append(build_candidate("scalable-minimum-wire", 0))
+    return candidates
 
 
 def run_phase5(
@@ -87,11 +131,10 @@ def run_phase5(
                 "timing_dag_optimizer requires the timing-DAG Phase 5 "
                 "provider"
             )
-        candidates = []
-        for strategy, exact_domain_limit in (
-            ("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT),
-            ("scalable-minimum-wire", 0),
-        ):
+
+        def build_candidate(
+            strategy: str, exact_domain_limit: int
+        ) -> Dict[str, Any]:
             if provider == TDM_RATIO_PROVIDER:
                 candidate_plan = build_tdm_ratio_plan(
                     routes,
@@ -166,17 +209,18 @@ def run_phase5(
                 ],
                 1 if strategy == "exact-displacement-dp" else 0,
             )
-            candidates.append(
-                {
-                    "strategy": strategy,
-                    "score": score,
-                    "ratio_plan": candidate_plan,
-                    "ratio_validation": candidate_ratio_validation,
-                    "schedule": candidate_schedule,
-                    "validation": candidate_validation,
-                    "timing_validation": candidate_timing,
-                }
-            )
+            return {
+                "strategy": strategy,
+                "score": score,
+                "ratio_plan": candidate_plan,
+                "ratio_validation": candidate_ratio_validation,
+                "schedule": candidate_schedule,
+                "validation": candidate_validation,
+                "timing_validation": candidate_timing,
+                "evaluation": "executed",
+            }
+
+        candidates = _build_strategy_candidates(build_candidate)
         selected = max(candidates, key=lambda candidate: candidate["score"])
         ratio_plan = selected["ratio_plan"]
         ratio_validation = selected["ratio_validation"]
@@ -192,6 +236,17 @@ def run_phase5(
             "candidates": [
                 {
                     "strategy": candidate["strategy"],
+                    "evaluation": candidate["evaluation"],
+                    **(
+                        {
+                            "reused_from": candidate["reused_from"],
+                            "equivalence_certificate": candidate[
+                                "equivalence_certificate"
+                            ],
+                        }
+                        if "reused_from" in candidate
+                        else {}
+                    ),
                     "realized_worst_normalized_slack": candidate[
                         "timing_validation"
                     ]["worst_normalized_slack"],
