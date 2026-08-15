@@ -52,6 +52,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
             "build",
         ]
         self.assertTrue(_build_parser().parse_args(base).timing_driven)
+        defaults = _build_parser().parse_args(base)
+        self.assertEqual(defaults.routing_feedback_iterations, 0)
+        self.assertEqual(defaults.routing_feedback_step, [])
+        self.assertEqual(
+            defaults.routing_feedback_max_route_change_fraction, 1.0
+        )
         self.assertFalse(
             _build_parser().parse_args(
                 [*base, "--no-timing-driven"]
@@ -457,6 +463,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 frame_slots=32,
                 optimize_frame_slots=True,
                 cross_stage_iterations=1,
+                routing_feedback_iterations=1,
                 cross_stage_feedback_optimizer=str(
                     tdm_partition_feedback()
                 ),
@@ -567,6 +574,20 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 report["stages"]["tdm"]["validation"],
             )
             self.assertEqual(
+                selected["phase45_feedback_validation"]["status"],
+                "pass",
+            )
+            self.assertTrue(
+                all(
+                    candidate.get("phase45_feedback_validation", {}).get(
+                        "status"
+                    )
+                    == "pass"
+                    for candidate in report["cross_stage"]["candidates"]
+                    if candidate.get("status") == "pass"
+                )
+            )
+            self.assertEqual(
                 report["runtime"]["validation"]["status"], "pass"
             )
             self.assertEqual(
@@ -627,7 +648,21 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 cross_stage_iterations=0,
+                routing_feedback_iterations=1,
                 equivalence_cycles=2,
+            )
+            self.assertEqual(
+                direct_report["phase45_feedback"]["status"], "pass"
+            )
+            self.assertEqual(
+                direct_report["summary"]["routing_feedback_candidate"],
+                direct_report["phase45_feedback"]["selected_candidate"],
+            )
+            self.assertTrue(
+                (
+                    direct_output
+                    / "phase45-feedback/phase45_feedback_report.json"
+                ).is_file()
             )
             direct_projection = direct_report["timing"][
                 "cut_path_projection"

@@ -47,6 +47,7 @@ def run_phase4(
     physical_feedback_runtime_path: Optional[Path] = None,
     physical_feedback_summary_path: Optional[Path] = None,
     physical_feedback_weight: float = 1.0,
+    tdm_feedback_weight: float = 1.0,
     candidate_workers: int = 1,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
@@ -154,6 +155,7 @@ def run_phase4(
             provider=provider,
             candidate_pool_path=candidate_pool_path,
             tdm_feedback=tdm_feedback,
+            feedback_price_scale=tdm_feedback_weight,
             candidate_workers=candidate_workers,
         )
         validation = validate_native_system_routes(
@@ -216,6 +218,7 @@ def run_phase4(
             provider=provider,
             candidate_pool_path=candidate_pool_path,
             tdm_feedback=tdm_feedback,
+            feedback_price_scale=tdm_feedback_weight,
             candidate_workers=candidate_workers,
         )
         validation = validate_native_system_routes(
@@ -262,6 +265,9 @@ def run_phase4(
                 physical_feedback_weight
             )
         report["tdm_feedback"]["validation"] = tdm_feedback_validation
+        report["tdm_feedback"]["feedback_price_scale"] = float(
+            tdm_feedback_weight
+        )
         report["artifacts"]["tdm_feedback"] = (
             "tdm_feedback.normalized.json"
         )

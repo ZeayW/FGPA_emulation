@@ -7,7 +7,7 @@ import math
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from .board_link_timing import (
     directed_route_link_delays,
@@ -15,7 +15,10 @@ from .board_link_timing import (
 )
 from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import run_chimew_phase6_pipeline
-from .cross_stage import run_cross_stage_optimization
+from .cross_stage import (
+    run_cross_stage_optimization,
+    run_phase45_feedback_loop,
+)
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
     run_frame_length_search,
@@ -544,6 +547,46 @@ def validate_multi_fpga_flow_report(
                 "frame-search selection disagrees with TDM/runtime"
             )
     cross_stage = report.get("cross_stage")
+    phase45_feedback = report.get("phase45_feedback")
+    if phase45_feedback is not None:
+        if cross_stage is not None:
+            raise ValidationError(
+                "top-level Phase 4/5 feedback must not duplicate nested "
+                "cross-stage feedback"
+            )
+        if not isinstance(phase45_feedback, dict):
+            raise ValidationError(
+                "multi-FPGA Phase 4/5 feedback report is invalid"
+            )
+        phase45_candidates = phase45_feedback.get("candidates")
+        phase45_selected = phase45_feedback.get("selected_candidate")
+        if (
+            phase45_feedback.get("status") != "pass"
+            or not isinstance(phase45_candidates, list)
+            or isinstance(phase45_selected, bool)
+            or not isinstance(phase45_selected, int)
+            or phase45_selected < 0
+            or phase45_selected >= len(phase45_candidates)
+        ):
+            raise ValidationError(
+                "multi-FPGA Phase 4/5 feedback selection is invalid"
+            )
+        selected_phase45 = phase45_candidates[phase45_selected]
+        if (
+            selected_phase45.get("status") != "pass"
+            or selected_phase45.get("artifacts", {}).get("routes", {}).get(
+                "sha256"
+            )
+            != report.get("artifacts", {}).get("routes", {}).get("sha256")
+            or selected_phase45.get("artifacts", {}).get(
+                "schedule", {}
+            ).get("sha256")
+            != report.get("artifacts", {}).get("schedule", {}).get("sha256")
+        ):
+            raise ValidationError(
+                "selected Phase 4/5 feedback candidate disagrees with "
+                "canonical stages"
+            )
     cross_stage_iteration = None
     if cross_stage is not None:
         if (
@@ -609,6 +652,11 @@ def validate_multi_fpga_flow_report(
         "equivalence_mismatches": equivalence.get("mismatches"),
         "frame_slots": runtime["validation"].get("frame_slots"),
         "cross_stage_iteration": cross_stage_iteration,
+        "routing_feedback_candidate": (
+            phase45_feedback.get("selected_candidate")
+            if phase45_feedback is not None
+            else None
+        ),
         "timing_optimization": (
             "enabled"
             if timing_optimization
@@ -691,6 +739,9 @@ def run_multi_fpga_flow(
     slot_refinement_iterations: int = 0,
     ratio_convergence: float = 1.0e-9,
     cross_stage_iterations: int = 0,
+    routing_feedback_iterations: int = 0,
+    routing_feedback_steps: Optional[Tuple[float, ...]] = None,
+    routing_feedback_max_route_change_fraction: float = 1.0,
     cross_stage_feedback_optimizer: Optional[str] = None,
     cross_stage_pair_pressure_weight: float = 1.0,
     simulation_frames: int = 16,
@@ -788,6 +839,33 @@ def run_multi_fpga_flow(
     if cross_stage_iterations and not timing_driven:
         raise EmuFlowError(
             "--cross-stage-iterations requires --timing-driven"
+        )
+    if (
+        isinstance(routing_feedback_iterations, bool)
+        or not isinstance(routing_feedback_iterations, int)
+        or routing_feedback_iterations < 0
+    ):
+        raise EmuFlowError(
+            "--routing-feedback-iterations must be non-negative"
+        )
+    if routing_feedback_iterations and not timing_driven:
+        raise EmuFlowError(
+            "--routing-feedback-iterations requires --timing-driven"
+        )
+    if (
+        isinstance(routing_feedback_max_route_change_fraction, bool)
+        or not isinstance(
+            routing_feedback_max_route_change_fraction, (int, float)
+        )
+        or not math.isfinite(
+            float(routing_feedback_max_route_change_fraction)
+        )
+        or not 0.0
+        < float(routing_feedback_max_route_change_fraction)
+        <= 1.0
+    ):
+        raise EmuFlowError(
+            "--routing-feedback-max-route-change-fraction must be in (0, 1]"
         )
     if optimize_frame_slots and not timing_driven:
         raise EmuFlowError(
@@ -1166,6 +1244,7 @@ def run_multi_fpga_flow(
     phase5_root = output_dir / "tdm"
     frame_search_report = None
     cross_stage_report = None
+    phase45_feedback_report = None
     if cross_stage_iterations:
         cross_stage_root = output_dir / "cross-stage"
         cross_stage_report = run_cross_stage_optimization(
@@ -1215,6 +1294,11 @@ def run_multi_fpga_flow(
             feedback_optimizer=cross_stage_feedback_optimizer,
             simulation_frames=simulation_frames,
             pair_pressure_weight=cross_stage_pair_pressure_weight,
+            routing_feedback_iterations=routing_feedback_iterations,
+            routing_feedback_steps=routing_feedback_steps,
+            routing_feedback_max_route_change_fraction=(
+                routing_feedback_max_route_change_fraction
+            ),
         )
         selected = cross_stage_report["candidates"][
             cross_stage_report["selected_iteration"]
@@ -1253,6 +1337,57 @@ def run_multi_fpga_flow(
             )
             frame_search_report = read_json(
                 output_dir / "frame-search/frame-search-report.json"
+            )
+    elif routing_feedback_iterations:
+        phase45_feedback_report = run_phase45_feedback_loop(
+            database_path=path_database_path,
+            assignment_path=assignment_path,
+            platform_path=platform_path,
+            timing_paths_path=projected_timing_paths,
+            output_dir=output_dir / "phase45-feedback",
+            canonical_phase4_dir=phase4_root,
+            canonical_phase5_dir=phase5_root,
+            max_iterations=routing_feedback_iterations,
+            feedback_steps=routing_feedback_steps,
+            max_route_change_fraction=(
+                routing_feedback_max_route_change_fraction
+            ),
+            route_constraints_path=effective_route_constraints,
+            frame_slots=frame_slots,
+            optimize_frame_slots=optimize_frame_slots,
+            route_max_iterations=route_max_iterations,
+            router=router,
+            route_provider=effective_route_provider,
+            route_candidate_workers=route_candidate_workers,
+            simulation_frames=simulation_frames,
+            tdm_provider=effective_tdm_provider,
+            ratio_optimizer=ratio_optimizer,
+            timing_dag_optimizer=timing_dag_optimizer,
+            slot_optimizer=slot_optimizer,
+            ratio_max_iterations=ratio_max_iterations,
+            max_ratio=max_ratio,
+            ratio_quantum=ratio_quantum,
+            post_refinement_iterations=post_refinement_iterations,
+            slot_refinement_iterations=slot_refinement_iterations,
+            ratio_convergence=ratio_convergence,
+        )
+        phase4_report = read_json(phase4_root / "phase4_report.json")
+        phase5_report = read_json(phase5_root / "phase5_report.json")
+        if optimize_frame_slots:
+            feedback_report = read_json(
+                output_dir
+                / "phase45-feedback/phase45_feedback_report.json"
+            )
+            baseline_frame = feedback_report["candidates"][0][
+                "frame_search"
+            ]["path"]
+            source_frame_report = (
+                output_dir / "phase45-feedback" / baseline_frame
+            )
+            frame_search_report = read_json(source_frame_report)
+            shutil.copytree(
+                source_frame_report.parent,
+                output_dir / "frame-search",
             )
     elif optimize_frame_slots:
         if frame_slots is None:
@@ -1620,6 +1755,11 @@ def run_multi_fpga_flow(
             if cross_stage_report is not None
             else {}
         ),
+        **(
+            {"phase45_feedback": phase45_feedback_report}
+            if phase45_feedback_report is not None
+            else {}
+        ),
         "runtime": runtime_report,
         **(
             {"physical": physical_report}
@@ -1696,6 +1836,23 @@ def run_multi_fpga_flow(
                     }
                 }
                 if cross_stage_report is not None
+                else {}
+            ),
+            **(
+                {
+                    "phase45_feedback_report": {
+                        "path": (
+                            "phase45-feedback/"
+                            "phase45_feedback_report.json"
+                        ),
+                        "sha256": _sha256(
+                            output_dir
+                            / "phase45-feedback/"
+                            "phase45_feedback_report.json"
+                        ),
+                    }
+                }
+                if phase45_feedback_report is not None
                 else {}
             ),
             **(

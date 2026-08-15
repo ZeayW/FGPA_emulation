@@ -1,19 +1,29 @@
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
+from emuflow.cross_stage import (
+    run_phase45_feedback_loop,
+    validate_phase45_feedback_report,
+)
 from emuflow.phase4 import run_phase4
 from emuflow.phase5 import run_phase5
 from emuflow.platform import Platform
 from emuflow.routing import demands_from_assignment, normalize_route_constraints
-from emuflow.tdm import build_tdm_schedule
+from emuflow.routing_candidates import exact_route_candidate_selection
+from emuflow.tdm import (
+    build_tdm_schedule,
+    reconstruct_tdm_schedule_timing,
+)
 from emuflow.tdm_feedback import (
     build_tdm_feedback,
     validate_tdm_feedback,
 )
+from emuflow.tdm_oracle import exact_multi_round_slot_schedule
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     STA_PATHS_SCHEMA,
@@ -21,7 +31,11 @@ from emuflow.timing_routing import (
     normalize_sta_paths,
     route_system_native,
 )
-from tests.native_build import tlr_router
+from tests.native_build import (
+    tdm_ratio_optimizer,
+    tdm_timing_dag_optimizer,
+    tlr_router,
+)
 from tests.test_phase4 import _assignment, _link, _platform_value
 
 
@@ -247,6 +261,7 @@ class TdmFeedbackTest(unittest.TestCase):
                 tdm_feedback_path=root / "feedback.json",
                 tdm_feedback_routes_path=root / "prior-routes.json",
                 tdm_feedback_schedule_path=root / "prior-schedule.json",
+                tdm_feedback_weight=0.5,
             )
             self.assertEqual(
                 report["tdm_feedback"]["validation"]["status"], "pass"
@@ -255,6 +270,32 @@ class TdmFeedbackTest(unittest.TestCase):
                 report["artifacts"]["tdm_feedback"],
                 "tdm_feedback.normalized.json",
             )
+            self.assertEqual(
+                report["tdm_feedback"]["feedback_price_scale"], 0.5
+            )
+            routed = json.loads(
+                (root / "phase4/routes.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                routed["joint_optimization"]["tdm_feedback"][
+                    "feedback_price_scale"
+                ],
+                0.5,
+            )
+            with self.assertRaisesRegex(ValueError, "must be in"):
+                run_phase4(
+                    root / "assignment.json",
+                    root / "platform.json",
+                    root / "invalid-weight",
+                    constraints_path=root / "constraints.json",
+                    timing_paths_path=root / "timing.json",
+                    provider=GLOBAL_CANDIDATE_PROVIDER,
+                    router=str(tlr_router()),
+                    tdm_feedback_path=root / "feedback.json",
+                    tdm_feedback_routes_path=root / "prior-routes.json",
+                    tdm_feedback_schedule_path=root / "prior-schedule.json",
+                    tdm_feedback_weight=0.0,
+                )
             broken = copy.deepcopy(feedback)
             broken["domains"][0]["routing_price"] += 1.0
             (root / "feedback.json").write_text(
@@ -295,23 +336,24 @@ class TdmFeedbackTest(unittest.TestCase):
             platform,
             [("to_e", "c", ["e"]), ("to_d", "c", ["d"])],
         )
+        timing_source = {
+            "schema": STA_PATHS_SCHEMA,
+            "design": "route_test",
+            "paths": [
+                {
+                    "id": f"p{index}",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 80.0,
+                    "slack_ns": 30.0 + index,
+                    "fixed_delay_ns": 1.0,
+                    "cut_nets": [net],
+                }
+                for index, net in enumerate(("to_e", "to_d"))
+            ],
+        }
         timing = compress_sta_paths(
             normalize_sta_paths(
-                {
-                    "schema": STA_PATHS_SCHEMA,
-                    "design": "route_test",
-                    "paths": [
-                        {
-                            "id": f"p{index}",
-                            "clock_domain": "clk",
-                            "clock_period_ns": 80.0,
-                            "slack_ns": 30.0 + index,
-                            "fixed_delay_ns": 1.0,
-                            "cut_nets": [net],
-                        }
-                        for index, net in enumerate(("to_e", "to_d"))
-                    ],
-                },
+                timing_source,
                 demands_from_assignment(assignment, platform),
             )
         )
@@ -343,15 +385,31 @@ class TdmFeedbackTest(unittest.TestCase):
         schedule = build_tdm_schedule(first, platform)
         feedback = build_tdm_feedback(first, platform, schedule)
         validate_tdm_feedback(first, platform, schedule, feedback)
-        second = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            timing,
-            executable=str(tlr_router()),
-            provider=GLOBAL_CANDIDATE_PROVIDER,
-            tdm_feedback=feedback,
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            pool_path = Path(temporary) / "feedback-pool.json"
+            second = route_system_native(
+                assignment,
+                platform,
+                constraints,
+                timing,
+                executable=str(tlr_router()),
+                provider=GLOBAL_CANDIDATE_PROVIDER,
+                candidate_pool_path=pool_path,
+                tdm_feedback=feedback,
+            )
+            oracle = exact_route_candidate_selection(
+                assignment,
+                platform,
+                json.loads(pool_path.read_text(encoding="utf-8")),
+                timing,
+            )
+            self.assertIn(
+                second["joint_optimization"]["candidate_generation"][
+                    "master_selection"
+                ],
+                oracle["optimal_selections"],
+            )
+            self.assertTrue(second["metrics"]["master_exact"])
         route_by_net = {
             route["net"]: route for route in first["routes"]
         }
@@ -380,6 +438,87 @@ class TdmFeedbackTest(unittest.TestCase):
             ],
             feedback["source_schedule_sha256"],
         )
+        database = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": assignment["design"],
+            "source": {"provider": "fixture", "input": "fixture"},
+            "normalization": timing["normalization"],
+            "paths": [
+                {
+                    "id": path["id"],
+                    "clock_domain": path["clock_domain"],
+                    "clock_period_ns": path["clock_period_ns"],
+                    "slack_ns": path["slack_ns"],
+                    "fixed_delay_ns": path["fixed_delay_ns"],
+                    "path_nets": list(path["cut_nets"]),
+                    "normalized_slack": path["normalized_slack"],
+                }
+                for path in timing["paths"]
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, value in {
+                "assignment.json": assignment,
+                "platform.json": platform.to_dict(),
+                "timing.json": timing_source,
+                "database.json": database,
+                "constraints.json": constraints,
+            }.items():
+                (root / name).write_text(
+                    json.dumps(value), encoding="utf-8"
+                )
+            loop = run_phase45_feedback_loop(
+                database_path=root / "database.json",
+                assignment_path=root / "assignment.json",
+                platform_path=root / "platform.json",
+                timing_paths_path=root / "timing.json",
+                output_dir=root / "loop",
+                canonical_phase4_dir=root / "loop-routes",
+                canonical_phase5_dir=root / "loop-tdm",
+                max_iterations=3,
+                route_constraints_path=root / "constraints.json",
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                simulation_frames=2,
+                ratio_max_iterations=50,
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(loop["selected_candidate"], 1)
+            self.assertEqual(loop["termination"], "route-cycle")
+            self.assertEqual(
+                loop["candidates"][1]["decision"]["reason"],
+                "phase5-objective-improved",
+            )
+            self.assertTrue(loop["candidates"][1]["decision"]["accepted"])
+            trust = run_phase45_feedback_loop(
+                database_path=root / "database.json",
+                assignment_path=root / "assignment.json",
+                platform_path=root / "platform.json",
+                timing_paths_path=root / "timing.json",
+                output_dir=root / "trust-loop",
+                canonical_phase4_dir=root / "trust-routes",
+                canonical_phase5_dir=root / "trust-tdm",
+                max_iterations=1,
+                max_route_change_fraction=0.5,
+                route_constraints_path=root / "constraints.json",
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                simulation_frames=2,
+                ratio_max_iterations=50,
+                post_refinement_iterations=20,
+            )
+            self.assertEqual(trust["selected_candidate"], 0)
+            self.assertEqual(trust["termination"], "line-search-rejected")
+            self.assertTrue(
+                all(
+                    candidate["decision"]["reason"]
+                    == "route-trust-region-exceeded"
+                    for candidate in trust["candidates"][1:]
+                )
+            )
 
     def test_phase5_writes_checked_feedback_artifact(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -410,6 +549,211 @@ class TdmFeedbackTest(unittest.TestCase):
             self.assertEqual(
                 report["tdm_feedback_validation"]["status"], "pass"
             )
+
+    def test_checked_phase45_loop_seals_and_revalidates_trials(self) -> None:
+        (
+            platform,
+            assignment,
+            timing_source,
+            timing,
+            constraints,
+        ) = self._timing_fixture()
+        database = {
+            "schema": "emuflow.sta-path-database/v1",
+            "design": assignment["design"],
+            "source": {"provider": "fixture", "input": "fixture"},
+            "normalization": timing["normalization"],
+            "paths": [
+                {
+                    "id": path["id"],
+                    "clock_domain": path["clock_domain"],
+                    "clock_period_ns": path["clock_period_ns"],
+                    "slack_ns": path["slack_ns"],
+                    "fixed_delay_ns": path["fixed_delay_ns"],
+                    "path_nets": list(path["cut_nets"]),
+                    "normalized_slack": path["normalized_slack"],
+                }
+                for path in timing["paths"]
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            values = {
+                "assignment.json": assignment,
+                "platform.json": platform.to_dict(),
+                "timing.json": timing_source,
+                "database.json": database,
+                "constraints.json": constraints,
+            }
+            for name, value in values.items():
+                (root / name).write_text(
+                    json.dumps(value), encoding="utf-8"
+                )
+            report = run_phase45_feedback_loop(
+                database_path=root / "database.json",
+                assignment_path=root / "assignment.json",
+                platform_path=root / "platform.json",
+                timing_paths_path=root / "timing.json",
+                output_dir=root / "phase45",
+                canonical_phase4_dir=root / "system-route",
+                canonical_phase5_dir=root / "tdm",
+                max_iterations=2,
+                route_constraints_path=root / "constraints.json",
+                router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                simulation_frames=2,
+                ratio_max_iterations=20,
+                post_refinement_iterations=10,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertGreaterEqual(len(report["candidates"]), 2)
+            validation = validate_phase45_feedback_report(
+                root / "phase45/phase45_feedback_report.json",
+                database_path=root / "database.json",
+                assignment_path=root / "assignment.json",
+                platform_path=root / "platform.json",
+                timing_paths_path=root / "timing.json",
+                route_constraints_path=root / "constraints.json",
+                canonical_phase4_dir=root / "system-route",
+                canonical_phase5_dir=root / "tdm",
+            )
+            self.assertEqual(validation["status"], "pass")
+            for candidate in report["candidates"]:
+                if candidate["status"] != "pass":
+                    continue
+                phase4_root = root / "phase45" / candidate["phase4_dir"]
+                phase5_root = root / "phase45" / candidate["phase5_dir"]
+                candidate_routes = json.loads(
+                    (phase4_root / "routes.json").read_text(encoding="utf-8")
+                )
+                route_oracle = exact_route_candidate_selection(
+                    assignment,
+                    platform,
+                    json.loads(
+                        (phase4_root / "route_candidate_pool.json").read_text(
+                            encoding="utf-8"
+                        )
+                    ),
+                    timing,
+                )
+                self.assertIn(
+                    candidate_routes["joint_optimization"][
+                        "candidate_generation"
+                    ]["master_selection"],
+                    route_oracle["optimal_selections"],
+                )
+                candidate_schedule = json.loads(
+                    (phase5_root / "schedule.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                candidate_ratio = json.loads(
+                    (phase5_root / "ratio_plan.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                slot_oracle = exact_multi_round_slot_schedule(
+                    candidate_routes,
+                    platform,
+                    candidate_ratio,
+                    max_hops=8,
+                )
+                timing_result = reconstruct_tdm_schedule_timing(
+                    candidate_routes, platform, candidate_schedule
+                )
+                self.assertAlmostEqual(
+                    timing_result["worst_normalized_slack"],
+                    slot_oracle["worst_normalized_slack"],
+                )
+                self.assertEqual(
+                    candidate_schedule["metrics"]["completion_slot"],
+                    slot_oracle["completion_slot"],
+                )
+            parallel = run_phase45_feedback_loop(
+                database_path=root / "database.json",
+                assignment_path=root / "assignment.json",
+                platform_path=root / "platform.json",
+                timing_paths_path=root / "timing.json",
+                output_dir=root / "phase45-parallel",
+                canonical_phase4_dir=root / "system-route-parallel",
+                canonical_phase5_dir=root / "tdm-parallel",
+                max_iterations=2,
+                route_constraints_path=root / "constraints.json",
+                router=str(tlr_router()),
+                route_candidate_workers=2,
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                simulation_frames=2,
+                ratio_max_iterations=20,
+                post_refinement_iterations=10,
+            )
+            self.assertEqual(
+                (root / "system-route/routes.json").read_bytes(),
+                (root / "system-route-parallel/routes.json").read_bytes(),
+            )
+            self.assertEqual(
+                (root / "tdm/schedule.json").read_bytes(),
+                (root / "tdm-parallel/schedule.json").read_bytes(),
+            )
+            self.assertEqual(report["termination"], parallel["termination"])
+            self.assertEqual(
+                report["candidates"][report["selected_candidate"]][
+                    "objective_key"
+                ],
+                parallel["candidates"][parallel["selected_candidate"]][
+                    "objective_key"
+                ],
+            )
+            tampered = copy.deepcopy(report)
+            tampered["selected_candidate"] = len(report["candidates"]) - 1
+            (root / "phase45/tampered.json").write_text(
+                json.dumps(tampered), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "selected candidate mismatch"
+            ):
+                validate_phase45_feedback_report(
+                    root / "phase45/tampered.json",
+                    database_path=root / "database.json",
+                    assignment_path=root / "assignment.json",
+                    platform_path=root / "platform.json",
+                    timing_paths_path=root / "timing.json",
+                    route_constraints_path=root / "constraints.json",
+                    canonical_phase4_dir=root / "system-route",
+                    canonical_phase5_dir=root / "tdm",
+                )
+            resealed = copy.deepcopy(report)
+            normalized_record = resealed["candidates"][1]["artifacts"][
+                "normalized_feedback"
+            ]
+            normalized_path = root / "phase45" / normalized_record["path"]
+            normalized = json.loads(
+                normalized_path.read_text(encoding="utf-8")
+            )
+            normalized["domains"][0]["routing_price"] += 0.125
+            normalized_path.write_text(
+                json.dumps(normalized), encoding="utf-8"
+            )
+            normalized_record["sha256"] = hashlib.sha256(
+                normalized_path.read_bytes()
+            ).hexdigest()
+            (root / "phase45/resealed.json").write_text(
+                json.dumps(resealed), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "preserve the independently rebuilt"
+            ):
+                validate_phase45_feedback_report(
+                    root / "phase45/resealed.json",
+                    database_path=root / "database.json",
+                    assignment_path=root / "assignment.json",
+                    platform_path=root / "platform.json",
+                    timing_paths_path=root / "timing.json",
+                    route_constraints_path=root / "constraints.json",
+                    canonical_phase4_dir=root / "system-route",
+                    canonical_phase5_dir=root / "tdm",
+                )
 
 
 if __name__ == "__main__":

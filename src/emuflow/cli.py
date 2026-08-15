@@ -1174,6 +1174,34 @@ def _build_parser() -> argparse.ArgumentParser:
             "its selected candidate through split, physical, and runtime"
         ),
     )
+    multi_fpga_compile.add_argument(
+        "--routing-feedback-iterations",
+        type=int,
+        default=0,
+        help=(
+            "iterate concrete Phase 5 schedule prices back into Phase 4 "
+            "while keeping the Phase 3 assignment fixed"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--routing-feedback-max-route-change-fraction",
+        type=float,
+        default=1.0,
+        help=(
+            "trust-region limit on the fraction of routed demands changed "
+            "by one accepted Phase 5-to-Phase 4 feedback round"
+        ),
+    )
+    multi_fpga_compile.add_argument(
+        "--routing-feedback-step",
+        type=float,
+        action="append",
+        default=[],
+        help=(
+            "strictly decreasing concrete-schedule price scale in (0,1]; "
+            "repeat to override 1,0.5,0.25,0.125"
+        ),
+    )
     multi_fpga_compile.add_argument("--cross-stage-feedback-optimizer")
     multi_fpga_compile.add_argument(
         "--cross-stage-pair-pressure-weight", type=float, default=1.0
@@ -1949,6 +1977,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="optional source ratio plan used by the feedback schedule",
     )
     phase4.add_argument(
+        "--tdm-feedback-weight",
+        type=float,
+        default=1.0,
+        help="audited concrete-schedule price scale in (0,1]",
+    )
+    phase4.add_argument(
         "--physical-feedback",
         type=Path,
         help="checked Phase 7 boundary-domain feedback to add to TDM prices",
@@ -2280,6 +2314,30 @@ def _build_parser() -> argparse.ArgumentParser:
             "strictly decreasing proximal line-search step in (0,1]; "
             "repeat to override the default 1,0.5,0.25,0.125 sequence"
         ),
+    )
+    cross_stage_optimize.add_argument(
+        "--routing-feedback-iterations",
+        type=int,
+        default=0,
+        help=(
+            "run this many concrete Phase 5-to-Phase 4 rounds inside every "
+            "fixed-assignment partition candidate"
+        ),
+    )
+    cross_stage_optimize.add_argument(
+        "--routing-feedback-step",
+        type=float,
+        action="append",
+        default=[],
+        help=(
+            "strictly decreasing Phase 5-to-Phase 4 price scale in (0,1]; "
+            "repeat to override 1,0.5,0.25,0.125"
+        ),
+    )
+    cross_stage_optimize.add_argument(
+        "--routing-feedback-max-route-change-fraction",
+        type=float,
+        default=1.0,
     )
 
     pin_plan_parser = subparsers.add_parser(
@@ -3478,6 +3536,17 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             slot_refinement_iterations=args.slot_refinement_iterations,
             cross_stage_iterations=args.cross_stage_iterations,
+            routing_feedback_iterations=(
+                args.routing_feedback_iterations
+            ),
+            routing_feedback_steps=(
+                tuple(args.routing_feedback_step)
+                if args.routing_feedback_step
+                else None
+            ),
+            routing_feedback_max_route_change_fraction=(
+                args.routing_feedback_max_route_change_fraction
+            ),
             cross_stage_feedback_optimizer=(
                 args.cross_stage_feedback_optimizer
             ),
@@ -3690,6 +3759,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.physical_feedback_summary
             ),
             physical_feedback_weight=args.physical_feedback_weight,
+            tdm_feedback_weight=args.tdm_feedback_weight,
             candidate_workers=args.candidate_workers,
         )
         _print_json(report)
@@ -3825,6 +3895,17 @@ def _dispatch(args: argparse.Namespace) -> int:
                     tuple(args.feedback_step)
                     if args.feedback_step
                     else None
+                ),
+                routing_feedback_iterations=(
+                    args.routing_feedback_iterations
+                ),
+                routing_feedback_steps=(
+                    tuple(args.routing_feedback_step)
+                    if args.routing_feedback_step
+                    else None
+                ),
+                routing_feedback_max_route_change_fraction=(
+                    args.routing_feedback_max_route_change_fraction
                 ),
             )
         _print_json(report)

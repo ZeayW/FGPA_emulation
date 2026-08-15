@@ -1398,32 +1398,8 @@ class Router {
             usage_[arc.capacity_domain] + demand.width > arc.capacity) {
           continue;
         }
-        const double projected =
-            static_cast<double>(usage_[arc.capacity_domain] + demand.width) /
-            arc.capacity;
-        const double timing_weight =
-            1.0 + model_.lambda_timing * demand_criticality_[demand_index];
-        // Below 10% utilization, SLL occupancy is too sparse to be a useful
-        // topology discriminator.  The dead zone preserves shortest routes
-        // on small instances; above it, rescale to [0, 1] so the load term
-        // progressively balances scarce, non-TDM SLL capacity.
-        const double load_pressure = model_.hard_sll_capacity
-            ? std::max(0.0, (projected - 0.1) / 0.9)
-            : projected;
-        double edge_cost = timing_weight * arc.delay_ns +
-            model_.lambda_load * load_pressure +
-            model_.lambda_history * history_[arc.capacity_domain];
-        if (!arc.is_sll) {
-          const int projected_ratio =
-              estimated_tdm_ratio(arc.capacity_domain, demand.width);
-          edge_cost += model_.lambda_tdm * timing_weight *
-              arc.beta_ns * (projected_ratio - 1);
-        }
-        if (discouraged.count(arc_index)) {
-          edge_cost += model_.lambda_timing *
-              std::max(1.0, arc.delay_ns) *
-              (1.0 + demand_criticality_[demand_index]);
-        }
+        const double edge_cost =
+            routing_arc_cost(demand_index, arc_index, discouraged);
         const double candidate = current + edge_cost;
         if (candidate + kEps < distance[arc.to] ||
             (std::abs(candidate - distance[arc.to]) <= kEps &&
@@ -1938,31 +1914,8 @@ class Router {
               usage_[arc.capacity_domain] + demand.width > arc.capacity) {
             continue;
           }
-          const double projected =
-              static_cast<double>(
-                  usage_[arc.capacity_domain] + demand.width) /
-              arc.capacity;
-          const int projected_ratio =
-              estimated_tdm_ratio(arc.capacity_domain, demand.width);
-          // Eq. (2) of DAC 2025 separates the fixed cable delay, the
-          // quantized TDM component, and demand/capacity pressure.  SLLs use
-          // fixed delay plus negotiated congestion because they do not TDM.
-          double edge_cost = timing_weight * arc.delay_ns;
-          if (!arc.is_sll) {
-            edge_cost += model_.lambda_tdm * timing_weight * arc.beta_ns *
-                (projected_ratio - 1);
-          }
-          // Keep the same sparse-load dead zone in both shortest-path and
-          // multicast-tree construction so their cost models agree.
-          const double load_pressure = model_.hard_sll_capacity
-              ? std::max(0.0, (projected - 0.1) / 0.9)
-              : projected;
-          edge_cost += model_.lambda_load * load_pressure +
-              model_.lambda_history * history_[arc.capacity_domain];
-          if (discouraged.count(arc_index)) {
-            edge_cost += model_.lambda_timing *
-                std::max(1.0, arc.delay_ns) * (1.0 + criticality);
-          }
+          const double edge_cost =
+              routing_arc_cost(demand_index, arc_index, discouraged);
           const double candidate = current + edge_cost;
           if (candidate + kEps < distance[arc.to] ||
               (std::abs(candidate - distance[arc.to]) <= kEps &&

@@ -168,7 +168,8 @@ flowchart TD
 
     PART --> SROUTE["Board-level system routing"]
     SROUTE --> TDM["TDM ratio, slot and lane assignment"]
-    TDM -. "optional checked feedback + line search" .-> PART
+    TDM -. "fixed-assignment concrete schedule feedback" .-> SROUTE
+    TDM -. "optional assignment-changing outer feedback" .-> PART
     TDM --> PIN["Logical pin planning and transport generation"]
     PIN --> SPLIT["Per-FPGA netlist + transport fabric"]
 
@@ -487,6 +488,20 @@ The optimizer also assigns every evaluated partition a canonical class under
 those same exact symmetries. Repeated classes terminate outer-loop cycling only
 after the candidate's routing/TDM QoR has been evaluated.
 
+The two feedback scopes are controlled independently.  The existing
+`--cross-stage-iterations N` is the assignment-changing Phase 5→Phase 3 outer
+loop.  `--routing-feedback-iterations N` is the fixed-assignment
+Phase 5→Phase 4 inner loop: each accepted schedule is independently rebuilt
+into directed-domain prices, Phase 4 reroutes with a decreasing feedback-step
+line search, and Phase 5 realizes and scores the resulting concrete schedule.
+`--routing-feedback-step` may be repeated to replace the default
+`1,0.5,0.25,0.125` sequence, while
+`--routing-feedback-max-route-change-fraction` bounds the fraction of route
+demands changed by one accepted inner round.  Enabling both knobs nests a
+fresh inner routing loop inside every outer partition candidate; feedback is
+never reused after an assignment changes.  Both iteration counts default to
+zero, so neither loop is entered unless requested.
+
 The same command can continue through the checked serial BSP boundary after a
 provider recipe has been materialized. It then runs Phase 6B, constructs the
 runtime synchronization tree, derives GT sites when needed, runs Phase 6C, and
@@ -582,6 +597,10 @@ emuflow multi-fpga compile design.v --top top \
   --timing-driven --clock-period clk=10 \
   --board-link-timing-db build/platforms/arm-mps4-link-timing.json \
   --cross-stage-iterations 2 \
+  --routing-feedback-iterations 2 \
+  --routing-feedback-step 1 --routing-feedback-step 0.5 \
+  --routing-feedback-step 0.25 --routing-feedback-step 0.125 \
+  --routing-feedback-max-route-change-fraction 0.5 \
   --physical --physical-backend open \
   --out build/full-flow
 ```
@@ -2079,9 +2098,27 @@ plan for an academic schedule). Phase 4 independently rebuilds the complete
 feedback artifact before invoking C++; self-declared or cross-run feedback is
 therefore rejected. The native generator uses the checked prices in its arc
 cost, and a behavioral regression demonstrates that a higher realized domain
-price changes the chosen candidate route. This establishes a checked
-one-round Phase 4/5 feedback edge; iterative trust-region orchestration and
-large-case QoR qualification remain pending.
+price changes the chosen candidate route. The fixed-assignment controller
+closes this edge with deterministic decreasing-step line search, a route
+change trust region, full-path concrete-Phase-5 objective acceptance and
+rollback, and fixed-point, cycle, infeasibility, line-search exhaustion, and
+iteration-budget termination.  It freezes the exact feasible frame found in
+round zero for all later trials, so a reroute cannot win by silently changing
+the scheduling budget.  Only the selected trial is copied to canonical Phase
+4/5 locations.
+
+Each loop writes a sealed `phase45-feedback-report/v1` bundle.  Its independent
+validator rehashes source constraints, routes, ratio plan, schedule and
+feedback; reconstructs the schedule-derived feedback and route migration;
+replays the full-path candidate score and accept/rollback decision; and checks
+the selected canonical artifacts.  Compact tests additionally compare every
+restricted route-master choice and multi-round slot schedule with exact
+oracles.  Workers 1 and 2 produce identical selected routes, schedules and
+termination decisions in the determinism regression.  Local qualification is
+currently 580 passed and 1 skipped plus the source-completeness audit, strict
+C++ compile, and diff check.  Materially sized proxy A/B and complete Phase 7
+global WNS/TNS A/B remain pending, so the routing loop remains opt-in and no
+final timing-improvement claim is made from the intermediate Phase 5 score.
 
 Baseline Phase 5 timing and feedback reconstruction uses the route trees and
 concrete schedule directly instead of materializing the academic optimizer's
@@ -2147,6 +2184,16 @@ lane/slot schedule. Feedback is applied by multiplicative log-space
 interpolation, with a deterministic decreasing-step line search; this limits
 the discontinuity of a new hypergraph partition and never promotes a
 regressing full-step candidate.
+
+When `--routing-feedback-iterations` is positive, every outer candidate first
+runs its own fixed-assignment Phase 4/5 loop described above.  Round zero
+always starts from proxy-only routing, and only its independently reconstructed
+concrete Phase 5 schedule can price the next routing round.  If the outer loop
+then changes the partition assignment, the next candidate starts from a new
+round zero rather than inheriting stale route-domain prices.  Consequently
+`--cross-stage-iterations 0 --routing-feedback-iterations N` isolates
+Phase 5→4 behavior, while positive values for both options enable the nested
+Phase 5→4 plus Phase 5→3 search.
 
 Passing `--board-link-timing-db` applies the same direction-exact link bounds
 used by `multi-fpga compile` to every cross-stage routing, TDM, candidate-score,

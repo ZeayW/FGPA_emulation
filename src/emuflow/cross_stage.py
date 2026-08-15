@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import math
+import shutil
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -50,6 +51,7 @@ from .sta import (
     project_sta_path_database,
 )
 from .tdm import validate_tdm_schedule
+from .tdm_feedback import canonical_mapping_sha256, validate_tdm_feedback
 from .tdm_ratio import (
     TDM_TIMING_DAG_RATIO_PROVIDER,
     validate_tdm_ratio_plan,
@@ -67,6 +69,10 @@ CROSS_STAGE_OBJECTIVE = (
     "all-path total negative normalized original-clock slack, negative "
     "path count, maximum TDM ratio, completion slot, link bit-hops, cut "
     "bits, replica LUTs)"
+)
+PHASE45_FEEDBACK_REPORT_SCHEMA = "emuflow.phase45-feedback-report/v1"
+PHASE45_FEEDBACK_PROVIDER = (
+    "concrete-schedule-routing-price-line-search-v1"
 )
 
 
@@ -827,7 +833,20 @@ def _validated_report_artifact(
         or len(digest) != 64
     ):
         raise ValidationError(f"cross-stage {label} artifact is invalid")
-    path = (root / relative).resolve()
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValidationError(
+            f"cross-stage {label} artifact path is unsafe"
+        )
+    unresolved = root / relative_path
+    cursor = root
+    for component in relative_path.parts:
+        cursor = cursor / component
+        if cursor.is_symlink():
+            raise ValidationError(
+                f"cross-stage {label} artifact uses a symlink"
+            )
+    path = unresolved.resolve()
     try:
         path.relative_to(root.resolve())
     except ValueError as error:
@@ -839,6 +858,953 @@ def _validated_report_artifact(
             f"cross-stage {label} artifact hash mismatch"
         )
     return path
+
+
+def _artifact_record(path: Path, root: Path) -> Dict[str, str]:
+    return {
+        "path": _relative(path, root),
+        "sha256": _sha256(path),
+    }
+
+
+def _route_selection_signature(routes: Mapping[str, Any]) -> str:
+    selected = []
+    for route in routes.get("routes", []):
+        if not isinstance(route, dict):
+            raise ValidationError("Phase 4/5 feedback route is invalid")
+        route_id = route.get("id")
+        edges = route.get("tree_edges")
+        if (
+            not isinstance(route_id, str)
+            or not route_id
+            or not isinstance(edges, list)
+            or not all(
+                isinstance(edge, dict)
+                and all(
+                    isinstance(edge.get(name), str) and edge.get(name)
+                    for name in ("link", "from", "to")
+                )
+                for edge in edges
+            )
+        ):
+            raise ValidationError("Phase 4/5 feedback route is invalid")
+        selected.append(
+            {
+                "id": route_id,
+                "tree_edges": sorted(
+                    (
+                        {
+                            "link": edge.get("link"),
+                            "from": edge.get("from"),
+                            "to": edge.get("to"),
+                        }
+                        for edge in edges
+                    ),
+                    key=lambda edge: (
+                        edge["link"], edge["from"], edge["to"]
+                    ),
+                ),
+            }
+        )
+    selected.sort(key=lambda route: route["id"])
+    if len(selected) != len(routes.get("routes", [])):
+        raise ValidationError("Phase 4/5 feedback route coverage is invalid")
+    return canonical_mapping_sha256({"routes": selected})
+
+
+def reconstruct_route_migration(
+    incumbent_routes: Mapping[str, Any],
+    candidate_routes: Mapping[str, Any],
+) -> Dict[str, Any]:
+    def selections(routes: Mapping[str, Any]) -> Dict[str, Any]:
+        result = {}
+        for route in routes.get("routes", []):
+            if not isinstance(route, dict) or not isinstance(
+                route.get("id"), str
+            ):
+                raise ValidationError(
+                    "Phase 4/5 feedback route migration input is invalid"
+                )
+            route_id = route["id"]
+            if route_id in result:
+                raise ValidationError(
+                    "Phase 4/5 feedback route migration has duplicate demand"
+                )
+            result[route_id] = route.get("tree_edges")
+        return result
+
+    incumbent = selections(incumbent_routes)
+    candidate = selections(candidate_routes)
+    if not incumbent or set(incumbent) != set(candidate):
+        raise ValidationError(
+            "Phase 4/5 feedback route migration coverage mismatch"
+        )
+    changed = sorted(
+        route for route in incumbent if incumbent[route] != candidate[route]
+    )
+    return {
+        "demands": len(incumbent),
+        "changed_demands": len(changed),
+        "changed_fraction": len(changed) / len(incumbent),
+        "changed_demand_ids": changed,
+        "incumbent_route_selection_sha256": _route_selection_signature(
+            incumbent_routes
+        ),
+        "candidate_route_selection_sha256": _route_selection_signature(
+            candidate_routes
+        ),
+    }
+
+
+def run_phase45_feedback_loop(
+    *,
+    database_path: Path,
+    assignment_path: Path,
+    platform_path: Path,
+    timing_paths_path: Path,
+    output_dir: Path,
+    canonical_phase4_dir: Path,
+    canonical_phase5_dir: Path,
+    max_iterations: int,
+    feedback_steps: Optional[Tuple[float, ...]] = None,
+    max_route_change_fraction: float = 1.0,
+    route_constraints_path: Optional[Path] = None,
+    frame_slots: Optional[int] = None,
+    optimize_frame_slots: bool = False,
+    route_max_iterations: Optional[int] = None,
+    router: Optional[str] = None,
+    route_provider: Optional[str] = None,
+    route_candidate_workers: int = 1,
+    simulation_frames: int = 16,
+    tdm_provider: Optional[str] = None,
+    ratio_optimizer: Optional[str] = None,
+    timing_dag_optimizer: Optional[str] = None,
+    slot_optimizer: Optional[str] = None,
+    ratio_max_iterations: int = 500,
+    max_ratio: Optional[int] = None,
+    ratio_quantum: int = 8,
+    post_refinement_iterations: int = 200,
+    slot_refinement_iterations: int = 0,
+    ratio_convergence: float = 1.0e-9,
+) -> Dict[str, Any]:
+    """Optimize Phase 4 against independently reconstructed Phase 5 prices.
+
+    The assignment is immutable for the complete loop.  Round zero is the
+    existing proxy-only Phase 4/5 flow.  Later trials consume only the most
+    recently accepted concrete schedule and are accepted atomically using the
+    complete Phase 5 candidate objective.
+    """
+
+    if (
+        isinstance(max_iterations, bool)
+        or not isinstance(max_iterations, int)
+        or max_iterations < 0
+    ):
+        raise ValidationError(
+            "Phase 4/5 feedback iterations must be non-negative"
+        )
+    if (
+        isinstance(max_route_change_fraction, bool)
+        or not isinstance(max_route_change_fraction, (int, float))
+        or not math.isfinite(float(max_route_change_fraction))
+        or not 0.0 < float(max_route_change_fraction) <= 1.0
+    ):
+        raise ValidationError(
+            "Phase 4/5 maximum route change fraction must be in (0, 1]"
+        )
+    steps = _normalize_feedback_steps(feedback_steps)
+    if max_iterations and (route_provider or GLOBAL_CANDIDATE_PROVIDER) != (
+        GLOBAL_CANDIDATE_PROVIDER
+    ):
+        raise ValidationError(
+            "Phase 5 to Phase 4 feedback requires the global candidate "
+            "routing provider"
+        )
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValidationError(
+            f"Phase 4/5 feedback output directory is not empty: {output_dir}"
+        )
+    if canonical_phase4_dir.exists() or canonical_phase5_dir.exists():
+        raise ValidationError(
+            "Phase 4/5 feedback canonical output directories must not exist"
+        )
+    if canonical_phase4_dir.parent.resolve() != (
+        canonical_phase5_dir.parent.resolve()
+    ):
+        raise ValidationError(
+            "Phase 4/5 feedback canonical outputs must be sibling directories"
+        )
+    output_resolved = output_dir.resolve()
+    for canonical in (canonical_phase4_dir, canonical_phase5_dir):
+        try:
+            canonical.resolve().relative_to(output_resolved)
+        except ValueError:
+            continue
+        raise ValidationError(
+            "Phase 4/5 feedback canonical outputs must be outside its trial "
+            "bundle"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_artifacts = {}
+    if route_constraints_path is not None:
+        copied_constraints = output_dir / "inputs/route_constraints.json"
+        copied_constraints.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(route_constraints_path, copied_constraints)
+        source_artifacts["route_constraints"] = _artifact_record(
+            copied_constraints, output_dir
+        )
+
+    def run_candidate(
+        index: int,
+        *,
+        source: Optional[Dict[str, Any]] = None,
+        feedback_step: float = 1.0,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        candidate_root = output_dir / f"candidate_{index:03d}"
+        phase4_root = candidate_root / "phase4"
+        phase5_root = candidate_root / "phase5"
+        frame_search = None
+        effective_frame_slots = frame_slots
+        if source is None and optimize_frame_slots:
+            if frame_slots is None:
+                raise ValidationError(
+                    "Phase 4/5 feedback frame search needs an upper bound"
+                )
+            frame_search = run_frame_length_search(
+                assignment_path,
+                platform_path,
+                timing_paths_path,
+                candidate_root / "frame-search",
+                phase4_root,
+                phase5_root,
+                max_frame_slots=frame_slots,
+                route_constraints=route_constraints_path,
+                route_max_iterations=route_max_iterations,
+                router=router,
+                route_provider=route_provider,
+                candidate_workers=route_candidate_workers,
+                tdm_provider=tdm_provider,
+                ratio_optimizer=ratio_optimizer,
+                timing_dag_optimizer=timing_dag_optimizer,
+                slot_optimizer=slot_optimizer,
+                simulation_frames=simulation_frames,
+                ratio_max_iterations=ratio_max_iterations,
+                max_ratio=max_ratio,
+                ratio_quantum=ratio_quantum,
+                post_refinement_iterations=post_refinement_iterations,
+                slot_refinement_iterations=slot_refinement_iterations,
+                ratio_convergence=ratio_convergence,
+            )
+        else:
+            feedback_arguments: Dict[str, Any] = {}
+            if source is not None:
+                source_phase4 = output_dir / source["phase4_dir"]
+                source_phase5 = output_dir / source["phase5_dir"]
+                source_schedule = read_json(
+                    source_phase5 / "schedule.json"
+                )
+                effective_frame_slots = source_schedule["metrics"][
+                    "frame_slots"
+                ]
+                feedback_arguments = {
+                    "tdm_feedback_path": (
+                        source_phase5 / "tdm_feedback.json"
+                    ),
+                    "tdm_feedback_routes_path": (
+                        source_phase4 / "routes.json"
+                    ),
+                    "tdm_feedback_schedule_path": (
+                        source_phase5 / "schedule.json"
+                    ),
+                    "tdm_feedback_ratio_plan_path": (
+                        source_phase5 / "ratio_plan.json"
+                    ),
+                    "tdm_feedback_weight": feedback_step,
+                }
+            run_phase4(
+                assignment_path,
+                platform_path,
+                phase4_root,
+                constraints_path=route_constraints_path,
+                frame_slots=effective_frame_slots,
+                max_iterations=route_max_iterations,
+                provider=route_provider or GLOBAL_CANDIDATE_PROVIDER,
+                timing_paths_path=timing_paths_path,
+                router=router,
+                candidate_workers=route_candidate_workers,
+                **feedback_arguments,
+            )
+            run_phase5(
+                phase4_root / "routes.json",
+                platform_path,
+                phase5_root,
+                simulation_frames=simulation_frames,
+                provider=tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER,
+                ratio_optimizer=ratio_optimizer,
+                timing_dag_optimizer=timing_dag_optimizer,
+                slot_optimizer=slot_optimizer,
+                ratio_max_iterations=ratio_max_iterations,
+                max_ratio=max_ratio,
+                ratio_quantum=ratio_quantum,
+                post_refinement_iterations=post_refinement_iterations,
+                slot_refinement_iterations=slot_refinement_iterations,
+                convergence=ratio_convergence,
+            )
+        score_path = candidate_root / "candidate.json"
+        score = evaluate_cross_stage_candidate(
+            database_path,
+            assignment_path,
+            phase4_root / "routes.json",
+            phase5_root / "schedule.json",
+            phase5_root / "ratio_plan.json",
+            platform_path,
+            score_path,
+        )
+        artifacts = {
+            "routes": _artifact_record(
+                phase4_root / "routes.json", output_dir
+            ),
+            "phase4_report": _artifact_record(
+                phase4_root / "phase4_report.json", output_dir
+            ),
+            "schedule": _artifact_record(
+                phase5_root / "schedule.json", output_dir
+            ),
+            "ratio_plan": _artifact_record(
+                phase5_root / "ratio_plan.json", output_dir
+            ),
+            "tdm_feedback": _artifact_record(
+                phase5_root / "tdm_feedback.json", output_dir
+            ),
+            "phase5_report": _artifact_record(
+                phase5_root / "phase5_report.json", output_dir
+            ),
+            "score": _artifact_record(score_path, output_dir),
+        }
+        if source is not None:
+            artifacts["normalized_feedback"] = _artifact_record(
+                phase4_root / "tdm_feedback.normalized.json", output_dir
+            )
+        record = {
+            "candidate": index,
+            "status": "pass",
+            "source_candidate": (
+                source["candidate"] if source is not None else None
+            ),
+            "feedback_step": feedback_step if source is not None else None,
+            "phase4_dir": _relative(phase4_root, output_dir),
+            "phase5_dir": _relative(phase5_root, output_dir),
+            "artifacts": artifacts,
+            "route_selection_sha256": _route_selection_signature(
+                read_json(phase4_root / "routes.json")
+            ),
+            "objective_metrics": score["objective_metrics"],
+            "objective_key": score["objective_key"],
+            "candidate_id": score["candidate_id"],
+        }
+        if frame_search is not None:
+            record["frame_search"] = _artifact_record(
+                candidate_root / "frame-search/frame-search-report.json",
+                output_dir,
+            )
+            record["frame_search_validation"] = (
+                validate_frame_search_report(frame_search)
+            )
+        return record, score
+
+    baseline, incumbent_score = run_candidate(0)
+    baseline["feedback_iteration"] = 0
+    baseline["trial"] = 0
+    baseline["route_migration"] = reconstruct_route_migration(
+        read_json(
+            output_dir / baseline["artifacts"]["routes"]["path"]
+        ),
+        read_json(
+            output_dir / baseline["artifacts"]["routes"]["path"]
+        ),
+    )
+    baseline["decision"] = {
+        "accepted": True,
+        "reason": "initial-proxy-only-incumbent",
+    }
+    candidates = [baseline]
+    incumbent = baseline
+    accepted_route_signatures = {baseline["route_selection_sha256"]: 0}
+    termination = "disabled" if max_iterations == 0 else "iteration-limit"
+
+    stop = False
+    for feedback_iteration in range(1, max_iterations + 1):
+        accepted = False
+        feasible = 0
+        for trial, step in enumerate(steps):
+            candidate_index = len(candidates)
+            try:
+                candidate, candidate_score = run_candidate(
+                    candidate_index,
+                    source=incumbent,
+                    feedback_step=step,
+                )
+            except (EmuFlowError, ValidationError, ValueError) as error:
+                candidates.append(
+                    {
+                        "candidate": candidate_index,
+                        "feedback_iteration": feedback_iteration,
+                        "trial": trial,
+                        "status": "rejected",
+                        "source_candidate": incumbent["candidate"],
+                        "feedback_step": step,
+                        "decision": {
+                            "accepted": False,
+                            "reason": "candidate-infeasible",
+                            "detail": str(error),
+                        },
+                    }
+                )
+                continue
+            feasible += 1
+            candidate["feedback_iteration"] = feedback_iteration
+            candidate["trial"] = trial
+            incumbent_routes = read_json(
+                output_dir / incumbent["artifacts"]["routes"]["path"]
+            )
+            candidate_routes = read_json(
+                output_dir / candidate["artifacts"]["routes"]["path"]
+            )
+            migration = reconstruct_route_migration(
+                incumbent_routes, candidate_routes
+            )
+            candidate["route_migration"] = migration
+            objective_decision = compare_candidate_objectives(
+                candidate_score, incumbent_score
+            )
+            candidate["objective_decision"] = objective_decision
+            if migration["changed_demands"] == 0:
+                decision = {
+                    "accepted": False,
+                    "reason": "route-fixed-point",
+                }
+                termination = "route-fixed-point"
+                stop = True
+            elif (
+                migration["changed_fraction"]
+                > float(max_route_change_fraction) + 1.0e-15
+            ):
+                decision = {
+                    "accepted": False,
+                    "reason": "route-trust-region-exceeded",
+                }
+            elif candidate["route_selection_sha256"] in (
+                accepted_route_signatures
+            ):
+                decision = {
+                    "accepted": False,
+                    "reason": "route-cycle",
+                    "matching_candidate": accepted_route_signatures[
+                        candidate["route_selection_sha256"]
+                    ],
+                }
+                termination = "route-cycle"
+                stop = True
+            elif objective_decision["accepted"]:
+                decision = {
+                    **objective_decision,
+                    "reason": "phase5-objective-improved",
+                }
+            else:
+                decision = {
+                    **objective_decision,
+                    "reason": "phase5-objective-not-improved",
+                }
+            candidate["decision"] = decision
+            candidates.append(candidate)
+            if decision["accepted"]:
+                incumbent = candidate
+                incumbent_score = candidate_score
+                accepted_route_signatures[
+                    candidate["route_selection_sha256"]
+                ] = candidate_index
+                accepted = True
+                break
+            if stop:
+                break
+        if stop:
+            break
+        if not accepted:
+            termination = (
+                "line-search-infeasible"
+                if feasible == 0
+                else "line-search-rejected"
+            )
+            break
+
+    selected_phase4 = output_dir / incumbent["phase4_dir"]
+    selected_phase5 = output_dir / incumbent["phase5_dir"]
+    shutil.copytree(selected_phase4, canonical_phase4_dir)
+    shutil.copytree(selected_phase5, canonical_phase5_dir)
+    source_paths = {
+        "database": database_path,
+        "assignment": assignment_path,
+        "platform": platform_path,
+        "timing_paths": timing_paths_path,
+    }
+    if route_constraints_path is not None:
+        source_paths["route_constraints"] = route_constraints_path
+    report = {
+        "schema": PHASE45_FEEDBACK_REPORT_SCHEMA,
+        "status": "pass",
+        "provider": PHASE45_FEEDBACK_PROVIDER,
+        "objective": CROSS_STAGE_OBJECTIVE,
+        "source_sha256": {
+            name: _sha256(path) for name, path in source_paths.items()
+        },
+        "source_artifacts": source_artifacts,
+        "configuration": {
+            "max_iterations": max_iterations,
+            "feedback_steps": list(steps),
+            "max_route_change_fraction": float(
+                max_route_change_fraction
+            ),
+            "optimize_frame_slots": optimize_frame_slots,
+            "frame_policy": (
+                "minimum-feasible-round-zero-then-fixed"
+                if optimize_frame_slots
+                else "fixed"
+            ),
+        },
+        "selected_candidate": incumbent["candidate"],
+        "termination": termination,
+        "candidates": candidates,
+        "canonical": {
+            "routes": _artifact_record(
+                canonical_phase4_dir / "routes.json",
+                canonical_phase4_dir.parent,
+            ),
+            "schedule": _artifact_record(
+                canonical_phase5_dir / "schedule.json",
+                canonical_phase5_dir.parent,
+            ),
+            "ratio_plan": _artifact_record(
+                canonical_phase5_dir / "ratio_plan.json",
+                canonical_phase5_dir.parent,
+            ),
+        },
+    }
+    report_path = output_dir / "phase45_feedback_report.json"
+    write_json(report_path, report)
+    validate_phase45_feedback_report(
+        report_path,
+        database_path=database_path,
+        assignment_path=assignment_path,
+        platform_path=platform_path,
+        timing_paths_path=timing_paths_path,
+        route_constraints_path=route_constraints_path,
+        canonical_phase4_dir=canonical_phase4_dir,
+        canonical_phase5_dir=canonical_phase5_dir,
+    )
+    return report
+
+
+def validate_phase45_feedback_report(
+    report_path: Path,
+    *,
+    database_path: Path,
+    assignment_path: Path,
+    platform_path: Path,
+    timing_paths_path: Path,
+    route_constraints_path: Optional[Path] = None,
+    canonical_phase4_dir: Optional[Path] = None,
+    canonical_phase5_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    report = read_json(report_path)
+    if report.get("schema") != PHASE45_FEEDBACK_REPORT_SCHEMA:
+        raise ValidationError("Phase 4/5 feedback report schema is invalid")
+    if (
+        report.get("provider") != PHASE45_FEEDBACK_PROVIDER
+        or report.get("status") != "pass"
+        or report.get("objective") != CROSS_STAGE_OBJECTIVE
+    ):
+        raise ValidationError("Phase 4/5 feedback report identity is invalid")
+    root = report_path.parent
+    source_artifacts = report.get("source_artifacts")
+    if not isinstance(source_artifacts, dict) or set(source_artifacts) - {
+        "route_constraints"
+    }:
+        raise ValidationError(
+            "Phase 4/5 feedback source artifacts are invalid"
+        )
+    sealed_constraints = None
+    if "route_constraints" in source_artifacts:
+        sealed_constraints = _validated_report_artifact(
+            root,
+            source_artifacts["route_constraints"],
+            "route constraints",
+        )
+        if route_constraints_path is not None and _sha256(
+            route_constraints_path
+        ) != _sha256(sealed_constraints):
+            raise ValidationError(
+                "Phase 4/5 external route constraints mismatch the seal"
+            )
+        route_constraints_path = sealed_constraints
+    elif route_constraints_path is not None:
+        raise ValidationError(
+            "Phase 4/5 feedback route constraints are not archived"
+        )
+    sources = {
+        "database": database_path,
+        "assignment": assignment_path,
+        "platform": platform_path,
+        "timing_paths": timing_paths_path,
+    }
+    if route_constraints_path is not None:
+        sources["route_constraints"] = route_constraints_path
+    if report.get("source_sha256") != {
+        name: _sha256(path) for name, path in sources.items()
+    }:
+        raise ValidationError("Phase 4/5 feedback source seal mismatch")
+    configuration = report.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValidationError("Phase 4/5 feedback configuration is invalid")
+    maximum = configuration.get("max_iterations")
+    if (
+        isinstance(maximum, bool)
+        or not isinstance(maximum, int)
+        or maximum < 0
+    ):
+        raise ValidationError("Phase 4/5 feedback iteration count is invalid")
+    raw_steps = configuration.get("feedback_steps")
+    if not isinstance(raw_steps, list):
+        raise ValidationError("Phase 4/5 feedback steps are invalid")
+    steps = _normalize_feedback_steps(tuple(raw_steps))
+    maximum_change = configuration.get("max_route_change_fraction")
+    if (
+        isinstance(maximum_change, bool)
+        or not isinstance(maximum_change, (int, float))
+        or not math.isfinite(float(maximum_change))
+        or not 0.0 < float(maximum_change) <= 1.0
+    ):
+        raise ValidationError(
+            "Phase 4/5 feedback route trust region is invalid"
+        )
+    optimize_frame_slots = configuration.get("optimize_frame_slots")
+    if not isinstance(optimize_frame_slots, bool) or configuration.get(
+        "frame_policy"
+    ) != (
+        "minimum-feasible-round-zero-then-fixed"
+        if optimize_frame_slots
+        else "fixed"
+    ):
+        raise ValidationError("Phase 4/5 feedback frame policy is invalid")
+    candidates = report.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValidationError("Phase 4/5 feedback candidates are invalid")
+    platform = Platform.load(platform_path)
+    incumbent_record = None
+    incumbent_score = None
+    selected = 0
+    accepted_signatures: Dict[str, int] = {}
+    expected_feedback_iteration = 1
+    expected_trial = 0
+    derived_termination = "disabled" if maximum == 0 else "iteration-limit"
+    stop = False
+    for index, candidate in enumerate(candidates):
+        if candidate.get("candidate") != index:
+            raise ValidationError(
+                "Phase 4/5 feedback candidate indexes are not contiguous"
+            )
+        if index == 0:
+            if (
+                candidate.get("status") != "pass"
+                or candidate.get("feedback_iteration") != 0
+                or candidate.get("trial") != 0
+                or candidate.get("source_candidate") is not None
+                or candidate.get("feedback_step") is not None
+                or candidate.get("decision")
+                != {
+                    "accepted": True,
+                    "reason": "initial-proxy-only-incumbent",
+                }
+            ):
+                raise ValidationError(
+                    "Phase 4/5 feedback baseline metadata is invalid"
+                )
+        else:
+            if (
+                candidate.get("feedback_iteration")
+                != expected_feedback_iteration
+                or candidate.get("trial") != expected_trial
+                or candidate.get("source_candidate") != selected
+                or candidate.get("feedback_step") != steps[expected_trial]
+            ):
+                raise ValidationError(
+                    "Phase 4/5 feedback trial sequence is invalid"
+                )
+            expected_trial += 1
+        if candidate.get("status") != "pass":
+            decision = candidate.get("decision")
+            if (
+                not isinstance(decision, dict)
+                or decision.get("accepted") is not False
+                or decision.get("reason") != "candidate-infeasible"
+                or not isinstance(decision.get("detail"), str)
+                or not decision["detail"]
+            ):
+                raise ValidationError(
+                    "Phase 4/5 infeasible trial evidence is invalid"
+                )
+            if expected_trial == len(steps):
+                derived_termination = "line-search-infeasible"
+            continue
+        artifacts = candidate.get("artifacts")
+        if not isinstance(artifacts, dict):
+            raise ValidationError(
+                "Phase 4/5 feedback candidate artifacts are invalid"
+            )
+        required = {
+            "routes",
+            "phase4_report",
+            "schedule",
+            "ratio_plan",
+            "tdm_feedback",
+            "phase5_report",
+            "score",
+        }
+        if index > 0:
+            required.add("normalized_feedback")
+        if set(artifacts) != required:
+            raise ValidationError(
+                "Phase 4/5 feedback candidate artifact coverage is invalid"
+            )
+        paths = {
+            name: _validated_report_artifact(
+                root, artifacts[name], f"candidate {index} {name}"
+            )
+            for name in required
+        }
+        score_validation = validate_cross_stage_candidate(
+            paths["score"],
+            database_path,
+            assignment_path,
+            paths["routes"],
+            paths["schedule"],
+            paths["ratio_plan"],
+            platform_path,
+        )
+        score = read_json(paths["score"])
+        route_signature = _route_selection_signature(
+            read_json(paths["routes"])
+        )
+        if (
+            candidate.get("candidate_id") != score_validation["candidate_id"]
+            or candidate.get("objective_key") != score["objective_key"]
+            or candidate.get("objective_metrics")
+            != score["objective_metrics"]
+            or candidate.get("route_selection_sha256") != route_signature
+        ):
+            raise ValidationError(
+                "Phase 4/5 feedback candidate score seal mismatch"
+            )
+        phase4_report = read_json(paths["phase4_report"])
+        phase5_report = read_json(paths["phase5_report"])
+        if (
+            phase4_report.get("status") != "pass"
+            or phase5_report.get("status") != "pass"
+        ):
+            raise ValidationError(
+                "Phase 4/5 feedback phase report did not pass"
+            )
+        frame_record = candidate.get("frame_search")
+        if index == 0 and optimize_frame_slots:
+            frame_path = _validated_report_artifact(
+                root, frame_record, "baseline frame search"
+            )
+            frame_validation = validate_frame_search_report(
+                read_json(frame_path)
+            )
+            if (
+                candidate.get("frame_search_validation")
+                != frame_validation
+                or frame_validation["selected_frame_slots"]
+                != score["objective_metrics"]["frame_slots"]
+            ):
+                raise ValidationError(
+                    "Phase 4/5 feedback frame-search seal mismatch"
+                )
+        elif frame_record is not None or "frame_search_validation" in candidate:
+            raise ValidationError(
+                "Phase 4/5 feedback has unexpected frame-search metadata"
+            )
+        if index == 0:
+            migration = reconstruct_route_migration(
+                read_json(paths["routes"]), read_json(paths["routes"])
+            )
+            if candidate.get("route_migration") != migration:
+                raise ValidationError(
+                    "Phase 4/5 feedback baseline migration is invalid"
+                )
+            incumbent_record = candidate
+            incumbent_score = score
+            accepted_signatures[route_signature] = 0
+            continue
+        assert incumbent_record is not None and incumbent_score is not None
+        incumbent_artifacts = incumbent_record["artifacts"]
+        incumbent_routes_path = _validated_report_artifact(
+            root,
+            incumbent_artifacts["routes"],
+            "incumbent routes",
+        )
+        incumbent_schedule_path = _validated_report_artifact(
+            root,
+            incumbent_artifacts["schedule"],
+            "incumbent schedule",
+        )
+        incumbent_ratio_path = _validated_report_artifact(
+            root,
+            incumbent_artifacts["ratio_plan"],
+            "incumbent ratio plan",
+        )
+        incumbent_feedback_path = _validated_report_artifact(
+            root,
+            incumbent_artifacts["tdm_feedback"],
+            "incumbent TDM feedback",
+        )
+        feedback = read_json(incumbent_feedback_path)
+        validate_tdm_feedback(
+            read_json(incumbent_routes_path),
+            platform,
+            read_json(incumbent_schedule_path),
+            feedback,
+            read_json(incumbent_ratio_path),
+        )
+        if read_json(paths["normalized_feedback"]) != feedback:
+            raise ValidationError(
+                "Phase 4 did not preserve the independently rebuilt feedback"
+            )
+        feedback_report = phase4_report.get("tdm_feedback")
+        routes = read_json(paths["routes"])
+        route_feedback = routes.get("joint_optimization", {}).get(
+            "tdm_feedback"
+        )
+        step = candidate["feedback_step"]
+        if (
+            not isinstance(feedback_report, dict)
+            or not isinstance(route_feedback, dict)
+            or feedback_report.get("feedback_price_scale") != step
+            or route_feedback.get("feedback_price_scale") != step
+            or route_feedback.get("source_routes_sha256")
+            != feedback["source_routes_sha256"]
+            or route_feedback.get("source_schedule_sha256")
+            != feedback["source_schedule_sha256"]
+        ):
+            raise ValidationError(
+                "Phase 4 feedback source or price scale mismatch"
+            )
+        migration = reconstruct_route_migration(
+            read_json(incumbent_routes_path), routes
+        )
+        objective_decision = compare_candidate_objectives(
+            score, incumbent_score
+        )
+        if (
+            candidate.get("route_migration") != migration
+            or candidate.get("objective_decision") != objective_decision
+        ):
+            raise ValidationError(
+                "Phase 4/5 feedback migration or objective mismatch"
+            )
+        if migration["changed_demands"] == 0:
+            expected_decision = {
+                "accepted": False,
+                "reason": "route-fixed-point",
+            }
+            derived_termination = "route-fixed-point"
+            stop = True
+        elif migration["changed_fraction"] > float(maximum_change) + 1.0e-15:
+            expected_decision = {
+                "accepted": False,
+                "reason": "route-trust-region-exceeded",
+            }
+        elif route_signature in accepted_signatures:
+            expected_decision = {
+                "accepted": False,
+                "reason": "route-cycle",
+                "matching_candidate": accepted_signatures[route_signature],
+            }
+            derived_termination = "route-cycle"
+            stop = True
+        elif objective_decision["accepted"]:
+            expected_decision = {
+                **objective_decision,
+                "reason": "phase5-objective-improved",
+            }
+        else:
+            expected_decision = {
+                **objective_decision,
+                "reason": "phase5-objective-not-improved",
+            }
+        if candidate.get("decision") != expected_decision:
+            raise ValidationError(
+                "Phase 4/5 feedback acceptance decision mismatch"
+            )
+        if expected_decision["accepted"]:
+            incumbent_record = candidate
+            incumbent_score = score
+            selected = index
+            accepted_signatures[route_signature] = index
+            expected_feedback_iteration += 1
+            expected_trial = 0
+        elif expected_trial == len(steps):
+            derived_termination = "line-search-rejected"
+        if stop and index != len(candidates) - 1:
+            raise ValidationError(
+                "Phase 4/5 feedback continued after terminal candidate"
+            )
+    if report.get("selected_candidate") != selected:
+        raise ValidationError(
+            "Phase 4/5 feedback selected candidate mismatch"
+        )
+    if report.get("termination") != derived_termination:
+        raise ValidationError(
+            "Phase 4/5 feedback termination reason mismatch"
+        )
+    if canonical_phase4_dir is not None and canonical_phase5_dir is not None:
+        canonical = report.get("canonical")
+        expected_canonical = {
+            "routes": _artifact_record(
+                canonical_phase4_dir / "routes.json",
+                canonical_phase4_dir.parent,
+            ),
+            "schedule": _artifact_record(
+                canonical_phase5_dir / "schedule.json",
+                canonical_phase5_dir.parent,
+            ),
+            "ratio_plan": _artifact_record(
+                canonical_phase5_dir / "ratio_plan.json",
+                canonical_phase5_dir.parent,
+            ),
+        }
+        if canonical != expected_canonical:
+            raise ValidationError(
+                "Phase 4/5 feedback canonical artifact seal mismatch"
+            )
+        selected_artifacts = candidates[selected]["artifacts"]
+        for name, path in (
+            ("routes", canonical_phase4_dir / "routes.json"),
+            ("schedule", canonical_phase5_dir / "schedule.json"),
+            ("ratio_plan", canonical_phase5_dir / "ratio_plan.json"),
+        ):
+            if _sha256(path) != selected_artifacts[name]["sha256"]:
+                raise ValidationError(
+                    "Phase 4/5 feedback canonical selection is inconsistent"
+                )
+    return {
+        "status": "pass",
+        "validated_candidates": sum(
+            candidate.get("status") == "pass" for candidate in candidates
+        ),
+        "selected_candidate": selected,
+        "termination": derived_termination,
+    }
 
 
 def _run_candidate_flow(
@@ -866,6 +1832,9 @@ def _run_candidate_flow(
     post_refinement_iterations: int,
     slot_refinement_iterations: int,
     ratio_convergence: float,
+    routing_feedback_iterations: int,
+    routing_feedback_steps: Optional[Tuple[float, ...]],
+    routing_feedback_max_route_change_fraction: float,
 ) -> Dict[str, Any]:
     iteration_root = root / f"iteration_{iteration:03d}"
     timing_path = iteration_root / "timing_paths.json"
@@ -876,7 +1845,50 @@ def _run_candidate_flow(
         database_path, assignment_path, timing_path
     )
     frame_search = None
-    if optimize_frame_slots:
+    phase45_feedback = None
+    if routing_feedback_iterations:
+        phase45_feedback = run_phase45_feedback_loop(
+            database_path=database_path,
+            assignment_path=assignment_path,
+            platform_path=platform_path,
+            timing_paths_path=timing_path,
+            output_dir=iteration_root / "phase45-feedback",
+            canonical_phase4_dir=phase4_root,
+            canonical_phase5_dir=phase5_root,
+            max_iterations=routing_feedback_iterations,
+            feedback_steps=routing_feedback_steps,
+            max_route_change_fraction=(
+                routing_feedback_max_route_change_fraction
+            ),
+            route_constraints_path=route_constraints_path,
+            frame_slots=frame_slots,
+            optimize_frame_slots=optimize_frame_slots,
+            route_max_iterations=route_max_iterations,
+            router=router,
+            route_provider=route_provider,
+            route_candidate_workers=route_candidate_workers,
+            simulation_frames=simulation_frames,
+            tdm_provider=tdm_provider,
+            ratio_optimizer=ratio_optimizer,
+            timing_dag_optimizer=timing_dag_optimizer,
+            slot_optimizer=slot_optimizer,
+            ratio_max_iterations=ratio_max_iterations,
+            max_ratio=max_ratio,
+            ratio_quantum=ratio_quantum,
+            post_refinement_iterations=post_refinement_iterations,
+            slot_refinement_iterations=slot_refinement_iterations,
+            ratio_convergence=ratio_convergence,
+        )
+        phase4 = read_json(phase4_root / "phase4_report.json")
+        phase5 = read_json(phase5_root / "phase5_report.json")
+        if optimize_frame_slots:
+            baseline = phase45_feedback["candidates"][0]
+            frame_search = read_json(
+                iteration_root
+                / "phase45-feedback"
+                / baseline["frame_search"]["path"]
+            )
+    elif optimize_frame_slots:
         if frame_slots is None:
             raise ValidationError(
                 "cross-stage frame optimization requires a feasible upper "
@@ -964,11 +1976,41 @@ def _run_candidate_flow(
         "candidate_id": score["candidate_id"],
     }
     if frame_search is not None:
-        result["frame_search"] = _relative(
-            iteration_root / "frame-search/frame-search-report.json", root
+        result["frame_search"] = (
+            _relative(
+                iteration_root / "frame-search/frame-search-report.json",
+                root,
+            )
+            if phase45_feedback is None
+            else _relative(
+                iteration_root
+                / "phase45-feedback"
+                / phase45_feedback["candidates"][0]["frame_search"]["path"],
+                root,
+            )
         )
         result["frame_search_validation"] = (
             validate_frame_search_report(frame_search)
+        )
+    if phase45_feedback is not None:
+        feedback_report_path = (
+            iteration_root
+            / "phase45-feedback/phase45_feedback_report.json"
+        )
+        result["phase45_feedback"] = _relative(
+            feedback_report_path, root
+        )
+        result["phase45_feedback_validation"] = (
+            validate_phase45_feedback_report(
+                feedback_report_path,
+                database_path=database_path,
+                assignment_path=assignment_path,
+                platform_path=platform_path,
+                timing_paths_path=timing_path,
+                route_constraints_path=route_constraints_path,
+                canonical_phase4_dir=phase4_root,
+                canonical_phase5_dir=phase5_root,
+            )
         )
     return result
 
@@ -1016,6 +2058,9 @@ def run_cross_stage_optimization(
     ratio_convergence: float = 1.0e-9,
     pair_pressure_weight: float = 1.0,
     feedback_steps: Optional[Tuple[float, ...]] = None,
+    routing_feedback_iterations: int = 0,
+    routing_feedback_steps: Optional[Tuple[float, ...]] = None,
+    routing_feedback_max_route_change_fraction: float = 1.0,
 ) -> Dict[str, Any]:
     if (
         isinstance(max_outer_iterations, bool)
@@ -1053,6 +2098,33 @@ def run_cross_stage_optimization(
             "cross-stage partition repair flags must be booleans"
         )
     steps = _normalize_feedback_steps(feedback_steps)
+    normalized_routing_steps = _normalize_feedback_steps(
+        routing_feedback_steps
+    )
+    if (
+        isinstance(routing_feedback_iterations, bool)
+        or not isinstance(routing_feedback_iterations, int)
+        or routing_feedback_iterations < 0
+    ):
+        raise ValidationError(
+            "routing feedback iterations must be non-negative"
+        )
+    if (
+        isinstance(routing_feedback_max_route_change_fraction, bool)
+        or not isinstance(
+            routing_feedback_max_route_change_fraction, (int, float)
+        )
+        or not math.isfinite(
+            float(routing_feedback_max_route_change_fraction)
+        )
+        or not 0.0
+        < float(routing_feedback_max_route_change_fraction)
+        <= 1.0
+    ):
+        raise ValidationError(
+            "routing feedback maximum route change fraction must be in "
+            "(0, 1]"
+        )
     if optimize_frame_slots and frame_slots is None:
         raise ValidationError(
             "cross-stage --optimize-frame-slots requires --frame-slots"
@@ -1185,6 +2257,11 @@ def run_cross_stage_optimization(
         post_refinement_iterations=post_refinement_iterations,
         slot_refinement_iterations=slot_refinement_iterations,
         ratio_convergence=ratio_convergence,
+        routing_feedback_iterations=routing_feedback_iterations,
+        routing_feedback_steps=normalized_routing_steps,
+        routing_feedback_max_route_change_fraction=(
+            routing_feedback_max_route_change_fraction
+        ),
     )
     baseline["decision"] = {
         "accepted": True,
@@ -1311,6 +2388,13 @@ def run_cross_stage_optimization(
                         slot_refinement_iterations
                     ),
                     ratio_convergence=ratio_convergence,
+                    routing_feedback_iterations=(
+                        routing_feedback_iterations
+                    ),
+                    routing_feedback_steps=normalized_routing_steps,
+                    routing_feedback_max_route_change_fraction=(
+                        routing_feedback_max_route_change_fraction
+                    ),
                 )
                 candidate.update(
                     {
@@ -1439,6 +2523,11 @@ def run_cross_stage_optimization(
                 route_provider or GLOBAL_CANDIDATE_PROVIDER
             ),
             "route_candidate_workers": route_candidate_workers,
+            "routing_feedback_iterations": routing_feedback_iterations,
+            "routing_feedback_steps": list(normalized_routing_steps),
+            "routing_feedback_max_route_change_fraction": float(
+                routing_feedback_max_route_change_fraction
+            ),
             "tdm_provider": (
                 tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER
             ),
@@ -1614,6 +2703,37 @@ def validate_cross_stage_report(
         raise ValidationError(
             "cross-stage report optimized frame has no upper bound"
         )
+    routing_feedback_iterations = configuration.get(
+        "routing_feedback_iterations", 0
+    )
+    if (
+        isinstance(routing_feedback_iterations, bool)
+        or not isinstance(routing_feedback_iterations, int)
+        or routing_feedback_iterations < 0
+    ):
+        raise ValidationError(
+            "cross-stage routing feedback iteration count is invalid"
+        )
+    raw_routing_steps = configuration.get(
+        "routing_feedback_steps", list(DEFAULT_FEEDBACK_STEPS)
+    )
+    if not isinstance(raw_routing_steps, list):
+        raise ValidationError(
+            "cross-stage routing feedback steps are invalid"
+        )
+    routing_steps = _normalize_feedback_steps(tuple(raw_routing_steps))
+    routing_maximum_change = configuration.get(
+        "routing_feedback_max_route_change_fraction", 1.0
+    )
+    if (
+        isinstance(routing_maximum_change, bool)
+        or not isinstance(routing_maximum_change, (int, float))
+        or not math.isfinite(float(routing_maximum_change))
+        or not 0.0 < float(routing_maximum_change) <= 1.0
+    ):
+        raise ValidationError(
+            "cross-stage routing feedback trust region is invalid"
+        )
     uses_board_link_timing = configuration.get("board_link_timing")
     if not isinstance(uses_board_link_timing, bool):
         raise ValidationError(
@@ -1783,6 +2903,59 @@ def validate_cross_stage_report(
             root / candidate["ratio_plan"],
             platform_path,
         )
+        phase45_path = candidate.get("phase45_feedback")
+        if routing_feedback_iterations:
+            if not isinstance(phase45_path, str) or not phase45_path:
+                raise ValidationError(
+                    "cross-stage candidate is missing Phase 4/5 feedback"
+                )
+            phase45_report_path = (root / phase45_path).resolve()
+            try:
+                phase45_report_path.relative_to(root.resolve())
+            except ValueError as error:
+                raise ValidationError(
+                    "cross-stage Phase 4/5 feedback report escapes root"
+                ) from error
+            phase45_report = read_json(phase45_report_path)
+            if (
+                phase45_report.get("configuration", {}).get(
+                    "max_iterations"
+                )
+                != routing_feedback_iterations
+                or phase45_report.get("configuration", {}).get(
+                    "feedback_steps"
+                )
+                != list(routing_steps)
+                or phase45_report.get("configuration", {}).get(
+                    "max_route_change_fraction"
+                )
+                != float(routing_maximum_change)
+            ):
+                raise ValidationError(
+                    "cross-stage Phase 4/5 feedback configuration mismatch"
+                )
+            phase45_validation = validate_phase45_feedback_report(
+                phase45_report_path,
+                database_path=database_path,
+                assignment_path=root / candidate["assignment"],
+                platform_path=platform_path,
+                timing_paths_path=root / candidate["timing_paths"],
+                canonical_phase4_dir=(root / candidate["routes"]).parent,
+                canonical_phase5_dir=(root / candidate["schedule"]).parent,
+            )
+            if candidate.get("phase45_feedback_validation") != (
+                phase45_validation
+            ):
+                raise ValidationError(
+                    "cross-stage Phase 4/5 feedback validation mismatch"
+                )
+        elif (
+            phase45_path is not None
+            or "phase45_feedback_validation" in candidate
+        ):
+            raise ValidationError(
+                "cross-stage candidate has unexpected Phase 4/5 feedback"
+            )
         assignment_path = root / candidate["assignment"]
         clusters_path = assignment_path.parent / "clusters.json"
         expected_partition_class = reconstruct_partition_class(

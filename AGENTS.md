@@ -37,6 +37,31 @@ These requirements apply to all work in this repository.
   completed full-flow validation unless both the baseline and candidate have
   successfully completed Phase 7 and their final WNS/TNS have been compared.
 
+## Phase 3--5 feedback scope and acceptance
+
+- Treat Phase 5→Phase 4 and Phase 5→Phase 3 as distinct controls.  A
+  Phase 5→Phase 4 round must keep the Phase 3 assignment fixed and may feed
+  back only independently reconstructed concrete schedule/domain prices.  A
+  Phase 5→Phase 3 round may change the assignment; after it does, discard all
+  prior routing feedback and start the new assignment from proxy-only Phase 4.
+- A feedback candidate must rerun both Phase 4 and Phase 5.  Accept or roll it
+  back using the complete frozen TimingPathDB population evaluated against the
+  concrete Phase 5 schedule, not route cost, congestion, critical-path-only
+  samples, or a self-declared feedback artifact.
+- Apply deterministic line search and an explicit route-migration trust
+  region.  Preserve the selected and rejected trials, source hashes,
+  termination reason, objective comparison, and canonical selected-artifact
+  hashes in an independently replayable report.  Only the selected candidate
+  may be copied into canonical Phase 4/5 locations or consumed by Phase 6.
+- Fixed points, accepted-route cycles, infeasible schedules, exhausted line
+  search, and iteration budgets are normal explicit termination states.  Do
+  not hide them by silently changing frame slots, assignment, TimingPathDB,
+  constraints, or feedback strength.
+- Intermediate Phase 4/5 objectives are selection proxies.  Any QoR or default
+  promotion claim for a feedback policy still requires a frozen baseline and
+  candidate to complete Phase 7 and report independently validated system-
+  global WNS/TNS under the rules below.
+
 ## Default timing-QoR terminology is system-global
 
 - `emuflow multi-fpga compile` must enable timing-driven Phase 3--5

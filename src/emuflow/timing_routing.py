@@ -826,6 +826,7 @@ def route_system_native(
     provider: str = NATIVE_ROUTER_PROVIDER,
     candidate_pool_path: Optional[Path] = None,
     tdm_feedback: Optional[Mapping[str, Any]] = None,
+    feedback_price_scale: float = 1.0,
     candidate_workers: int = 1,
 ) -> Dict[str, Any]:
     if provider not in {
@@ -852,6 +853,18 @@ def route_system_native(
         raise ValueError(
             "parallel candidate generation requires the global candidate "
             "provider"
+        )
+    if (
+        isinstance(feedback_price_scale, bool)
+        or not isinstance(feedback_price_scale, (int, float))
+        or not math.isfinite(float(feedback_price_scale))
+        or float(feedback_price_scale) <= 0.0
+        or float(feedback_price_scale) > 1.0
+    ):
+        raise ValueError("feedback_price_scale must be in (0, 1]")
+    if tdm_feedback is None and float(feedback_price_scale) != 1.0:
+        raise ValueError(
+            "feedback_price_scale requires concrete TDM feedback"
         )
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
@@ -888,7 +901,10 @@ def route_system_native(
                 or float(domain["routing_price"]) < 0.0
             ):
                 raise ValidationError("TDM feedback domain price is invalid")
-            feedback_prices[domain["key"]] = float(domain["routing_price"])
+            feedback_prices[domain["key"]] = (
+                float(domain["routing_price"])
+                * float(feedback_price_scale)
+            )
         if set(feedback_prices) != set(model["capacity_keys"]):
             raise ValidationError(
                 "TDM feedback capacity-domain coverage is not exact"
@@ -1178,6 +1194,7 @@ def route_system_native(
                 "maximum_domain_price": tdm_feedback["metrics"][
                     "maximum_domain_price"
                 ],
+                "feedback_price_scale": float(feedback_price_scale),
             }
         result["joint_optimization"]["candidate_generation"][
             "master_selection"
