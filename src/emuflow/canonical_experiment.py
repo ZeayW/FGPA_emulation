@@ -66,6 +66,19 @@ def _append_option(command: list[str], option: str, value: Any) -> None:
         command.extend((option, str(value)))
 
 
+def _identity_argv(
+    arguments: Sequence[str], bindings: Mapping[str, str]
+) -> list[str]:
+    reverse: Dict[str, str] = {}
+    for label, value in bindings.items():
+        if value not in reverse or label < reverse[value]:
+            reverse[value] = label
+    return [
+        f"{{input:{reverse[argument]}}}" if argument in reverse else argument
+        for argument in arguments
+    ]
+
+
 def _canonical_case_contract(
     repository_root: Path,
     case_id: str,
@@ -190,6 +203,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
     ),
     "partition": (
         "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_partition.py",
         "src/emuflow/phase3.py",
         "src/emuflow/partition.py",
         "src/emuflow/partition_hops.py",
@@ -443,6 +457,20 @@ def compile_canonical_experiment_spec(
         "openparf_implementation": openparf_closure["implementation_sha256"],
         **{f"tool.{label}": _sha256(path) for label, path in sorted(tools.items())},
     }
+    base_bindings = {
+        "rtl": str(rtl),
+        "platform": str(platform),
+        "boarddb_report": str(boarddb_report_path),
+        "route_constraints": str(route_constraints),
+        "end_to_end_matrix": str(contract["matrix_path"]),
+        "benchmark_run_spec": str(contract["run_spec_path"]),
+        "timing_model": str(timing_model),
+        "architecture_timing_db": str(architecture_timing),
+        "physical_architecture": str(physical_architecture),
+        "openparf_manifest": str(openparf_manifest),
+        "openparf_implementation": str(openparf_install),
+        **{f"tool.{label}": str(path) for label, path in sorted(tools.items())},
+    }
     closures = {stage: _closure(repository_root, stage) for stage in _COMPONENTS}
 
     nodes: list[Dict[str, Any]] = []
@@ -462,16 +490,28 @@ def compile_canonical_experiment_spec(
         provider: str | None = None,
         physical_seed: int | None = None,
     ) -> None:
+        selected_inputs = {label: base_inputs[label] for label in sorted(inputs)}
+        runtime_values = set(command) | set(validator)
+        execution_bindings = {
+            label: base_bindings[label]
+            for label in sorted(inputs)
+            if base_bindings[label] in runtime_values
+        }
         record: Dict[str, Any] = {
             "id": node_id,
             "stage": stage,
             "dependencies": list(dependencies),
-            "inputs": {label: base_inputs[label] for label in sorted(inputs)},
+            "inputs": selected_inputs,
             "configuration": dict(configuration or {}),
             "implementation": closures[stage],
             "command": command,
+            "execution_bindings": execution_bindings,
+            "command_identity": _identity_argv(command, execution_bindings),
             "validator_implementation": closures[stage],
             "validator": validator,
+            "validator_identity": _identity_argv(
+                validator, execution_bindings
+            ),
             "environment": {"EMUFLOW_EXPERIMENT_POLICY": "canonical-real-rtl-v1"},
             "storage_estimate": {
                 "peak_bytes": peak_gib * 1024**3,

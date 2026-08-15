@@ -112,17 +112,19 @@ from .experiment_upstream import (
     materialize_shared_phase1_5,
     run_cut_timing_checkpoint,
     run_frontend_checkpoint,
-    run_partition_checkpoint,
     run_route_checkpoint,
     run_tdm_checkpoint,
     run_timing_checkpoint,
     validate_cut_timing_checkpoint,
     validate_frontend_checkpoint,
     validate_materialized_shared_phase1_5,
-    validate_partition_checkpoint,
     validate_route_checkpoint,
     validate_tdm_checkpoint,
     validate_timing_checkpoint,
+)
+from .experiment_partition import (
+    run_partition_checkpoint,
+    validate_partition_checkpoint,
 )
 from .errors import EmuFlowError
 from .fpga_interchange import (

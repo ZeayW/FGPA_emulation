@@ -48,6 +48,12 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   binary files used by execution, and a separate closure for its validator.
   An implementation change invalidates that node and descendants; a validator-
   only change triggers independent revalidation without recomputing output.
+  Versioned install and input paths are runtime bindings, not identity: the
+  portable command identity replaces each such path with the label of its
+  byte-sealed input.  Moving identical bytes must preserve the execution key;
+  changing those bytes must change it.  Keep stage-specific producer and
+  validator code in stage-specific closure components so a Phase 3-only edit
+  cannot invalidate Phase 1 merely because both once shared a source file.
 - The DAG implementation and experiment spec must support arbitrary named
   stages and multiple dependencies; it must not hard-code one current flow's
   phase sequence.  Physical lookahead, source preparation, qualification, and
@@ -130,6 +136,15 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   terminal nodes and ancestors and must validate after the source cache is
   unavailable.  A legacy archive containing any hash-only run file is not
   replay-complete and must never authorize deletion of its source run.
+- Validate experiment-management semantics on a small deterministic design
+  first.  That gate must exercise cache hits and misses, selective
+  invalidation, relocation of byte-identical tools, validator-only changes,
+  tampering, failed attempts, lease expiry/reconciliation, storage blocking,
+  evidence replay without the cache, and reference-aware GC.  Do not use a
+  large design to debug these control-plane rules.  After the small-design gate
+  passes, run one canonical medium/large complete flow to validate production
+  scale, long leases, large checkpoints, cross-node recovery, quota estimates,
+  and final Phase 7 QoR; reuse its validated ancestors for all comparisons.
 
 ## Mandatory experiment storage boundary
 

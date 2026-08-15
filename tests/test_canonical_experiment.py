@@ -182,6 +182,21 @@ class CanonicalExperimentTest(unittest.TestCase):
                 nodes["frontend"]["configuration"]["mapping_profile"],
                 "vtr-hard-blocks",
             )
+            self.assertEqual(
+                nodes["frontend"]["command_identity"][0],
+                "{input:tool.emuflow}",
+            )
+            self.assertIn(
+                "{input:rtl}", nodes["frontend"]["command_identity"]
+            )
+            self.assertNotIn(
+                "src/emuflow/experiment_partition.py",
+                nodes["frontend"]["implementation"]["components"],
+            )
+            self.assertIn(
+                "src/emuflow/experiment_partition.py",
+                nodes["partition"]["implementation"]["components"],
+            )
             self.assertIn("--hop-refiner", nodes["partition"]["command"])
             self.assertEqual(
                 nodes["partition"]["configuration"]["seed_attempts"], 6

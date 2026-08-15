@@ -985,6 +985,15 @@ binaries used by that stage. The validation key independently binds the
 validator's own closure and argv. Thus a Phase 4 implementation change does
 not invalidate Phase 1--3, and a validator-only change produces `revalidate`
 without recomputing output.
+Runtime argv and identity argv are deliberately separate. Absolute versioned
+install and source paths remain in the executable command, while the identity
+argv replaces them with labels such as `{input:tool.yosys}` whose SHA-256 is
+already sealed in the node inputs. Relocating identical bytes therefore keeps
+the execution key; changing the bytes changes it. The spec validator derives
+this substitution independently and rejects a claimed portable identity that
+does not match its runtime bindings. Stage-specific policy also lives in a
+stage-specific closure component, so a partition-only change cannot invalidate
+the frontend through an unrelated shared orchestration file.
 Changing any node input invalidates only that node and its descendants.  For
 example, a Chimew parameter invalidates only Chimew Phase 6 and its Phase 7
 descendants, while changing RTL or BoardDB invalidates the shared Phase 1--5
@@ -1196,6 +1205,18 @@ storage estimate. The farm checks shared filesystem free space and user quota,
 adds a reserve, rewrites `TMPDIR`, `TMP`, `TEMP`, and `XDG_CACHE_HOME` below the
 attempt, and reports `blocked_storage` without submitting SSH work when space
 is insufficient.
+
+Experiment-management validation uses two deliberately separate gates. A
+small deterministic design is the primary correctness gate for cache
+hit/miss behavior, selective invalidation, byte-identical tool relocation,
+validator-only revalidation, tamper rejection, failed attempts, lease
+reconciliation, storage blocking, standalone evidence replay, and
+reference-aware GC. These control-plane properties do not require a large
+netlist and should not consume one while being debugged. One canonical
+medium/large complete Phase 1--7 run follows only after that gate passes; it
+checks production-scale checkpoint size, long-running leases, cross-node
+recovery, quota estimates, and final whole-design WNS/TNS. Its validated
+ancestors are then reused across provider and seed comparisons.
 
 ### Public contest compatibility
 

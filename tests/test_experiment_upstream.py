@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import ValidationError
+from emuflow.experiment_partition import validate_partition_checkpoint
 from emuflow.experiment_upstream import (
     EXPERIMENT_PARTITION_SCHEMA,
-    validate_partition_checkpoint,
 )
 
 
@@ -73,7 +73,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
         )
         return frontend, timing, platform, partition
 
-    @mock.patch("emuflow.experiment_upstream.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3")
     def test_partition_validator_binds_seed_sweep_and_repair(
         self, validate_phase3
     ) -> None:
@@ -94,7 +94,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             )
             self.assertEqual(checked["status"], "pass")
 
-    @mock.patch("emuflow.experiment_upstream.validate_phase3")
+    @mock.patch("emuflow.experiment_partition.validate_phase3")
     def test_partition_validator_rejects_resealed_policy_mismatch(
         self, validate_phase3
     ) -> None:

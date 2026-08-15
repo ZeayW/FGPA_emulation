@@ -512,6 +512,65 @@ class ExperimentDagTest(unittest.TestCase):
             states = {item["id"]: item["state"] for item in changed_plan["nodes"]}
             self.assertEqual(states, {"phase1": "reuse", "phase2": "ready", "phase3": "waiting"})
 
+    def test_v2_byte_bound_runtime_paths_do_not_change_execution_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def relocated(path: str) -> dict:
+                value = self._v2_spec()
+                node = value["nodes"][0]
+                node["inputs"]["tool.runtime"] = _digest("same-tool-bytes")
+                node["command"][0] = path
+                node["validator"][0] = path
+                node["execution_bindings"] = {"tool.runtime": path}
+                node["command_identity"] = [
+                    "{input:tool.runtime}", *node["command"][1:]
+                ]
+                node["validator_identity"] = [
+                    "{input:tool.runtime}", *node["validator"][1:]
+                ]
+                return value
+
+            first_path = self._write_spec(root, relocated("/install/a/emuflow"))
+            first = plan_experiment(first_path, root / "cache", root / "first.json")
+            second_path = root / "relocated.json"
+            write_json(second_path, relocated("/install/b/emuflow"))
+            second = plan_experiment(
+                second_path, root / "cache", root / "second.json"
+            )
+            self.assertEqual(
+                first["nodes"][0]["execution_key"],
+                second["nodes"][0]["execution_key"],
+            )
+            self.assertNotEqual(
+                first["nodes"][0]["command"][0],
+                second["nodes"][0]["command"][0],
+            )
+
+            changed = relocated("/install/c/emuflow")
+            changed["nodes"][0]["inputs"]["tool.runtime"] = _digest(
+                "changed-tool-bytes"
+            )
+            changed_path = root / "changed.json"
+            write_json(changed_path, changed)
+            changed_plan = plan_experiment(
+                changed_path, root / "cache", root / "changed-plan.json"
+            )
+            self.assertNotEqual(
+                first["nodes"][0]["execution_key"],
+                changed_plan["nodes"][0]["execution_key"],
+            )
+
+            tampered = relocated("/install/d/emuflow")
+            tampered["nodes"][0]["command_identity"][0] = "unsealed-tool"
+            with self.assertRaisesRegex(ValidationError, "command_identity"):
+                validate_experiment_spec(tampered)
+
+            incomplete = relocated("/install/e/emuflow")
+            del incomplete["nodes"][0]["validator_identity"]
+            with self.assertRaisesRegex(ValidationError, "declare execution_bindings"):
+                validate_experiment_spec(incomplete)
+
     def test_v2_validator_change_revalidates_without_rerunning_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

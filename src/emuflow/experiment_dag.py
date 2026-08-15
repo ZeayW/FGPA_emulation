@@ -63,6 +63,26 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _portable_argv(
+    arguments: list[str], bindings: Mapping[str, str]
+) -> list[str]:
+    """Replace byte-sealed runtime paths with stable input labels.
+
+    The executable argv remains available for execution.  Identity argv must
+    not depend on where an immutable tool or input was installed, because the
+    corresponding input digest already binds its bytes.
+    """
+
+    reverse: Dict[str, str] = {}
+    for label, value in bindings.items():
+        if value not in reverse or label < reverse[value]:
+            reverse[value] = label
+    return [
+        f"{{input:{reverse[argument]}}}" if argument in reverse else argument
+        for argument in arguments
+    ]
+
+
 def _string(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValidationError(f"experiment {label} must be a non-empty string")
@@ -436,6 +456,45 @@ def _validate_node_v2(
                         f"experiment node {node_id} {label} references undeclared dependency"
                     )
 
+    execution_bindings = raw.get("execution_bindings", {})
+    if not isinstance(execution_bindings, dict) or not all(
+        isinstance(label, str)
+        and label in inputs
+        and isinstance(value, str)
+        and value
+        for label, value in execution_bindings.items()
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} execution_bindings must map input labels "
+            "to non-empty runtime values"
+        )
+    portable_command = _portable_argv(command, execution_bindings)
+    portable_validator = _portable_argv(validator, execution_bindings)
+    command_identity = raw.get("command_identity")
+    validator_identity = raw.get("validator_identity")
+    identity_declared = (
+        bool(execution_bindings)
+        or command_identity is not None
+        or validator_identity is not None
+    )
+    if identity_declared and (
+        command_identity is None or validator_identity is None
+    ):
+        raise ValidationError(
+            f"experiment node {node_id} must declare execution_bindings, "
+            "command_identity, and validator_identity together"
+        )
+    if command_identity is not None and command_identity != portable_command:
+        raise ValidationError(
+            f"experiment node {node_id} command_identity disagrees with its "
+            "byte-sealed execution bindings"
+        )
+    if validator_identity is not None and validator_identity != portable_validator:
+        raise ValidationError(
+            f"experiment node {node_id} validator_identity disagrees with its "
+            "byte-sealed execution bindings"
+        )
+
     environment = raw.get("environment", {})
     if not isinstance(environment, dict) or not all(
         isinstance(key, str) and isinstance(value, str)
@@ -479,6 +538,10 @@ def _validate_node_v2(
         },
         "artifacts": _validate_artifact_records(raw.get("artifacts"), node_id),
     }
+    if identity_declared:
+        result["execution_bindings"] = dict(sorted(execution_bindings.items()))
+        result["command_identity"] = list(command_identity)
+        result["validator_identity"] = list(validator_identity)
     if provider is not None:
         result["provider"] = provider
     if seed is not None:
@@ -557,7 +620,7 @@ def _v2_execution_key(
         "inputs": node["inputs"],
         "configuration": node["configuration"],
         "implementation_sha256": node["implementation_sha256"],
-        "command": node["command"],
+        "command": node.get("command_identity", node["command"]),
         "environment": node["environment"],
         "artifacts": node["artifacts"],
         "dependency_keys": dict(sorted(dependency_keys.items())),
@@ -575,7 +638,7 @@ def _v2_validation_key(node: Mapping[str, Any], execution_key: str) -> str:
             "schema": "emuflow.experiment-validation-identity/v1",
             "execution_key": execution_key,
             "validator_sha256": node["validator_sha256"],
-            "validator": node["validator"],
+            "validator": node.get("validator_identity", node["validator"]),
         }
     )
 
