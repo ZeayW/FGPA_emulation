@@ -78,6 +78,15 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   logs, a declared `pass` status, or visually similar results are insufficient.
   If a stage has no adequate validator, its result is not reusable evidence
   until that validation gap is repaired.
+- Publishing and importing perform the strong content hash and semantic
+  validation once.  A cache-resident output must then be read-only and its
+  checkpoint manifest non-writable; routine planning may validate that managed
+  object from its sealed digest table plus immutable-tree metadata instead of
+  rereading multi-gigabyte content.  Explicit checkpoint/evidence validation
+  always rehashes content.  External references remain mutable and therefore
+  must be strongly rehashed on every reuse boundary.  When a validated import
+  already resides under the object store, promote it to a managed immutable
+  alias rather than retaining the repeatedly hashed external-reference mode.
 - Fair A/B and ablation experiments must share the exact validated upstream
   checkpoints and differ only in the intended variable.  Compute each unique
   baseline once.  Reuse a valid baseline in every later comparison rather than

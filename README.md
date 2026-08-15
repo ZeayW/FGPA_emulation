@@ -997,8 +997,11 @@ that prepass is a separate fixed-seed checkpoint shared by every applicable
 provider; it is not silently regenerated for each final physical seed.
 Experiment DAG stages are not limited to the Phase 1--7 names, and a node may
 depend on multiple earlier checkpoints when its semantic contract requires
-them.  Repeating a planner invocation validates every cached
-artifact and reports each node as:
+them.  Publishing/import and explicit checkpoint or evidence validation hash
+every declared artifact. Repeating a planner invocation fully rehashes mutable
+external references; for a managed checkpoint it instead validates the sealed
+digest table, non-writable manifest, and immutable output tree without rereading
+multi-gigabyte payloads. The planner reports each node as:
 
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
 - `revalidate`: execution output is reusable but the independent validator
@@ -1163,9 +1166,13 @@ emuflow experiment-cache import \
 ```
 
 Import first runs the same independent semantic validator used after a new
-execution, then recomputes and seals every declared file or directory.  The cache keeps
-a validated external reference instead of copying a large physical run; if the
-old artifact is later changed or removed, subsequent planning fails loudly.
+execution, then recomputes and seals every declared file or directory.  For an
+artifact outside the object store, the cache keeps a validated external
+reference instead of copying a large physical run; if it is later changed or
+removed, subsequent planning fails loudly and therefore rehashes it at every
+reuse boundary.  An imported output already owned by the object store is made
+read-only and registered as a managed alias, so later plans check immutable
+metadata while explicit validation still rehashes its bytes.
 Directory names, mtimes, and a report that merely says `pass` never authorize
 reuse.  Experiment plans and resulting farm tasks remain outside the source
 repository, while reusable policy and canonical registries stay checked in.
