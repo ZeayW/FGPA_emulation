@@ -1173,6 +1173,28 @@ Force-runs are exceptional (for example, deliberate nondeterminism or noise
 replication), must record their reason, and must use a distinct declared
 identity instead of overwriting or bypassing a valid checkpoint.
 
+An interrupted physical-lookahead node can reuse validated per-FPGA VPR
+pack/place work without pretending that the partial node passed.  Copy-on-write
+materialize the failed `physical/` tree into a new attempt, complete it with
+`multi-fpga physical --resume`, then finish the stage around that physical tree:
+
+```bash
+emuflow experiment-stage lookahead-resume \
+  --shared /research/d4/gds/ziyiwang21/checkpoints/shared-phase1-5 \
+  --baseline-phase6 /research/d4/gds/ziyiwang21/checkpoints/phase6-baseline \
+  --platform /research/d4/gds/ziyiwang21/inputs/boarddb.json \
+  --architecture /research/d4/gds/ziyiwang21/inputs/vtr-flagship.xml \
+  --seed 1 --workers 8 --region-count 4 --route-channel-width 300 \
+  --out /research/d4/gds/ziyiwang21/attempts/lookahead-recovered
+```
+
+The output root must contain only the completed `physical/` directory before
+this command starts.  It rechecks the physical report, Phase 6 manifest, FPGA
+coverage, seed, worker count, architecture digest, and channel width before
+materializing the lookahead artifacts.  Only the resulting complete root may
+be passed to `experiment-cache import`; the original failed attempt remains
+append-only evidence.
+
 Build and verify the portable implementation closure used by a v2 node:
 
 ```bash

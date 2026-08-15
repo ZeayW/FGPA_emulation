@@ -86,6 +86,13 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   re-plan from the last valid checkpoint.  Do not overwrite another attempt's
   artifacts, silently turn a failed attempt into a fresh run directory, or
   publish a partial checkpoint as complete.
+- If a stage supports independently validated internal checkpoints, recover in
+  a new attempt by copy-on-write materializing the failed tree and resuming
+  only from those checked boundaries.  Keep the original failure immutable.
+  Finish and independently validate the complete stage artifact before using
+  `experiment-cache import`; never register an internal or partial checkpoint
+  directly.  Physical-lookahead recovery uses `multi-fpga physical --resume`
+  followed by `experiment-stage lookahead-resume`.
 - Keep three storage classes physically separate: immutable content-addressed
   checkpoints, append-only per-execution attempts, and self-contained final
   evidence bundles.  Each retry gets a new `attempt-NNNN` directory.  Logs,

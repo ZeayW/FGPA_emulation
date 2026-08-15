@@ -249,6 +249,120 @@ def run_physical_lookahead(
         routes_path=paths["routes"] if _timing_paths(shared_root) else None,
         path_database_path=_timing_paths(shared_root),
     )
+    return _finish_physical_lookahead(
+        shared_root,
+        baseline_phase6_root,
+        platform_path,
+        output_dir,
+        physical,
+        seed=seed,
+        workers=workers,
+        region_count=region_count,
+        architecture=architecture,
+        architecture_id=architecture_id,
+        route_channel_width=route_channel_width,
+    )
+
+
+def resume_physical_lookahead(
+    shared_root: Path,
+    baseline_phase6_root: Path | None,
+    platform_path: Path,
+    output_dir: Path,
+    *,
+    seed: int,
+    workers: int,
+    region_count: int,
+    architecture: Path | None = None,
+    architecture_id: str = VTR_HARD_BLOCK_PROFILE,
+    route_channel_width: int = 300,
+) -> Dict[str, Any]:
+    """Finish a lookahead checkpoint around an independently resumed physical run."""
+
+    output_dir = output_dir.expanduser().resolve()
+    if not output_dir.is_dir() or {path.name for path in output_dir.iterdir()} != {
+        "physical"
+    }:
+        raise ValidationError(
+            "resumed physical-lookahead root must contain only physical/"
+        )
+    physical_root = output_dir / "physical"
+    if not physical_root.is_dir():
+        raise ValidationError("resumed physical-lookahead physical/ is missing")
+    physical = read_json(
+        _require_file(physical_root, "multi-fpga-physical-flow-report.json")
+    )
+    return _finish_physical_lookahead(
+        shared_root,
+        baseline_phase6_root,
+        platform_path,
+        output_dir,
+        physical,
+        seed=seed,
+        workers=workers,
+        region_count=region_count,
+        architecture=architecture,
+        architecture_id=architecture_id,
+        route_channel_width=route_channel_width,
+    )
+
+
+def _finish_physical_lookahead(
+    shared_root: Path,
+    baseline_phase6_root: Path | None,
+    platform_path: Path,
+    output_dir: Path,
+    physical: Dict[str, Any],
+    *,
+    seed: int,
+    workers: int,
+    region_count: int,
+    architecture: Path | None,
+    architecture_id: str,
+    route_channel_width: int,
+) -> Dict[str, Any]:
+    shared = validate_shared_phase1_5(shared_root, platform_path)
+    paths = _shared_paths(shared_root)
+    split_root = (
+        baseline_phase6_root / "split"
+        if baseline_phase6_root is not None
+        else shared_root / "split"
+    )
+    if baseline_phase6_root is not None:
+        baseline = validate_phase6_checkpoint(
+            baseline_phase6_root, shared_root, None, platform_path
+        )
+        if baseline["provider"] != "baseline":
+            raise ValidationError("physical lookahead requires baseline Phase 6")
+    validate_multi_fpga_physical_report(physical)
+    if physical.get("execution", {}).get("requested_workers") != workers:
+        raise ValidationError("resumed physical-lookahead worker count disagrees")
+    physical_architecture = physical.get("architecture", {})
+    expected_architecture_sha256 = (
+        _sha256(architecture.expanduser().resolve())
+        if architecture is not None
+        else None
+    )
+    if expected_architecture_sha256 is not None and physical_architecture.get(
+        "sha256"
+    ) != expected_architecture_sha256:
+        raise ValidationError("resumed physical-lookahead architecture disagrees")
+    if physical.get("split_manifest", {}).get("sha256") != _sha256(
+        split_root / "manifest.json"
+    ):
+        raise ValidationError("resumed physical-lookahead Phase 6 seal disagrees")
+    for fpga in physical.get("fpgas", []):
+        stages = fpga.get("stages", {})
+        if stages.get("vpr_pack_place", {}).get("configuration", {}).get(
+            "seed"
+        ) != seed:
+            raise ValidationError("resumed physical-lookahead VPR seed disagrees")
+        if stages.get("vpr_route", {}).get("configuration", {}).get(
+            "route_channel_width"
+        ) != route_channel_width:
+            raise ValidationError(
+                "resumed physical-lookahead VPR channel width disagrees"
+            )
     lookahead = materialize_academic_chimew_inputs(
         ir_path=paths["ir"],
         schedule_path=paths["schedule"],
@@ -269,9 +383,7 @@ def run_physical_lookahead(
         "seed": seed,
         "workers": workers,
         "region_count": region_count,
-        "architecture_sha256": (
-            _sha256(architecture.resolve()) if architecture is not None else None
-        ),
+        "architecture_sha256": expected_architecture_sha256,
         "architecture_id": architecture_id,
         "route_channel_width": route_channel_width,
         "shared": shared,

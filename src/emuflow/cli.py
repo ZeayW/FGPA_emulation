@@ -103,6 +103,7 @@ from .experiment_stages import (
     run_phase6_checkpoint,
     run_phase7_checkpoint,
     run_physical_lookahead,
+    resume_physical_lookahead,
     validate_phase6_checkpoint,
     validate_phase7_checkpoint,
     validate_physical_lookahead,
@@ -683,6 +684,22 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_run.add_argument("--openparf-python", type=Path)
     lookahead_run.add_argument("--route-channel-width", type=int, default=300)
     lookahead_run.add_argument("--out", type=Path, required=True)
+    lookahead_resume = experiment_stage_subparsers.add_parser(
+        "lookahead-resume",
+        help="finish one reusable lookahead around a resumed physical checkpoint",
+    )
+    lookahead_resume.add_argument("--shared", type=Path, required=True)
+    lookahead_resume.add_argument("--baseline-phase6", type=Path)
+    lookahead_resume.add_argument("--platform", type=Path, required=True)
+    lookahead_resume.add_argument("--seed", type=int, default=1)
+    lookahead_resume.add_argument("--workers", type=int, default=8)
+    lookahead_resume.add_argument("--region-count", type=int, default=4)
+    lookahead_resume.add_argument("--architecture", type=Path)
+    lookahead_resume.add_argument(
+        "--architecture-id", default="vtr-flagship-k6-n10-40nm"
+    )
+    lookahead_resume.add_argument("--route-channel-width", type=int, default=300)
+    lookahead_resume.add_argument("--out", type=Path, required=True)
     lookahead_validate = experiment_stage_subparsers.add_parser(
         "lookahead-validate", help="independently validate a lookahead checkpoint"
     )
@@ -3272,6 +3289,19 @@ def _dispatch(args: argparse.Namespace) -> int:
                 route_checker=args.route_checker,
                 openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
+                route_channel_width=args.route_channel_width,
+            )
+        elif args.experiment_stage_command == "lookahead-resume":
+            report = resume_physical_lookahead(
+                args.shared,
+                args.baseline_phase6,
+                args.platform,
+                args.out,
+                seed=args.seed,
+                workers=args.workers,
+                region_count=args.region_count,
+                architecture=args.architecture,
+                architecture_id=args.architecture_id,
                 route_channel_width=args.route_channel_width,
             )
         elif args.experiment_stage_command == "lookahead-validate":

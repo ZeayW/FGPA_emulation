@@ -157,6 +157,41 @@ class VprTest(unittest.TestCase):
                 seed=1,
             )
             self.assertEqual(checked["metrics"]["packed_blocks"], 3)
+            self.assertEqual(
+                checked["architecture"]["path"],
+                str((new_physical / "architecture/arch.xml").resolve()),
+            )
+            self.assertEqual(
+                checked["circuit"]["path"],
+                str((new_physical / "FPGA0/partition.eblif").resolve()),
+            )
+            self.assertEqual(
+                checked["artifacts"]["packed_netlist"]["path"],
+                str(
+                    (
+                        new_physical
+                        / "FPGA0/vpr-pack-place/partition.net"
+                    ).resolve()
+                ),
+            )
+            self.assertEqual(
+                checked["artifacts"]["placement"]["path"],
+                str(
+                    (
+                        new_physical
+                        / "FPGA0/vpr-pack-place/partition.place"
+                    ).resolve()
+                ),
+            )
+            self.assertEqual(
+                checked["log"],
+                str(
+                    (
+                        new_physical
+                        / "FPGA0/vpr-pack-place/vpr.console.log"
+                    ).resolve()
+                ),
+            )
 
     def test_logic_only_script_lowers_ff_variants_to_latches(self) -> None:
         script = build_vtr_yosys_script(

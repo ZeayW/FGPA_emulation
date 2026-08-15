@@ -704,7 +704,18 @@ def validate_vpr_pack_place_checkpoint(
         or report.get("metrics") != expected_metrics
     ):
         raise ValidationError("VPR pack/place checkpoint metrics disagree")
-    return report
+    # The sealed checkpoint may have been atomically relocated from a failed
+    # cache staging tree.  Keep the on-disk report immutable, but return a
+    # runtime view whose consumable paths point at the independently validated
+    # current tree.  Returning the stale sealed paths would make the validator
+    # pass and then fail immediately in the next physical-flow stage.
+    validated = json.loads(json.dumps(report))
+    validated["architecture"]["path"] = str(architecture)
+    validated["circuit"]["path"] = str(circuit)
+    validated["log"] = str(log_path)
+    for label, expected in expected_artifacts.items():
+        validated["artifacts"][label]["path"] = str(expected)
+    return validated
 
 
 def run_vpr_route_packed(

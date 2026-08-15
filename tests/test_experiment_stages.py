@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError
@@ -8,6 +9,7 @@ from emuflow.experiment_stages import (
     _placement_aware_positions,
     _prepare_empty_output,
     _timing_paths,
+    resume_physical_lookahead,
 )
 from emuflow.experiment_upstream import (
     run_frontend_checkpoint,
@@ -275,6 +277,65 @@ class ExperimentStagesTest(unittest.TestCase):
             ]
         )
         self.assertEqual(args.baseline_phase6, Path("baseline-phase6"))
+
+    def test_cli_exposes_resumed_physical_lookahead(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "experiment-stage",
+                "lookahead-resume",
+                "--shared",
+                "shared",
+                "--baseline-phase6",
+                "baseline",
+                "--platform",
+                "boarddb.json",
+                "--seed",
+                "2",
+                "--workers",
+                "6",
+                "--out",
+                "recovered",
+            ]
+        )
+        self.assertEqual(args.experiment_stage_command, "lookahead-resume")
+        self.assertEqual((args.seed, args.workers), (2, 6))
+
+    def test_resumed_lookahead_requires_only_a_physical_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "recovered"
+            physical = root / "physical"
+            physical.mkdir(parents=True)
+            write_json(
+                physical / "multi-fpga-physical-flow-report.json",
+                {"schema": "placeholder"},
+            )
+            with mock.patch(
+                "emuflow.experiment_stages._finish_physical_lookahead",
+                return_value={"status": "pass"},
+            ) as finish:
+                report = resume_physical_lookahead(
+                    Path("shared"),
+                    Path("baseline"),
+                    Path("platform"),
+                    root,
+                    seed=1,
+                    workers=8,
+                    region_count=4,
+                )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(finish.call_args.args[4], {"schema": "placeholder"})
+
+            (root / "unrelated").write_text("stale", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "contain only physical"):
+                resume_physical_lookahead(
+                    Path("shared"),
+                    Path("baseline"),
+                    Path("platform"),
+                    root,
+                    seed=1,
+                    workers=8,
+                    region_count=4,
+                )
 
 
 if __name__ == "__main__":
