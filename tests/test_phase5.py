@@ -503,6 +503,10 @@ class Phase5Test(unittest.TestCase):
             canonical_native_float("64.2131710470971"),
             canonical_native_float("64.21317104709718"),
         )
+        self.assertEqual(
+            canonical_native_float("18.900936631692"),
+            canonical_native_float("18.900936631693"),
+        )
         self.assertNotEqual(
             canonical_native_float("1.0000000001"),
             canonical_native_float("1.0000000002"),

@@ -2124,10 +2124,11 @@ the selected canonical artifacts.  Compact tests additionally compare every
 restricted route-master choice and multi-round slot schedule with exact
 oracles.  Workers 1 and 2 produce identical selected routes, schedules and
 termination decisions in the determinism regression.  Native continuous
-solver records are canonicalized at fourteen significant digits before
-discrete legalization: this is five orders tighter than the default solver
-convergence tolerance while preventing CPU/libm last-bit noise from changing
-a discrete tie or sealed artifact hash.  Redundant continuous objective
+solver records are canonicalized at twelve significant digits before
+discrete legalization: this is three orders tighter than the default solver
+convergence tolerance and leaves two guard digits beyond measured cross-host
+CPU/libm variation, preventing that noise from changing a discrete tie or
+sealed artifact hash.  Redundant continuous objective
 summaries are then rebuilt from those canonical hop ratios rather than copied
 from a separately reduced native value, so the serialized aggregate and the
 independent checker share one exact canonical state.  Local qualification is

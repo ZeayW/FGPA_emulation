@@ -12,7 +12,7 @@ from .errors import EmuFlowError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-NATIVE_FLOAT_SIGNIFICANT_DIGITS = 14
+NATIVE_FLOAT_SIGNIFICANT_DIGITS = 12
 
 
 def canonical_native_float(value: str) -> float:
@@ -20,9 +20,11 @@ def canonical_native_float(value: str) -> float:
 
     Native continuous solvers use libm and IEEE-754 reductions whose final
     one or two decimal digits can differ across compatible CPU generations.
-    Fourteen significant digits retains roughly 1e-14 relative precision,
-    five orders tighter than EmuFlow's default 1e-9 convergence/checking
-    tolerance, while preventing that noise from perturbing a discrete tie.
+    Twelve significant digits retains roughly 1e-12 relative precision,
+    three orders tighter than EmuFlow's default 1e-9 convergence/checking
+    tolerance.  The two guard digits beyond the observed cross-host libm
+    variation prevent that noise from perturbing a discrete tie or a sealed
+    artifact hash.
     """
 
     parsed = float(value)
