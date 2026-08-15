@@ -388,14 +388,20 @@ def _exact_capture_certificate(
 ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
     records = []
     commit_slot = contract["commit_slot"]
+    # A large design can have tens of thousands of terminal captures.  Build
+    # the reverse relation once instead of scanning every logic segment for
+    # every capture (O(captures * segments)).  The independent validator below
+    # deliberately reconstructs its own index and exact coverage check.
+    segments_by_capture: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
+    for segment in segments.values():
+        if segment.get("kind") != "rx_to_capture":
+            continue
+        capture_id = segment.get("capture_requirement")
+        if isinstance(capture_id, str):
+            segments_by_capture[capture_id].append(segment)
     for capture_id in sorted(captures):
         capture = captures[capture_id]
-        matching = [
-            segment
-            for segment in segments.values()
-            if segment.get("kind") == "rx_to_capture"
-            and segment.get("capture_requirement") == capture_id
-        ]
+        matching = segments_by_capture.get(capture_id, [])
         if len(matching) != 1:
             raise ValidationError(
                 f"exact capture {capture_id!r} must have one timing segment"

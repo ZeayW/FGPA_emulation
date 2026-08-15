@@ -209,3 +209,8 @@ formal evidence types distinct. Physical qualification is still withheld
 until a complete physical run supplies all routed source-ready and capture
 segment evidence and passes both exact deadlines and whole-design global
 target/virtual-runtime WNS/TNS.
+
+Phase 5 certificate construction and Phase 6 macro-cycle replay index the
+`capture_requirement` relation once. They do not scan every logic segment for
+every terminal capture; a 100,000-capture regression enforces one segment-set
+scan, while the independent Phase 5 validator builds and checks its own index.

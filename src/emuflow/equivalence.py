@@ -684,6 +684,24 @@ def _static_exact_equivalence_context(
         raise ValidationError(
             "static exact contract identities/route coverage are invalid"
         )
+    capture_segment_by_id: Dict[str, Mapping[str, Any]] = {}
+    for segment in segments:
+        if segment.get("kind") != "rx_to_capture":
+            continue
+        capture_id = segment.get("capture_requirement")
+        if (
+            not isinstance(capture_id, str)
+            or capture_id not in capture_by_id
+            or capture_id in capture_segment_by_id
+        ):
+            raise ValidationError(
+                "static exact capture segment coverage is invalid"
+            )
+        capture_segment_by_id[capture_id] = segment
+    if set(capture_segment_by_id) != set(capture_by_id):
+        raise ValidationError(
+            "static exact capture segment coverage is incomplete"
+        )
     frame_slots = schedule.get("metrics", {}).get("frame_slots")
     commit_slot = contract.get("commit_slot")
     if (
@@ -733,6 +751,7 @@ def _static_exact_equivalence_context(
         "node_by_net": node_by_net,
         "segment_by_id": segment_by_id,
         "capture_by_id": capture_by_id,
+        "capture_segment_by_id": capture_segment_by_id,
         "net_by_id": net_by_id,
         "entries": entries,
         "frame_slots": frame_slots,
@@ -984,17 +1003,7 @@ def _simulate_static_exact_macro_step(
 
     capture_checks = 0
     for capture_id, capture in sorted(context["capture_by_id"].items()):
-        matching = [
-            segment
-            for segment in context["segment_by_id"].values()
-            if segment.get("kind") == "rx_to_capture"
-            and segment.get("capture_requirement") == capture_id
-        ]
-        if len(matching) != 1:
-            raise ValidationError(
-                f"static exact capture {capture_id!r} lacks one segment"
-            )
-        segment = matching[0]
+        segment = context["capture_segment_by_id"][capture_id]
         key = (capture.get("cut_net"), capture.get("fpga"))
         if key not in current_arrivals:
             raise ValidationError(

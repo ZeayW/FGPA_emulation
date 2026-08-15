@@ -15,6 +15,7 @@ from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import (
+    _exact_capture_certificate,
     build_tdm_schedule,
     reconstruct_tdm_schedule_timing,
     reconstruct_tdm_schedule_timing_paths,
@@ -130,6 +131,48 @@ def _routes(platform, cuts, frame_slots):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_exact_capture_certificate_indexes_100k_segments_once(self) -> None:
+        class CountingSegments(dict):
+            def __init__(self, value):
+                super().__init__(value)
+                self.values_calls = 0
+
+            def values(self):
+                self.values_calls += 1
+                return super().values()
+
+        count = 100_000
+        captures = {
+            f"capture-{index}": {
+                "id": f"capture-{index}",
+                "cut_net": f"net-{index}",
+                "fpga": "fpga1",
+            }
+            for index in range(count)
+        }
+        segments = CountingSegments(
+            {
+                f"segment-{index}": {
+                    "id": f"segment-{index}",
+                    "kind": "rx_to_capture",
+                    "capture_requirement": f"capture-{index}",
+                    "source_cut_net": f"net-{index}",
+                    "fpga": "fpga1",
+                    "budget_slots": 1,
+                }
+                for index in range(count)
+            }
+        )
+        arrivals = {
+            (f"net-{index}", "fpga1"): 1 for index in range(count)
+        }
+        records, minimum = _exact_capture_certificate(
+            {"commit_slot": 3}, segments, captures, arrivals
+        )
+        self.assertEqual(len(records), count)
+        self.assertEqual(minimum, 1)
+        self.assertEqual(segments.values_calls, 1)
+
     def test_native_slot_optimizer_compacts_sparse_lane_ids(self) -> None:
         source = (
             ROOT / "src" / "native" / "tdm_slot_optimizer.cpp"
