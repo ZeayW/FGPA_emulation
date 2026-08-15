@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .errors import EmuFlowError, ValidationError
-from .native_tools import resolve_native_executable
+from .native_tools import canonical_native_float, resolve_native_executable
 from .platform import Platform
 from .tdm_ratio import (
     TDM_TIMING_DAG_RATIO_PROVIDER,
@@ -162,25 +162,25 @@ def _parse_native_output(
                 index = int(fields[1])
                 if index in hops:
                     raise EmuFlowError("duplicate timing-DAG HOP output")
-                hops[index] = float(fields[2])
+                hops[index] = canonical_native_float(fields[2])
             elif len(fields) == 3 and fields[0] == "EDGE":
                 index = int(fields[1])
                 if index in edges:
                     raise EmuFlowError("duplicate timing-DAG EDGE output")
-                edges[index] = float(fields[2])
+                edges[index] = canonical_native_float(fields[2])
             elif len(fields) == 4 and fields[0] == "DOMAIN":
                 index = int(fields[1])
                 if index in domains:
                     raise EmuFlowError("duplicate timing-DAG DOMAIN output")
                 domains[index] = {
-                    "lambda": float(fields[2]),
-                    "usage": float(fields[3]),
+                    "lambda": canonical_native_float(fields[2]),
+                    "usage": canonical_native_float(fields[3]),
                 }
             elif len(fields) == 3 and fields[0] == "PATH":
                 index = int(fields[1])
                 if index in paths:
                     raise EmuFlowError("duplicate timing-DAG PATH output")
-                paths[index] = float(fields[2])
+                paths[index] = canonical_native_float(fields[2])
             elif len(fields) == 3 and fields[0] == "METRIC":
                 key = fields[1]
                 if key in metrics:
@@ -188,7 +188,7 @@ def _parse_native_output(
                 metrics[key] = (
                     int(fields[2])
                     if key in integer_metrics
-                    else float(fields[2])
+                    else canonical_native_float(fields[2])
                 )
             else:
                 raise EmuFlowError(

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
-from .native_tools import resolve_native_executable
+from .native_tools import canonical_native_float, resolve_native_executable
 from .platform import Platform
 from .routing import (
     SYSTEM_ROUTES_SCHEMA,
@@ -471,7 +471,7 @@ def _parse_native_output(
             try:
                 index = int(fields[1])
                 record = {
-                    "continuous_ratio": float(fields[2]),
+                    "continuous_ratio": canonical_native_float(fields[2]),
                     "discrete_ratio": int(fields[3]),
                     "lane": int(fields[4]),
                 }
@@ -488,9 +488,9 @@ def _parse_native_output(
             try:
                 index = int(fields[1])
                 record = {
-                    "delay_ns": float(fields[2]),
-                    "slack_ns": float(fields[3]),
-                    "normalized_slack": float(fields[4]),
+                    "delay_ns": canonical_native_float(fields[2]),
+                    "slack_ns": canonical_native_float(fields[3]),
+                    "normalized_slack": canonical_native_float(fields[4]),
                 }
             except ValueError as error:
                 raise EmuFlowError(
@@ -511,7 +511,7 @@ def _parse_native_output(
                 metrics[key] = (
                     int(fields[2])
                     if key in integer_metrics
-                    else float(fields[2])
+                    else canonical_native_float(fields[2])
                 )
             except ValueError as error:
                 raise EmuFlowError(

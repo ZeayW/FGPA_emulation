@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,25 @@ from .errors import EmuFlowError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+NATIVE_FLOAT_SIGNIFICANT_DIGITS = 14
+
+
+def canonical_native_float(value: str) -> float:
+    """Remove sub-convergence host noise from native floating output.
+
+    Native continuous solvers use libm and IEEE-754 reductions whose final
+    one or two decimal digits can differ across compatible CPU generations.
+    Fourteen significant digits retains roughly 1e-14 relative precision,
+    five orders tighter than EmuFlow's default 1e-9 convergence/checking
+    tolerance, while preventing that noise from perturbing a discrete tie.
+    """
+
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        return parsed
+    if parsed == 0.0:
+        return 0.0
+    return float(f"{parsed:.{NATIVE_FLOAT_SIGNIFICANT_DIGITS}g}")
 
 
 def native_install_roots() -> tuple[Path, ...]:

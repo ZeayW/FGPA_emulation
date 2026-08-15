@@ -2123,8 +2123,12 @@ replays the full-path candidate score and accept/rollback decision; and checks
 the selected canonical artifacts.  Compact tests additionally compare every
 restricted route-master choice and multi-round slot schedule with exact
 oracles.  Workers 1 and 2 produce identical selected routes, schedules and
-termination decisions in the determinism regression.  Local qualification is
-currently 582 passed and 1 skipped plus the source-completeness audit, strict
+termination decisions in the determinism regression.  Native continuous
+solver records are canonicalized at fourteen significant digits before
+discrete legalization: this is five orders tighter than the default solver
+convergence tolerance while preventing CPU/libm last-bit noise from changing
+a discrete tie or sealed artifact hash.  Local qualification is currently
+585 passed and 1 skipped plus the source-completeness audit, strict
 C++ compile, and diff check.  Materially sized proxy A/B and complete Phase 7
 global WNS/TNS A/B remain pending, so the routing loop remains opt-in and no
 final timing-improvement claim is made from the intermediate Phase 5 score.

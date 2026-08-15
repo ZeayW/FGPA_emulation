@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.native_tools import canonical_native_float
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase5 import (
     _build_strategy_candidates,
@@ -474,6 +475,38 @@ class Phase5Test(unittest.TestCase):
         self.assertLessEqual(
             result["metrics"]["max_flow_conservation_error"], 1.0e-12
         )
+        native_values = [
+            *result["continuous_ratios"],
+            *result["edge_mu"],
+            *result["path_mu"],
+            *(
+                value
+                for domain in result["domains"]
+                for value in (domain["lambda"], domain["usage"])
+            ),
+            *(
+                value
+                for value in result["metrics"].values()
+                if isinstance(value, float)
+            ),
+        ]
+        self.assertTrue(
+            all(
+                value == canonical_native_float(repr(value))
+                for value in native_values
+            )
+        )
+
+    def test_timing_dag_canonicalizes_only_subconvergence_noise(self) -> None:
+        self.assertEqual(
+            canonical_native_float("64.2131710470971"),
+            canonical_native_float("64.21317104709718"),
+        )
+        self.assertNotEqual(
+            canonical_native_float("1.0000000001"),
+            canonical_native_float("1.0000000002"),
+        )
+        self.assertEqual(canonical_native_float("-0.0"), 0.0)
 
     def test_timing_dag_independent_checker_rejects_mu_corruption(self) -> None:
         routes, platform = self._timing_dag_fixture()
@@ -569,6 +602,12 @@ class Phase5Test(unittest.TestCase):
             "aspdac26-timing-dag-lagrangian-v1",
         )
         continuous = [hop["continuous_ratio"] for hop in plan["hops"]]
+        self.assertTrue(
+            all(
+                value == canonical_native_float(repr(value))
+                for value in continuous
+            )
+        )
         discrete = [hop["discrete_ratio"] for hop in plan["hops"]]
         bound = max(
             abs(before - after)
