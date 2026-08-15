@@ -196,9 +196,9 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
         continue
       }
       incr driver_count
-      set startpoints [all_fanin -flat -startpoints_only \
+      set startpoints [get_fanin -flat -startpoints_only \
         -to [list $through_pin]]
-      set endpoints [all_fanout -flat -endpoints_only \
+      set endpoints [get_fanout -flat -endpoints_only \
         -from [list $through_pin]]
       if {[llength $startpoints] == 0} {
         error "through net '$mapped_name' has no timing startpoints"
