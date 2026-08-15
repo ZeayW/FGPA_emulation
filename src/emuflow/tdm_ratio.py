@@ -585,6 +585,38 @@ def _discrete_timing_records(
     return records, worst
 
 
+def _continuous_worst_normalized_slack(
+    model: Mapping[str, Any],
+    hop_records: Sequence[Mapping[str, Any]],
+) -> float:
+    """Rebuild the continuous objective from canonical native ratios.
+
+    The native solver also reports this aggregate, but the hop ratios are the
+    source of truth consumed by discrete legalization.  Rebuilding the metric
+    after canonicalization keeps the serialized aggregate exactly consistent
+    with the independent checker and prevents sub-convergence host noise in a
+    redundant native summary from leaking into artifact hashes.
+    """
+
+    return min(
+        _normalized_slack(
+            timing_path["clock_period_ns"],
+            timing_path["clock_period_ns"]
+            - (
+                timing_path["fixed_delay_ns"]
+                + sum(
+                    hop_records[hop]["base_delay_ns"]
+                    + hop_records[hop]["beta_ns"]
+                    * (hop_records[hop]["continuous_ratio"] - 1.0)
+                    for hop in timing_path["hops"]
+                )
+            ),
+            model["normalization"],
+        )
+        for timing_path in model["timing_paths"]
+    )
+
+
 def _round_barrier_legalize(
     hop_records: List[Dict[str, Any]],
     model: Mapping[str, Any],
@@ -1309,6 +1341,9 @@ def build_tdm_ratio_plan(
     timing_records, discrete_worst = _discrete_timing_records(
         model, hop_records
     )
+    continuous_worst = _continuous_worst_normalized_slack(
+        model, hop_records
+    )
     groups = {
         (
             hop["capacity_key"],
@@ -1340,6 +1375,7 @@ def build_tdm_ratio_plan(
         "timing_paths": timing_records,
         "metrics": {
             **native["metrics"],
+            "continuous_worst_normalized_slack": continuous_worst,
             "discrete_worst_normalized_slack": discrete_worst,
             "max_discrete_ratio": max(
                 hop["discrete_ratio"] for hop in hop_records

@@ -2127,8 +2127,11 @@ termination decisions in the determinism regression.  Native continuous
 solver records are canonicalized at fourteen significant digits before
 discrete legalization: this is five orders tighter than the default solver
 convergence tolerance while preventing CPU/libm last-bit noise from changing
-a discrete tie or sealed artifact hash.  Local qualification is currently
-585 passed and 1 skipped plus the source-completeness audit, strict
+a discrete tie or sealed artifact hash.  Redundant continuous objective
+summaries are then rebuilt from those canonical hop ratios rather than copied
+from a separately reduced native value, so the serialized aggregate and the
+independent checker share one exact canonical state.  Local qualification is
+currently 581 passed and 1 skipped plus the source-completeness audit, strict
 C++ compile, and diff check.  Materially sized proxy A/B and complete Phase 7
 global WNS/TNS A/B remain pending, so the routing loop remains opt-in and no
 final timing-improvement claim is made from the intermediate Phase 5 score.

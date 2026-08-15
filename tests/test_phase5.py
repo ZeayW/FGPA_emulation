@@ -31,6 +31,7 @@ from emuflow.tdm import (
 from emuflow.tdm_ratio import (
     DEFAULT_EXACT_DOMAIN_LIMIT,
     TDM_TIMING_DAG_RATIO_PROVIDER,
+    _continuous_worst_normalized_slack,
     _prepare_model,
     _round_barrier_legalize,
     build_tdm_ratio_plan,
@@ -600,6 +601,11 @@ class Phase5Test(unittest.TestCase):
         self.assertEqual(
             validation["provider"],
             "aspdac26-timing-dag-lagrangian-v1",
+        )
+        model = _prepare_model(routes, platform)
+        self.assertEqual(
+            plan["metrics"]["continuous_worst_normalized_slack"],
+            _continuous_worst_normalized_slack(model, plan["hops"]),
         )
         continuous = [hop["continuous_ratio"] for hop in plan["hops"]]
         self.assertTrue(
