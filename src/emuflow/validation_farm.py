@@ -572,7 +572,15 @@ def _claim_submission(task_dir: Path) -> None:
 
 
 def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str, Any]:
-    """Submit every prepared task through SSH; workers detach on their target nodes."""
+    """Submit every prepared task through SSH; workers detach on their target nodes.
+
+    Detachment deliberately happens in the remote host shell, outside any
+    runtime wrapper present in ``worker_argv``.  Detaching from inside a
+    Singularity/Apptainer payload lets the wrapper's main process exit and can
+    tear down the container runtime view while the orphaned Python worker is
+    still running.  Native children started later by that worker then lose the
+    container libraries they were sealed against.
+    """
 
     if submit_workers < 1:
         raise ValidationError("validation farm submit workers must be positive")
@@ -694,9 +702,13 @@ def _launch_validation_farm_locked(
             "worker",
             "--task",
             str(task_path),
-            "--detach",
         ]
-        remote_command = shlex.join(remote_argv)
+        bootstrap_log = task_dir / "worker-bootstrap.log"
+        remote_command = (
+            f"nohup setsid {shlex.join(remote_argv)} </dev/null "
+            f">>{shlex.quote(str(bootstrap_log))} 2>&1 & "
+            "printf '%s\\n' \"$!\""
+        )
         command = [ssh["executable"], *ssh["arguments"], record["node"], remote_command]
         completed = subprocess.run(command, capture_output=True, text=True)
         if completed.returncode != 0:
