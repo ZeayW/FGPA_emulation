@@ -183,18 +183,32 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     if {[llength $through_pins] == 0} {
       error "through net '$mapped_name' has no timing pins"
     }
-    # Query only driver pins as timing startpoints.  OpenSTA 2.6 crashes in its
-    # -through collection path and when internal sink pins are used as -from or
-    # -to constraints.  Partition cut nets originate at a unique timing-model
-    # driver; paths launched from that driver necessarily contain the net.
+    # OpenSTA does not treat an internal combinational driver as a legal timing
+    # startpoint, so querying -from the cut-net driver silently returns no path.
+    # Its 2.6 -through collection path is also unsafe.  Instead, independently
+    # reconstruct the cut's timing cone and query from its real sequential/input
+    # startpoints to its real sequential/output endpoints.  The serialized path
+    # is still checked below (and again by Python) for the requested EmuIR net,
+    # so a reconvergent bypass cannot satisfy the coverage certificate.
     set driver_count 0
     foreach through_pin $through_pins {
       if {[get_property $through_pin direction] ne "output"} {
         continue
       }
       incr driver_count
+      set startpoints [all_fanin -flat -startpoints_only \
+        -to [list $through_pin]]
+      set endpoints [all_fanout -flat -endpoints_only \
+        -from [list $through_pin]]
+      if {[llength $startpoints] == 0} {
+        error "through net '$mapped_name' has no timing startpoints"
+      }
+      if {[llength $endpoints] == 0} {
+        error "through net '$mapped_name' has no timing endpoints"
+      }
       foreach path_end [find_timing_paths -path_delay max \
-          -from [list $through_pin] -group_count 1 -endpoint_count 1 \
+          -from $startpoints -to $endpoints \
+          -group_count 1 -endpoint_count 1 \
           -sort_by_slack] {
         set timing_paths [list $path_end]
         incr queried_paths
