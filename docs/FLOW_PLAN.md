@@ -27,9 +27,12 @@ The initial semantic envelope is intentionally narrow:
 - board links use deterministic static schedules;
 - a global barrier completes before each virtual DUT clock-enable.
 
-Multi-clock designs, arbitrary combinational cuts, runtime packet switching,
-partial reconfiguration, and transparent encrypted-IP partitioning are later
-extensions.
+Multi-clock designs, runtime packet switching, partial reconfiguration, and
+transparent encrypted-IP partitioning are later extensions. Controlled static
+exact combinational cuts are an active opt-in extension. Its read-only
+characterization increment is implemented, while partition, schedule,
+macro-cycle-equivalence, and physical-deadline gates remain pending; the
+production default therefore remains sequential-only.
 
 ## 2. Architectural layers
 
@@ -261,6 +264,25 @@ strictly balanced one. Multilevel partitioning cannot recover freedom that
 semantic clustering removed; controlled combinational cuts, multi-phase
 settling, and corresponding cycle-equivalence checks are therefore a separate
 prerequisite milestone.
+
+The first milestone for that extension is the EmuIR-semantic-bound
+`emuflow.combinational-cut-characterization/v1` report. It reconstructs the
+complete EmuIR combinational graph, detects SCCs/self-loops, permits only a
+conservative single-driver LUT-only potential-cut set, retains reconvergent
+predecessors, and reports depth-1/depth-2 theoretical component splitting.
+Its independent validator regenerates the whole report. It is not a Phase 3
+artifact and cannot establish partition legality or physical closure.
+
+Future exact-mode stages share the
+`fabric-rising-edge-current-slot/v1` convention: TX samples on the rising edge
+labelled by its current slot; RX shadow capture occurs on the rising edge
+labelled by `arrival_slot`; a budget `B` makes the value available at edge
+`arrival+B`; and virtual-DUT commit occurs on the `frame_slots-1` edge. The
+versioned semantic contract and staged acceptance plan are defined in
+`docs/STATIC_EXACT_COMBINATIONAL_CUT.md`. No exact-mode provider may be
+promoted until Phase 5 proves source readiness and final capture, Phase 6
+proves one macro-step equivalence, and Phase 7C proves every routed segment
+deadline plus whole-design target/runtime WNS/TNS.
 
 The RePart replication provider adds a versioned replication artifact without
 changing the unique-owner primary assignment. A C++-kernel replicability mask

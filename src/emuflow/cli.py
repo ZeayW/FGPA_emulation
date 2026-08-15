@@ -79,6 +79,10 @@ from .canonical_qor import (
     run_canonical_qor_comparison,
     validate_canonical_qor_comparison,
 )
+from .combinational_cut import (
+    characterize_combinational_cuts,
+    validate_combinational_cut_characterization,
+)
 from .experiment_dag import (
     build_experiment_farm_spec,
     import_experiment_checkpoint,
@@ -1252,6 +1256,36 @@ def _build_parser() -> argparse.ArgumentParser:
     ir_validate.add_argument("path", type=Path)
     ir_stats = ir_subparsers.add_parser("stats", help="show EmuIR statistics")
     ir_stats.add_argument("path", type=Path)
+
+    combinational_cut = subparsers.add_parser(
+        "combinational-cut",
+        help="analyze future static exact combinational-cut eligibility",
+    )
+    combinational_cut_subparsers = combinational_cut.add_subparsers(
+        dest="combinational_cut_command", required=True
+    )
+    combinational_cut_characterize = combinational_cut_subparsers.add_parser(
+        "characterize",
+        help="write a read-only SCC, eligibility, and depth report",
+    )
+    combinational_cut_characterize.add_argument("--ir", type=Path, required=True)
+    combinational_cut_characterize.add_argument(
+        "--depth-limit",
+        type=int,
+        choices=(1, 2),
+        action="append",
+        default=[],
+        help="dependency-depth upper bound to characterize (default: 1 and 2)",
+    )
+    combinational_cut_characterize.add_argument(
+        "--output", "-o", type=Path, required=True
+    )
+    combinational_cut_validate = combinational_cut_subparsers.add_parser(
+        "validate",
+        help="independently reconstruct and validate a characterization report",
+    )
+    combinational_cut_validate.add_argument("report", type=Path)
+    combinational_cut_validate.add_argument("--ir", type=Path, required=True)
 
     importer = subparsers.add_parser(
         "import-yosys", help="convert Yosys JSON to EmuIR"
@@ -3837,6 +3871,20 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         else:
             _print_json(ir.stats())
+        return 0
+
+    if args.command == "combinational-cut":
+        ir = EmuIR.load(args.ir)
+        if args.combinational_cut_command == "characterize":
+            report = characterize_combinational_cuts(
+                ir, args.depth_limit or (1, 2)
+            )
+            write_json(args.output, report)
+        else:
+            report = validate_combinational_cut_characterization(
+                ir, read_json(args.report)
+            )
+        _print_json(report)
         return 0
 
     if args.command == "import-yosys":
