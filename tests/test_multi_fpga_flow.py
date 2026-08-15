@@ -631,8 +631,10 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             )
             projected = read_json(output / "timing/cut-timing-paths.json")
             self.assertEqual(
-                Path(projected["source"]["input"]).resolve(),
-                (output / "timing/path-database.json").resolve(),
+                projected["source"]["input_sha256"],
+                hashlib.sha256(
+                    (output / "timing/path-database.json").read_bytes()
+                ).hexdigest(),
             )
             self.assertIn(
                 "timing_validation", report["stages"]["tdm"]
@@ -744,8 +746,12 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                 direct_output / "timing/cut-timing-paths.json"
             )
             self.assertEqual(
-                Path(direct_projected["source"]["input"]).resolve(),
-                (direct_output / "timing/path-database.json").resolve(),
+                direct_projected["source"]["input_sha256"],
+                hashlib.sha256(
+                    (
+                        direct_output / "timing/path-database.json"
+                    ).read_bytes()
+                ).hexdigest(),
             )
 
     def test_nonempty_output_is_rejected(self) -> None:

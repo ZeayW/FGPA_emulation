@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from pathlib import Path
@@ -32,6 +33,14 @@ STA_PATH_DATABASE_TSV_HEADER = (
     "fixed_delay_ns\tpath_nets_hex"
 )
 VIVADO_PATH_DATABASE_TSV_HEADER = STA_PATH_DATABASE_TSV_HEADER
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _instance_pin_inventory(ir: EmuIR) -> Dict[str, set[tuple[str, int]]]:
@@ -1019,7 +1028,11 @@ def project_sta_path_database(
         "design": assignment["design"],
         "source": {
             "provider": "partition-projected-sta-paths-v1",
-            "input": str(database_path),
+            # Checkpoints are first built below a staging directory and then
+            # atomically moved into the content-addressed object store.  A
+            # producer-local absolute path would make an otherwise identical
+            # projection fail independent reconstruction after that move.
+            "input_sha256": _file_sha256(database_path),
         },
         "normalization": normalization,
         "paths": paths,

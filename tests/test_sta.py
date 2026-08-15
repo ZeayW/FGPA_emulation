@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.sta import (
@@ -531,6 +531,65 @@ class StaAdapterTest(unittest.TestCase):
         )
         self.assertEqual(
             projected_b["paths"][0]["normalized_slack"], -0.2
+        )
+
+    def test_projection_identity_survives_atomic_checkpoint_move(self) -> None:
+        database = {
+            "schema": STA_PATH_DATABASE_SCHEMA,
+            "design": "movable",
+            "source": {"provider": "fixture"},
+            "normalization": {
+                "positive_slack_scale_ns": 1.0,
+                "negative_slack_scale_ns": 1.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "paths": [
+                {
+                    "id": "a/Q->b/D#00000000",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "slack_ns": 1.0,
+                    "fixed_delay_ns": 9.0,
+                    "normalized_slack": 1.0,
+                    "path_nets": ["cut"],
+                }
+            ],
+        }
+        assignment = {
+            "schema": PARTITION_ASSIGNMENT_SCHEMA,
+            "design": "movable",
+            "platform": "fixture",
+            "cut_nets": [
+                {
+                    "net": "cut",
+                    "source_fpgas": ["a"],
+                    "sink_fpgas": ["b"],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            staging.mkdir()
+            write_json(staging / "database.json", database)
+            write_json(staging / "assignment.json", assignment)
+            project_sta_path_database(
+                staging / "database.json",
+                staging / "assignment.json",
+                staging / "projected.json",
+            )
+            original = read_json(staging / "projected.json")
+            objects = root / "objects"
+            staging.rename(objects)
+            project_sta_path_database(
+                objects / "database.json",
+                objects / "assignment.json",
+                objects / "rebuilt.json",
+            )
+            rebuilt = read_json(objects / "rebuilt.json")
+        self.assertEqual(original, rebuilt)
+        self.assertEqual(
+            set(original["source"]), {"provider", "input_sha256"}
         )
 
     def test_cut_map_and_vivado_tsv_import_preserve_names(self) -> None:
