@@ -587,6 +587,10 @@ def _build_parser() -> argparse.ArgumentParser:
     cut_timing_validate.add_argument("root", type=Path)
     cut_timing_validate.add_argument("--frontend", type=Path, required=True)
     cut_timing_validate.add_argument("--partition", type=Path, required=True)
+    cut_timing_validate.add_argument(
+        "--timing-model", type=Path, default=DEFAULT_TIMING_MODEL
+    )
+    cut_timing_validate.add_argument("--architecture-timing-db", type=Path)
 
     route_run = experiment_stage_subparsers.add_parser(
         "route-run", help="run one reusable timing-aware Phase 4 checkpoint"
@@ -647,6 +651,10 @@ def _build_parser() -> argparse.ArgumentParser:
     shared_materialize.add_argument("--route", type=Path, required=True)
     shared_materialize.add_argument("--tdm", type=Path, required=True)
     shared_materialize.add_argument("--platform", type=Path, required=True)
+    shared_materialize.add_argument(
+        "--timing-model", type=Path, default=DEFAULT_TIMING_MODEL
+    )
+    shared_materialize.add_argument("--architecture-timing-db", type=Path)
     shared_materialize.add_argument("--out", type=Path, required=True)
     shared_validate = experiment_stage_subparsers.add_parser(
         "shared-validate", help="validate a frozen Phase 1-5 flow root"
@@ -3176,7 +3184,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.experiment_stage_command == "cut-timing-validate":
             report = validate_cut_timing_checkpoint(
-                args.frontend, args.partition, args.root
+                args.frontend,
+                args.partition,
+                args.root,
+                timing_model_path=args.timing_model,
+                architecture_timing_db_path=args.architecture_timing_db,
             )
         elif args.experiment_stage_command == "route-run":
             report = run_route_checkpoint(
@@ -3235,6 +3247,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.tdm,
                 args.platform,
                 args.out,
+                timing_model_path=args.timing_model,
+                architecture_timing_db_path=args.architecture_timing_db,
             )
         elif args.experiment_stage_command == "shared-validate":
             report = validate_materialized_shared_phase1_5(

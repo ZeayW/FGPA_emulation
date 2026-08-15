@@ -345,6 +345,11 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   seed, derive both placement-aware and Chimew inputs from that same frozen
   placement, and reuse the lookahead itself as baseline Phase 7 at the matching
   seed.  Do not hide a fresh baseline physical run inside either candidate arm.
+- A post-partition OpenSTA directed query is complete only with sealed
+  per-cut-net driver/query/emission evidence and an independently rebuilt
+  EmuIR-plus-timing-model endpoint-reachability classification.  Never silence
+  a missing cut net by dropping the coverage assertion or by treating a
+  producer-reported zero-path result as self-authenticating.
 - Existing pre-cache results should be registered with `experiment-cache
   import` only after the node's independent semantic validator passes and all
   declared artifacts pass hash sealing.  New node executions use the same

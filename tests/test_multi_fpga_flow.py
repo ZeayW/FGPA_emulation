@@ -83,6 +83,15 @@ for index, row in enumerate(rows):
 Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
     "\\n".join(records) + "\\n"
 )
+if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
+    requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
+    coverage = ["emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths"]
+    for row in requested:
+        _, emuir_hex = row.split("\\t")
+        coverage.append(f"{emuir_hex}\\t1\\t1\\t1")
+    Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
+        "\\n".join(coverage) + "\\n"
+    )
 """,
                 encoding="utf-8",
             )
@@ -430,6 +439,15 @@ for index, row in enumerate(rows):
 Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
     "\\n".join(records) + "\\n"
 )
+if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
+    requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
+    coverage = ["emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths"]
+    for row in requested:
+        _, emuir_hex = row.split("\\t")
+        coverage.append(f"{emuir_hex}\\t1\\t1\\t1")
+    Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
+        "\\n".join(coverage) + "\\n"
+    )
 """,
                 encoding="utf-8",
             )

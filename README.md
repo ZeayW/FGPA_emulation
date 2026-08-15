@@ -222,7 +222,14 @@ complete original TimingPathDB, so every original path that becomes
 cross-partition is optimized and remains identifiable at Phase 7C. An
 additional post-partition OpenSTA through-cut query is retained as diagnostic
 coverage evidence for the selected cut nets; it is not substituted for the
-complete original path population. The physical stage likewise keeps the
+complete original path population. Directed extraction records a sealed
+per-cut-net query certificate (driver count and queried/emitted path counts).
+The validator independently reconstructs timed-endpoint reachability from
+EmuIR connectivity plus the selected timing-cell model. A net may be absent
+only when OpenSTA reports zero paths and that independent graph proves there
+is no reachable sequential data/setup endpoint; a queried path whose launch
+net was omitted from OpenSTA's point list retains the uniquely bound launch-net
+identity explicitly. The physical stage likewise keeps the
 complete database for same-FPGA and final set-hash coverage, while using the
 projected member identities for routed cross-FPGA logic-segment queries.
 Both original-target-clock and virtual-runtime-clock system slack are
@@ -1784,6 +1791,9 @@ silently attached to the wrong instance.
 After a partition is selected, the provider can also issue directed
 through-net queries for the actual cut nets, so a timing-relevant cut is not
 silently absent merely because it fell outside the global worst-path prefix.
+The reusable cut-timing checkpoint seals `through-net-coverage.json`; its
+independent validator rebuilds both the cut-net set and structural endpoint
+classification instead of trusting the producer's pass status.
 
 For a Xilinx platform, `--timing-backend vivado --timing-vivado PATH` replaces
 only that TimingPathDB producer. The downstream partitioning, system routing,
