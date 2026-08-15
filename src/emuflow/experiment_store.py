@@ -1039,20 +1039,50 @@ def apply_legacy_run_retirement(
             "started_at": datetime.now(timezone.utc).isoformat(),
             "removed": [],
             "removed_bytes": 0,
+            "quarantine": [
+                {
+                    "name": candidate["name"],
+                    "path": str(
+                        root
+                        / (
+                            f".emuflow-retiring-{candidate['name']}-"
+                            f"{expected_sha256[:12]}"
+                        )
+                    ),
+                    "status": "planned",
+                }
+                for candidate, _ in validated
+            ],
             "claim_boundary": "retired noncanonical material; not validation evidence",
         }
         write_json(receipt_path, receipt)
+        quarantine = []
+        for record in receipt["quarantine"]:
+            destination = Path(record["path"])
+            if os.path.lexists(destination):
+                raise ValidationError("legacy retirement quarantine path exists")
         _mark_legacy_farms_retiring(farm_locks, expected_sha256)
+        for (candidate, path), record in zip(validated, receipt["quarantine"]):
+            destination = Path(record["path"])
+            path.rename(destination)
+            record["status"] = "moved"
+            quarantine.append((candidate, destination))
+            write_json(receipt_path, receipt)
         # NFS retains an unlinked open lock as a .nfs* file.  The marker makes
-        # retirement irrevocable to launchers, so descriptors can and must be
-        # closed before removing the directory tree.
+        # retirement explicit, while the atomic top-level rename makes the old
+        # launch path permanently unavailable even if recursive removal later
+        # stops partway through. Descriptors can and must be closed before
+        # removing the quarantined directory tree.
         _release_legacy_farm_launch_locks(farm_locks)
         farm_locks = []
-        for candidate, path in validated:
+        for candidate, path in quarantine:
             _make_writable(path)
             shutil.rmtree(path)
             receipt["removed"].append(candidate)
             receipt["removed_bytes"] += candidate["bytes"]
+            for record in receipt["quarantine"]:
+                if record["name"] == candidate["name"]:
+                    record["status"] = "removed"
             write_json(receipt_path, receipt)
         receipt["status"] = "pass"
         receipt["finished_at"] = datetime.now(timezone.utc).isoformat()

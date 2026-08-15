@@ -140,7 +140,9 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   retirement marker. Launchers must refuse that marker before and after lock
   acquisition. Close all lock descriptors before tree removal so NFS cannot
   retain `.nfs*` lock files; the marker, not an open descriptor, protects the
-  unlock-to-removal interval.
+  transaction. While still locked, atomically rename each selected top-level
+  tree into its sealed quarantine path; recursively remove only that path after
+  closing locks. A partial removal must never restore the original launch path.
 - A final evidence bundle recursively contains every required artifact for its
   terminal nodes and ancestors and must validate after the source cache is
   unavailable.  A legacy archive containing any hash-only run file is not

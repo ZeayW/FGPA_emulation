@@ -1227,8 +1227,11 @@ from time.  Retirement accepts only farms whose task states are all final
 `pass` or `failed`, requires every farm to have a safe `launch.lock`, and holds
 all such locks while sealing and committing a `RETIREMENT_PENDING` marker.
 Launchers check that marker both before and after acquiring the same lock. The
-retirement path then closes every lock descriptor before tree removal, avoiding
-NFS `.nfs*` remnants without reopening a concurrent-launch race.
+retirement path atomically renames the selected top-level tree to a sealed
+quarantine path while still locked, then closes every lock descriptor before
+recursive removal. This avoids NFS `.nfs*` remnants without reopening a
+concurrent-launch race, and a partial removal cannot restore the original farm
+path.
 
 On linux10/hpc1--hpc8 all controlled writes and temporary files are
 code-enforced below `/research/d4/gds/ziyiwang21`. Every v2 node supplies a peak

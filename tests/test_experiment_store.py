@@ -394,8 +394,10 @@ class ExperimentStoreTest(unittest.TestCase):
             remove_tree = shutil.rmtree
 
             def assert_unlocked_before_removal(path: Path) -> None:
-                self.assertTrue((farm / "RETIREMENT_PENDING.json").is_file())
-                with (farm / "launch.lock").open("r+", encoding="utf-8") as stream:
+                self.assertFalse(farm.exists())
+                self.assertTrue((path / "RETIREMENT_PENDING.json").is_file())
+                self.assertTrue(path.name.startswith(".emuflow-retiring-completed-farm-"))
+                with (path / "launch.lock").open("r+", encoding="utf-8") as stream:
                     fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
                 remove_tree(path)
@@ -409,6 +411,7 @@ class ExperimentStoreTest(unittest.TestCase):
                 )
             self.assertEqual(receipt["status"], "pass")
             self.assertFalse(farm.exists())
+            self.assertEqual(receipt["quarantine"][0]["status"], "removed")
 
     def test_legacy_retirement_plan_refuses_concurrent_farm_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -442,6 +445,52 @@ class ExperimentStoreTest(unittest.TestCase):
                 finally:
                     fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
             self.assertTrue(farm.is_dir())
+
+    def test_legacy_retirement_remains_quarantined_if_removal_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            farm = runs / "completed-farm"
+            task = farm / "tasks/task-a"
+            task.mkdir(parents=True)
+            write_json(farm / "farm-manifest.json", {"status": "pass"})
+            (farm / "launch.lock").touch()
+            write_json(
+                task / "state.json",
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "pass",
+                },
+            )
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["completed-farm"],
+                plan_path,
+                reason="completed noncanonical diagnostic farm",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            with mock.patch(
+                "emuflow.experiment_store.shutil.rmtree",
+                side_effect=OSError("injected removal failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected removal failure"):
+                    apply_legacy_run_retirement(
+                        plan_path, approved, root / "receipt"
+                    )
+            self.assertFalse(farm.exists())
+            receipt = json.loads(
+                (root / "receipt/retirement-receipt.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(receipt["status"], "in-progress")
+            self.assertEqual(receipt["quarantine"][0]["status"], "moved")
+            quarantine = Path(receipt["quarantine"][0]["path"])
+            self.assertTrue(quarantine.is_dir())
+            self.assertTrue((quarantine / "RETIREMENT_PENDING.json").is_file())
 
     def test_legacy_retirement_apply_rechecks_farm_activity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
