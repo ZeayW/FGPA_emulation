@@ -11,8 +11,10 @@ from .routing import (
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
+    NATIVE_TIMING_EVALUATED_PROVIDER,
     ROUTE_TDM_PROVIDER,
     TLR_PROVIDER,
+    annotate_system_route_timing,
     load_sta_paths,
     route_system_native,
     validate_native_system_routes,
@@ -159,6 +161,37 @@ def run_phase4(
             platform,
             routes,
         )
+    elif provider == NATIVE_TIMING_EVALUATED_PROVIDER:
+        if timing_paths_path is None:
+            raise ValueError(
+                f"--provider {NATIVE_TIMING_EVALUATED_PROVIDER} requires "
+                "--timing-paths"
+            )
+        if candidate_workers != 1:
+            raise ValueError(
+                "timing-evaluated native routing requires one candidate worker"
+            )
+        timing_paths = load_sta_paths(
+            timing_paths_path,
+            demands_from_assignment(assignment, platform),
+        )
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=router,
+            provider=NATIVE_ROUTER_PROVIDER,
+            candidate_pool_path=candidate_pool_path,
+        )
+        routes = annotate_system_route_timing(
+            assignment, platform, routes, timing_paths
+        )
+        validation = validate_native_system_routes(
+            assignment,
+            platform,
+            routes,
+            timing_paths,
+        )
     elif provider in {
         TLR_PROVIDER,
         ROUTE_TDM_PROVIDER,
@@ -276,6 +309,19 @@ def validate_phase4(
             assignment,
             platform,
             routes,
+        )
+    if provider == NATIVE_TIMING_EVALUATED_PROVIDER:
+        if timing_paths_path is None:
+            raise ValueError(
+                "validating timing-evaluated native routes requires "
+                "--timing-paths"
+            )
+        timing_paths = load_sta_paths(
+            timing_paths_path,
+            demands_from_assignment(assignment, platform),
+        )
+        return validate_native_system_routes(
+            assignment, platform, routes, timing_paths
         )
     if provider in {
         TLR_PROVIDER,

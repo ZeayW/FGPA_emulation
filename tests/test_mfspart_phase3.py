@@ -16,6 +16,7 @@ from tests.native_build import tlr_router
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = ROOT / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MFSPartPhase3Test(unittest.TestCase):
@@ -192,6 +193,9 @@ class MFSPartPhase3Test(unittest.TestCase):
                     top="counter",
                     clocks=["clk"],
                     partition_provider="mfspart",
+                    timing_driven=False,
+                    clock_periods={"clk": 10.0},
+                    opensta=str(FAKE_OPENSTA),
                     router=str(tlr_router()),
                     frame_slots=32,
                     equivalence_cycles=2,

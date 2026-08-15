@@ -18,6 +18,7 @@ from tests.native_build import tlr_router
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json"
+FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 def _run_small_flow(output: Path) -> None:
@@ -28,6 +29,9 @@ def _run_small_flow(output: Path) -> None:
         top="counter",
         clocks=["clk"],
         partition_provider="greedy",
+        timing_driven=False,
+        clock_periods={"clk": 10.0},
+        opensta=str(FAKE_OPENSTA),
         router=str(tlr_router()),
         frame_slots=32,
         equivalence_cycles=2,
@@ -155,6 +159,11 @@ class ValidationArchiveTest(unittest.TestCase):
                     "counter",
                     "--clock",
                     "clk",
+                    "--no-timing-driven",
+                    "--clock-period",
+                    "clk=10",
+                    "--opensta",
+                    str(FAKE_OPENSTA),
                     "--platform",
                     str(PLATFORM),
                     "--partition-provider",

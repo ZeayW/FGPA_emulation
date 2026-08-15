@@ -9,13 +9,23 @@ from emuflow.ir import EmuIR
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.partition import build_clusters, normalize_partition_constraints
 from emuflow.platform import Platform
+from emuflow.vtr_architecture import run_vtr_architecture_import
 from emuflow.vtr_netlist import normalize_vtr_hard_block_json
 from emuflow.yosys import import_yosys_json
-from tests.native_build import tlr_router
+from tests.native_build import (
+    tdm_ratio_optimizer,
+    tdm_timing_dag_optimizer,
+    tlr_router,
+    vtr_architecture_importer,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json"
+FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
+VTR_ARCHITECTURE = (
+    ROOT / "examples/architecture/vtr_k6_heterogeneous_fixture.xml"
+)
 
 
 def _raw_vtr_json() -> dict:
@@ -226,8 +236,19 @@ class VtrNetlistTest(unittest.TestCase):
             source = root / "raw.json"
             normalized = root / "normalized.json"
             constraints = root / "partition-constraints.json"
+            architecture_db = root / "architecture.json"
+            timing_db = root / "architecture-timing.json"
             write_json(source, _raw_vtr_json())
             normalize_vtr_hard_block_json(source, normalized, top="top")
+            run_vtr_architecture_import(
+                input_path=VTR_ARCHITECTURE,
+                architecture_output_path=architecture_db,
+                timing_output_path=timing_db,
+                architecture_id="fixture-k6",
+                width=24,
+                height=24,
+                executable=str(vtr_architecture_importer()),
+            )
             write_json(
                 constraints,
                 {
@@ -249,8 +270,13 @@ class VtrNetlistTest(unittest.TestCase):
                 clocks=["clk"],
                 partition_constraints=constraints,
                 partition_provider="greedy",
+                clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA),
+                architecture_timing_db=timing_db,
                 min_used_fpgas=2,
                 router=str(tlr_router()),
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 frame_slots=32,
                 equivalence_cycles=4,
             )

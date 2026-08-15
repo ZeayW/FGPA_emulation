@@ -1109,6 +1109,58 @@ class Phase5Test(unittest.TestCase):
                 (root / "phase5" / "ratio_plan.json").is_file()
             )
 
+    def test_academic_ratio_optimizer_accepts_round_one_only(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "round_one_only",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=2, latency=1)],
+            )
+        )
+        routes = _routes(
+            platform,
+            [("registered_cut", "a", ["b"])],
+            frame_slots=16,
+        )
+        routes["routes"][0]["transport_round"] = 1
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 10.0,
+                "negative_slack_scale_ns": 10.0,
+                "max_clock_period_ns": 10.0,
+            },
+            "compression": {
+                "original_paths": 1,
+                "compressed_paths": 1,
+            },
+            "paths": [
+                {
+                    "path": "registered_path",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 10.0,
+                    "fixed_delay_ns": 1.0,
+                    "cut_nets": ["registered_cut"],
+                }
+            ],
+        }
+        plan = build_tdm_ratio_plan(
+            routes,
+            platform,
+            executable=str(tdm_ratio_optimizer()),
+            max_ratio=4,
+            ratio_quantum=4,
+            post_refinement_iterations=0,
+        )
+        self.assertEqual(
+            plan["round_barrier_legalization"]["active_rounds"],
+            [1],
+        )
+        self.assertEqual(
+            validate_tdm_ratio_plan(routes, platform, plan)["status"],
+            "pass",
+        )
+
     def test_round_barrier_promotion_can_migrate_the_boundary(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

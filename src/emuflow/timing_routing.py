@@ -36,6 +36,9 @@ from .routing_batches import build_route_refinement_batches
 
 STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"
 NATIVE_ROUTER_PROVIDER = "native-load-balanced-v1"
+NATIVE_TIMING_EVALUATED_PROVIDER = (
+    "native-load-balanced-timing-evaluated-v1"
+)
 TLR_PROVIDER = "timing-aware-load-balanced-v1"
 ROUTE_TDM_PROVIDER = "timing-aware-route-tdm-cooptimized-v1"
 GLOBAL_CANDIDATE_PROVIDER = "timing-aware-global-candidate-v1"
@@ -1234,6 +1237,8 @@ def reconstruct_system_route_timing(
     platform: Platform,
     routes: Mapping[str, Any],
     timing_paths: Mapping[str, Any],
+    *,
+    include_records: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate any legal route provider against one normalized STA input."""
     validation = validate_system_routes(assignment, platform, routes)
@@ -1243,16 +1248,21 @@ def reconstruct_system_route_timing(
     _, arcs, capacities = build_directed_graph(platform, constraints)
     link_by_id = {link.id: link for link in platform.links}
 
+    ordered_arc_keys = sorted(arcs)
+    arc_index = {key: index for index, key in enumerate(ordered_arc_keys)}
     route_delay_by_net = {}
+    route_signature_by_net = {}
     capacity_usage = {key: 0 for key in capacities}
     for route in routes["routes"]:
         graph: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+        signature = []
         for edge in route["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
             graph[edge["from"]].append((edge["to"], edge["link"]))
             capacity_usage[arcs[key]["capacity_key"]] += int(
                 route["width_bits"]
             )
+            signature.append(arc_index[key])
         delay_by_node = {route["source"]: 0.0}
         queue = deque([route["source"]])
         while queue:
@@ -1268,6 +1278,7 @@ def reconstruct_system_route_timing(
         route_delay_by_net[route["net"]] = max(
             delay_by_node[sink] for sink in route["sinks"]
         )
+        route_signature_by_net[route["net"]] = sorted(signature)
 
     ratios = {}
     for key, capacity in capacities.items():
@@ -1388,10 +1399,30 @@ def reconstruct_system_route_timing(
         path_records.append(
             {
                 "path": path["id"],
+                "clock_domain": path["clock_domain"],
+                "clock_period_ns": path["clock_period_ns"],
+                "fixed_delay_ns": path["fixed_delay_ns"],
+                "cut_nets": path["cut_nets"],
+                "cut_signature": path["cut_signature"],
+                "compressed_path_ids": path["compressed_path_ids"],
+                **(
+                    {"cut_transitions": path["cut_transitions"]}
+                    if "cut_transitions" in path
+                    else {}
+                ),
+                "delay_ns": delay,
                 "slack_ns": slack,
                 "normalized_slack": normalized,
                 "estimated_tdm_slack_ns": tdm_slack,
                 "estimated_tdm_normalized_slack": tdm_normalized,
+                "route_signature": (
+                    ",".join(
+                        str(arc)
+                        for net in path["cut_nets"]
+                        for arc in route_signature_by_net[net]
+                    )
+                    or "-"
+                ),
             }
         )
     if not path_records:
@@ -1426,7 +1457,7 @@ def reconstruct_system_route_timing(
             record["path"],
         ),
     )
-    return {
+    result = {
         **validation,
         "provider": routes["provider"],
         "timing_paths_original": timing_paths["compression"][
@@ -1453,6 +1484,64 @@ def reconstruct_system_route_timing(
         ],
         "estimated_max_tdm_ratio": max(ratios.values(), default=1),
     }
+    if include_records:
+        result["_timing_records"] = path_records
+    return result
+
+
+def annotate_system_route_timing(
+    assignment: Mapping[str, Any],
+    platform: Platform,
+    routes: Mapping[str, Any],
+    timing_paths: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Bind TimingPathDB evaluation to a timing-oblivious legal route.
+
+    The route tree is produced without timing criticality, then evaluated
+    against the complete normalized TimingPathDB.  Keeping this provider
+    distinct from the timing-aware optimizers makes a disabled
+    ``timing-driven`` switch an honest algorithmic baseline while preserving
+    the path identities required by Phase 5 and whole-design Phase 7C timing.
+    """
+
+    evaluation = reconstruct_system_route_timing(
+        assignment,
+        platform,
+        routes,
+        timing_paths,
+        include_records=True,
+    )
+    records = evaluation.pop("_timing_records")
+    annotated = dict(routes)
+    annotated["provider"] = NATIVE_TIMING_EVALUATED_PROVIDER
+    annotated["timing_evaluation"] = {
+        "mode": "post-route-evaluation-only",
+        "optimization_enabled": False,
+        "source_provider": NATIVE_ROUTER_PROVIDER,
+    }
+    annotated["timing"] = {
+        "schema": STA_PATHS_SCHEMA,
+        "normalization": timing_paths["normalization"],
+        "compression": timing_paths["compression"],
+        "paths": records,
+    }
+    annotated["metrics"] = {
+        **routes["metrics"],
+        "worst_slack_ns": evaluation["worst_slack_ns"],
+        "worst_normalized_slack": evaluation[
+            "worst_normalized_slack"
+        ],
+        "estimated_worst_tdm_slack_ns": evaluation[
+            "estimated_worst_tdm_slack_ns"
+        ],
+        "estimated_worst_tdm_normalized_slack": evaluation[
+            "estimated_worst_tdm_normalized_slack"
+        ],
+        "estimated_max_tdm_ratio": evaluation[
+            "estimated_max_tdm_ratio"
+        ],
+    }
+    return annotated
 
 
 def validate_native_system_routes(
@@ -1465,6 +1554,7 @@ def validate_native_system_routes(
     provider = routes.get("provider")
     if provider not in {
         NATIVE_ROUTER_PROVIDER,
+        NATIVE_TIMING_EVALUATED_PROVIDER,
         TLR_PROVIDER,
         ROUTE_TDM_PROVIDER,
         GLOBAL_CANDIDATE_PROVIDER,
@@ -1477,7 +1567,19 @@ def validate_native_system_routes(
             "native load-balanced routes must not use STA timing input"
         )
     if provider != NATIVE_ROUTER_PROVIDER and timing_paths is None:
-        raise ValidationError("timing-aware routes require normalized STA input")
+        raise ValidationError(
+            "timing-bearing routes require normalized STA input"
+        )
+    if provider == NATIVE_TIMING_EVALUATED_PROVIDER:
+        evaluation = routes.get("timing_evaluation")
+        if evaluation != {
+            "mode": "post-route-evaluation-only",
+            "optimization_enabled": False,
+            "source_provider": NATIVE_ROUTER_PROVIDER,
+        }:
+            raise ValidationError(
+                "timing-evaluated native routes have invalid evaluation metadata"
+            )
     if routes.get("provider") in {
         ROUTE_TDM_PROVIDER,
         GLOBAL_CANDIDATE_PROVIDER,
@@ -1706,6 +1808,10 @@ def validate_native_system_routes(
         raise ValidationError(
             "routes.timing.normalization does not match normalized STA input"
         )
+    if timing.get("compression") != timing_paths["compression"]:
+        raise ValidationError(
+            "routes.timing.compression does not match normalized STA input"
+        )
     positive_scale = timing_paths["normalization"][
         "positive_slack_scale_ns"
     ]
@@ -1795,6 +1901,15 @@ def validate_native_system_routes(
                 tdm_slack
                 / (negative_scale * expected["clock_period_ns"])
             )
+        for key, value in (
+            ("estimated_tdm_slack_ns", tdm_slack),
+            ("estimated_tdm_normalized_slack", tdm_normalized),
+        ):
+            if abs(float(actual.get(key, float("nan"))) - value) > 1.0e-9:
+                raise ValidationError(
+                    f"routes.timing path {expected['id']!r}.{key}: "
+                    "does not match independent recomputation"
+                )
         estimated_worst_tdm_slack = min(
             estimated_worst_tdm_slack, tdm_slack
         )
