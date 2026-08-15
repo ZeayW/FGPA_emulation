@@ -10,6 +10,8 @@ from unittest import mock
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.validation_farm import (
+    FARM_RETIREMENT_MARKER,
+    FARM_RETIREMENT_MARKER_SCHEMA,
     FARM_SPEC_SCHEMA,
     launch_validation_farm,
     prepare_validation_farm,
@@ -238,6 +240,58 @@ class ValidationFarmTest(unittest.TestCase):
             self.assertEqual(second["submitted"], 0)
             self.assertEqual(second["skipped"], 1)
             second_runner.assert_not_called()
+
+    def test_retirement_marker_blocks_validation_and_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            farm = root / "farm"
+            prepare_validation_farm(spec, farm)
+            write_json(
+                farm / FARM_RETIREMENT_MARKER,
+                {
+                    "schema": FARM_RETIREMENT_MARKER_SCHEMA,
+                    "status": "retirement-pending",
+                },
+            )
+            with self.assertRaisesRegex(ValidationError, "pending retirement"):
+                validate_validation_farm(farm)
+            with mock.patch("emuflow.validation_farm.subprocess.run") as runner:
+                with self.assertRaisesRegex(ValidationError, "pending retirement"):
+                    launch_validation_farm(farm)
+            runner.assert_not_called()
+
+    def test_launch_rechecks_retirement_after_acquiring_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec, _ = self._fixture(root, task_count=1)
+            farm = root / "farm"
+            prepare_validation_farm(spec, farm)
+            from emuflow import validation_farm as farm_module
+
+            original = farm_module._refuse_retiring_farm
+            calls = 0
+
+            def inject_marker(candidate: Path) -> None:
+                nonlocal calls
+                calls += 1
+                original(candidate)
+                if calls == 1:
+                    write_json(
+                        candidate / FARM_RETIREMENT_MARKER,
+                        {
+                            "schema": FARM_RETIREMENT_MARKER_SCHEMA,
+                            "status": "retirement-pending",
+                        },
+                    )
+
+            with mock.patch.object(
+                farm_module, "_refuse_retiring_farm", side_effect=inject_marker
+            ), mock.patch("emuflow.validation_farm.subprocess.run") as runner:
+                with self.assertRaisesRegex(ValidationError, "pending retirement"):
+                    launch_validation_farm(farm)
+            self.assertEqual(calls, 2)
+            runner.assert_not_called()
 
     def test_submit_failure_can_be_retried_without_duplicate_claim(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

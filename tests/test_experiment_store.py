@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.experiment_dag import plan_experiment, run_experiment_node
@@ -388,9 +389,24 @@ class ExperimentStoreTest(unittest.TestCase):
                 reason="completed noncanonical diagnostic farm",
             )
             approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
-            receipt = apply_legacy_run_retirement(
-                plan_path, approved, root / "receipt"
-            )
+            import shutil
+
+            remove_tree = shutil.rmtree
+
+            def assert_unlocked_before_removal(path: Path) -> None:
+                self.assertTrue((farm / "RETIREMENT_PENDING.json").is_file())
+                with (farm / "launch.lock").open("r+", encoding="utf-8") as stream:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                remove_tree(path)
+
+            with mock.patch(
+                "emuflow.experiment_store.shutil.rmtree",
+                side_effect=assert_unlocked_before_removal,
+            ):
+                receipt = apply_legacy_run_retirement(
+                    plan_path, approved, root / "receipt"
+                )
             self.assertEqual(receipt["status"], "pass")
             self.assertFalse(farm.exists())
 

@@ -136,7 +136,11 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   still run or retry, is malformed, or has not been reconciled. An expired
   lease alone never permits cleanup. Only farms whose task states are all final
   `pass` or `failed` may enter a retirement plan, and the planner/apply path
-  must hold every farm `launch.lock` while sealing or removing the tree.
+  must hold every farm `launch.lock` while sealing and committing an explicit
+  retirement marker. Launchers must refuse that marker before and after lock
+  acquisition. Close all lock descriptors before tree removal so NFS cannot
+  retain `.nfs*` lock files; the marker, not an open descriptor, protects the
+  unlock-to-removal interval.
 - A final evidence bundle recursively contains every required artifact for its
   terminal nodes and ancestors and must validate after the source cache is
   unavailable.  A legacy archive containing any hash-only run file is not

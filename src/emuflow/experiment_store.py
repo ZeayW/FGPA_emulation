@@ -26,6 +26,10 @@ from .experiment_dag import (
 )
 from .experiment_storage import validate_experiment_write_path
 from .io import read_json, write_json
+from .validation_farm import (
+    FARM_RETIREMENT_MARKER,
+    FARM_RETIREMENT_MARKER_SCHEMA,
+)
 
 
 EXPERIMENT_INVENTORY_SCHEMA = "emuflow.experiment-store-inventory/v1"
@@ -90,6 +94,9 @@ def _legacy_farm_retirement_protection(root: Path) -> dict[str, Any]:
         ]
         for name in file_names:
             path = current_path / name
+            if name == FARM_RETIREMENT_MARKER:
+                relative = path.relative_to(root).as_posix()
+                reasons.append(f"farm-retirement-pending:{relative}")
             if name == "farm-manifest.json":
                 manifests.append(path.relative_to(root).as_posix())
             if name != "state.json" or current_path.parent.name != "tasks":
@@ -138,8 +145,8 @@ def _legacy_farm_retirement_protection(root: Path) -> dict[str, Any]:
     }
 
 
-def _acquire_legacy_farm_launch_locks(root: Path) -> list[Any]:
-    """Hold every farm launch lock while a legacy tree is sealed or removed."""
+def _acquire_legacy_farm_launch_locks(root: Path) -> list[tuple[Path, Any]]:
+    """Hold every farm launch lock while a legacy tree is sealed and marked."""
 
     streams = []
     manifests = sorted(root.rglob("farm-manifest.json"))
@@ -160,19 +167,43 @@ def _acquire_legacy_farm_launch_locks(root: Path) -> list[Any]:
                 raise ValidationError(
                     "legacy validation farm launch is active"
                 ) from error
-            streams.append(stream)
+            streams.append((manifest.parent, stream))
         return streams
     except Exception:
-        for stream in reversed(streams):
+        for _, stream in reversed(streams):
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
             stream.close()
         raise
 
 
-def _release_legacy_farm_launch_locks(streams: Iterable[Any]) -> None:
-    for stream in reversed(list(streams)):
+def _release_legacy_farm_launch_locks(
+    streams: Iterable[tuple[Path, Any]],
+) -> None:
+    for _, stream in reversed(list(streams)):
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
         stream.close()
+
+
+def _mark_legacy_farms_retiring(
+    locks: Iterable[tuple[Path, Any]], plan_sha256: str
+) -> None:
+    """Commit farm retirement while every corresponding launch lock is held."""
+
+    records = list(locks)
+    for farm_dir, _ in records:
+        if os.path.lexists(farm_dir / FARM_RETIREMENT_MARKER):
+            raise ValidationError("legacy validation farm is already retiring")
+    created_at = datetime.now(timezone.utc).isoformat()
+    for farm_dir, _ in records:
+        write_json(
+            farm_dir / FARM_RETIREMENT_MARKER,
+            {
+                "schema": FARM_RETIREMENT_MARKER_SCHEMA,
+                "status": "retirement-pending",
+                "plan_sha256": plan_sha256,
+                "created_at": created_at,
+            },
+        )
 
 
 def inventory_experiment_store(cache_root: Path) -> dict[str, Any]:
@@ -916,7 +947,8 @@ def plan_legacy_run_retirement(
             "marker_tombstones_retained": True,
             "canonical_evidence_or_archive_candidates_refused": True,
             "active_or_unreconciled_farms_refused": True,
-            "farm_launch_locks_held_during_seal": True,
+            "farm_launch_locks_held_during_seal_and_retirement_commit": True,
+            "farm_lock_descriptors_closed_before_tree_removal": True,
         },
     }
     write_json(output_path, plan)
@@ -1010,6 +1042,12 @@ def apply_legacy_run_retirement(
             "claim_boundary": "retired noncanonical material; not validation evidence",
         }
         write_json(receipt_path, receipt)
+        _mark_legacy_farms_retiring(farm_locks, expected_sha256)
+        # NFS retains an unlinked open lock as a .nfs* file.  The marker makes
+        # retirement irrevocable to launchers, so descriptors can and must be
+        # closed before removing the directory tree.
+        _release_legacy_farm_launch_locks(farm_locks)
+        farm_locks = []
         for candidate, path in validated:
             _make_writable(path)
             shutil.rmtree(path)

@@ -1225,8 +1225,10 @@ unreconciled.  An expired lease is still protected: run the normal farm
 reconciler, which probes the pinned worker, rather than inferring process death
 from time.  Retirement accepts only farms whose task states are all final
 `pass` or `failed`, requires every farm to have a safe `launch.lock`, and holds
-all such locks continuously while sealing and applying the approved plan so a
-concurrent launch cannot race cleanup.
+all such locks while sealing and committing a `RETIREMENT_PENDING` marker.
+Launchers check that marker both before and after acquiring the same lock. The
+retirement path then closes every lock descriptor before tree removal, avoiding
+NFS `.nfs*` remnants without reopening a concurrent-launch race.
 
 On linux10/hpc1--hpc8 all controlled writes and temporary files are
 code-enforced below `/research/d4/gds/ziyiwang21`. Every v2 node supplies a peak
