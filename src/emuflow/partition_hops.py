@@ -14,8 +14,8 @@ from .io import read_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
-    TRANSPORTED_CUT_CLASSES,
     build_partition_assignment,
+    transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
 from .platform import Platform
@@ -136,8 +136,11 @@ def _primary_net_records(
         for instance_id in cluster["instances"]
     }
     records = []
+    transported_cut_classes = transported_cut_classes_for_clusters(
+        clusters_artifact
+    )
     for net in ir.value["nets"]:
-        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+        if net["cut_class"] not in transported_cut_classes:
             continue
         sources = sorted(
             {

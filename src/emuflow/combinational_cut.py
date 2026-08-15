@@ -15,7 +15,6 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
 
 from .errors import ValidationError
 from .ir import EmuIR
-from .partition import LEGAL_CUT_CLASSES, REPLICATED_NET_CLASSES
 from .resources import RESOURCE_FIELDS
 
 
@@ -25,6 +24,12 @@ COMBINATIONAL_CUT_CHARACTERIZATION_SCHEMA = (
 STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA = (
     "emuflow.static-exact-combinational-cut/v1"
 )
+SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
+SEQUENTIAL_LEGAL_CUT_CLASSES = {
+    *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
+    "primary_input",
+}
+REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
 SLOT_EDGE_CONVENTION = {
     "id": "fabric-rising-edge-current-slot/v1",
     "tx_sample": (
@@ -183,7 +188,10 @@ def _atomic_components(
         members = _instance_members(net)
         if len(members) < 2 or net["id"] in released_nets:
             continue
-        if net["cut_class"] in LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES:
+        if (
+            net["cut_class"]
+            in SEQUENTIAL_LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES
+        ):
             continue
         for member in members[1:]:
             union_find.union(members[0], member)
@@ -493,6 +501,370 @@ def characterize_combinational_cuts(
             "ineligible_combinational_cut_nets": len(ineligible),
             "maximum_potential_dependency_depth": max(levels.values(), default=0),
             "potential_cut_depth_histogram": dict(sorted(depth_histogram.items())),
+        },
+    }
+
+
+def build_static_exact_semantic_contract(
+    ir: EmuIR,
+    platform: Mapping[str, Any],
+    instance_assignment: Mapping[str, str],
+    cut_nets: Sequence[Mapping[str, Any]],
+    *,
+    max_dependency_depth: int,
+    comb_segment_budget_slots: int,
+    frame_slots: int,
+) -> Dict[str, Any]:
+    """Build the provisional Phase-3 exact-cut semantic contract.
+
+    This establishes structural legality only.  Schedule readiness,
+    macro-cycle equivalence, and physical segment deadlines remain downstream
+    gates and are intentionally named as pending in the returned contract.
+    """
+
+    if max_dependency_depth not in {1, 2}:
+        raise ValidationError("exact combinational-cut depth must be 1 or 2")
+    if (
+        isinstance(comb_segment_budget_slots, bool)
+        or not isinstance(comb_segment_budget_slots, int)
+        or comb_segment_budget_slots <= 0
+    ):
+        raise ValidationError("comb segment budget slots must be positive")
+    if (
+        isinstance(frame_slots, bool)
+        or not isinstance(frame_slots, int)
+        or frame_slots < 2
+    ):
+        raise ValidationError(
+            "exact combinational-cut frame slots must be at least two"
+        )
+
+    characterization = characterize_combinational_cuts(ir, (1, 2))
+    eligible = {item["net"] for item in characterization["eligible_cuts"]}
+    instances = {item["id"]: item for item in ir.value["instances"]}
+    classes = {
+        instance_id: _instance_class(instance)
+        for instance_id, instance in instances.items()
+    }
+    nets = {item["id"]: item for item in ir.value["nets"]}
+    incoming_by_instance: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
+    outgoing_by_instance: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
+    for net in ir.value["nets"]:
+        for endpoint in net["sinks"]:
+            if endpoint["instance"] is not None:
+                incoming_by_instance[endpoint["instance"]].append(net)
+        for endpoint in net["drivers"]:
+            if endpoint["instance"] is not None:
+                outgoing_by_instance[endpoint["instance"]].append(net)
+
+    cut_by_net = {item["net"]: dict(item) for item in cut_nets}
+    if len(cut_by_net) != len(cut_nets):
+        raise ValidationError("exact semantic contract cut nets are not unique")
+    for net_id, cut in cut_by_net.items():
+        net = nets.get(net_id)
+        if net is None:
+            raise ValidationError(f"exact semantic contract has unknown net {net_id!r}")
+        if len(cut.get("source_fpgas", [])) != 1:
+            raise ValidationError(f"exact cut {net_id!r} must have one source FPGA")
+        if net["cut_class"] == "combinational" and net_id not in eligible:
+            raise ValidationError(
+                f"combinational cut {net_id!r} is not in the independently "
+                "reconstructed eligible set"
+            )
+
+    dependencies: Dict[str, Set[str]] = {}
+    for net_id, cut in sorted(cut_by_net.items()):
+        source_fpga = cut["source_fpgas"][0]
+        driver_instances = sorted(
+            {
+                endpoint["instance"]
+                for endpoint in nets[net_id]["drivers"]
+                if endpoint["instance"] is not None
+            }
+        )
+        if len(driver_instances) != 1:
+            raise ValidationError(f"exact cut {net_id!r} lacks one logic driver")
+        predecessors: Set[str] = set()
+        work = list(driver_instances)
+        visited: Set[str] = set()
+        while work:
+            instance_id = work.pop()
+            if instance_id in visited:
+                continue
+            visited.add(instance_id)
+            if instance_assignment.get(instance_id) != source_fpga:
+                raise ValidationError(
+                    f"exact cut {net_id!r} source cone crosses an unmodelled boundary"
+                )
+            if classes[instance_id] == "architectural-state-or-memory":
+                continue
+            for incoming in incoming_by_instance.get(instance_id, []):
+                predecessor = cut_by_net.get(incoming["id"])
+                if (
+                    predecessor is not None
+                    and source_fpga in predecessor.get("sink_fpgas", [])
+                ):
+                    predecessors.add(incoming["id"])
+                    continue
+                for endpoint in incoming["drivers"]:
+                    upstream = endpoint["instance"]
+                    if (
+                        upstream is not None
+                        and instance_assignment.get(upstream) == source_fpga
+                    ):
+                        work.append(upstream)
+        dependencies[net_id] = predecessors
+
+    successors: Dict[str, Set[str]] = defaultdict(set)
+    indegree = {net_id: len(items) for net_id, items in dependencies.items()}
+    for sink, sources in dependencies.items():
+        for source in sources:
+            successors[source].add(sink)
+    queue = deque(sorted(net_id for net_id, degree in indegree.items() if degree == 0))
+    dependency_level: Dict[str, int] = {}
+    combinational_depth: Dict[str, int] = {}
+    while queue:
+        net_id = queue.popleft()
+        dependency_level[net_id] = 1 + max(
+            (dependency_level[source] for source in dependencies[net_id]),
+            default=0,
+        )
+        prior_depth = max(
+            (combinational_depth[source] for source in dependencies[net_id]),
+            default=0,
+        )
+        combinational_depth[net_id] = prior_depth + (
+            1 if nets[net_id]["cut_class"] == "combinational" else 0
+        )
+        for sink in sorted(successors.get(net_id, set())):
+            indegree[sink] -= 1
+            if indegree[sink] == 0:
+                queue.append(sink)
+    if len(dependency_level) != len(cut_by_net):
+        raise ValidationError("exact cut dependency graph contains a cycle")
+    maximum_depth = max(combinational_depth.values(), default=0)
+    if maximum_depth > max_dependency_depth:
+        critical = min(
+            net_id
+            for net_id, depth in combinational_depth.items()
+            if depth == maximum_depth
+        )
+        raise ValidationError(
+            "exact combinational-cut dependency depth exceeds the configured "
+            f"limit: net {critical!r} has depth {maximum_depth}, limit "
+            f"{max_dependency_depth}"
+        )
+
+    capture_records: List[Dict[str, Any]] = []
+    for net_id, cut in sorted(cut_by_net.items()):
+        net = nets[net_id]
+        for sink_fpga in sorted(cut["sink_fpgas"]):
+            work = [
+                endpoint["instance"]
+                for endpoint in net["sinks"]
+                if endpoint["instance"] is not None
+                and instance_assignment.get(endpoint["instance"]) == sink_fpga
+            ]
+            for endpoint in net["sinks"]:
+                if endpoint["instance"] is None:
+                    capture_records.append(
+                        {
+                            "cut_net": net_id,
+                            "fpga": sink_fpga,
+                            "kind": "top-output",
+                            "endpoint": f"top:{endpoint['port']}[{endpoint['bit']}]",
+                        }
+                    )
+            visited: Set[str] = set()
+            while work:
+                instance_id = work.pop()
+                if instance_id in visited:
+                    continue
+                visited.add(instance_id)
+                classification = classes[instance_id]
+                if classification == "architectural-state-or-memory":
+                    capture_records.append(
+                        {
+                            "cut_net": net_id,
+                            "fpga": sink_fpga,
+                            "kind": "architectural-state",
+                            "endpoint": instance_id,
+                        }
+                    )
+                    continue
+                for outgoing in outgoing_by_instance.get(instance_id, []):
+                    downstream_cut = cut_by_net.get(outgoing["id"])
+                    if (
+                        downstream_cut is not None
+                        and downstream_cut["source_fpgas"][0] == sink_fpga
+                    ):
+                        continue
+                    for endpoint in outgoing["sinks"]:
+                        sink = endpoint["instance"]
+                        if sink is None:
+                            capture_records.append(
+                                {
+                                    "cut_net": net_id,
+                                    "fpga": sink_fpga,
+                                    "kind": "top-output",
+                                    "endpoint": (
+                                        f"top:{endpoint['port']}[{endpoint['bit']}]"
+                                    ),
+                                }
+                            )
+                        elif instance_assignment.get(sink) == sink_fpga:
+                            work.append(sink)
+
+    unique_capture_records = sorted(
+        {
+            (
+                item["cut_net"],
+                item["fpga"],
+                item["kind"],
+                item["endpoint"],
+            )
+            for item in capture_records
+        }
+    )
+    capture_records = [
+        {
+            "id": f"capture{index:06d}",
+            "cut_net": cut_net,
+            "fpga": fpga,
+            "kind": kind,
+            "endpoint": endpoint,
+        }
+        for index, (cut_net, fpga, kind, endpoint) in enumerate(
+            unique_capture_records
+        )
+    ]
+
+    logic_segments: List[Dict[str, Any]] = []
+    source_segment_by_net: Dict[str, str] = {}
+    dependency_segment: Dict[Tuple[str, str], str] = {}
+    capture_segment: Dict[str, str] = {}
+    for net_id in sorted(cut_by_net):
+        if not dependencies[net_id]:
+            segment_id = f"segment{len(logic_segments):06d}"
+            source_segment_by_net[net_id] = segment_id
+            logic_segments.append(
+                {
+                    "id": segment_id,
+                    "kind": "launch_to_tx",
+                    "fpga": cut_by_net[net_id]["source_fpgas"][0],
+                    "sink_cut_net": net_id,
+                    "budget_slots": (
+                        comb_segment_budget_slots
+                        if nets[net_id]["cut_class"] != "register_output"
+                        else 0
+                    ),
+                    "evidence": "contract-budget-provisional",
+                }
+            )
+    for sink in sorted(dependencies):
+        for source in sorted(dependencies[sink]):
+            segment_id = f"segment{len(logic_segments):06d}"
+            dependency_segment[(source, sink)] = segment_id
+            logic_segments.append(
+                {
+                    "id": segment_id,
+                    "kind": "rx_to_tx",
+                    "fpga": cut_by_net[sink]["source_fpgas"][0],
+                    "source_cut_net": source,
+                    "sink_cut_net": sink,
+                    "budget_slots": comb_segment_budget_slots,
+                    "evidence": "contract-budget-provisional",
+                }
+            )
+    for capture in capture_records:
+        segment_id = f"segment{len(logic_segments):06d}"
+        capture_segment[capture["id"]] = segment_id
+        logic_segments.append(
+            {
+                "id": segment_id,
+                "kind": "rx_to_capture",
+                "fpga": capture["fpga"],
+                "source_cut_net": capture["cut_net"],
+                "capture_requirement": capture["id"],
+                "budget_slots": comb_segment_budget_slots,
+                "evidence": "contract-budget-provisional",
+            }
+        )
+
+    capture_by_cut: Dict[str, List[str]] = defaultdict(list)
+    for capture in capture_records:
+        capture_by_cut[capture["cut_net"]].append(
+            capture_segment[capture["id"]]
+        )
+    cut_nodes = []
+    for net_id, cut in sorted(cut_by_net.items()):
+        source_segments = []
+        if net_id in source_segment_by_net:
+            source_segments.append(source_segment_by_net[net_id])
+        source_segments.extend(
+            dependency_segment[(source, net_id)]
+            for source in sorted(dependencies[net_id])
+        )
+        cut_nodes.append(
+            {
+                "net": net_id,
+                "cut_class": nets[net_id]["cut_class"],
+                "source_fpgas": list(cut["source_fpgas"]),
+                "sink_fpgas": list(cut["sink_fpgas"]),
+                "dependency_level": dependency_level[net_id],
+                "combinational_dependency_depth": combinational_depth[net_id],
+                "predecessor_cut_nets": sorted(dependencies[net_id]),
+                "source_segment_ids": source_segments,
+                "capture_segment_ids": sorted(capture_by_cut.get(net_id, [])),
+            }
+        )
+
+    platform_value = dict(platform)
+    return {
+        "schema": STATIC_EXACT_COMBINATIONAL_CUT_SCHEMA,
+        "mode": "static-exact-combinational",
+        "qualification": "partition-legality-only-provisional",
+        "max_cross_fpga_dependency_depth": max_dependency_depth,
+        "comb_segment_budget_slots": comb_segment_budget_slots,
+        "frame_slots": frame_slots,
+        "commit_slot": frame_slots - 1,
+        "slot_edge_convention": dict(SLOT_EDGE_CONVENTION),
+        "cut_nodes": cut_nodes,
+        "dependency_edges": [
+            {
+                "from": source,
+                "to": sink,
+                "segment": dependency_segment[(source, sink)],
+            }
+            for sink in sorted(dependencies)
+            for source in sorted(dependencies[sink])
+        ],
+        "logic_segments": logic_segments,
+        "capture_requirements": capture_records,
+        "metrics": {
+            "transported_cut_nets": len(cut_nodes),
+            "combinational_cut_nets": sum(
+                item["cut_class"] == "combinational" for item in cut_nodes
+            ),
+            "dependency_edges": sum(len(items) for items in dependencies.values()),
+            "maximum_dependency_level": max(dependency_level.values(), default=0),
+            "maximum_combinational_dependency_depth": maximum_depth,
+            "logic_segments": len(logic_segments),
+            "capture_requirements": len(capture_records),
+        },
+        "source_identity": {
+            "canonical_emuir_sha256": _canonical_sha256(ir.to_dict()),
+            "canonical_platform_sha256": _canonical_sha256(platform_value),
+            "instance_assignment_sha256": _canonical_sha256(
+                {"instance_assignment": dict(sorted(instance_assignment.items()))}
+            ),
+            "timing_source_sha256": None,
+        },
+        "downstream_gates": {
+            "dependency_aware_schedule": "pending",
+            "macro_cycle_equivalence": "pending",
+            "physical_segment_deadlines": "pending",
+            "global_target_and_runtime_timing": "pending",
         },
     }
 

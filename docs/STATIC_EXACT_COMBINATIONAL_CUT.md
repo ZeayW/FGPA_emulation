@@ -11,11 +11,14 @@ cut dependencies, and atomic-component reductions. It does **not** change a
 partition, create a transport schedule, establish macro-cycle equivalence, or
 claim physical timing closure.
 
-The intended opt-in mode is `static-exact-combinational`. It will be enabled
-only after the producer and an independent validator exist at every affected
-Phase 3--7 boundary. Merely adding `combinational` to the existing legal-cut
-constant is invalid because the current schedule and equivalence model do not
-prove when a downstream combinational value becomes available.
+The opt-in Phase 3 mode `static-exact-combinational` now implements the first
+legality gate for dependency depth 1. It emits an independently reconstructed
+semantic contract but is deliberately qualified only as
+`partition-legality-only-provisional`. It must not be routed, scheduled, split,
+or used for timing claims until the later Phase 4--7 gates below consume that
+contract. Merely adding `combinational` to the existing legal-cut constant is
+invalid because the current production schedule and equivalence model do not
+yet prove when a downstream combinational value becomes available.
 
 ## Slot-edge convention
 
@@ -42,10 +45,10 @@ virtual-clock enable. Scheduler, independent validator, RTL tests, and
 Phase 7C must consume the same versioned convention rather than defining
 local `+1` rules.
 
-## Planned semantic contract
+## Semantic contract
 
-Exact mode will bind one versioned sub-contract through assignment, routes,
-schedule, Phase 6 split, and Phase 7C:
+Phase 3 emits one versioned sub-contract. Subsequent increments will bind it
+through routes, schedule, Phase 6 split, and Phase 7C:
 
 ```json
 {
@@ -92,9 +95,10 @@ feasibility, and physical segment deadlines.
 1. **Characterization (implemented, no behavior change).** Read-only SCC,
    eligibility, dependency-depth, and theoretical atomic-component report;
    independent exact replay; tamper tests.
-2. **Phase 3 depth 1.** Explicit cut policy, assignment semantic contract,
-   provider-independent legality reconstruction, and balance fixture. Its
-   strongest status is `partition-legality-pass`.
+2. **Phase 3 depth 1 (implemented, opt-in).** Explicit cut policy, assignment
+   semantic contract, provider-independent cluster/legality reconstruction,
+   and balance fixture. Its strongest qualification is
+   `partition-legality-only-provisional`; all downstream gates are `pending`.
 3. **Phase 4/5 depth 1.** Exact contract propagation, deterministic
    dependency-aware list scheduling, source-ready/capture certificate, fixed
    frame fail-closed diagnostics, and tamper tests.
@@ -116,8 +120,20 @@ emuflow combinational-cut characterize \
 emuflow combinational-cut validate \
   --ir build/phase1/design.emuir.json \
   build/comb-cut/characterization.json
+
+emuflow phase3 \
+  --ir build/phase1/design.emuir.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --provider greedy \
+  --cut-mode static-exact-combinational \
+  --max-cross-fpga-dependency-depth 1 \
+  --comb-segment-budget-slots 1 \
+  --out build/phase3-exact
 ```
 
 Characterization is deterministic and near-linear apart from sorting. The
 validator reconstructs the complete report from EmuIR and rejects changed
 eligibility, SCC, dependency, depth, source identity, or metric fields.
+The Phase 3 validator also regenerates the exact cluster release policy and
+semantic contract from EmuIR, PlatformDB, normalized constraints, and the
+instance assignment; provider output cannot self-declare eligibility.

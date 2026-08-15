@@ -2201,7 +2201,11 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--platform", type=Path, required=True)
 
     phase3 = subparsers.add_parser(
-        "phase3", help="run sequential clustering and multi-FPGA partitioning"
+        "phase3",
+        help=(
+            "run multi-FPGA partitioning with sequential-only clustering "
+            "or an explicit provisional exact-cut policy"
+        ),
     )
     phase3.add_argument("--ir", type=Path, required=True)
     phase3.add_argument("--platform", type=Path, required=True)
@@ -2216,6 +2220,28 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     phase3.add_argument("--seed", type=int, default=0)
+    phase3.add_argument(
+        "--cut-mode",
+        choices=("sequential-only", "static-exact-combinational"),
+        default="sequential-only",
+        help=(
+            "opt-in Phase 3 cut legality; the default preserves sequential "
+            "boundaries only"
+        ),
+    )
+    phase3.add_argument(
+        "--max-cross-fpga-dependency-depth",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="static exact mode dependency-depth limit (currently 1)",
+    )
+    phase3.add_argument(
+        "--comb-segment-budget-slots",
+        type=int,
+        default=1,
+        help="provisional per-FPGA combinational segment slot budget",
+    )
     phase3.add_argument("--min-used-fpgas", type=int)
     phase3.add_argument("--balance-tolerance", type=float)
     phase3.add_argument(
@@ -4458,6 +4484,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             mfspart_refiner=args.mfspart_refiner,
             mfspart_refiner_checker=args.mfspart_refiner_checker,
             mfspart_legalizer=args.mfspart_legalizer,
+            cut_mode=args.cut_mode,
+            max_cross_fpga_dependency_depth=(
+                args.max_cross_fpga_dependency_depth
+            ),
+            comb_segment_budget_slots=args.comb_segment_budget_slots,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

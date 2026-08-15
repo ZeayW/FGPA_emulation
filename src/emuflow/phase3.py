@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
     assign_clusters,
     build_clusters,
     load_partition_constraints,
@@ -48,6 +49,9 @@ def run_phase3(
     mfspart_refiner: Optional[str] = None,
     mfspart_refiner_checker: Optional[str] = None,
     mfspart_legalizer: Optional[str] = None,
+    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    max_cross_fpga_dependency_depth: int = 1,
+    comb_segment_budget_slots: int = 1,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
     platform = Platform.load(platform_path)
@@ -58,9 +62,18 @@ def run_phase3(
         min_used_fpgas=min_used_fpgas,
         balance_tolerance=balance_tolerance,
     )
-    clusters = build_clusters(ir, constraints)
     route_constraints = load_route_constraints(
         route_constraints_path, platform
+    )
+    clusters = build_clusters(
+        ir,
+        constraints,
+        cut_mode=cut_mode,
+        max_cross_fpga_dependency_depth=(
+            max_cross_fpga_dependency_depth
+        ),
+        comb_segment_budget_slots=comb_segment_budget_slots,
+        frame_slots=route_constraints["frame_slots"],
     )
     if provider == "greedy":
         assignment = assign_clusters(
@@ -168,6 +181,12 @@ def run_phase3(
             "report": "phase3_report.json",
         },
     }
+    if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
+        report["cut_mode"] = cut_mode
+        report["qualification"] = "partition-legality-only-provisional"
+        report["artifacts"]["semantic_contract"] = (
+            "assignment.json#/semantic_contract"
+        )
     if provider == "tritonpart":
         report["artifacts"]["tritonpart"] = "tritonpart/tritonpart_input.json"
     elif provider in {"repart", "repart-replication"}:

@@ -11,8 +11,8 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
-    TRANSPORTED_CUT_CLASSES,
     build_partition_assignment,
+    transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
 from .platform import Platform
@@ -186,6 +186,7 @@ def _legal_hyperedges(
     cluster_by_instance: Mapping[str, str],
     vertex_number: Mapping[str, int],
     net_weights: Mapping[str, float],
+    transported_cut_classes: set[str],
 ) -> List[Dict[str, Any]]:
     known_nets = {net["id"] for net in ir.value["nets"]}
     unknown_weights = sorted(set(net_weights) - known_nets)
@@ -196,7 +197,7 @@ def _legal_hyperedges(
 
     hyperedges = []
     for net in ir.value["nets"]:
-        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+        if net["cut_class"] not in transported_cut_classes:
             continue
         cluster_ids = sorted(
             {
@@ -306,6 +307,7 @@ def export_tritonpart_inputs(
         cluster_by_instance,
         vertex_number,
         net_weights or {},
+        transported_cut_classes_for_clusters(clusters_artifact),
     )
     if not hyperedges:
         raise ValidationError(

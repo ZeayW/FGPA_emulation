@@ -10,8 +10,8 @@ from .io import write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
-    TRANSPORTED_CUT_CLASSES,
     build_partition_assignment,
+    transported_cut_classes_for_clusters,
 )
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
@@ -76,6 +76,7 @@ def _hyperedges(
     ir: EmuIR,
     cluster_by_instance: Mapping[str, str],
     net_weights: Mapping[str, float],
+    transported_cut_classes: set[str],
 ) -> List[Dict[str, Any]]:
     known_nets = {net["id"] for net in ir.value["nets"]}
     unknown_weights = sorted(set(net_weights) - known_nets)
@@ -86,7 +87,7 @@ def _hyperedges(
 
     raw: List[Dict[str, Any]] = []
     for net in ir.value["nets"]:
-        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+        if net["cut_class"] not in transported_cut_classes:
             continue
         driver_clusters = sorted(
             {
@@ -285,6 +286,7 @@ def export_repart_inputs(
         ir,
         cluster_by_instance,
         net_weights or {},
+        transported_cut_classes_for_clusters(clusters_artifact),
     )
     if not hyperedges:
         raise ValidationError(

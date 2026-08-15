@@ -18,6 +18,8 @@ PARTITION_CONSTRAINTS_SCHEMA = "emuflow.partition-constraints/v1"
 TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
+CUT_MODE_SEQUENTIAL_ONLY = "sequential-only"
+CUT_MODE_STATIC_EXACT = "static-exact-combinational"
 HARD_MACRO_RESOURCES = {
     "bram",
     "dsp",
@@ -308,7 +310,46 @@ def load_partition_constraints(
 def build_clusters(
     ir: EmuIR,
     constraints: Mapping[str, Any],
+    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    max_cross_fpga_dependency_depth: int = 1,
+    comb_segment_budget_slots: int = 1,
+    frame_slots: int = 2,
 ) -> Dict[str, Any]:
+    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
+        raise ValidationError(
+            "partition cut mode must be 'sequential-only' or "
+            "'static-exact-combinational'"
+        )
+    released_combinational_nets: Set[str] = set()
+    characterization = None
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        if max_cross_fpga_dependency_depth != 1:
+            raise ValidationError(
+                "static exact combinational cuts currently support only "
+                "max_cross_fpga_dependency_depth=1"
+            )
+        if (
+            isinstance(comb_segment_budget_slots, bool)
+            or not isinstance(comb_segment_budget_slots, int)
+            or comb_segment_budget_slots <= 0
+        ):
+            raise ValidationError(
+                "comb_segment_budget_slots must be a positive integer"
+            )
+        if (
+            isinstance(frame_slots, bool)
+            or not isinstance(frame_slots, int)
+            or frame_slots < 2
+        ):
+            raise ValidationError("frame_slots must be an integer at least two")
+        from .combinational_cut import characterize_combinational_cuts
+
+        characterization = characterize_combinational_cuts(ir, (1,))
+        released_combinational_nets = {
+            item["net"]
+            for item in characterization["eligible_cuts"]
+            if item["dependency_level"] <= max_cross_fpga_dependency_depth
+        }
     instances = {
         instance["id"]: instance for instance in ir.value["instances"]
     }
@@ -327,7 +368,10 @@ def build_clusters(
         members = _instance_ids_on_net(net)
         if len(members) < 2:
             continue
-        if net["cut_class"] not in LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES:
+        if (
+            net["cut_class"] not in LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES
+            and net["id"] not in released_combinational_nets
+        ):
             for member in members[1:]:
                 union_find.union(index_by_id[members[0]], index_by_id[member])
     members_by_root: Dict[int, List[str]] = defaultdict(list)
@@ -378,7 +422,7 @@ def build_clusters(
             }
         )
 
-    return {
+    result = {
         "schema": CLUSTERS_SCHEMA,
         "design": ir.value["design"]["name"],
         "clusters": clusters,
@@ -390,15 +434,60 @@ def build_clusters(
             "hard_macro_granularity": "instance",
         },
     }
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        assert characterization is not None
+        result["policy"].update(
+            {
+                "cut_mode": cut_mode,
+                "max_cross_fpga_dependency_depth": (
+                    max_cross_fpga_dependency_depth
+                ),
+                "comb_segment_budget_slots": comb_segment_budget_slots,
+                "frame_slots": frame_slots,
+                "eligible_combinational_cut_nets": sorted(
+                    released_combinational_nets
+                ),
+                "transported_cut_classes": sorted(
+                    {*TRANSPORTED_CUT_CLASSES, "combinational"}
+                ),
+                "characterization_source_sha256": characterization[
+                    "source_identity"
+                ]["canonical_emuir_sha256"],
+                "qualification": "partition-legality-only-provisional",
+            }
+        )
+    return result
+
+
+def transported_cut_classes_for_clusters(
+    clusters_artifact: Mapping[str, Any],
+) -> Set[str]:
+    raw = clusters_artifact.get("policy", {}).get("transported_cut_classes")
+    if raw is None:
+        return set(TRANSPORTED_CUT_CLASSES)
+    if not isinstance(raw, list) or not all(
+        isinstance(item, str) for item in raw
+    ):
+        raise ValidationError(
+            "clusters.policy.transported_cut_classes: expected strings"
+        )
+    result = set(raw)
+    allowed = {*TRANSPORTED_CUT_CLASSES, "combinational"}
+    if not set(TRANSPORTED_CUT_CLASSES).issubset(result) or not result <= allowed:
+        raise ValidationError(
+            "clusters.policy.transported_cut_classes is not a supported policy"
+        )
+    return result
 
 
 def _cluster_adjacency(
     ir: EmuIR,
     cluster_by_instance: Mapping[str, str],
+    transported_cut_classes: Set[str],
 ) -> Dict[str, Dict[str, int]]:
     adjacency: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for net in ir.value["nets"]:
-        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+        if net["cut_class"] not in transported_cut_classes:
             continue
         driver_clusters = {
             cluster_by_instance[endpoint["instance"]]
@@ -422,11 +511,12 @@ def _cluster_adjacency(
 def _cluster_transport_arcs(
     ir: EmuIR,
     cluster_by_instance: Mapping[str, str],
+    transported_cut_classes: Set[str],
 ) -> Dict[str, Set[Tuple[str, bool]]]:
     """Return neighbor arcs and whether the keyed cluster drives the arc."""
     arcs: Dict[str, Set[Tuple[str, bool]]] = defaultdict(set)
     for net in ir.value["nets"]:
-        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+        if net["cut_class"] not in transported_cut_classes:
             continue
         driver_clusters = {
             cluster_by_instance[endpoint["instance"]]
@@ -522,8 +612,15 @@ def assign_clusters(
         for cluster_id, cluster in clusters.items()
         for instance_id in cluster["instances"]
     }
-    adjacency = _cluster_adjacency(ir, cluster_by_instance)
-    transport_arcs = _cluster_transport_arcs(ir, cluster_by_instance)
+    transported_cut_classes = transported_cut_classes_for_clusters(
+        clusters_artifact
+    )
+    adjacency = _cluster_adjacency(
+        ir, cluster_by_instance, transported_cut_classes
+    )
+    transport_arcs = _cluster_transport_arcs(
+        ir, cluster_by_instance, transported_cut_classes
+    )
     hop_limit = (
         route_constraints.get("max_route_hops")
         if route_constraints is not None
@@ -783,6 +880,54 @@ def build_partition_assignment(
         for instance_id in cluster["instances"]
     }
     cut_nets, cut_metrics = compute_cut_nets(ir, instance_assignment)
+    semantic_contract = None
+    cut_policy = clusters_artifact.get("policy", {})
+    if cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT:
+        from .combinational_cut import build_static_exact_semantic_contract
+
+        semantic_contract = build_static_exact_semantic_contract(
+            ir,
+            platform.to_dict(),
+            instance_assignment,
+            cut_nets,
+            max_dependency_depth=cut_policy[
+                "max_cross_fpga_dependency_depth"
+            ],
+            comb_segment_budget_slots=cut_policy[
+                "comb_segment_budget_slots"
+            ],
+            frame_slots=cut_policy["frame_slots"],
+        )
+        contract_nodes = {
+            item["net"]: item for item in semantic_contract["cut_nodes"]
+        }
+        for cut in cut_nets:
+            if cut["cut_class"] != "combinational":
+                continue
+            node = contract_nodes[cut["net"]]
+            cut.update(
+                {
+                    "dependency_level": node["dependency_level"],
+                    "combinational_dependency_depth": node[
+                        "combinational_dependency_depth"
+                    ],
+                    "predecessor_cut_nets": node[
+                        "predecessor_cut_nets"
+                    ],
+                }
+            )
+        cut_metrics.update(
+            {
+                "combinational_cut_nets": semantic_contract["metrics"][
+                    "combinational_cut_nets"
+                ],
+                "maximum_combinational_dependency_depth": (
+                    semantic_contract["metrics"][
+                        "maximum_combinational_dependency_depth"
+                    ]
+                ),
+            }
+        )
     partition_records = []
     for fpga in platform.fpgas:
         cluster_ids = sorted(
@@ -844,6 +989,8 @@ def build_partition_assignment(
     }
     if provider_metadata is not None:
         result["provider_metadata"] = dict(provider_metadata)
+    if semantic_contract is not None:
+        result["semantic_contract"] = semantic_contract
     return result
 
 
@@ -1133,6 +1280,22 @@ def validate_partition_artifacts(
             f"got {assignment_artifact.get('schema')!r}"
         )
 
+    cut_policy = clusters_artifact.get("policy", {})
+    cut_mode = cut_policy.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
+        raise ValidationError(f"clusters.policy.cut_mode: unknown {cut_mode!r}")
+    if cut_mode == CUT_MODE_SEQUENTIAL_ONLY and any(
+        key in cut_policy
+        for key in (
+            "eligible_combinational_cut_nets",
+            "semantic_contract",
+            "max_cross_fpga_dependency_depth",
+        )
+    ):
+        raise ValidationError(
+            "sequential-only cluster policy contains exact-cut fields"
+        )
+
     instance_ids = {instance["id"] for instance in ir.value["instances"]}
     instances = {
         instance["id"]: instance for instance in ir.value["instances"]
@@ -1209,6 +1372,38 @@ def validate_partition_artifacts(
         ir,
         platform,
     )
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        required_policy = {
+            "max_cross_fpga_dependency_depth",
+            "comb_segment_budget_slots",
+            "frame_slots",
+            "eligible_combinational_cut_nets",
+            "transported_cut_classes",
+            "characterization_source_sha256",
+            "qualification",
+        }
+        missing_policy = sorted(required_policy - set(cut_policy))
+        if missing_policy:
+            raise ValidationError(
+                "static exact cluster policy is incomplete: "
+                f"{missing_policy}"
+            )
+        expected_clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=cut_policy[
+                "max_cross_fpga_dependency_depth"
+            ],
+            comb_segment_budget_slots=cut_policy[
+                "comb_segment_budget_slots"
+            ],
+            frame_slots=cut_policy["frame_slots"],
+        )
+        if clusters_artifact != expected_clusters:
+            raise ValidationError(
+                "static exact clusters do not match independent reconstruction"
+            )
     for group in constraints["groups"]:
         assigned_fpgas = {
             raw_assignment[instance_id] for instance_id in group["instances"]
@@ -1235,6 +1430,10 @@ def validate_partition_artifacts(
     }
     replication_validation = None
     if assignment_artifact.get("replication") is not None:
+        if cut_mode == CUT_MODE_STATIC_EXACT:
+            raise ValidationError(
+                "replication is not qualified with static exact cuts"
+            )
         from .replication import validate_replication_artifact
 
         replication_validation = validate_replication_artifact(
@@ -1285,6 +1484,18 @@ def validate_partition_artifacts(
         constraints.get("balance_tolerance_by_dimension", {}),
     )
 
+    legal_cut_classes = set(LEGAL_CUT_CLASSES)
+    eligible_combinational_nets: Set[str] = set()
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        transported = transported_cut_classes_for_clusters(clusters_artifact)
+        if transported != {*TRANSPORTED_CUT_CLASSES, "combinational"}:
+            raise ValidationError(
+                "static exact mode requires combinational transport"
+            )
+        eligible_combinational_nets = set(
+            cut_policy["eligible_combinational_cut_nets"]
+        )
+        legal_cut_classes.add("combinational")
     illegal_cuts: List[str] = []
     for net in ir.value["nets"]:
         fpga_ids = {
@@ -1294,7 +1505,13 @@ def validate_partition_artifacts(
         if (
             len(fpga_ids) > 1
             and net["cut_class"]
-            not in LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES
+            not in legal_cut_classes | REPLICATED_NET_CLASSES
+        ):
+            illegal_cuts.append(net["id"])
+        if (
+            len(fpga_ids) > 1
+            and net["cut_class"] == "combinational"
+            and net["id"] not in eligible_combinational_nets
         ):
             illegal_cuts.append(net["id"])
     if illegal_cuts:
@@ -1310,6 +1527,62 @@ def validate_partition_artifacts(
     else:
         expected_cuts = replication_validation["cut_nets"]
         expected_metrics = replication_validation["metrics"]
+    expected_contract = None
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        from .combinational_cut import build_static_exact_semantic_contract
+
+        expected_contract = build_static_exact_semantic_contract(
+            ir,
+            platform.to_dict(),
+            raw_assignment,
+            expected_cuts,
+            max_dependency_depth=cut_policy[
+                "max_cross_fpga_dependency_depth"
+            ],
+            comb_segment_budget_slots=cut_policy[
+                "comb_segment_budget_slots"
+            ],
+            frame_slots=cut_policy["frame_slots"],
+        )
+        contract_nodes = {
+            item["net"]: item for item in expected_contract["cut_nodes"]
+        }
+        for cut in expected_cuts:
+            if cut["cut_class"] != "combinational":
+                continue
+            node = contract_nodes[cut["net"]]
+            cut.update(
+                {
+                    "dependency_level": node["dependency_level"],
+                    "combinational_dependency_depth": node[
+                        "combinational_dependency_depth"
+                    ],
+                    "predecessor_cut_nets": node[
+                        "predecessor_cut_nets"
+                    ],
+                }
+            )
+        expected_metrics.update(
+            {
+                "combinational_cut_nets": expected_contract["metrics"][
+                    "combinational_cut_nets"
+                ],
+                "maximum_combinational_dependency_depth": (
+                    expected_contract["metrics"][
+                        "maximum_combinational_dependency_depth"
+                    ]
+                ),
+            }
+        )
+        if assignment_artifact.get("semantic_contract") != expected_contract:
+            raise ValidationError(
+                "assignment.semantic_contract does not match independent "
+                "reconstruction"
+            )
+    elif "semantic_contract" in assignment_artifact:
+        raise ValidationError(
+            "sequential-only assignment may not contain a semantic contract"
+        )
     if assignment_artifact.get("cut_nets") != expected_cuts:
         raise ValidationError("assignment.cut_nets does not match recomputed cuts")
     metrics = assignment_artifact.get("metrics")
@@ -1335,6 +1608,17 @@ def validate_partition_artifacts(
             for fpga_id, resources in resources_by_fpga.items()
         },
     }
+    if expected_contract is not None:
+        result.update(
+            {
+                "cut_mode": CUT_MODE_STATIC_EXACT,
+                "qualification": "partition-legality-only-provisional",
+                "semantic_contract": {
+                    "status": "pass",
+                    **expected_contract["metrics"],
+                },
+            }
+        )
     if replication_validation is not None:
         replication_metrics = replication_validation["artifact"]["metrics"]
         for key, expected in replication_metrics.items():

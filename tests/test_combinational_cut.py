@@ -13,6 +13,20 @@ from emuflow.combinational_cut import (
 )
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
+from emuflow.partition import (
+    CUT_MODE_STATIC_EXACT,
+    assign_clusters,
+    build_clusters,
+    build_partition_assignment,
+    normalize_partition_constraints,
+    validate_partition_artifacts,
+)
+from emuflow.platform import Platform
+from emuflow.phase4 import run_phase4
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PLATFORM_PATH = ROOT / "platforms" / "virtual" / "xcvu3p_2fpga_p2p.json"
 
 
 def _endpoint(instance, port):
@@ -61,6 +75,66 @@ def _chain_ir():
         {
             "schema": "emuflow.emuir/v1",
             "design": {"name": "cut_chain", "top": "cut_chain", "source_format": "test"},
+            "ports": [],
+            "instances": instances,
+            "nets": nets,
+            "clocks": [],
+            "warnings": [],
+        }
+    )
+
+
+def _wide_fanout_ir(width=32):
+    instances = [
+        {"id": "q0", "type": "FDRE", "resources": {"ff": 1}},
+        {"id": "source_lut", "type": "LUT2", "resources": {"lut": 1}},
+    ]
+    nets = [
+        {
+            "id": "q",
+            "name": "q",
+            "cut_class": "register_output",
+            "drivers": [_endpoint("q0", "Q")],
+            "sinks": [_endpoint("source_lut", "I0")],
+        }
+    ]
+    fanout_sinks = []
+    for index in range(width):
+        lut = f"sink_lut_{index:03d}"
+        register = f"sink_ff_{index:03d}"
+        instances.extend(
+            [
+                {"id": lut, "type": "LUT2", "resources": {"lut": 1}},
+                {"id": register, "type": "FDRE", "resources": {"ff": 1}},
+            ]
+        )
+        fanout_sinks.append(_endpoint(lut, "I0"))
+        nets.append(
+            {
+                "id": f"d_{index:03d}",
+                "name": f"d_{index:03d}",
+                "cut_class": "register_input",
+                "drivers": [_endpoint(lut, "O")],
+                "sinks": [_endpoint(register, "D")],
+            }
+        )
+    nets.append(
+        {
+            "id": "wide_boundary",
+            "name": "wide_boundary",
+            "cut_class": "combinational",
+            "drivers": [_endpoint("source_lut", "O")],
+            "sinks": fanout_sinks,
+        }
+    )
+    return EmuIR(
+        {
+            "schema": "emuflow.emuir/v1",
+            "design": {
+                "name": "wide_fanout",
+                "top": "wide_fanout",
+                "source_format": "test",
+            },
             "ports": [],
             "instances": instances,
             "nets": nets,
@@ -171,6 +245,202 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                     0,
                 )
             self.assertTrue(report_path.is_file())
+
+
+class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
+    def setUp(self):
+        self.ir = _chain_ir()
+        self.platform = Platform.load(PLATFORM_PATH)
+        self.constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+
+    def _exact_artifacts(self):
+        clusters = build_clusters(
+            self.ir,
+            self.constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=1,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        assignment = build_partition_assignment(
+            self.ir,
+            self.platform,
+            clusters,
+            self.constraints,
+            {
+                cluster_for["q0"]: "fpga0",
+                cluster_for["l0"]: "fpga0",
+                cluster_for["l1"]: "fpga1",
+                cluster_for["q1"]: "fpga1",
+            },
+            provider="test-static-exact-v1",
+            seed=0,
+        )
+        return clusters, assignment
+
+    def test_safe_default_is_identical_to_explicit_safe_mode(self):
+        implicit = build_clusters(self.ir, self.constraints)
+        explicit = build_clusters(
+            self.ir, self.constraints, cut_mode="sequential-only"
+        )
+        self.assertEqual(implicit, explicit)
+        self.assertNotIn("cut_mode", implicit["policy"])
+
+    def test_depth_one_cut_has_independently_validated_contract(self):
+        safe = build_clusters(self.ir, self.constraints)
+        clusters, assignment = self._exact_artifacts()
+        self.assertGreater(
+            len(clusters["clusters"]), len(safe["clusters"])
+        )
+        combinational = [
+            item
+            for item in assignment["cut_nets"]
+            if item["cut_class"] == "combinational"
+        ]
+        self.assertEqual([item["net"] for item in combinational], ["n0"])
+        self.assertEqual(combinational[0]["predecessor_cut_nets"], [])
+        self.assertEqual(combinational[0]["combinational_dependency_depth"], 1)
+        contract = assignment["semantic_contract"]
+        self.assertEqual(
+            contract["qualification"],
+            "partition-legality-only-provisional",
+        )
+        self.assertEqual(contract["metrics"]["combinational_cut_nets"], 1)
+        self.assertTrue(contract["capture_requirements"])
+        validation = validate_partition_artifacts(
+            self.ir, self.platform, clusters, assignment
+        )
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(
+            validation["qualification"],
+            "partition-legality-only-provisional",
+        )
+
+    def test_contract_tamper_is_rejected(self):
+        clusters, assignment = self._exact_artifacts()
+        tampered = copy.deepcopy(assignment)
+        tampered["semantic_contract"]["commit_slot"] -= 1
+        with self.assertRaisesRegex(ValidationError, "semantic_contract"):
+            validate_partition_artifacts(
+                self.ir, self.platform, clusters, tampered
+            )
+
+    def test_exact_cluster_policy_tamper_is_rejected(self):
+        clusters, assignment = self._exact_artifacts()
+        tampered = copy.deepcopy(clusters)
+        tampered["policy"]["eligible_combinational_cut_nets"].append("n1")
+        with self.assertRaisesRegex(ValidationError, "reconstruction"):
+            validate_partition_artifacts(
+                self.ir, self.platform, tampered, assignment
+            )
+
+    def test_depth_two_is_not_silently_enabled(self):
+        with self.assertRaisesRegex(ValidationError, "currently support"):
+            build_clusters(
+                self.ir,
+                self.constraints,
+                cut_mode=CUT_MODE_STATIC_EXACT,
+                max_cross_fpga_dependency_depth=2,
+            )
+
+    def test_wide_cone_splits_and_improves_checked_balance(self):
+        ir = _wide_fanout_ir()
+        constraints = normalize_partition_constraints(None, ir, self.platform)
+        safe_clusters = build_clusters(ir, constraints)
+        exact_clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            frame_slots=16,
+        )
+        self.assertEqual(
+            max(len(item["instances"]) for item in safe_clusters["clusters"]),
+            33,
+        )
+        self.assertEqual(
+            max(len(item["instances"]) for item in exact_clusters["clusters"]),
+            1,
+        )
+        safe_assignment = assign_clusters(
+            ir, self.platform, safe_clusters, constraints, seed=9
+        )
+        exact_assignment = assign_clusters(
+            ir, self.platform, exact_clusters, constraints, seed=9
+        )
+        safe_validation = validate_partition_artifacts(
+            ir, self.platform, safe_clusters, safe_assignment
+        )
+        exact_validation = validate_partition_artifacts(
+            ir, self.platform, exact_clusters, exact_assignment
+        )
+        self.assertLess(
+            exact_validation["effective_balance_percent"],
+            safe_validation["effective_balance_percent"],
+        )
+        self.assertGreater(
+            exact_validation["combinational_cut_nets"], 0
+        )
+
+    def test_phase3_cli_emits_opt_in_provisional_qualification(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.json"
+            output = root / "phase3"
+            ir_path.write_text(
+                json.dumps(self.ir.to_dict()), encoding="utf-8"
+            )
+            with redirect_stdout(io.StringIO()):
+                status = main(
+                    [
+                        "phase3",
+                        "--ir",
+                        str(ir_path),
+                        "--platform",
+                        str(PLATFORM_PATH),
+                        "--provider",
+                        "greedy",
+                        "--cut-mode",
+                        "static-exact-combinational",
+                        "--max-cross-fpga-dependency-depth",
+                        "1",
+                        "--out",
+                        str(output),
+                    ]
+                )
+            self.assertEqual(status, 0)
+            report = json.loads(
+                (output / "phase3_report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                report["qualification"],
+                "partition-legality-only-provisional",
+            )
+            self.assertEqual(
+                report["validation"]["cut_mode"],
+                "static-exact-combinational",
+            )
+
+    def test_unqualified_exact_assignment_cannot_enter_phase4(self):
+        _, assignment = self._exact_artifacts()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.json"
+            assignment_path.write_text(
+                json.dumps(assignment), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "stop after the Phase 3"):
+                run_phase4(
+                    assignment_path=assignment_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=root / "phase4",
+                )
 
 
 if __name__ == "__main__":

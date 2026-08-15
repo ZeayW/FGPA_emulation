@@ -255,23 +255,25 @@ partitioner, and imports the solution into the common assignment schema. The
 dependency-free greedy provider remains available explicitly as a fallback
 and A/B baseline.
 
-The cycle-correct runtime contract currently transports register-input and
-register-output boundaries only. Nets outside those classes are unioned into
-semantic atomic clusters, so an RTL design may contain a cluster larger than
-the requested per-partition balance target. Phase 3 records both requested
-and effective balance and never presents an automatically relaxed result as a
-strictly balanced one. Multilevel partitioning cannot recover freedom that
-semantic clustering removed; controlled combinational cuts, multi-phase
-settling, and corresponding cycle-equivalence checks are therefore a separate
-prerequisite milestone.
+The production cycle-correct runtime contract currently transports
+register-input and register-output boundaries only. Nets outside those classes
+are unioned into semantic atomic clusters, so an RTL design may contain a
+cluster larger than the requested per-partition balance target. Phase 3 records
+both requested and effective balance and never presents an automatically
+relaxed result as a strictly balanced one. Multilevel partitioning cannot
+recover freedom that semantic clustering removed.
 
 The first milestone for that extension is the EmuIR-semantic-bound
 `emuflow.combinational-cut-characterization/v1` report. It reconstructs the
 complete EmuIR combinational graph, detects SCCs/self-loops, permits only a
 conservative single-driver LUT-only potential-cut set, retains reconvergent
 predecessors, and reports depth-1/depth-2 theoretical component splitting.
-Its independent validator regenerates the whole report. It is not a Phase 3
-artifact and cannot establish partition legality or physical closure.
+Its independent validator regenerates the whole report. An opt-in
+`--cut-mode static-exact-combinational` Phase 3 path now releases only depth-1
+eligible nets, emits `emuflow.static-exact-combinational-cut/v1`, and
+independently reconstructs both clusters and contract. Its qualification is
+only `partition-legality-only-provisional`; production defaults and downstream
+Phase 4--7 behavior are unchanged.
 
 Future exact-mode stages share the
 `fabric-rising-edge-current-slot/v1` convention: TX samples on the rising edge

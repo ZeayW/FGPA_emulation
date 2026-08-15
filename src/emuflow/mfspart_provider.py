@@ -14,8 +14,8 @@ from .mfspart_initial import build_mfspart_initial_partition
 from .mfspart_legalize import legalize_mfspart_min_used
 from .mfspart_refine import refine_mfspart_hierarchy
 from .partition import (
-    TRANSPORTED_CUT_CLASSES,
     build_partition_assignment,
+    transported_cut_classes_for_clusters,
 )
 from .partition_hops import _shortest_hop_distances
 from .platform import Platform
@@ -207,8 +207,11 @@ def _partition_graph(
         for instance in cluster["instances"]
     }
     nets = []
+    transported_cut_classes = transported_cut_classes_for_clusters(
+        clusters_artifact
+    )
     for net in ir.value["nets"]:
-        if net["cut_class"] not in TRANSPORTED_CUT_CLASSES:
+        if net["cut_class"] not in transported_cut_classes:
             continue
         drivers = sorted(
             {

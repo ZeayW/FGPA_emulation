@@ -29,6 +29,18 @@ from .physical_route_feedback import (
 PHASE4_REPORT_SCHEMA = "emuflow.phase4-report/v1"
 
 
+def _reject_unqualified_exact_assignment(assignment: Dict[str, Any]) -> None:
+    contract = assignment.get("semantic_contract")
+    if contract is None:
+        return
+    if contract.get("mode") == "static-exact-combinational":
+        raise ValueError(
+            "static exact combinational cuts currently stop after the "
+            "Phase 3 partition-legality gate; Phase 4/5 contract propagation "
+            "and dependency-aware scheduling are not yet qualified"
+        )
+
+
 def run_phase4(
     assignment_path: Path,
     platform_path: Path,
@@ -50,6 +62,7 @@ def run_phase4(
     candidate_workers: int = 1,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
+    _reject_unqualified_exact_assignment(assignment)
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     candidate_pool_path = output_dir / "route_candidate_pool.json"
@@ -296,6 +309,7 @@ def validate_phase4(
     timing_paths_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     assignment = read_json(assignment_path)
+    _reject_unqualified_exact_assignment(assignment)
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     provider = routes.get("provider")

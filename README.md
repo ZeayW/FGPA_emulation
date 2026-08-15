@@ -279,7 +279,7 @@ such a vertex; a run with relaxed balance is a legal capacity/topology result,
 not evidence of high-quality balanced partitioning. Supporting controlled
 combinational cuts requires an explicit multi-phase settling and equivalence
 contract and is a planned semantic extension, not a partitioner tuning flag.
-The first increment of that extension is deliberately read-only:
+The characterization increment is deliberately read-only:
 
 ```bash
 emuflow combinational-cut characterize \
@@ -295,11 +295,27 @@ single-driver LUT-only potential-cut set, complete potential-cut dependencies,
 depth-1/depth-2 distributions, and theoretical atomic-component reductions.
 Its qualification is explicitly
 `analysis-only-no-partition-or-equivalence-claim`: it does not change Phase 3
-output or any default provider. The shared slot-edge convention, planned
-semantic contract, fail-closed policy, and Phase 3--7 acceptance sequence are
-specified in
+output or any default provider. An explicit Phase 3 depth-1 experiment can
+release only independently eligible LUT nets and emit a provisional semantic
+contract:
+
+```bash
+emuflow phase3 \
+  --ir build/phase1/design.emuir.json \
+  --platform platforms/virtual/xcvu3p_2fpga_p2p.json \
+  --provider greedy \
+  --cut-mode static-exact-combinational \
+  --max-cross-fpga-dependency-depth 1 \
+  --comb-segment-budget-slots 1 \
+  --out build/phase3-exact
+```
+
+That opt-in artifact is qualified only as
+`partition-legality-only-provisional`: Phase 4--7 consumption remains blocked.
+The shared slot-edge convention, semantic contract, fail-closed policy, and
+Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).
-Production remains sequential-only until dependency-aware scheduling,
+The default remains sequential-only until dependency-aware scheduling,
 macro-cycle equivalence, routed segment deadlines, and whole-design target and
 virtual-runtime WNS/TNS all pass.
 For Xilinx-mapped flip-flops, `FDRE.R` and `FDSE.S` are synchronous controls
