@@ -600,7 +600,7 @@ def compile_canonical_experiment_spec(
     cut_command.extend(("--out", "{output_dir}"))
     node(
         "cut-timing", "cut-timing", ["frontend", "timing", "partition"], cut_command,
-        [executable, "experiment-stage", "cut-timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--partition", "{dependency:partition}", "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing)],
+        [executable, "experiment-stage", "cut-timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing)],
         [_artifact("cut-path-database.json", "consumer-checkpoint"), _artifact("cut-timing-paths.json", "consumer-checkpoint"), _artifact("through-net-coverage.json", "evidence-critical"), _artifact("experiment-cut-timing-report.json", "evidence-critical")],
         inputs=("timing_model", "architecture_timing_db", "tool.emuflow", "tool.opensta"),
         configuration={"clock_periods": periods, "max_paths": 200000},

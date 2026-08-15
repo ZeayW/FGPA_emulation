@@ -1790,13 +1790,17 @@ same value for both sides of an A/B comparison. For a 32-FPGA run, start from a
 measured value such as 8 and raise it only after checking memory and tool-token
 pressure.
 
-Endpoint-complete physical timing consumes two sealed STA namespaces with
-different roles. `--path-database` is the complete pre-partition database used
-for same-FPGA local paths; `--logic-path-database` is the through-cut database
-whose member IDs were routed by Phase 4 and are expanded into cross-FPGA logic
-segments. Canonical experiment stages bind both automatically and fail before
-P&R if either half of a timing-enabled checkpoint is missing; substituting the
-bounded full-path enumeration for the through-cut database is invalid.
+Endpoint-complete physical timing retains two sealed STA artifacts with
+different roles. `path-database.json` is the complete pre-partition population;
+canonical v3 checkpoints project it into Phase 4/5, use it for same-FPGA local
+paths, and use the same member-ID namespace for routed cross-FPGA logic
+segments. `cut-path-database.json` is a directed through-net qualification run
+that proves every actual cut net was queried and structurally classified; it is
+not allowed to truncate the Phase 4/5 timing population. Canonical experiment
+stages inspect the sealed projection provenance and bind `--logic-path-database`
+to the matching namespace automatically. Legacy v2 checkpoints that projected
+the through-cut database remain readable, but they are not valid evidence for
+endpoint-complete whole-design WNS/TNS.
 
 To use the identical flow boundary with a concrete Xilinx part, select the
 Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:

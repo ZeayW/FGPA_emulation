@@ -13,6 +13,7 @@ from emuflow.experiment_upstream import (
     EXPERIMENT_PARTITION_SCHEMA,
     EXPERIMENT_TDM_SCHEMA,
     _portable_cut_timing_projection,
+    run_cut_timing_checkpoint,
     validate_tdm_checkpoint,
 )
 
@@ -22,6 +23,62 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    @mock.patch("emuflow.experiment_upstream.validate_cut_timing_checkpoint")
+    @mock.patch("emuflow.experiment_upstream._sha256", return_value="0" * 64)
+    @mock.patch("emuflow.experiment_upstream.project_sta_path_database")
+    @mock.patch("emuflow.experiment_upstream.run_opensta_path_database")
+    @mock.patch("emuflow.experiment_upstream.validate_timing_checkpoint")
+    def test_cut_timing_projects_complete_prepartition_database(
+        self,
+        _validate_timing,
+        run_opensta,
+        project,
+        _sha,
+        _validate_cut,
+    ) -> None:
+        run_opensta.return_value = {"status": "pass"}
+        project.return_value = {"status": "pass"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontend = root / "frontend"
+            timing = root / "timing"
+            partition = root / "partition"
+            output = root / "cut"
+            (frontend / "phase1").mkdir(parents=True)
+            timing.mkdir()
+            partition.mkdir()
+            (frontend / "phase1/design.emuir.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            complete = timing / "path-database.json"
+            complete.write_text("{}", encoding="utf-8")
+            (partition / "assignment.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "emuflow.partition-assignment/v1",
+                        "cut_nets": [{"net": "n0"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            run_cut_timing_checkpoint(
+                frontend,
+                timing,
+                partition,
+                output,
+                clocks={"clk": 10.0},
+            )
+
+            self.assertEqual(project.call_args.args[0], complete.resolve())
+            self.assertNotEqual(
+                project.call_args.args[0], output / "cut-path-database.json"
+            )
+            self.assertEqual(
+                _validate_cut.call_args.args[:3],
+                (frontend, timing, partition),
+            )
+
     def test_cut_timing_projection_provenance_is_relocation_portable(
         self,
     ) -> None:

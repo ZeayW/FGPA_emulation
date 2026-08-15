@@ -79,12 +79,13 @@ def _sta_path_database(root: Path) -> Path | None:
 
 
 def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
-    """Return the full and through-cut STA databases used by physical timing.
+    """Return the local and routed-member STA databases for physical timing.
 
-    Local intra-FPGA queries use the complete pre-partition database.  Logic
-    segments reconstructed from Phase 4 use the independently queried
-    through-cut database because the router's compressed member identities
-    are defined by that database, not by the bounded full-path enumeration.
+    Local intra-FPGA queries always use the complete pre-partition database.
+    Cross-FPGA logic segments must use the database that produced the sealed
+    Phase 4 timing population, because its compressed member IDs define the
+    routed paths.  Canonical v3 checkpoints project the complete database;
+    legacy v2 checkpoints projected the through-cut qualification database.
     """
 
     full = _sta_path_database(root)
@@ -99,7 +100,25 @@ def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
         raise ValidationError(
             "physical timing requires the through-cut STA path database"
         )
-    return full, cut
+    if full is None:
+        return None, None
+    projected_path = root / "timing/cut-timing-paths.json"
+    if not projected_path.is_file():
+        raise ValidationError(
+            "physical timing requires the sealed Phase 4 timing population"
+        )
+    projected = read_json(projected_path)
+    source_input = projected.get("source", {}).get("input")
+    if not isinstance(source_input, str) or not source_input:
+        raise ValidationError("physical timing population provenance is invalid")
+    source_name = Path(source_input).name
+    if source_name == full.name:
+        return full, full
+    if source_name == cut.name:
+        return full, cut
+    raise ValidationError(
+        "physical timing population names an unknown STA database"
+    )
 
 
 def _board_link_timing(root: Path) -> Path | None:

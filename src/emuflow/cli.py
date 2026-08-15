@@ -587,6 +587,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cut_timing_validate.add_argument("root", type=Path)
     cut_timing_validate.add_argument("--frontend", type=Path, required=True)
+    cut_timing_validate.add_argument("--timing", type=Path, required=True)
     cut_timing_validate.add_argument("--partition", type=Path, required=True)
     cut_timing_validate.add_argument(
         "--timing-model", type=Path, default=DEFAULT_TIMING_MODEL
@@ -3210,6 +3211,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         elif args.experiment_stage_command == "cut-timing-validate":
             report = validate_cut_timing_checkpoint(
                 args.frontend,
+                args.timing,
                 args.partition,
                 args.root,
                 timing_model_path=args.timing_model,

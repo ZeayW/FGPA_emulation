@@ -37,6 +37,10 @@ class ExperimentStagesTest(unittest.TestCase):
             (timing / "cut-path-database.json").write_text(
                 "{}", encoding="utf-8"
             )
+            write_json(
+                timing / "cut-timing-paths.json",
+                {"source": {"input": "cut-path-database.json"}},
+            )
             self.assertEqual(
                 _physical_timing_databases(root),
                 (
@@ -44,11 +48,19 @@ class ExperimentStagesTest(unittest.TestCase):
                     timing / "cut-path-database.json",
                 ),
             )
-            self.assertIsNone(_timing_paths(root))
-
             projected = timing / "cut-timing-paths.json"
-            projected.write_text("{}", encoding="utf-8")
             self.assertEqual(_timing_paths(root), projected)
+            write_json(
+                projected,
+                {"source": {"input": "path-database.json"}},
+            )
+            self.assertEqual(
+                _physical_timing_databases(root),
+                (
+                    timing / "path-database.json",
+                    timing / "path-database.json",
+                ),
+            )
 
     def test_physical_timing_requires_both_sta_database_namespaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -64,6 +76,20 @@ class ExperimentStagesTest(unittest.TestCase):
                 "{}", encoding="utf-8"
             )
             with self.assertRaisesRegex(Exception, "complete original STA"):
+                _physical_timing_databases(root)
+
+    def test_physical_timing_rejects_unknown_projection_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timing = root / "timing"
+            timing.mkdir()
+            for name in ("path-database.json", "cut-path-database.json"):
+                (timing / name).write_text("{}", encoding="utf-8")
+            write_json(
+                timing / "cut-timing-paths.json",
+                {"source": {"input": "unsealed.json"}},
+            )
+            with self.assertRaisesRegex(Exception, "unknown STA database"):
                 _physical_timing_databases(root)
 
     def test_frontend_checkpoint_is_reusable_and_tamper_evident(self) -> None:

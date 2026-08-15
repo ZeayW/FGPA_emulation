@@ -367,6 +367,12 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   EmuIR-plus-timing-model endpoint-reachability classification.  Never silence
   a missing cut net by dropping the coverage assertion or by treating a
   producer-reported zero-path result as self-authenticating.
+- The directed through-cut database is qualification evidence, not the Phase
+  4/5 timing population.  Project every cross-partition path from the complete
+  pre-partition TimingPathDB, seal that database SHA in the cut-timing
+  checkpoint, and use the same member-ID namespace for Phase 4 routing and
+  Phase 7 physical logic-segment reconstruction.  A bounded through-net query
+  must never silently truncate final whole-design WNS/TNS coverage.
 - OpenPARF legalization locks must project through the electric-potential,
   multiplier, gradient, and step-size calculations.  An empty active
   placement subspace is a no-op/termination condition, not a reason to divide
