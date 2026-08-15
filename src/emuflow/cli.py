@@ -2272,7 +2272,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=(1, 2),
         default=1,
-        help="static exact mode dependency-depth limit (currently 1)",
+        help="static exact mode dependency-depth limit",
     )
     phase3.add_argument(
         "--comb-segment-budget-slots",

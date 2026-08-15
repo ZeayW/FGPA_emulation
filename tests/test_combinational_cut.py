@@ -293,7 +293,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             None, self.ir, self.platform
         )
 
-    def _exact_artifacts(self, frame_slots=16, dependent_return=False):
+    def _exact_artifacts(
+        self, frame_slots=16, dependent_return=False, dependency_depth=1
+    ):
         constraints = (
             normalize_partition_constraints(
                 {
@@ -303,14 +305,14 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 self.ir,
                 self.platform,
             )
-            if dependent_return
+            if dependent_return or dependency_depth == 2
             else self.constraints
         )
         clusters = build_clusters(
             self.ir,
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
-            max_cross_fpga_dependency_depth=1,
+            max_cross_fpga_dependency_depth=dependency_depth,
             comb_segment_budget_slots=1,
             frame_slots=frame_slots,
         )
@@ -319,19 +321,32 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             for cluster in clusters["clusters"]
             for instance in cluster["instances"]
         }
+        instance_targets = {
+            "q0": "fpga0",
+            "l0": "fpga0",
+            "l1": "fpga1",
+            "l2": "fpga0" if dependency_depth == 2 else "fpga1",
+            "q1": (
+                "fpga0"
+                if dependent_return or dependency_depth == 2
+                else "fpga1"
+            ),
+        }
+        cluster_targets = {}
+        for instance, target in instance_targets.items():
+            cluster_id = cluster_for[instance]
+            if (
+                cluster_id in cluster_targets
+                and cluster_targets[cluster_id] != target
+            ):
+                raise AssertionError("fixture assigns one cluster twice")
+            cluster_targets[cluster_id] = target
         assignment = build_partition_assignment(
             self.ir,
             self.platform,
             clusters,
             constraints,
-            {
-                cluster_for["q0"]: "fpga0",
-                cluster_for["l0"]: "fpga0",
-                cluster_for["l1"]: "fpga1",
-                cluster_for["q1"]: (
-                    "fpga0" if dependent_return else "fpga1"
-                ),
-            },
+            cluster_targets,
             provider="test-static-exact-v1",
             seed=0,
         )
@@ -463,13 +478,73 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 self.ir, self.platform, tampered, assignment
             )
 
-    def test_depth_two_is_not_silently_enabled(self):
-        with self.assertRaisesRegex(ValidationError, "currently support"):
+    def test_depth_two_contract_schedule_and_macro_cycle_are_exact(self):
+        clusters, assignment = self._exact_artifacts(dependency_depth=2)
+        combinational = [
+            item
+            for item in assignment["cut_nets"]
+            if item["cut_class"] == "combinational"
+        ]
+        self.assertEqual([item["net"] for item in combinational], ["n0", "n1"])
+        self.assertEqual(combinational[1]["predecessor_cut_nets"], ["n0"])
+        self.assertEqual(
+            assignment["semantic_contract"]["metrics"][
+                "maximum_combinational_dependency_depth"
+            ],
+            2,
+        )
+        self.assertEqual(
+            validate_partition_artifacts(
+                self.ir, self.platform, clusters, assignment
+            )["status"],
+            "pass",
+        )
+        routes = self._exact_routes(assignment)
+        schedule = build_tdm_schedule(routes, self.platform)
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, schedule)["status"],
+            "pass",
+        )
+        readiness = {
+            item["net"]: item
+            for item in schedule["schedule_dependency_certificate"][
+                "demand_readiness"
+            ]
+        }
+        self.assertEqual(readiness["n1"]["evidence"][0]["predecessor_cut_net"], "n0")
+        self.assertGreater(
+            readiness["n1"]["source_ready_slot"],
+            readiness["n0"]["source_ready_slot"],
+        )
+        split = build_split_artifacts(
+            self.ir, assignment, schedule, self.platform
+        )
+        self.assertEqual(
+            validate_split_artifacts(
+                self.ir,
+                assignment,
+                schedule,
+                self.platform,
+                split,
+            )["status"],
+            "pass",
+        )
+        random_evidence = simulate_static_exact_partition_equivalence(
+            self.ir, assignment, schedule, cycles=8, seed=23
+        )
+        self.assertEqual(random_evidence["status"], "pass")
+        exhaustive = exhaustively_verify_static_exact_partition_equivalence(
+            self.ir, assignment, schedule
+        )
+        self.assertEqual(exhaustive["status"], "pass")
+
+    def test_depth_above_two_is_rejected(self):
+        with self.assertRaisesRegex(ValidationError, "1 or 2"):
             build_clusters(
                 self.ir,
                 self.constraints,
                 cut_mode=CUT_MODE_STATIC_EXACT,
-                max_cross_fpga_dependency_depth=2,
+                max_cross_fpga_dependency_depth=3,
             )
 
     def test_wide_cone_splits_and_improves_checked_balance(self):

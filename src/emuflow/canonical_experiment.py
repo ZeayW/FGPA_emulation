@@ -470,11 +470,11 @@ def compile_canonical_experiment_spec(
     )
     if (
         cut_mode == CUT_MODE_STATIC_EXACT
-        and max_cross_fpga_dependency_depth != 1
+        and max_cross_fpga_dependency_depth not in {1, 2}
     ):
         raise ValidationError(
             "canonical static exact cut currently requires "
-            "max_cross_fpga_dependency_depth=1"
+            "max_cross_fpga_dependency_depth to be 1 or 2"
         )
     executable = str(tools["emuflow"])
     base_inputs = {

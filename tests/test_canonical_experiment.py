@@ -381,7 +381,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config.update(
                 {
                     "cut_mode": "static-exact-combinational",
-                    "max_cross_fpga_dependency_depth": 1,
+                    "max_cross_fpga_dependency_depth": 2,
                     "comb_segment_budget_slots": 2,
                     "route_candidate_workers": 7,
                 }
@@ -412,6 +412,12 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertEqual(
                 partition["configuration"]["comb_segment_budget_slots"], 2
+            )
+            self.assertEqual(
+                partition["configuration"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                2,
             )
             self.assertIn("--cut-mode", partition["command"])
             self.assertIn("--cut-mode", partition["validator"])

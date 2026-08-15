@@ -2,7 +2,7 @@
 
 ## Status and claim boundary
 
-The production flow remains `sequential-only`. The opt-in depth-1 path now
+The production flow remains `sequential-only`. The opt-in depth-1/depth-2 path now
 passes Phase 3 partition legality, Phase 4 native-route contract propagation,
 and Phase 5 dependency/capture scheduling. Safe-mode Phase 3 transports
 register outputs, transport-safe register inputs, and replicated primary
@@ -14,7 +14,7 @@ partition, create a transport schedule, establish macro-cycle equivalence, or
 claim physical timing closure.
 
 The opt-in Phase 3 mode `static-exact-combinational` implements the first
-legality gate for dependency depth 1 and emits an independently reconstructed
+legality gate for dependency depth 1 or 2 and emits an independently reconstructed
 semantic contract. Phase 4 binds that contract through native routing. Phase 5
 uses it to prove when downstream combinational values become available and
 when terminal captures are ready. Phase 6 now materializes contract-bound,
@@ -101,11 +101,11 @@ feasibility, and physical segment deadlines.
 1. **Characterization (implemented, no behavior change).** Read-only SCC,
    eligibility, dependency-depth, and theoretical atomic-component report;
    independent exact replay; tamper tests.
-2. **Phase 3 depth 1 (implemented, opt-in).** Explicit cut policy, assignment
+2. **Phase 3 depth 1/2 (implemented, opt-in).** Explicit cut policy, assignment
    semantic contract, provider-independent cluster/legality reconstruction,
    and balance fixture. Its strongest qualification is
    `partition-legality-only-provisional`.
-3. **Phase 4/5 depth 1 (implemented, opt-in).** Exact contract propagation,
+3. **Phase 4/5 depth 1/2 (implemented, opt-in).** Exact contract propagation,
    canonical contract digest binding, deterministic
    dependency-aware list scheduling, source-ready/capture certificate, fixed
    frame fail-closed diagnostics, and tamper tests.
@@ -118,8 +118,9 @@ feasibility, and physical segment deadlines.
    Contract-bound routed `launch_to_tx`, `rx_to_tx`, and `rx_to_capture`
    evidence, independent causal deadline reconstruction, explicit missing-
    evidence incompleteness, and global target-clock/virtual-runtime WNS/TNS.
-6. **Depth 2 and optimizer integration.** Path-local readiness precedes any
-   timing-DAG/ratio provider promotion.
+6. **Optimizer integration.** Path-local readiness precedes any timing-DAG or
+   ratio-provider promotion; V1 depth 2 continues to use the dedicated exact
+   scheduler.
 
 ## Commands
 

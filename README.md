@@ -295,9 +295,9 @@ single-driver LUT-only potential-cut set, complete potential-cut dependencies,
 depth-1/depth-2 distributions, and theoretical atomic-component reductions.
 Its qualification is explicitly
 `analysis-only-no-partition-or-equivalence-claim`: it does not change Phase 3
-output or any default provider. An explicit Phase 3 depth-1 experiment can
-release only independently eligible LUT nets and emit a provisional semantic
-contract:
+output or any default provider. An explicit Phase 3 depth-1 or depth-2
+experiment can release only independently eligible LUT nets and emit a
+provisional semantic contract:
 
 ```bash
 emuflow phase3 \

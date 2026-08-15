@@ -323,10 +323,10 @@ def build_clusters(
     released_combinational_nets: Set[str] = set()
     characterization = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
-        if max_cross_fpga_dependency_depth != 1:
+        if max_cross_fpga_dependency_depth not in {1, 2}:
             raise ValidationError(
-                "static exact combinational cuts currently support only "
-                "max_cross_fpga_dependency_depth=1"
+                "static exact combinational cuts require "
+                "max_cross_fpga_dependency_depth to be 1 or 2"
             )
         if (
             isinstance(comb_segment_budget_slots, bool)
@@ -344,7 +344,9 @@ def build_clusters(
             raise ValidationError("frame_slots must be an integer at least two")
         from .combinational_cut import characterize_combinational_cuts
 
-        characterization = characterize_combinational_cuts(ir, (1,))
+        characterization = characterize_combinational_cuts(
+            ir, tuple(range(1, max_cross_fpga_dependency_depth + 1))
+        )
         released_combinational_nets = {
             item["net"]
             for item in characterization["eligible_cuts"]

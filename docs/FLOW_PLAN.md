@@ -30,7 +30,7 @@ The initial semantic envelope is intentionally narrow:
 Multi-clock designs, runtime packet switching, partial reconfiguration, and
 transparent encrypted-IP partitioning are later extensions. Controlled static
 exact combinational cuts are an active opt-in extension. Characterization,
-depth-1 partition legality, native-route contract propagation, and dependency-
+depth-1/depth-2 partition legality, native-route contract propagation, and dependency-
 aware Phase 5 scheduling, Phase 6 exact boundary materialization, and event-
 driven macro-cycle equivalence are implemented. Small LUT/FF models receive
 complete one-step state/input enumeration, while larger models are honestly
@@ -276,13 +276,14 @@ conservative single-driver LUT-only potential-cut set, retains reconvergent
 predecessors, and reports depth-1/depth-2 theoretical component splitting.
 Its independent validator regenerates the whole report. An opt-in
 `--cut-mode static-exact-combinational` Phase 3 path now releases only depth-1
-eligible nets, emits `emuflow.static-exact-combinational-cut/v1`, and
+or depth-2 eligible nets, as explicitly configured, emits
+`emuflow.static-exact-combinational-cut/v1`, and
 independently reconstructs both clusters and contract. Its qualification is
 only `partition-legality-only-provisional`; production defaults and safe-mode
-Phase 4--7 behavior are unchanged. Exact-mode Phase 4 accepts only
-`native-load-balanced-v1`, copies the full contract and canonical digest into
-the route artifact, and independently checks every routed demand against its
-cut-node metadata. Exact-mode Phase 5 uses
+Phase 4--7 behavior are unchanged. Exact-mode Phase 4 accepts only the native
+route tree, with optional post-route timing annotation, copies the full
+contract and canonical digest into the route artifact, and independently
+checks every routed demand against its cut-node metadata. Exact-mode Phase 5 uses
 `deterministic-static-exact-list-schedule-v1`: it topologically orders cut
 nodes, derives each source-ready edge from launch or predecessor arrival,
 reserves collision-free lane/slots, and proves each final capture is ready by
@@ -351,8 +352,9 @@ Acceptance:
 - route trees contain no cycles;
 - the checker independently reconstructs link utilization.
 
-For the opt-in static-exact depth-1 path, Phase 4 deliberately permits only
-the timing-oblivious native provider. The route artifact retains the complete
+For the opt-in static-exact depth-1/depth-2 path, Phase 4 deliberately permits
+only the native route tree, either timing-oblivious or with post-route timing
+annotation. The route artifact retains the complete
 Phase 3 semantic contract and its canonical SHA-256, while each route repeats
 the cut class, dependency level, predecessor-cut set, and combinational depth.
 The standalone validator cross-checks all of those fields against the
@@ -490,7 +492,7 @@ Acceptance:
 - partitioned and unpartitioned designs are cycle-equivalent.
 
 The first three items now also have a separate exact-mode implementation for
-depth-1 combinational cuts. Its topological list scheduler uses the shared
+depth-1/depth-2 combinational cuts. Its topological list scheduler uses the shared
 `fabric-rising-edge-current-slot/v1` convention, computes launch-to-TX,
 RX-to-TX, and RX-to-capture readiness from the Phase 3 contract, and stops
 with a precise fixed-frame infeasibility diagnostic when any arrival or
