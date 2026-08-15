@@ -35,6 +35,18 @@ def _reconstruct_tdm_feedback(
     ratio_plan: Optional[Mapping[str, Any]],
     prepared_ratio_model: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
+    # Academic schedules are certified against the canonical hop-indexed
+    # timing model used by their ratio plan.  Phase 5 normally already owns
+    # that model, while a downstream Phase 4 consumer deliberately receives
+    # only the sealed public artifacts.  Rebuild it here when necessary so
+    # producer and independent consumer reconstruct exactly the same path
+    # semantics (including compressed paths and member-specific multicast
+    # transitions).  Ratio-free baseline schedules retain the sparse linear
+    # reconstruction below.
+    if ratio_plan is not None and prepared_ratio_model is None:
+        from .tdm_ratio import _prepare_model
+
+        prepared_ratio_model = _prepare_model(routes, platform)
     validation = validate_tdm_schedule(
         routes,
         platform,

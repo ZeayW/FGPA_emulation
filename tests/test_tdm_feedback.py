@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.cross_stage import (
@@ -549,6 +550,73 @@ class TdmFeedbackTest(unittest.TestCase):
             self.assertEqual(
                 report["tdm_feedback_validation"]["status"], "pass"
             )
+
+    def test_academic_feedback_consumer_rebuilds_canonical_ratio_model(
+        self,
+    ) -> None:
+        (
+            platform,
+            assignment,
+            _,
+            timing,
+            constraints,
+        ) = self._timing_fixture()
+        routes = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            timing,
+            executable=str(tlr_router()),
+            provider=GLOBAL_CANDIDATE_PROVIDER,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            run_phase5(
+                routes_path,
+                platform_path,
+                root / "phase5",
+                simulation_frames=2,
+                ratio_optimizer=str(tdm_ratio_optimizer()),
+                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+                ratio_max_iterations=20,
+                post_refinement_iterations=10,
+            )
+            schedule = json.loads(
+                (root / "phase5/schedule.json").read_text(encoding="utf-8")
+            )
+            ratio_plan = json.loads(
+                (root / "phase5/ratio_plan.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            feedback = json.loads(
+                (root / "phase5/tdm_feedback.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            # A downstream Phase 4 process has only the sealed artifacts,
+            # not Phase 5's in-memory dense model.  Academic feedback must
+            # rebuild that canonical model rather than silently switching to
+            # the sparse ratio-free timing reconstruction.
+            with patch(
+                "emuflow.tdm_feedback."
+                "reconstruct_tdm_schedule_timing_paths_from_routes",
+                side_effect=AssertionError("sparse path must not be used"),
+            ):
+                checked = validate_tdm_feedback(
+                    routes,
+                    platform,
+                    schedule,
+                    feedback,
+                    ratio_plan,
+                )
+            self.assertEqual(checked["status"], "pass")
 
     def test_checked_phase45_loop_seals_and_revalidates_trials(self) -> None:
         (

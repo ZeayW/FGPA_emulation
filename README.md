@@ -2115,7 +2115,7 @@ the selected canonical artifacts.  Compact tests additionally compare every
 restricted route-master choice and multi-round slot schedule with exact
 oracles.  Workers 1 and 2 produce identical selected routes, schedules and
 termination decisions in the determinism regression.  Local qualification is
-currently 580 passed and 1 skipped plus the source-completeness audit, strict
+currently 582 passed and 1 skipped plus the source-completeness audit, strict
 C++ compile, and diff check.  Materially sized proxy A/B and complete Phase 7
 global WNS/TNS A/B remain pending, so the routing loop remains opt-in and no
 final timing-improvement claim is made from the intermediate Phase 5 score.
