@@ -2148,6 +2148,9 @@ contest-path estimated slack by 297 ns, and reduce link bit-hops from 243,180
 to 242,717.  In round two, feedback steps 1 and 0.5 are rolled back before
 step 0.25 is accepted, demonstrating that the line search is selecting with
 the realized Phase 5 objective rather than accepting a proxy improvement.
+Both the in-process checker and a cold-start independent checker replayed all
+five candidates, selected candidate 4, and returned `pass` with the same
+`iteration-limit` termination.
 Case 7 has no RTL/physical source for a Phase 7 timing claim, so this remains
 scale/proxy evidence; broader RTL/platform Phase 7 replication is pending.
 The routing loop remains opt-in, and no final timing-improvement claim is
