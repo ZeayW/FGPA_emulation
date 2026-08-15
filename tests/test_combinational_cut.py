@@ -1338,6 +1338,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         command = (
             f"read_verilog -formal -sv {fixture}; "
             "prep -top static_exact_macro_step_miter; "
+            "chformal -lower; "
             "sat -verify -prove-asserts"
         )
         completed = subprocess.run(
