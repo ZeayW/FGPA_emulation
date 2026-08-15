@@ -1326,6 +1326,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             random_evidence["startup_uninitialized_shadow_reads"], 0
         )
         self.assertEqual(random_evidence["source_full_evaluations"], 0)
+        self.assertEqual(random_evidence["reference_full_evaluations"], 8)
+        self.assertEqual(
+            random_evidence["initialization_full_evaluations"], 0
+        )
+        self.assertEqual(random_evidence["partition_full_evaluations"], 0)
         self.assertGreaterEqual(
             random_evidence["incremental_combinational_cell_evaluations"], 0
         )
@@ -1339,6 +1344,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual(exhaustive["cases"], 4)
         self.assertEqual(exhaustive["full_replay_cross_checks"], 4)
         self.assertEqual(exhaustive["source_full_evaluations"], 0)
+        self.assertEqual(exhaustive["reference_full_evaluations"], 4)
+        self.assertEqual(exhaustive["initialization_full_evaluations"], 0)
+        self.assertEqual(exhaustive["partition_full_evaluations"], 0)
 
     def test_phase6_event_model_rejects_tx_before_local_source_ready(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
@@ -1433,6 +1441,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertEqual(evidence["random_trace_count"], 3)
             self.assertEqual(evidence["random_macro_cycles"], 12)
             self.assertEqual(evidence["source_full_evaluations"], 0)
+            self.assertEqual(evidence["reference_full_evaluations"], 12)
+            self.assertEqual(evidence["initialization_full_evaluations"], 0)
+            self.assertEqual(evidence["partition_full_evaluations"], 0)
             self.assertEqual(
                 evidence["exhaustive_macro_step"]["evidence_type"],
                 "exhaustive-small-model",

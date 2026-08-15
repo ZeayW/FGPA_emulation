@@ -84,6 +84,16 @@ def _static_exact_equivalence_evidence(
         "source_full_evaluations": sum(
             item["source_full_evaluations"] for item in random_traces
         ),
+        "reference_full_evaluations": sum(
+            item["reference_full_evaluations"] for item in random_traces
+        ),
+        "initialization_full_evaluations": sum(
+            item["initialization_full_evaluations"]
+            for item in random_traces
+        ),
+        "partition_full_evaluations": sum(
+            item["partition_full_evaluations"] for item in random_traces
+        ),
         "incremental_combinational_cell_evaluations": sum(
             item["incremental_combinational_cell_evaluations"]
             for item in random_traces

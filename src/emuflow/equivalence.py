@@ -426,6 +426,26 @@ class _MappedModel:
                 values, instance_id, overrides
             )
 
+        next_state, outputs = self.state_and_outputs_from_values(
+            values,
+            state,
+            overrides,
+        )
+        return values, next_state, outputs
+
+    def state_and_outputs_from_values(
+        self,
+        values: Mapping[str, int],
+        state: Mapping[str, Any],
+        overrides: Optional[Mapping[Tuple[str, str], int]] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, int]]:
+        """Extract the synchronous boundary from settled net values.
+
+        Static-exact event simulation already maintains a settled local value
+        map as transport shadows arrive.  Reusing that map here avoids a
+        second whole-design combinational evaluation at macro-cycle commit.
+        """
+
         next_state: Dict[str, Any] = {}
         for instance_id in self.ff_ids:
             instance = self.instances[instance_id]
@@ -577,7 +597,7 @@ class _MappedModel:
             for (port, bit), net in sorted(self.top_output_net.items())
             if net in values
         }
-        return values, next_state, outputs
+        return next_state, outputs
 
     def state_bit_count(self) -> int:
         return len(self.ff_ids) + sum(
@@ -884,21 +904,35 @@ class _StaticExactIncrementalValues:
         seed: int,
         shadow_values: Mapping[Tuple[str, str], int],
         input_values: Optional[Mapping[Tuple[str, int], int]],
+        reference_values: Optional[Mapping[str, int]] = None,
     ) -> None:
         self.model = model
         self.context = context
-        self.overrides = _static_exact_sink_overrides(
-            context, shadow_values
-        )
-        self.values, _, _ = model.evaluate(
-            state,
-            cycle,
-            seed,
-            overrides=self.overrides,
-            input_values=input_values,
-        )
+        self.overrides: Dict[Tuple[str, str], int] = {}
+        if reference_values is None:
+            self.values, _, _ = model.evaluate(
+                state,
+                cycle,
+                seed,
+                input_values=input_values,
+            )
+            self.initial_full_evaluations = 1
+        else:
+            self.values = dict(reference_values)
+            self.initial_full_evaluations = 0
         self.incremental_cell_evaluations = 0
         self.shadow_pin_updates = 0
+        # Start from the monolithic reference snapshot and apply every local
+        # cross-FPGA shadow override as one batch.  Each affected local cone is
+        # then recomputed at most once in topological order, instead of doing a
+        # second whole-design evaluation merely to initialize partition-local
+        # values.
+        self.apply_shadow_updates(
+            [
+                (shadow_key, int(shadow_values.get(shadow_key, 0)))
+                for shadow_key in sorted(context["override_pins_by_shadow"])
+            ]
+        )
 
     def value(self, net_id: str) -> int:
         if net_id not in self.values:
@@ -1057,7 +1091,6 @@ def _simulate_static_exact_macro_step(
         seed,
         input_values=input_values,
     )
-    del reference_values  # TX must never consume the reference final-net map.
     shadows = dict(shadow_values)
     incremental_values = (
         None
@@ -1070,8 +1103,13 @@ def _simulate_static_exact_macro_step(
             seed,
             shadows,
             input_values,
+            reference_values,
         )
     )
+    if incremental_values is None:
+        # The legacy small-model oracle deliberately resolves TX values by
+        # repeated full replay and must not retain a reference-net shortcut.
+        del reference_values
     current_arrivals: Dict[Tuple[str, str], int] = {}
     current_shadow_generation: Set[Tuple[str, str]] = set()
     arrivals_by_slot: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
@@ -1214,13 +1252,28 @@ def _simulate_static_exact_macro_step(
         capture_checks += 1
 
     final_overrides = _static_exact_sink_overrides(context, shadows)
-    _, partition_next, partition_outputs = model.evaluate(
-        state,
-        cycle,
-        seed,
-        overrides=final_overrides,
-        input_values=input_values,
-    )
+    if incremental_values is None:
+        _, partition_next, partition_outputs = model.evaluate(
+            state,
+            cycle,
+            seed,
+            overrides=final_overrides,
+            input_values=input_values,
+        )
+        partition_full_evaluations = 1
+        initialization_full_evaluations = 0
+    else:
+        partition_next, partition_outputs = (
+            model.state_and_outputs_from_values(
+                incremental_values.values,
+                state,
+                incremental_values.overrides,
+            )
+        )
+        partition_full_evaluations = 0
+        initialization_full_evaluations = (
+            incremental_values.initial_full_evaluations
+        )
     if partition_next != reference_next:
         mismatch = next(
             instance_id
@@ -1245,6 +1298,9 @@ def _simulate_static_exact_macro_step(
         "capture_checks": capture_checks,
         "uninitialized_shadow_reads": uninitialized_shadow_reads,
         "source_full_evaluations": source_full_evaluations,
+        "reference_full_evaluations": 1,
+        "initialization_full_evaluations": initialization_full_evaluations,
+        "partition_full_evaluations": partition_full_evaluations,
         "incremental_cell_evaluations": (
             0
             if incremental_values is None
@@ -1279,6 +1335,9 @@ def simulate_static_exact_partition_equivalence(
     capture_checks = 0
     uninitialized_shadow_reads = 0
     source_full_evaluations = 0
+    reference_full_evaluations = 0
+    initialization_full_evaluations = 0
+    partition_full_evaluations = 0
     incremental_cell_evaluations = 0
     shadow_pin_updates = 0
     compared_outputs = 0
@@ -1304,6 +1363,15 @@ def simulate_static_exact_partition_equivalence(
         capture_checks += result["capture_checks"]
         uninitialized_shadow_reads += result["uninitialized_shadow_reads"]
         source_full_evaluations += result["source_full_evaluations"]
+        reference_full_evaluations += result[
+            "reference_full_evaluations"
+        ]
+        initialization_full_evaluations += result[
+            "initialization_full_evaluations"
+        ]
+        partition_full_evaluations += result[
+            "partition_full_evaluations"
+        ]
         incremental_cell_evaluations += result[
             "incremental_cell_evaluations"
         ]
@@ -1340,6 +1408,11 @@ def simulate_static_exact_partition_equivalence(
         "capture_checks": capture_checks,
         "startup_uninitialized_shadow_reads": uninitialized_shadow_reads,
         "source_full_evaluations": source_full_evaluations,
+        "reference_full_evaluations": reference_full_evaluations,
+        "initialization_full_evaluations": (
+            initialization_full_evaluations
+        ),
+        "partition_full_evaluations": partition_full_evaluations,
         "incremental_combinational_cell_evaluations": (
             incremental_cell_evaluations
         ),
@@ -1396,6 +1469,9 @@ def exhaustively_verify_static_exact_partition_equivalence(
     tx_samples = 0
     full_replay_cross_checks = 0
     source_full_evaluations = 0
+    reference_full_evaluations = 0
+    initialization_full_evaluations = 0
+    partition_full_evaluations = 0
     incremental_cell_evaluations = 0
     shadow_pin_updates = 0
     for vector in range(cases):
@@ -1444,6 +1520,15 @@ def exhaustively_verify_static_exact_partition_equivalence(
                 )
         full_replay_cross_checks += 1
         source_full_evaluations += result["source_full_evaluations"]
+        reference_full_evaluations += result[
+            "reference_full_evaluations"
+        ]
+        initialization_full_evaluations += result[
+            "initialization_full_evaluations"
+        ]
+        partition_full_evaluations += result[
+            "partition_full_evaluations"
+        ]
         incremental_cell_evaluations += result[
             "incremental_cell_evaluations"
         ]
@@ -1488,6 +1573,11 @@ def exhaustively_verify_static_exact_partition_equivalence(
         "tx_samples": tx_samples,
         "full_replay_cross_checks": full_replay_cross_checks,
         "source_full_evaluations": source_full_evaluations,
+        "reference_full_evaluations": reference_full_evaluations,
+        "initialization_full_evaluations": (
+            initialization_full_evaluations
+        ),
+        "partition_full_evaluations": partition_full_evaluations,
         "incremental_combinational_cell_evaluations": (
             incremental_cell_evaluations
         ),
