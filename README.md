@@ -2704,7 +2704,12 @@ BoardDB domain order, so the parallel and serial artifacts are byte-identical;
 the default remains one worker unless the caller explicitly allocates more.
 
 Four Chimew kernels now sit beside that production baseline and are composed
-by the default open academic physical path described above. The first
+by the default open academic physical path described above.  Its electrical
+materializer follows the BoardDB capacity contract: full-duplex
+`per_direction` links use two direction-qualified assignment domains, while
+`shared_bidirectional` contest links put both directional groups in one
+exclusive lane domain with direction-agnostic channels.  It never widens a
+shared contest link into two independent lane pools merely to run Chimew. The first
 reproduces FPGA 2026 Algorithm 1 from explicit,
 source-qualified physical SLL-crossing encodings. The second only swaps
 equal-encoding signals using physical-site source-y coordinates, preserving
