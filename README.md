@@ -2951,6 +2951,12 @@ these timing-covered groups become physical placement anchors, and their anchor
 coordinate is the source/sink placement centroid from the sealed prepass.
 Unprotected channel coordinates remain optimization/certificate data and are
 not misrepresented as real package-pin constraints.
+When the input is a real Phase 5 schedule, its explicit slot is also part of
+the refinement exchange domain.  Equal-encoding signals may therefore move
+only among groups at the same frozen slot; native refinement and the Python
+replay both preserve per-group slot uniqueness before the final pin-plan
+validator checks every physical lane/slot.  Paper-only fixtures without an
+explicit Phase 5 slot retain the unconstrained published-kernel behavior.
 
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report

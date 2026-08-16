@@ -23,6 +23,7 @@ from .chimew_grouping import (
     _integer,
     _popcount,
     _tdm_ratio,
+    _tdm_slot,
     _string,
     validate_chimew_crossings,
 )
@@ -148,6 +149,18 @@ def _validate_initial_groups(
         ratio = next(iter(ratios))
         if len(members) > ratio:
             raise ValidationError(f"Chimew group {group} exceeds its TDM ratio")
+        explicit_slots = [
+            _tdm_slot(entries[entry_id], 0)
+            for entry_id in members
+            if "slot" in entries[entry_id]
+        ]
+        if explicit_slots and (
+            len(explicit_slots) != len(members)
+            or len(set(explicit_slots)) != len(explicit_slots)
+        ):
+            raise ValidationError(
+                f"Chimew group {group} reuses a frozen Phase 5 slot"
+            )
         encoding = 0
         for entry_id in members:
             encoding |= encodings[entry_id]
@@ -242,21 +255,32 @@ def _oracle_refine(
     before_total = _pairwise_objective(members, positions, all_groups)
     guards = guards or {}
     buckets: Dict[
-        Tuple[Tuple[str, str, str], int, int, Optional[tuple[Any, ...]]],
+        Tuple[
+            Tuple[str, str, str],
+            int,
+            int,
+            Optional[tuple[Any, ...]],
+            Optional[int],
+        ],
         list[str],
     ] = defaultdict(list)
-    for entry in entries:
+    for index, entry in enumerate(entries):
         buckets[
             (
                 _domain(entry),
                 _tdm_ratio(entry),
                 encodings[entry["id"]],
                 guards.get(entry["id"]),
+                (
+                    _tdm_slot(entry, index)
+                    if "slot" in entry
+                    else None
+                ),
             )
         ].append(entry["id"])
     accepted = moved = 0
     guard_sentinel = ("", "", "", -1)
-    for (_, _, encoding, _guard), bucket in sorted(
+    for (_, _, encoding, _guard, _frozen_slot), bucket in sorted(
         buckets.items(),
         key=lambda item: (
             item[0][0],
@@ -264,6 +288,8 @@ def _oracle_refine(
             item[0][3] or guard_sentinel,
             item[0][1],
             item[0][2],
+            item[0][4] is not None,
+            item[0][4] if item[0][4] is not None else -1,
         ),
     ):
         affected = {assignment[entry_id] for entry_id in bucket}
@@ -325,9 +351,20 @@ def _run_native(
 ) -> Tuple[Dict[str, int], int, int, float, float]:
     guard_sentinel = ("", "", "", -1)
     domains = sorted(
-        {(_domain(entry), guards.get(entry["id"])) for entry in entries},
+        {
+            (
+                _domain(entry),
+                guards.get(entry["id"]),
+                _tdm_slot(entry, index) if "slot" in entry else None,
+            )
+            for index, entry in enumerate(entries)
+        },
         key=lambda item: (
-            item[0], item[1] is not None, item[1] or guard_sentinel
+            item[0],
+            item[1] is not None,
+            item[1] or guard_sentinel,
+            item[2] is not None,
+            item[2] if item[2] is not None else -1,
         ),
     )
     domain_index = {domain: index for index, domain in enumerate(domains)}
@@ -338,9 +375,14 @@ def _run_native(
         lines = ["EMUFLOW_CHIMEW_REFINER_INPUT_V1"]
         for index, entry in enumerate(entries):
             entry_id = entry["id"]
+            domain = (
+                _domain(entry),
+                guards.get(entry_id),
+                _tdm_slot(entry, index) if "slot" in entry else None,
+            )
             lines.append(
                 "SIGNAL "
-                f"{index} {domain_index[(_domain(entry), guards.get(entry_id))]} "
+                f"{index} {domain_index[domain]} "
                 f"{_tdm_ratio(entry)} "
                 f"{encodings[entry_id]} {initial[entry_id]} "
                 f"{positions[entry_id]:.17g}"
@@ -413,6 +455,18 @@ def refine_chimew_groups(
         refined_crossings[assignment[entry_id]] |= encodings[entry_id]
     if initial_crossings != refined_crossings:
         raise EmuFlowError("Chimew refinement changed a group SLL encoding")
+    refined_members: Dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        refined_members[assignment[entry["id"]]].append(entry)
+    for group, members in refined_members.items():
+        explicit_slots = [entry["slot"] for entry in members if "slot" in entry]
+        if explicit_slots and (
+            len(explicit_slots) != len(members)
+            or len(set(explicit_slots)) != len(explicit_slots)
+        ):
+            raise EmuFlowError(
+                f"Chimew refinement reused a frozen Phase 5 slot in group {group}"
+            )
     return {
         "schema": CHIMEW_REFINED_GROUPING_SCHEMA,
         "status": "standalone_paper_bounded_inference",

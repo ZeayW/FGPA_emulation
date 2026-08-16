@@ -136,6 +136,30 @@ class ChimewRefinementTest(unittest.TestCase):
         )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
+    def test_refinement_preserves_frozen_phase5_slot_uniqueness(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        for index, entry in enumerate(schedule["entries"]):
+            entry["slot"] = index % entry["tdm_ratio"]
+        initial = build_chimew_initial_groups(
+            schedule, self.crossings, executable=str(self.grouper)
+        )
+        result = refine_chimew_groups(
+            schedule,
+            self.crossings,
+            initial,
+            self.positions,
+            executable=str(self.refiner),
+        )
+        group_by_entry = {
+            record["schedule_entry"]: record["group"]
+            for record in result["entries"]
+        }
+        slots_by_group = {}
+        for entry in schedule["entries"]:
+            slots = slots_by_group.setdefault(group_by_entry[entry["id"]], set())
+            self.assertNotIn(entry["slot"], slots)
+            slots.add(entry["slot"])
+
     def test_normalized_position_substitute_is_rejected(self) -> None:
         invalid = copy.deepcopy(self.positions)
         invalid["coordinate_system"] = "normalized-y"
