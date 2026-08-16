@@ -585,6 +585,7 @@ def build_static_exact_semantic_contract(
             )
 
     dependencies: Dict[str, Set[str]] = {}
+    local_launches: Dict[str, bool] = {}
     for net_id, cut in sorted(cut_by_net.items()):
         source_fpga = cut["source_fpgas"][0]
         driver_instances = sorted(
@@ -597,6 +598,7 @@ def build_static_exact_semantic_contract(
         if len(driver_instances) != 1:
             raise ValidationError(f"exact cut {net_id!r} lacks one logic driver")
         predecessors: Set[str] = set()
+        has_local_launch = False
         work = list(driver_instances)
         visited: Set[str] = set()
         while work:
@@ -609,6 +611,7 @@ def build_static_exact_semantic_contract(
                     f"exact cut {net_id!r} source cone crosses an unmodelled boundary"
                 )
             if classes[instance_id] == "architectural-state-or-memory":
+                has_local_launch = True
                 continue
             for incoming in incoming_by_instance.get(instance_id, []):
                 predecessor = cut_by_net.get(incoming["id"])
@@ -620,12 +623,15 @@ def build_static_exact_semantic_contract(
                     continue
                 for endpoint in incoming["drivers"]:
                     upstream = endpoint["instance"]
+                    if upstream is None:
+                        has_local_launch = True
                     if (
                         upstream is not None
                         and instance_assignment.get(upstream) == source_fpga
                     ):
                         work.append(upstream)
         dependencies[net_id] = predecessors
+        local_launches[net_id] = has_local_launch
 
     successors: Dict[str, Set[str]] = defaultdict(set)
     indegree = {net_id: len(items) for net_id, items in dependencies.items()}
@@ -756,7 +762,13 @@ def build_static_exact_semantic_contract(
     dependency_segment: Dict[Tuple[str, str], str] = {}
     capture_segment: Dict[str, str] = {}
     for net_id in sorted(cut_by_net):
-        if not dependencies[net_id]:
+        # A reconvergent source cone can be fed both by predecessor cuts and
+        # by a local architectural launch (register/memory/top input).  Those
+        # are distinct timing branches whose readiness must all be covered;
+        # predecessor presence therefore does not suppress launch-to-TX.
+        # Preserve the conservative legacy segment for a dependency-free
+        # constant cone, which has no timed launch endpoint of its own.
+        if local_launches[net_id] or not dependencies[net_id]:
             segment_id = f"segment{len(logic_segments):06d}"
             source_segment_by_net[net_id] = segment_id
             logic_segments.append(

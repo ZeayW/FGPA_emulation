@@ -189,12 +189,13 @@ def _reconvergent_ir():
     instances = [
         {"id": "qa", "type": "FDRE", "resources": {"ff": 1}},
         {"id": "qb", "type": "FDRE", "resources": {"ff": 1}},
+        {"id": "qc", "type": "FDRE", "resources": {"ff": 1}},
         {"id": "la", "type": "LUT2", "resources": {"lut": 1}},
         {"id": "lb", "type": "LUT2", "resources": {"lut": 1}},
         {
             "id": "merge",
-            "type": "LUT2",
-            "parameters": {"INIT": "1000"},
+            "type": "LUT3",
+            "parameters": {"INIT": "10000000"},
             "resources": {"lut": 1},
         },
         {"id": "after", "type": "LUT2", "resources": {"lut": 1}},
@@ -228,6 +229,13 @@ def _reconvergent_ir():
             "cut_class": "combinational",
             "drivers": [_endpoint("lb", "O")],
             "sinks": [_endpoint("merge", "I1")],
+        },
+        {
+            "id": "qc_q",
+            "name": "qc_q",
+            "cut_class": "register_output",
+            "drivers": [_endpoint("qc", "Q")],
+            "sinks": [_endpoint("merge", "I2")],
         },
         {
             "id": "c",
@@ -823,6 +831,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         instance_targets = {
             "qa": "fpga0",
             "qb": "fpga0",
+            "qc": "fpga1",
             "la": "fpga0",
             "lb": "fpga0",
             "merge": "fpga1",
@@ -848,6 +857,18 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             for item in assignment["semantic_contract"]["cut_nodes"]
         }
         self.assertEqual(node_by_net["c"]["predecessor_cut_nets"], ["a", "b"])
+        segment_by_id = {
+            item["id"]: item
+            for item in assignment["semantic_contract"]["logic_segments"]
+        }
+        source_segments = [
+            segment_by_id[item]
+            for item in node_by_net["c"]["source_segment_ids"]
+        ]
+        self.assertEqual(
+            [item["kind"] for item in source_segments],
+            ["launch_to_tx", "rx_to_tx", "rx_to_tx"],
+        )
         routes = self._exact_routes(assignment)
         schedule = build_tdm_schedule(routes, self.platform)
         readiness = {
@@ -858,7 +879,16 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         }
         evidence = readiness["c"]["evidence"]
         self.assertEqual(
-            [item["predecessor_cut_net"] for item in evidence], ["a", "b"]
+            [
+                item["predecessor_cut_net"]
+                for item in evidence
+                if item["kind"] == "rx_to_tx"
+            ],
+            ["a", "b"],
+        )
+        self.assertEqual(
+            [item["kind"] for item in evidence],
+            ["launch_to_tx", "rx_to_tx", "rx_to_tx"],
         )
         self.assertEqual(
             readiness["c"]["source_ready_slot"],
