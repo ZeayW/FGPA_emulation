@@ -285,7 +285,8 @@ route tree, with optional post-route timing annotation, copies the full
 contract and canonical digest into the route artifact, and independently
 checks every routed demand against its cut-node metadata. Exact-mode Phase 5 uses
 `deterministic-static-exact-list-schedule-v1`: it topologically orders cut
-nodes, derives each source-ready edge from launch or predecessor arrival,
+nodes, derives each source-ready edge from every applicable local launch and
+predecessor arrival (including reconvergent cones containing both kinds),
 reserves collision-free lane/slots, and proves each final capture is ready by
 the fixed commit edge. Its versioned
 `emuflow.static-exact-schedule-certificate/v1` is reconstructed through a

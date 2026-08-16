@@ -206,7 +206,10 @@ the route to TimingPathDB only after route selection. On the fully
 open route, the VTR architecture supplies public resource and delay data,
 OpenSTA supplies pre-partition optimization timing, OpenPARF performs
 placement, and VPR performs exact packing, detailed routing, and post-route
-timing. On the Vivado route, Vivado supplies device timing and physical
+timing. The bundled VPR SDC reader uses 64-bit picosecond-scaled clock-edge
+arithmetic so millisecond-scale emulation/runtime periods do not overflow
+while constructing launch/capture relationships. On the Vivado route, Vivado
+supplies device timing and physical
 implementation for a concrete Xilinx part; Vivado itself and its device
 database are not included in this repository. Phase 7C does not compare the
 local OpenPARF/VPR or Vivado WNS values directly. It combines each scheduled
@@ -317,7 +320,10 @@ That opt-in Phase 3 artifact is qualified only as
 `partition-legality-only-provisional`. Phase 4 can now propagate the contract
 through the timing-oblivious native router, and Phase 5 can produce and
 independently reconstruct a deterministic dependency-aware schedule with
-path-local source-ready and final-capture certificates:
+path-local source-ready and final-capture certificates.  A reconvergent TX
+source retains every transported predecessor and any local architectural
+register, memory, or primary-input launch as separate timing branches; the TX
+is ready only after all applicable branches are ready:
 
 ```bash
 emuflow phase4 \

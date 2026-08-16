@@ -89,6 +89,10 @@ The first version is intentionally fail-closed:
 - top-level output capture and supported synchronous FF data/control inputs
   are valid terminal boundaries;
 - every reconvergent predecessor is retained;
+- a source cone that reconverges transported predecessors with a local
+  architectural register, memory, or primary-input launch retains both the
+  `rx_to_tx` and `launch_to_tx` timing branches; predecessor presence never
+  suppresses the local launch branch;
 - the dependency-depth limit is reconstructed from EmuIR after each candidate
   assignment, independent of the partition provider.
 
