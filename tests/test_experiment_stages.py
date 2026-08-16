@@ -414,6 +414,69 @@ class ExperimentStagesTest(unittest.TestCase):
                     region_count=4,
                 )
 
+    def test_resumed_lookahead_rebases_sealed_attempt_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "recovered"
+            physical = root / "physical"
+            physical.mkdir(parents=True)
+            old_root = Path(temporary) / "attempt/output/physical"
+            report = {
+                "schema": "fixture",
+                "fpgas": [
+                    {
+                        "fpga": "FPGA0",
+                        "stages": {
+                            "placement_ir": {
+                                "output": str(old_root / "FPGA0/placement-ir.json")
+                            },
+                            "openparf_placement": {
+                                "artifacts": {
+                                    "vpr_placement": str(
+                                        old_root / "FPGA0/openparf/design.place"
+                                    )
+                                }
+                            },
+                        },
+                    }
+                ],
+                "external_source": "/research/example/input.json",
+            }
+            write_json(
+                physical / "multi-fpga-physical-flow-report.json", report
+            )
+            with mock.patch(
+                "emuflow.experiment_stages._finish_physical_lookahead",
+                return_value={"status": "pass"},
+            ) as finish:
+                resume_physical_lookahead(
+                    Path("shared"),
+                    Path("baseline"),
+                    Path("platform"),
+                    root,
+                    seed=1,
+                    workers=8,
+                    region_count=4,
+                )
+            rebased = finish.call_args.args[4]
+            self.assertEqual(
+                rebased["fpgas"][0]["stages"]["placement_ir"]["output"],
+                str(physical.resolve() / "FPGA0/placement-ir.json"),
+            )
+            self.assertEqual(
+                rebased["fpgas"][0]["stages"]["openparf_placement"]
+                ["artifacts"]["vpr_placement"],
+                str(physical.resolve() / "FPGA0/openparf/design.place"),
+            )
+            self.assertEqual(
+                rebased["external_source"], "/research/example/input.json"
+            )
+            self.assertEqual(
+                read_json(
+                    physical / "multi-fpga-physical-flow-report.json"
+                ),
+                rebased,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

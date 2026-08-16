@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import shutil
 import tempfile
@@ -342,6 +343,10 @@ def resume_physical_lookahead(
     physical = read_json(
         _require_file(physical_root, "multi-fpga-physical-flow-report.json")
     )
+    physical = _rebase_resumed_physical_paths(physical, physical_root)
+    write_json(
+        physical_root / "multi-fpga-physical-flow-report.json", physical
+    )
     return _finish_physical_lookahead(
         shared_root,
         baseline_phase6_root,
@@ -355,6 +360,69 @@ def resume_physical_lookahead(
         architecture_id=architecture_id,
         route_channel_width=route_channel_width,
     )
+
+
+def _rebase_resumed_physical_paths(
+    physical: Dict[str, Any], physical_root: Path
+) -> Dict[str, Any]:
+    """Relocate report-internal paths after an immutable attempt is moved.
+
+    A failed attempt is sealed below ``checkpoints/failures`` before it can be
+    resumed.  The physical report consequently still names its original
+    staging directory.  Infer that old ``physical/`` root only from the
+    per-FPGA placement-IR outputs, require one unambiguous root, and rewrite
+    only descendants of it into the caller-provided physical tree.
+    """
+
+    roots = set()
+    marker = "/physical/"
+    for record in physical.get("fpgas", []):
+        if not isinstance(record, dict):
+            continue
+        output = record.get("stages", {}).get("placement_ir", {}).get("output")
+        if not isinstance(output, str) or not Path(output).is_absolute():
+            continue
+        prefix, separator, _ = output.rpartition(marker)
+        if separator:
+            roots.add(prefix + "/physical")
+    if not roots:
+        return copy.deepcopy(physical)
+    if len(roots) != 1:
+        raise ValidationError(
+            "resumed physical report contains ambiguous staging roots"
+        )
+    old_root = next(iter(roots))
+    new_root = physical_root.resolve()
+    if Path(old_root).resolve() == new_root:
+        return copy.deepcopy(physical)
+
+    def relocate(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: relocate(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [relocate(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        if value == old_root:
+            return str(new_root)
+        prefix = old_root + "/"
+        if not value.startswith(prefix):
+            return value
+        relative = Path(value[len(prefix) :])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValidationError(
+                "resumed physical report contains an unsafe internal path"
+            )
+        candidate = (new_root / relative).resolve()
+        try:
+            candidate.relative_to(new_root)
+        except ValueError as error:
+            raise ValidationError(
+                "resumed physical report path escapes the physical tree"
+            ) from error
+        return str(candidate)
+
+    return relocate(copy.deepcopy(physical))
 
 
 def _finish_physical_lookahead(

@@ -1021,6 +1021,9 @@ binaries used by that stage. The validation key independently binds the
 validator's own closure and argv. Thus a Phase 4 implementation change does
 not invalidate Phase 1--3, and a validator-only change produces `revalidate`
 without recomputing output.
+Closures include transitive stage algorithms as well as their orchestration;
+for example, the physical-lookahead identity seals the Chimew grouping and
+position-refinement modules and native kernels that materialize its outputs.
 Runtime argv and identity argv are deliberately separate. Absolute versioned
 install and source paths remain in the executable command, while the identity
 argv replaces them with labels such as `{input:tool.yosys}` whose SHA-256 is
@@ -1224,7 +1227,9 @@ this command starts.  It rechecks the physical report, Phase 6 manifest, FPGA
 coverage, seed, worker count, architecture digest, and channel width before
 materializing the lookahead artifacts.  Only the resulting complete root may
 be passed to `experiment-cache import`; the original failed attempt remains
-append-only evidence.
+append-only evidence.  If sealing moved the attempt, the resume gate infers
+one original `physical/` root from the per-FPGA reports and safely rebases only
+its descendants into the new copy; external inputs are never rewritten.
 
 Build and verify the portable implementation closure used by a v2 node:
 

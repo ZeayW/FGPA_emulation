@@ -208,6 +208,14 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "src/emuflow/experiment_partition.py",
                 nodes["partition"]["implementation"]["components"],
             )
+            self.assertIn(
+                "src/emuflow/chimew_refinement.py",
+                nodes["physical-lookahead"]["implementation"]["components"],
+            )
+            self.assertIn(
+                "src/native/chimew_position_refiner.cpp",
+                nodes["physical-lookahead"]["implementation"]["components"],
+            )
             self.assertIn("--hop-refiner", nodes["partition"]["command"])
             self.assertEqual(
                 nodes["partition"]["configuration"]["seed_attempts"], 6
