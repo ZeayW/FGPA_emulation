@@ -257,10 +257,10 @@ def _oracle_refine(
     buckets: Dict[
         Tuple[
             Tuple[str, str, str],
-            int,
-            int,
             Optional[tuple[Any, ...]],
             Optional[int],
+            int,
+            int,
         ],
         list[str],
     ] = defaultdict(list)
@@ -268,28 +268,31 @@ def _oracle_refine(
         buckets[
             (
                 _domain(entry),
-                _tdm_ratio(entry),
-                encodings[entry["id"]],
                 guards.get(entry["id"]),
                 (
                     _tdm_slot(entry, index)
                     if "slot" in entry
                     else None
                 ),
+                _tdm_ratio(entry),
+                encodings[entry["id"]],
             )
         ].append(entry["id"])
     accepted = moved = 0
     guard_sentinel = ("", "", "", -1)
-    for (_, _, encoding, _guard, _frozen_slot), bucket in sorted(
+    # The native map iterates (domain_index, ratio, encoding).  domain_index is
+    # assigned in (domain, guard, frozen_slot) order, so the independent replay
+    # must use that complete order before it mutates group anchors.
+    for (_, _guard, _frozen_slot, _, encoding), bucket in sorted(
         buckets.items(),
         key=lambda item: (
             item[0][0],
-            item[0][3] is not None,
-            item[0][3] or guard_sentinel,
-            item[0][1],
-            item[0][2],
-            item[0][4] is not None,
-            item[0][4] if item[0][4] is not None else -1,
+            item[0][1] is not None,
+            item[0][1] or guard_sentinel,
+            item[0][2] is not None,
+            item[0][2] if item[0][2] is not None else -1,
+            item[0][3],
+            item[0][4],
         ),
     ):
         affected = {assignment[entry_id] for entry_id in bucket}
