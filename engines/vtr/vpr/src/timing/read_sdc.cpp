@@ -20,6 +20,7 @@
 
 #include "read_sdc.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <regex>
@@ -1221,7 +1222,13 @@ class SdcParseCallback : public sdcparse::Callback {
     //   Launch=6ns -> nearest cap=12ns -> hold cap=0ns  -> setup= 6ns, hold=-6ns
     //   Result: setup=min(12,6)=6ns,  hold=max(0,-6)=0ns.
     LaunchCaptureEdgeTimes calculate_launch_to_capture_edge_times(tatum::DomainId launch_domain, tatum::DomainId capture_domain) const {
-        constexpr int CLOCK_SCALE = 1000;
+        // SDC periods are expressed in nanoseconds and scaled to picoseconds
+        // below.  Emulation clocks can legitimately have millisecond-scale
+        // periods after TDM expansion, so a 32-bit signed value is not large
+        // enough (INT_MAX picoseconds is only about 2.147 ms).  Keep all
+        // intermediate clock arithmetic 64-bit; truncating a valid period here
+        // can make the LCM and edge arrays wrap and leave no setup/hold pair.
+        constexpr std::int64_t CLOCK_SCALE = 1000;
 
         auto launch_iter = sdc_clocks_.find(launch_domain);
         VTR_ASSERT(launch_iter != sdc_clocks_.end());
@@ -1246,10 +1253,10 @@ class SdcParseCallback : public sdcparse::Callback {
         } else {
             //Multiply periods and edges by CLOCK_SCALE and round down to the nearest
             //integer, to avoid messy decimals.
-            int launch_period = static_cast<int>(launch_clock.period * CLOCK_SCALE);
-            int capture_period = static_cast<int>(capture_clock.period * CLOCK_SCALE);
-            int launch_rise_edge = static_cast<int>(launch_clock.rise_edge * CLOCK_SCALE);
-            int capture_rise_edge = static_cast<int>(capture_clock.rise_edge * CLOCK_SCALE);
+            std::int64_t launch_period = static_cast<std::int64_t>(launch_clock.period * CLOCK_SCALE);
+            std::int64_t capture_period = static_cast<std::int64_t>(capture_clock.period * CLOCK_SCALE);
+            std::int64_t launch_rise_edge = static_cast<std::int64_t>(launch_clock.rise_edge * CLOCK_SCALE);
+            std::int64_t capture_rise_edge = static_cast<std::int64_t>(capture_clock.rise_edge * CLOCK_SCALE);
 
             // Normalize rise edges to [0, period) to handle values the SDC parser may
             // produce outside that range (e.g. from generated clocks with large phases).
@@ -1260,15 +1267,15 @@ class SdcParseCallback : public sdcparse::Callback {
 
             //Find the LCM of the two periods. This determines how long it takes before
             //the pattern of the two clocks' edges starts repeating.
-            int lcm_period = vtr::lcm(launch_period, capture_period);
+            std::int64_t lcm_period = vtr::lcm(launch_period, capture_period);
 
             //Create arrays of edges for each clock over one LCM period.
 
             //Launch edges (+1 extra to handle boundary launch edges).
-            std::vector<int> launch_edges;
-            int launch_rise_time = launch_rise_edge;
-            int num_launch_edges = lcm_period / launch_period + 1;
-            for (int i = 0; i < num_launch_edges; ++i) {
+            std::vector<std::int64_t> launch_edges;
+            std::int64_t launch_rise_time = launch_rise_edge;
+            std::int64_t num_launch_edges = lcm_period / launch_period + 1;
+            for (std::int64_t i = 0; i < num_launch_edges; ++i) {
                 launch_edges.push_back(launch_rise_time);
                 launch_rise_time += launch_period;
             }
@@ -1276,10 +1283,10 @@ class SdcParseCallback : public sdcparse::Callback {
             //Capture edges (+2 extra to guarantee every launch edge in the window has at
             //least one capture edge strictly after it; e.g. a launch at the last edge of
             //the LCM window needs a capture edge one full capture period beyond it).
-            std::vector<int> capture_edges;
-            int capture_rise_time = capture_rise_edge;
-            int num_capture_edges = lcm_period / capture_period + 2;
-            for (int i = 0; i < num_capture_edges; ++i) {
+            std::vector<std::int64_t> capture_edges;
+            std::int64_t capture_rise_time = capture_rise_edge;
+            std::int64_t num_capture_edges = lcm_period / capture_period + 2;
+            for (std::int64_t i = 0; i < num_capture_edges; ++i) {
                 capture_edges.push_back(capture_rise_time);
                 capture_rise_time += capture_period;
             }
@@ -1289,11 +1296,11 @@ class SdcParseCallback : public sdcparse::Callback {
             //so we break after finding it. That single nearest pair contributes:
             //  - the minimum setup diff (capture_edge - launch_edge), and
             //  - the hold diff for this launch edge (capture_edge - capture_period - launch_edge).
-            int scaled_setup = std::numeric_limits<int>::max();
-            int scaled_hold = std::numeric_limits<int>::min();
+            std::int64_t scaled_setup = std::numeric_limits<std::int64_t>::max();
+            std::int64_t scaled_hold = std::numeric_limits<std::int64_t>::min();
 
-            for (int launch_edge : launch_edges) {
-                for (int capture_edge : capture_edges) {
+            for (std::int64_t launch_edge : launch_edges) {
+                for (std::int64_t capture_edge : capture_edges) {
                     if (capture_edge > launch_edge) {
                         scaled_setup = std::min(scaled_setup, capture_edge - launch_edge);
                         scaled_hold = std::max(scaled_hold, capture_edge - capture_period - launch_edge);
@@ -1303,8 +1310,8 @@ class SdcParseCallback : public sdcparse::Callback {
                 }
             }
 
-            VTR_ASSERT(scaled_setup != std::numeric_limits<int>::max());
-            VTR_ASSERT(scaled_hold != std::numeric_limits<int>::min());
+            VTR_ASSERT(scaled_setup != std::numeric_limits<std::int64_t>::max());
+            VTR_ASSERT(scaled_hold != std::numeric_limits<std::int64_t>::min());
 
             return {float(scaled_setup) / CLOCK_SCALE, float(scaled_hold) / CLOCK_SCALE};
         }
