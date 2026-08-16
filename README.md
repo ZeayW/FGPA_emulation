@@ -1268,7 +1268,9 @@ emuflow experiment-cache evidence-validate /research/d4/gds/ziyiwang21/emuflow/e
 An evidence bundle recursively materializes every required artifact for its
 terminal nodes and ancestors and validates without the source cache. Cache
 reclamation is a separate two-step operation. `gc-plan` roots active plans,
-records every candidate's current content digest, and performs no mutation;
+including both each logical execution key and any cache-local immutable
+payload-object alias recorded by an imported or re-keyed checkpoint's
+`output_dir`, records every candidate's current content digest, and performs no mutation;
 `gc-apply` requires the exact plan-file SHA-256 and aborts if an object changed
 or became referenced. Legacy `runs` first receive a read-only migration plan:
 

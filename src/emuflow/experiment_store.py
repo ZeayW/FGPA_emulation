@@ -546,7 +546,11 @@ def validate_experiment_evidence_bundle(root: Path) -> dict[str, Any]:
     }
 
 
-def _root_execution_keys(plan_paths: Iterable[Path]) -> tuple[set[str], list[dict[str, Any]]]:
+def _root_execution_keys(
+    plan_paths: Iterable[Path], cache_root: Path
+) -> tuple[set[str], list[dict[str, Any]]]:
+    cache_root = cache_root.resolve()
+    object_root = (cache_root / "objects").resolve()
     keys: set[str] = set()
     sources = []
     for path in plan_paths:
@@ -554,13 +558,43 @@ def _root_execution_keys(plan_paths: Iterable[Path]) -> tuple[set[str], list[dic
         plan = _load_plan(plan_path)
         if plan["schema"] != EXPERIMENT_PLAN_V2_SCHEMA:
             raise ValidationError("experiment GC roots require v2 plans")
+        if Path(plan["cache_root"]).resolve() != cache_root:
+            raise ValidationError("experiment GC root plan uses a different cache")
         plan_keys = sorted(node["execution_key"] for node in plan["nodes"])
-        keys.update(plan_keys)
+        object_keys = set(plan_keys)
+        for node in plan["nodes"]:
+            output_dir = Path(node.get("output_dir", ""))
+            if not output_dir.is_absolute():
+                raise ValidationError("experiment GC root output_dir must be absolute")
+            resolved = output_dir.resolve()
+            try:
+                relative = resolved.relative_to(object_root)
+            except ValueError:
+                continue
+            if (
+                len(relative.parts) != 2
+                or relative.parts[1] != "output"
+                or len(relative.parts[0]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in relative.parts[0]
+                )
+            ):
+                raise ValidationError(
+                    "experiment GC root output_dir is not a cache object"
+                )
+            # Imported/re-keyed checkpoints keep their logical execution-key
+            # manifest in one object while its immutable payload can remain in
+            # another cache-local object directory. Both names are live roots.
+            object_keys.add(relative.parts[0])
+        sorted_object_keys = sorted(object_keys)
+        keys.update(sorted_object_keys)
         sources.append(
             {
                 "path": str(plan_path),
                 "sha256": _sha256(plan_path),
                 "execution_keys": plan_keys,
+                "object_keys": sorted_object_keys,
             }
         )
     return keys, sources
@@ -581,7 +615,7 @@ def plan_experiment_gc(
         raise ValidationError("experiment GC minimum age is invalid")
     cache_root = validate_experiment_write_path(cache_root)
     output_path = validate_experiment_write_path(output_path)
-    roots, root_sources = _root_execution_keys(root_plans)
+    roots, root_sources = _root_execution_keys(root_plans, cache_root)
     now = datetime.now(timezone.utc).timestamp()
     candidates = []
     for area in ("objects", "staging", "failures", "scratch"):
@@ -643,7 +677,9 @@ def apply_experiment_gc(plan_path: Path, expected_sha256: str) -> dict[str, Any]
     if plan.get("schema") != EXPERIMENT_GC_PLAN_SCHEMA or plan.get("status") != "planned":
         raise ValidationError("experiment GC plan is invalid")
     cache_root = validate_experiment_write_path(Path(plan["cache_root"]))
-    roots, _ = _root_execution_keys([Path(item["path"]) for item in plan["roots"]])
+    roots, _ = _root_execution_keys(
+        [Path(item["path"]) for item in plan["roots"]], cache_root
+    )
     removed = []
     for candidate in plan.get("candidates", []):
         relative = Path(candidate["path"])
