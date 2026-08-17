@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Optional
+from unittest.mock import patch
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.experiment_dag import (
@@ -374,6 +375,70 @@ class ExperimentDagTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "seal is broken"):
                 validate_experiment_checkpoint(manifest)
 
+    def test_cache_resident_import_becomes_an_immutable_managed_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec = self._write_spec(root)
+            plan_path = root / "plan.json"
+            plan_experiment(spec, cache, plan_path)
+            source = cache / "objects" / ("f" * 64) / "output"
+            source.mkdir(parents=True)
+            artifact = source / "phase5.json"
+            artifact.write_text("shared", encoding="utf-8")
+
+            imported = import_experiment_checkpoint(
+                plan_path, "shared-phase1-5", source
+            )
+            self.assertEqual(imported["status"], "imported")
+            self.assertEqual(imported["checkpoint"]["storage"], "managed")
+            self.assertTrue(imported["checkpoint"]["output_immutable"])
+            self.assertEqual(source.stat().st_mode & 0o222, 0)
+            self.assertEqual(artifact.stat().st_mode & 0o222, 0)
+
+            with patch(
+                "emuflow.experiment_dag._artifact_digest",
+                side_effect=AssertionError("managed plan rehashed artifact content"),
+            ):
+                replanned = plan_experiment(spec, cache, root / "next.json")
+            self.assertEqual(replanned["nodes"][0]["state"], "reuse")
+
+    def test_existing_cache_alias_is_promoted_after_one_strong_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec = self._write_spec(root)
+            plan_path = root / "plan.json"
+            plan = plan_experiment(spec, cache, plan_path)
+            source = cache / "objects" / ("e" * 64) / "output"
+            source.mkdir(parents=True)
+            artifact = source / "phase5.json"
+            artifact.write_text("shared", encoding="utf-8")
+            imported = import_experiment_checkpoint(
+                plan_path, "shared-phase1-5", source
+            )
+            manifest = (
+                cache
+                / "objects"
+                / plan["nodes"][0]["key"]
+                / "checkpoint.json"
+            )
+            manifest.chmod(0o644)
+            value = read_json(manifest)
+            value["storage"] = "external-validated"
+            value["output_immutable"] = False
+            write_json(manifest, value)
+            source.chmod(0o755)
+            artifact.chmod(0o644)
+
+            promoted = import_experiment_checkpoint(
+                plan_path, "shared-phase1-5", source
+            )
+            self.assertEqual(promoted["status"], "promoted")
+            self.assertEqual(promoted["checkpoint"]["storage"], "managed")
+            self.assertEqual(manifest.stat().st_mode & 0o222, 0)
+            self.assertEqual(artifact.stat().st_mode & 0o222, 0)
+
     def test_import_and_new_runs_require_independent_validator(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -453,6 +518,59 @@ class ExperimentDagTest(unittest.TestCase):
                     "relative-launcher",
                     root / "relative.json",
                     worker_launcher=Path("worker-launcher"),
+                )
+
+    def test_farm_spec_seals_explicit_worker_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install = root / "install" / COMMIT
+            install.mkdir(parents=True)
+            plan_path = root / "plan.json"
+            plan_experiment(self._write_spec(root), root / "cache", plan_path)
+            farm_path = root / "farm.json"
+            wrapper = [
+                "/usr/bin/env",
+                "PYTHONPATH={install}/lib",
+                "/runtime/emuflow-run",
+                "{install}/bin/emuflow",
+            ]
+            build_experiment_farm_spec(
+                plan_path,
+                install,
+                ["hpc1"],
+                "wrapped-frontier",
+                farm_path,
+                worker_argv=wrapper,
+            )
+            self.assertEqual(read_json(farm_path)["worker_argv"], wrapper)
+
+            with self.assertRaisesRegex(ValidationError, "non-empty string list"):
+                build_experiment_farm_spec(
+                    plan_path,
+                    install,
+                    ["hpc1"],
+                    "empty-wrapper",
+                    root / "empty.json",
+                    worker_argv=[],
+                )
+            with self.assertRaisesRegex(ValidationError, "non-empty strings"):
+                build_experiment_farm_spec(
+                    plan_path,
+                    install,
+                    ["hpc1"],
+                    "invalid-wrapper",
+                    root / "invalid.json",
+                    worker_argv=["/runtime/emuflow-run", ""],
+                )
+            with self.assertRaisesRegex(ValidationError, "mutually exclusive"):
+                build_experiment_farm_spec(
+                    plan_path,
+                    install,
+                    ["hpc1"],
+                    "ambiguous-wrapper",
+                    root / "ambiguous.json",
+                    worker_argv=wrapper,
+                    worker_launcher=Path("/runtime/emuflow-run"),
                 )
 
     def test_farm_spec_can_submit_a_bounded_ready_subset(self) -> None:
@@ -650,6 +768,24 @@ class ExperimentDagTest(unittest.TestCase):
             self.assertEqual(output.stat().st_mode & 0o222, 0)
             self.assertEqual((output / "phase1.json").stat().st_mode & 0o222, 0)
             self.assertTrue(report["checkpoint"]["output_immutable"])
+
+    def test_explicit_validation_still_rehashes_managed_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec = self._write_spec(root, self._v2_spec())
+            plan_path = root / "plan.json"
+            plan = plan_experiment(spec, cache, plan_path)
+            run_experiment_node(plan_path, "phase1", root / "attempt")
+            artifact = Path(plan["nodes"][0]["output_dir"]) / "phase1.json"
+            artifact.chmod(0o644)
+            artifact.write_text("tampered", encoding="utf-8")
+            artifact.chmod(0o444)
+            manifest = (
+                cache / "objects" / plan["nodes"][0]["key"] / "checkpoint.json"
+            )
+            with self.assertRaisesRegex(ValidationError, "seal is broken"):
+                validate_experiment_checkpoint(manifest)
 
     def test_v2_artifact_roles_are_validated(self) -> None:
         invalid = self._v2_spec()

@@ -51,7 +51,7 @@ from .vtr_netlist import normalize_vtr_hard_block_json
 EXPERIMENT_FRONTEND_SCHEMA = "emuflow.experiment-frontend-checkpoint/v1"
 EXPERIMENT_TIMING_SCHEMA = "emuflow.experiment-timing-checkpoint/v1"
 EXPERIMENT_PARTITION_SCHEMA = "emuflow.experiment-partition-checkpoint/v1"
-EXPERIMENT_CUT_TIMING_SCHEMA = "emuflow.experiment-cut-timing-checkpoint/v2"
+EXPERIMENT_CUT_TIMING_SCHEMA = "emuflow.experiment-cut-timing-checkpoint/v3"
 EXPERIMENT_ROUTE_SCHEMA = "emuflow.experiment-route-checkpoint/v1"
 EXPERIMENT_TDM_SCHEMA = "emuflow.experiment-tdm-checkpoint/v1"
 EXPERIMENT_SHARED_SCHEMA = "emuflow.experiment-shared-phase1-5/v1"
@@ -542,6 +542,7 @@ def run_cut_timing_checkpoint(
     if not cut_nets:
         raise ValidationError("cut-timing checkpoint requires partition cut nets")
     output_dir = _prepare_empty_output(output_dir, "cut-timing checkpoint")
+    complete_database = _require(timing_root, "path-database.json")
     database = output_dir / "cut-path-database.json"
     sta = run_opensta_path_database(
         ir_path,
@@ -555,14 +556,23 @@ def run_cut_timing_checkpoint(
         through_nets=cut_nets,
         through_coverage_path=output_dir / "through-net-coverage.json",
     )
+    # The through-net database above is qualification evidence and supplies
+    # post-partition physical logic-segment identities.  It is not the Phase
+    # 4/5 timing population: a bounded through-net query can omit valid
+    # cross-partition paths from the complete pre-partition STA database.
+    # Project the complete database so routing, TDM, and final whole-design
+    # timing cover every original cross-partition path.
     projection = project_sta_path_database(
-        database, assignment_path, output_dir / "cut-timing-paths.json"
+        complete_database,
+        assignment_path,
+        output_dir / "cut-timing-paths.json",
     )
     report = {
         "schema": EXPERIMENT_CUT_TIMING_SCHEMA,
         "status": "pass",
         "emuir_sha256": _sha256(ir_path),
         "assignment_sha256": _sha256(assignment_path),
+        "complete_path_database_sha256": _sha256(complete_database),
         "cut_nets": cut_nets,
         "clocks": dict(sorted((name, float(period)) for name, period in clocks.items())),
         "timing_model_sha256": _sha256(timing_model_path.resolve()),
@@ -582,6 +592,7 @@ def run_cut_timing_checkpoint(
     write_json(output_dir / "experiment-cut-timing-report.json", report)
     validate_cut_timing_checkpoint(
         frontend_root,
+        timing_root,
         partition_root,
         output_dir,
         timing_model_path=timing_model_path,
@@ -592,6 +603,7 @@ def run_cut_timing_checkpoint(
 
 def validate_cut_timing_checkpoint(
     frontend_root: Path,
+    timing_root: Path,
     partition_root: Path,
     root: Path,
     *,
@@ -599,6 +611,8 @@ def validate_cut_timing_checkpoint(
     architecture_timing_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
+    complete_database = _require(timing_root, "path-database.json")
+    validate_timing_checkpoint(frontend_root, timing_root)
     assignment_path = _require(partition_root, "assignment.json")
     report = read_json(_require(root, "experiment-cut-timing-report.json"))
     if report.get("schema") != EXPERIMENT_CUT_TIMING_SCHEMA or report.get("status") != "pass":
@@ -610,6 +624,10 @@ def validate_cut_timing_checkpoint(
         "assignment_sha256"
     ) != _sha256(assignment_path):
         raise ValidationError("cut-timing input seal is broken")
+    if report.get("complete_path_database_sha256") != _sha256(
+        complete_database
+    ):
+        raise ValidationError("cut-timing complete path database seal is broken")
     if report.get("cut_path_database_sha256") != _sha256(database) or report.get(
         "cut_timing_paths_sha256"
     ) != _sha256(projected):
@@ -708,10 +726,14 @@ def validate_cut_timing_checkpoint(
         raise ValidationError("cut-timing coverage summary is inconsistent")
     with tempfile.TemporaryDirectory(prefix="emuflow-cut-timing-validate-") as temporary:
         rebuilt = Path(temporary) / "projected.json"
-        project_sta_path_database(database, assignment_path, rebuilt)
+        project_sta_path_database(
+            complete_database, assignment_path, rebuilt
+        )
         if _portable_cut_timing_projection(
-            read_json(rebuilt), database.name
-        ) != _portable_cut_timing_projection(read_json(projected), database.name):
+            read_json(rebuilt), complete_database.name
+        ) != _portable_cut_timing_projection(
+            read_json(projected), complete_database.name
+        ):
             raise ValidationError("cut-timing projection reconstruction failed")
     return {
         "status": "pass",
@@ -979,6 +1001,7 @@ def materialize_shared_phase1_5(
     validate_partition_checkpoint(frontend_root, timing_root, platform_path, partition_root)
     validate_cut_timing_checkpoint(
         frontend_root,
+        timing_root,
         partition_root,
         cut_timing_root,
         timing_model_path=timing_model_path,

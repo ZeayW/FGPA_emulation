@@ -63,6 +63,63 @@ def resolve_openparf_install(
     )
 
 
+def _openparf_environment(installation: Path) -> Dict[str, str]:
+    environment = os.environ.copy()
+    python_path = str(installation)
+    if environment.get("PYTHONPATH"):
+        python_path += os.pathsep + environment["PYTHONPATH"]
+    environment["PYTHONPATH"] = python_path
+    return environment
+
+
+def validate_openparf_runtime(
+    *,
+    install_root: Optional[Path] = None,
+    python_executable: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Fail before physical work when the configured OpenPARF runtime is unusable."""
+
+    installation = resolve_openparf_install(install_root)
+    python = (
+        python_executable
+        if python_executable is not None
+        else Path(os.environ.get("EMUFLOW_OPENPARF_PYTHON", sys.executable))
+    ).expanduser()
+    if not python.is_file():
+        raise EmuFlowError(
+            f"OpenPARF Python interpreter does not exist: {python}"
+        )
+    try:
+        completed = subprocess.run(
+            [
+                str(python),
+                "-c",
+                "import torch; from openparf.flow import place, route",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=120,
+            env=_openparf_environment(installation),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise EmuFlowError(
+            "OpenPARF runtime preflight exceeded 120 seconds"
+        ) from error
+    if completed.returncode != 0:
+        tail = "\n".join(completed.stdout.splitlines()[-40:])
+        raise EmuFlowError(
+            "OpenPARF runtime preflight failed before physical execution"
+            + (f":\n{tail}" if tail else "")
+        )
+    return {
+        "status": "pass",
+        "installation": str(installation),
+        "python": str(python),
+    }
+
+
 def run_openparf(
     config_path: Path,
     *,
@@ -108,11 +165,7 @@ def run_openparf(
     console_log_path = log_path.with_name(
         f"{log_path.stem}.console{log_path.suffix}"
     )
-    environment = os.environ.copy()
-    python_path = str(installation)
-    if environment.get("PYTHONPATH"):
-        python_path += os.pathsep + environment["PYTHONPATH"]
-    environment["PYTHONPATH"] = python_path
+    environment = _openparf_environment(installation)
     with console_log_path.open("w", encoding="utf-8") as console_log:
         completed = subprocess.run(
             [

@@ -3,15 +3,18 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
+    _physical_timing_databases,
     _placement_aware_positions,
     _prepare_empty_output,
-    _projected_timing_paths,
-    _timing_paths,
     _validate_managed_phase6_checkpoint,
+    _sta_path_database,
+    _timing_paths,
+    resume_physical_lookahead,
 )
 from emuflow.experiment_upstream import (
     run_frontend_checkpoint,
@@ -27,19 +30,71 @@ class ExperimentStagesTest(unittest.TestCase):
             root = Path(temporary)
             timing = root / "timing"
             timing.mkdir()
+            self.assertIsNone(_sta_path_database(root))
             (timing / "path-database.json").write_text(
                 "{}", encoding="utf-8"
+            )
+            self.assertEqual(
+                _sta_path_database(root), timing / "path-database.json"
             )
             (timing / "cut-path-database.json").write_text(
                 "{}", encoding="utf-8"
             )
             self.assertIsNone(_timing_paths(root))
-            self.assertIsNone(_projected_timing_paths(root))
-
+            write_json(
+                timing / "cut-timing-paths.json",
+                {"source": {"input": "cut-path-database.json"}},
+            )
+            self.assertEqual(
+                _physical_timing_databases(root),
+                (
+                    timing / "path-database.json",
+                    timing / "cut-path-database.json",
+                ),
+            )
             projected = timing / "cut-timing-paths.json"
-            write_json(projected, {"schema": "emuflow.sta-paths/v1"})
             self.assertEqual(_timing_paths(root), projected)
-            self.assertEqual(_projected_timing_paths(root), projected)
+            write_json(
+                projected,
+                {"source": {"input": "path-database.json"}},
+            )
+            self.assertEqual(
+                _physical_timing_databases(root),
+                (
+                    timing / "path-database.json",
+                    timing / "path-database.json",
+                ),
+            )
+
+    def test_physical_timing_requires_both_sta_database_namespaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timing = root / "timing"
+            timing.mkdir()
+            self.assertEqual(_physical_timing_databases(root), (None, None))
+            (timing / "path-database.json").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "through-cut STA"):
+                _physical_timing_databases(root)
+            (timing / "path-database.json").unlink()
+            (timing / "cut-path-database.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(Exception, "complete original STA"):
+                _physical_timing_databases(root)
+
+    def test_physical_timing_rejects_unknown_projection_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timing = root / "timing"
+            timing.mkdir()
+            for name in ("path-database.json", "cut-path-database.json"):
+                (timing / name).write_text("{}", encoding="utf-8")
+            write_json(
+                timing / "cut-timing-paths.json",
+                {"source": {"input": "unsealed.json"}},
+            )
+            with self.assertRaisesRegex(Exception, "unknown STA database"):
+                _physical_timing_databases(root)
 
     def test_frontend_checkpoint_is_reusable_and_tamper_evident(self) -> None:
         repository = Path(__file__).resolve().parents[1]
@@ -340,6 +395,150 @@ class ExperimentStagesTest(unittest.TestCase):
             ]
         )
         self.assertEqual(args.baseline_phase6, Path("baseline-phase6"))
+
+    def test_cli_exposes_resumed_physical_lookahead(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "experiment-stage",
+                "lookahead-resume",
+                "--shared",
+                "shared",
+                "--baseline-phase6",
+                "baseline",
+                "--platform",
+                "boarddb.json",
+                "--seed",
+                "2",
+                "--workers",
+                "6",
+                "--out",
+                "recovered",
+            ]
+        )
+        self.assertEqual(args.experiment_stage_command, "lookahead-resume")
+        self.assertEqual((args.seed, args.workers), (2, 6))
+
+    def test_cli_exposes_distinct_physical_timing_databases(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "multi-fpga",
+                "physical",
+                "--split",
+                "split",
+                "--platform",
+                "boarddb.json",
+                "--schedule",
+                "schedule.json",
+                "--path-database",
+                "full.json",
+                "--logic-path-database",
+                "through-cut.json",
+                "--out",
+                "physical",
+            ]
+        )
+        self.assertEqual(args.path_database, Path("full.json"))
+        self.assertEqual(args.logic_path_database, Path("through-cut.json"))
+
+    def test_resumed_lookahead_requires_only_a_physical_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "recovered"
+            physical = root / "physical"
+            physical.mkdir(parents=True)
+            write_json(
+                physical / "multi-fpga-physical-flow-report.json",
+                {"schema": "placeholder"},
+            )
+            with mock.patch(
+                "emuflow.experiment_stages._finish_physical_lookahead",
+                return_value={"status": "pass"},
+            ) as finish:
+                report = resume_physical_lookahead(
+                    Path("shared"),
+                    Path("baseline"),
+                    Path("platform"),
+                    root,
+                    seed=1,
+                    workers=8,
+                    region_count=4,
+                )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(finish.call_args.args[4], {"schema": "placeholder"})
+
+            (root / "unrelated").write_text("stale", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "contain only physical"):
+                resume_physical_lookahead(
+                    Path("shared"),
+                    Path("baseline"),
+                    Path("platform"),
+                    root,
+                    seed=1,
+                    workers=8,
+                    region_count=4,
+                )
+
+    def test_resumed_lookahead_rebases_sealed_attempt_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "recovered"
+            physical = root / "physical"
+            physical.mkdir(parents=True)
+            old_root = Path(temporary) / "attempt/output/physical"
+            report = {
+                "schema": "fixture",
+                "fpgas": [
+                    {
+                        "fpga": "FPGA0",
+                        "stages": {
+                            "placement_ir": {
+                                "output": str(old_root / "FPGA0/placement-ir.json")
+                            },
+                            "openparf_placement": {
+                                "artifacts": {
+                                    "vpr_placement": str(
+                                        old_root / "FPGA0/openparf/design.place"
+                                    )
+                                }
+                            },
+                        },
+                    }
+                ],
+                "external_source": "/research/example/input.json",
+            }
+            write_json(
+                physical / "multi-fpga-physical-flow-report.json", report
+            )
+            with mock.patch(
+                "emuflow.experiment_stages._finish_physical_lookahead",
+                return_value={"status": "pass"},
+            ) as finish:
+                resume_physical_lookahead(
+                    Path("shared"),
+                    Path("baseline"),
+                    Path("platform"),
+                    root,
+                    seed=1,
+                    workers=8,
+                    region_count=4,
+                )
+            rebased = finish.call_args.args[4]
+            self.assertEqual(
+                rebased["fpgas"][0]["stages"]["placement_ir"]["output"],
+                str(physical.resolve() / "FPGA0/placement-ir.json"),
+            )
+            self.assertEqual(
+                rebased["fpgas"][0]["stages"]["openparf_placement"]
+                ["artifacts"]["vpr_placement"],
+                str(physical.resolve() / "FPGA0/openparf/design.place"),
+            )
+            self.assertEqual(
+                rebased["external_source"], "/research/example/input.json"
+            )
+            self.assertEqual(
+                read_json(
+                    physical / "multi-fpga-physical-flow-report.json"
+                ),
+                rebased,
+            )
 
 
 if __name__ == "__main__":

@@ -266,6 +266,91 @@ class AcademicChimewTest(unittest.TestCase):
                 "pass",
             )
 
+    def test_shared_bidirectional_link_uses_one_exclusive_lane_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir, assignment, routes, schedule = self._upstream(root)
+            platform_document = read_json(PLATFORM)
+            platform_document["links"][0][
+                "capacity_sharing"
+            ] = "shared_bidirectional"
+            shared_platform = root / "shared-platform.json"
+            write_json(shared_platform, platform_document)
+
+            lookahead = materialize_academic_chimew_inputs(
+                ir_path=ir,
+                schedule_path=schedule,
+                routes_path=routes,
+                platform_path=shared_platform,
+                physical_report=self._physical_report(
+                    root / "physical", assignment
+                ),
+                output_dir=root / "lookahead",
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+            )
+            artifacts = lookahead["artifacts"]
+            bank_input = read_json(
+                Path(artifacts["bank_channel_input"]["path"])
+            )
+            electrical_map = read_json(
+                Path(artifacts["electrical_map"]["path"])
+            )
+            self.assertEqual(
+                {group["direction"] for group in bank_input["groups"]},
+                {"a_to_b", "b_to_a"},
+            )
+            self.assertEqual(
+                [domain["id"] for domain in bank_input["domains"]],
+                ["link_0_1:shared_bidirectional"],
+            )
+            self.assertEqual(
+                {channel["direction"] for channel in electrical_map["channels"]},
+                {"either"},
+            )
+            concrete_lanes = [
+                channel["physical_lane"]
+                for channel in electrical_map["channels"]
+            ]
+            self.assertEqual(len(concrete_lanes), len(set(concrete_lanes)))
+
+            report = run_chimew_phase6_pipeline(
+                Path(artifacts["schedule"]["path"]),
+                shared_platform,
+                Path(artifacts["crossings"]["path"]),
+                Path(artifacts["positions"]["path"]),
+                Path(artifacts["rudy_input"]["path"]),
+                Path(artifacts["bank_channel_input"]["path"]),
+                Path(artifacts["electrical_map"]["path"]),
+                root / "chimew",
+                source_paths={
+                    label: Path(path)
+                    for label, path in lookahead["sources"].items()
+                },
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+                rudy=self.executables["rudy"],
+                assigner=self.executables["assigner"],
+                region_count=4,
+            )
+            binding = read_json(
+                root
+                / "chimew"
+                / report["artifacts"]["adapter_electrical_binding"]["path"]
+            )
+            self.assertEqual(
+                {entry["direction"] for entry in binding["entries"]},
+                {"a_to_b", "b_to_a"},
+            )
+            self.assertEqual(
+                len(binding["entries"]),
+                len({entry["physical_lane"] for entry in binding["entries"]}),
+            )
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(root / "chimew")["status"],
+                "pass",
+            )
+
     def test_timing_driven_materialization_binds_projected_sta_weights(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -374,7 +459,7 @@ class AcademicChimewTest(unittest.TestCase):
                 critical_electrical_channel["physical_lane"],
                 critical_entry["lane"],
             )
-            self.assertTrue(
+            self.assertFalse(
                 critical_electrical_channel["placement_anchor"]
             )
             self.assertTrue(
@@ -429,7 +514,7 @@ class AcademicChimewTest(unittest.TestCase):
                 for binding in electrical_binding["entries"]
                 if critical_entry["id"] in binding["schedule_entries"]
             )
-            self.assertTrue(protected_binding["placement_anchor"])
+            self.assertFalse(protected_binding["placement_anchor"])
             self.assertEqual(
                 qualification["source_binding"]["digests"]["timing_paths"],
                 lookahead["timing_weighting"]["source_sha256"],

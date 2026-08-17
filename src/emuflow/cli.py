@@ -107,6 +107,7 @@ from .experiment_stages import (
     run_phase6_checkpoint,
     run_phase7_checkpoint,
     run_physical_lookahead,
+    resume_physical_lookahead,
     validate_phase6_checkpoint,
     validate_phase7_checkpoint,
     validate_physical_lookahead,
@@ -468,6 +469,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="submit only this ready/revalidate experiment node; repeatable",
     )
+    experiment_farm.add_argument(
+        "--worker-arg",
+        action="append",
+        default=[],
+        help=(
+            "seal one validation-farm worker wrapper argument; repeat in argv "
+            "order (supports {install})"
+        ),
+    )
     experiment_farm.add_argument("--farm-id", required=True)
     experiment_farm.add_argument(
         "--worker-launcher",
@@ -617,6 +627,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cut_timing_validate.add_argument("root", type=Path)
     cut_timing_validate.add_argument("--frontend", type=Path, required=True)
+    cut_timing_validate.add_argument("--timing", type=Path, required=True)
     cut_timing_validate.add_argument("--partition", type=Path, required=True)
     cut_timing_validate.add_argument(
         "--timing-model", type=Path, default=DEFAULT_TIMING_MODEL
@@ -717,6 +728,22 @@ def _build_parser() -> argparse.ArgumentParser:
     lookahead_run.add_argument("--openparf-python", type=Path)
     lookahead_run.add_argument("--route-channel-width", type=int, default=300)
     lookahead_run.add_argument("--out", type=Path, required=True)
+    lookahead_resume = experiment_stage_subparsers.add_parser(
+        "lookahead-resume",
+        help="finish one reusable lookahead around a resumed physical checkpoint",
+    )
+    lookahead_resume.add_argument("--shared", type=Path, required=True)
+    lookahead_resume.add_argument("--baseline-phase6", type=Path)
+    lookahead_resume.add_argument("--platform", type=Path, required=True)
+    lookahead_resume.add_argument("--seed", type=int, default=1)
+    lookahead_resume.add_argument("--workers", type=int, default=8)
+    lookahead_resume.add_argument("--region-count", type=int, default=4)
+    lookahead_resume.add_argument("--architecture", type=Path)
+    lookahead_resume.add_argument(
+        "--architecture-id", default="vtr-flagship-k6-n10-40nm"
+    )
+    lookahead_resume.add_argument("--route-channel-width", type=int, default=300)
+    lookahead_resume.add_argument("--out", type=Path, required=True)
     lookahead_validate = experiment_stage_subparsers.add_parser(
         "lookahead-validate", help="independently validate a lookahead checkpoint"
     )
@@ -1865,7 +1892,15 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument(
         "--path-database",
         type=Path,
-        help="pre-partition STA path database with endpoint identity",
+        help="complete pre-partition STA path database for local paths",
+    )
+    multi_fpga_physical.add_argument(
+        "--logic-path-database",
+        type=Path,
+        help=(
+            "through-cut STA path database whose member identities feed "
+            "Phase-4 logic-segment reconstruction"
+        ),
     )
     multi_fpga_physical.add_argument(
         "--backend", choices=("open", "vivado"), default="open"
@@ -3323,6 +3358,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         elif args.experiment_stage_command == "cut-timing-validate":
             report = validate_cut_timing_checkpoint(
                 args.frontend,
+                args.timing,
                 args.partition,
                 args.root,
                 timing_model_path=args.timing_model,
@@ -3414,6 +3450,19 @@ def _dispatch(args: argparse.Namespace) -> int:
                 reuse_validated_phase6_equivalence=(
                     args.reuse_validated_phase6_equivalence
                 ),
+            )
+        elif args.experiment_stage_command == "lookahead-resume":
+            report = resume_physical_lookahead(
+                args.shared,
+                args.baseline_phase6,
+                args.platform,
+                args.out,
+                seed=args.seed,
+                workers=args.workers,
+                region_count=args.region_count,
+                architecture=args.architecture,
+                architecture_id=args.architecture_id,
+                route_channel_width=args.route_channel_width,
             )
         elif args.experiment_stage_command == "lookahead-validate":
             report = validate_physical_lookahead(
@@ -3565,6 +3614,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.out,
                 args.experiment_node,
                 worker_launcher=args.worker_launcher,
+                worker_argv=args.worker_arg or None,
             )
         else:
             report = run_experiment_node(
@@ -4390,6 +4440,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 assignment_path=args.assignment,
                 routes_path=args.routes,
                 path_database_path=args.path_database,
+                logic_path_database_path=args.logic_path_database,
                 workers=args.workers,
                 resume=args.resume,
             )

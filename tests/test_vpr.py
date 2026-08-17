@@ -97,6 +97,102 @@ class VprTest(unittest.TestCase):
                     resume=True,
                 )
 
+    def test_pack_place_checkpoint_allows_sealed_root_relocation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old_physical = root / "staging/output/physical"
+            old_output = old_physical / "FPGA0/vpr-pack-place"
+            old_output.mkdir(parents=True)
+            architecture = old_physical / "architecture/arch.xml"
+            architecture.parent.mkdir()
+            circuit = old_physical / "FPGA0/partition.eblif"
+            architecture.write_text("<architecture/>", encoding="utf-8")
+            circuit.write_text(".model partition\n.end\n", encoding="utf-8")
+            netlist = old_output / "partition.net"
+            placement = old_output / "partition.place"
+            log = old_output / "vpr.console.log"
+            netlist.write_text("packed", encoding="utf-8")
+            placement.write_text("placement", encoding="utf-8")
+            log.write_text(
+                "Netlist num_nets: 4\nNetlist num_blocks: 3\nVPR succeeded\n",
+                encoding="utf-8",
+            )
+            sha256 = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+            report = {
+                "status": "pass",
+                "provider": "vpr-root-build",
+                "stages": ["pack", "place"],
+                "metrics": {"packed_nets": 4, "packed_blocks": 3},
+                "artifacts": {
+                    "packed_netlist": {
+                        "path": str(netlist),
+                        "bytes": netlist.stat().st_size,
+                        "sha256": sha256(netlist),
+                    },
+                    "placement": {
+                        "path": str(placement),
+                        "bytes": placement.stat().st_size,
+                        "sha256": sha256(placement),
+                    },
+                },
+                "architecture": {
+                    "path": str(architecture),
+                    "sha256": sha256(architecture),
+                },
+                "circuit": {"path": str(circuit), "sha256": sha256(circuit)},
+                "configuration": {"seed": 1},
+                "command": ["vpr"],
+                "log": str(log),
+            }
+            (old_output / "vpr-pack-place-report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            new_physical = root / "failures/output/physical"
+            new_physical.parent.mkdir(parents=True)
+            old_physical.rename(new_physical)
+            checked = validate_vpr_pack_place_checkpoint(
+                new_physical / "architecture/arch.xml",
+                new_physical / "FPGA0/partition.eblif",
+                new_physical / "FPGA0/vpr-pack-place",
+                seed=1,
+            )
+            self.assertEqual(checked["metrics"]["packed_blocks"], 3)
+            self.assertEqual(
+                checked["architecture"]["path"],
+                str((new_physical / "architecture/arch.xml").resolve()),
+            )
+            self.assertEqual(
+                checked["circuit"]["path"],
+                str((new_physical / "FPGA0/partition.eblif").resolve()),
+            )
+            self.assertEqual(
+                checked["artifacts"]["packed_netlist"]["path"],
+                str(
+                    (
+                        new_physical
+                        / "FPGA0/vpr-pack-place/partition.net"
+                    ).resolve()
+                ),
+            )
+            self.assertEqual(
+                checked["artifacts"]["placement"]["path"],
+                str(
+                    (
+                        new_physical
+                        / "FPGA0/vpr-pack-place/partition.place"
+                    ).resolve()
+                ),
+            )
+            self.assertEqual(
+                checked["log"],
+                str(
+                    (
+                        new_physical
+                        / "FPGA0/vpr-pack-place/vpr.console.log"
+                    ).resolve()
+                ),
+            )
+
     def test_logic_only_script_lowers_ff_variants_to_latches(self) -> None:
         script = build_vtr_yosys_script(
             [Path("rtl/cpu.v")],

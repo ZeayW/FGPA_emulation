@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import shutil
 import tempfile
@@ -132,9 +133,52 @@ def _timing_paths(root: Path) -> Path | None:
     return path if path.is_file() else None
 
 
-def _projected_timing_paths(root: Path) -> Path | None:
-    path = root / "timing/cut-timing-paths.json"
+def _sta_path_database(root: Path) -> Path | None:
+    path = root / "timing/path-database.json"
     return path if path.is_file() else None
+
+
+def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
+    """Return the local and routed-member STA databases for physical timing.
+
+    Local intra-FPGA queries always use the complete pre-partition database.
+    Cross-FPGA logic segments must use the database that produced the sealed
+    Phase 4 timing population, because its compressed member IDs define the
+    routed paths.  Canonical v3 checkpoints project the complete database;
+    legacy v2 checkpoints projected the through-cut qualification database.
+    """
+
+    full = _sta_path_database(root)
+    cut_path = root / "timing/cut-path-database.json"
+    cut = cut_path if cut_path.is_file() else None
+    if full is None and cut is not None:
+        raise ValidationError(
+            "physical timing has a through-cut STA database without the "
+            "complete original STA path database"
+        )
+    if full is not None and cut is None:
+        raise ValidationError(
+            "physical timing requires the through-cut STA path database"
+        )
+    if full is None:
+        return None, None
+    projected_path = root / "timing/cut-timing-paths.json"
+    if not projected_path.is_file():
+        raise ValidationError(
+            "physical timing requires the sealed Phase 4 timing population"
+        )
+    projected = read_json(projected_path)
+    source_input = projected.get("source", {}).get("input")
+    if not isinstance(source_input, str) or not source_input:
+        raise ValidationError("physical timing population provenance is invalid")
+    source_name = Path(source_input).name
+    if source_name == full.name:
+        return full, full
+    if source_name == cut.name:
+        return full, cut
+    raise ValidationError(
+        "physical timing population names an unknown STA database"
+    )
 
 
 def _board_link_timing(root: Path) -> Path | None:
@@ -298,6 +342,7 @@ def run_physical_lookahead(
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
+    path_database, logic_path_database = _physical_timing_databases(shared_root)
     output_dir = _prepare_empty_output(output_dir, "physical-lookahead")
     physical = run_multi_fpga_physical_flow(
         split_root,
@@ -317,11 +362,193 @@ def run_physical_lookahead(
         seed=seed,
         route_channel_width=route_channel_width,
         workers=workers,
-        original_ir_path=paths["ir"] if _timing_paths(shared_root) else None,
-        assignment_path=paths["assignment"] if _timing_paths(shared_root) else None,
-        routes_path=paths["routes"] if _timing_paths(shared_root) else None,
-        path_database_path=_timing_paths(shared_root),
+        original_ir_path=(paths["ir"] if path_database else None),
+        assignment_path=(paths["assignment"] if path_database else None),
+        routes_path=(paths["routes"] if path_database else None),
+        path_database_path=path_database,
+        logic_path_database_path=logic_path_database,
     )
+    return _finish_physical_lookahead(
+        shared_root,
+        baseline_phase6_root,
+        platform_path,
+        output_dir,
+        physical,
+        seed=seed,
+        workers=workers,
+        region_count=region_count,
+        architecture=architecture,
+        architecture_id=architecture_id,
+        route_channel_width=route_channel_width,
+    )
+
+
+def resume_physical_lookahead(
+    shared_root: Path,
+    baseline_phase6_root: Path | None,
+    platform_path: Path,
+    output_dir: Path,
+    *,
+    seed: int,
+    workers: int,
+    region_count: int,
+    architecture: Path | None = None,
+    architecture_id: str = VTR_HARD_BLOCK_PROFILE,
+    route_channel_width: int = 300,
+) -> Dict[str, Any]:
+    """Finish a lookahead checkpoint around an independently resumed physical run."""
+
+    output_dir = output_dir.expanduser().resolve()
+    if not output_dir.is_dir() or {path.name for path in output_dir.iterdir()} != {
+        "physical"
+    }:
+        raise ValidationError(
+            "resumed physical-lookahead root must contain only physical/"
+        )
+    physical_root = output_dir / "physical"
+    if not physical_root.is_dir():
+        raise ValidationError("resumed physical-lookahead physical/ is missing")
+    physical = read_json(
+        _require_file(physical_root, "multi-fpga-physical-flow-report.json")
+    )
+    physical = _rebase_resumed_physical_paths(physical, physical_root)
+    write_json(
+        physical_root / "multi-fpga-physical-flow-report.json", physical
+    )
+    return _finish_physical_lookahead(
+        shared_root,
+        baseline_phase6_root,
+        platform_path,
+        output_dir,
+        physical,
+        seed=seed,
+        workers=workers,
+        region_count=region_count,
+        architecture=architecture,
+        architecture_id=architecture_id,
+        route_channel_width=route_channel_width,
+    )
+
+
+def _rebase_resumed_physical_paths(
+    physical: Dict[str, Any], physical_root: Path
+) -> Dict[str, Any]:
+    """Relocate report-internal paths after an immutable attempt is moved.
+
+    A failed attempt is sealed below ``checkpoints/failures`` before it can be
+    resumed.  The physical report consequently still names its original
+    staging directory.  Infer that old ``physical/`` root only from the
+    per-FPGA placement-IR outputs, require one unambiguous root, and rewrite
+    only descendants of it into the caller-provided physical tree.
+    """
+
+    roots = set()
+    marker = "/physical/"
+    for record in physical.get("fpgas", []):
+        if not isinstance(record, dict):
+            continue
+        output = record.get("stages", {}).get("placement_ir", {}).get("output")
+        if not isinstance(output, str) or not Path(output).is_absolute():
+            continue
+        prefix, separator, _ = output.rpartition(marker)
+        if separator:
+            roots.add(prefix + "/physical")
+    if not roots:
+        return copy.deepcopy(physical)
+    if len(roots) != 1:
+        raise ValidationError(
+            "resumed physical report contains ambiguous staging roots"
+        )
+    old_root = next(iter(roots))
+    new_root = physical_root.resolve()
+    if Path(old_root).resolve() == new_root:
+        return copy.deepcopy(physical)
+
+    def relocate(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: relocate(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [relocate(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        if value == old_root:
+            return str(new_root)
+        prefix = old_root + "/"
+        if not value.startswith(prefix):
+            return value
+        relative = Path(value[len(prefix) :])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValidationError(
+                "resumed physical report contains an unsafe internal path"
+            )
+        candidate = (new_root / relative).resolve()
+        try:
+            candidate.relative_to(new_root)
+        except ValueError as error:
+            raise ValidationError(
+                "resumed physical report path escapes the physical tree"
+            ) from error
+        return str(candidate)
+
+    return relocate(copy.deepcopy(physical))
+
+
+def _finish_physical_lookahead(
+    shared_root: Path,
+    baseline_phase6_root: Path | None,
+    platform_path: Path,
+    output_dir: Path,
+    physical: Dict[str, Any],
+    *,
+    seed: int,
+    workers: int,
+    region_count: int,
+    architecture: Path | None,
+    architecture_id: str,
+    route_channel_width: int,
+) -> Dict[str, Any]:
+    shared = validate_shared_phase1_5(shared_root, platform_path)
+    paths = _shared_paths(shared_root)
+    split_root = (
+        baseline_phase6_root / "split"
+        if baseline_phase6_root is not None
+        else shared_root / "split"
+    )
+    if baseline_phase6_root is not None:
+        baseline = validate_phase6_checkpoint(
+            baseline_phase6_root, shared_root, None, platform_path
+        )
+        if baseline["provider"] != "baseline":
+            raise ValidationError("physical lookahead requires baseline Phase 6")
+    validate_multi_fpga_physical_report(physical)
+    if physical.get("execution", {}).get("requested_workers") != workers:
+        raise ValidationError("resumed physical-lookahead worker count disagrees")
+    physical_architecture = physical.get("architecture", {})
+    expected_architecture_sha256 = (
+        _sha256(architecture.expanduser().resolve())
+        if architecture is not None
+        else None
+    )
+    if expected_architecture_sha256 is not None and physical_architecture.get(
+        "sha256"
+    ) != expected_architecture_sha256:
+        raise ValidationError("resumed physical-lookahead architecture disagrees")
+    if physical.get("split_manifest", {}).get("sha256") != _sha256(
+        split_root / "manifest.json"
+    ):
+        raise ValidationError("resumed physical-lookahead Phase 6 seal disagrees")
+    for fpga in physical.get("fpgas", []):
+        stages = fpga.get("stages", {})
+        if stages.get("vpr_pack_place", {}).get("configuration", {}).get(
+            "seed"
+        ) != seed:
+            raise ValidationError("resumed physical-lookahead VPR seed disagrees")
+        if stages.get("vpr_route", {}).get("configuration", {}).get(
+            "route_channel_width"
+        ) != route_channel_width:
+            raise ValidationError(
+                "resumed physical-lookahead VPR channel width disagrees"
+            )
     lookahead = materialize_academic_chimew_inputs(
         ir_path=paths["ir"],
         schedule_path=paths["schedule"],
@@ -342,9 +569,7 @@ def run_physical_lookahead(
         "seed": seed,
         "workers": workers,
         "region_count": region_count,
-        "architecture_sha256": (
-            _sha256(architecture.resolve()) if architecture is not None else None
-        ),
+        "architecture_sha256": expected_architecture_sha256,
         "architecture_id": architecture_id,
         "route_channel_width": route_channel_width,
         "shared": shared,
@@ -703,6 +928,7 @@ def run_phase7_checkpoint(
         ),
     )
     paths = _shared_paths(shared_root)
+    path_database, logic_path_database = _physical_timing_databases(shared_root)
     output_dir = _prepare_empty_output(output_dir, "Phase 7 checkpoint")
     lookahead_report = read_json(lookahead_root / "experiment-lookahead-report.json")
     if phase6["provider"] == "baseline" and seed == lookahead_report["seed"]:
@@ -725,10 +951,11 @@ def run_phase7_checkpoint(
             seed=seed,
             route_channel_width=route_channel_width,
             workers=workers,
-            original_ir_path=paths["ir"] if _timing_paths(shared_root) else None,
-            assignment_path=paths["assignment"] if _timing_paths(shared_root) else None,
-            routes_path=paths["routes"] if _timing_paths(shared_root) else None,
-            path_database_path=_timing_paths(shared_root),
+            original_ir_path=(paths["ir"] if path_database else None),
+            assignment_path=(paths["assignment"] if path_database else None),
+            routes_path=(paths["routes"] if path_database else None),
+            path_database_path=path_database,
+            logic_path_database_path=logic_path_database,
         )
     runtime = run_phase7c(
         phase6_root / "schedule.json",

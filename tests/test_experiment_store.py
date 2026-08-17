@@ -213,6 +213,91 @@ class ExperimentStoreTest(unittest.TestCase):
             self.assertFalse(failure.exists())
             self.assertTrue(protected.exists())
 
+    def test_gc_preserves_cache_local_output_aliases_from_imported_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec_path = root / "spec.json"
+            write_json(spec_path, _spec())
+            initial_plan_path = root / "initial-plan.json"
+            initial_plan = plan_experiment(spec_path, cache, initial_plan_path)
+            run_experiment_node(initial_plan_path, "phase1", root / "attempt")
+            final_plan_path = root / "final-plan.json"
+            final_plan = plan_experiment(spec_path, cache, final_plan_path)
+
+            alias_key = "a" * 64
+            alias_output = cache / "objects" / alias_key / "output"
+            alias_output.mkdir(parents=True)
+            (alias_output / "imported.bin").write_bytes(b"imported payload")
+            unreferenced_key = "b" * 64
+            unreferenced = cache / "objects" / unreferenced_key
+            unreferenced.mkdir(parents=True)
+            (unreferenced / "old.bin").write_bytes(b"old")
+            final_plan["nodes"][0]["output_dir"] = str(alias_output.resolve())
+            write_json(final_plan_path, final_plan)
+
+            gc_path = root / "gc.json"
+            gc = plan_experiment_gc(
+                cache, [final_plan_path], gc_path, minimum_age_seconds=0
+            )
+            candidates = {item["path"] for item in gc["candidates"]}
+            self.assertNotIn(f"objects/{alias_key}", candidates)
+            self.assertIn(f"objects/{unreferenced_key}", candidates)
+            roots = gc["roots"][0]
+            self.assertIn(alias_key, roots["object_keys"])
+            self.assertIn(
+                final_plan["nodes"][0]["execution_key"], roots["execution_keys"]
+            )
+
+    def test_gc_apply_refuses_output_alias_that_became_referenced(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            spec_path = root / "spec.json"
+            write_json(spec_path, _spec())
+            initial_plan_path = root / "initial-plan.json"
+            initial_plan = plan_experiment(spec_path, cache, initial_plan_path)
+            run_experiment_node(initial_plan_path, "phase1", root / "attempt")
+            final_plan_path = root / "final-plan.json"
+            final_plan = plan_experiment(spec_path, cache, final_plan_path)
+
+            alias_key = "c" * 64
+            alias_output = cache / "objects" / alias_key / "output"
+            alias_output.mkdir(parents=True)
+            (alias_output / "imported.bin").write_bytes(b"imported payload")
+            gc_path = root / "gc.json"
+            gc = plan_experiment_gc(
+                cache, [final_plan_path], gc_path, minimum_age_seconds=0
+            )
+            self.assertIn(
+                f"objects/{alias_key}",
+                {item["path"] for item in gc["candidates"]},
+            )
+
+            final_plan["nodes"][0]["output_dir"] = str(alias_output.resolve())
+            write_json(final_plan_path, final_plan)
+            approved = hashlib.sha256(gc_path.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(ValidationError, "became referenced"):
+                apply_experiment_gc(gc_path, approved)
+            self.assertTrue(alias_output.is_dir())
+
+    def test_gc_rejects_root_plan_for_another_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_cache = root / "first-cache"
+            second_cache = root / "second-cache"
+            spec_path = root / "spec.json"
+            write_json(spec_path, _spec())
+            plan_path = root / "plan.json"
+            plan_experiment(spec_path, first_cache, plan_path)
+            with self.assertRaisesRegex(ValidationError, "different cache"):
+                plan_experiment_gc(
+                    second_cache,
+                    [plan_path],
+                    root / "gc.json",
+                    minimum_age_seconds=0,
+                )
+
     def test_legacy_migration_inventory_is_read_only_and_counts_hardlinks_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

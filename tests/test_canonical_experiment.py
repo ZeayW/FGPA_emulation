@@ -180,6 +180,9 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(nodes["route"]["dependencies"], ["partition", "cut-timing"])
+            self.assertIn(
+                "{dependency:timing}", nodes["cut-timing"]["validator"]
+            )
             self.assertEqual(nodes["tdm"]["dependencies"], ["route"])
             self.assertIn("--route-constraints", nodes["partition"]["command"])
             self.assertEqual(
@@ -208,6 +211,14 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn(
                 "src/emuflow/experiment_partition.py",
                 nodes["partition"]["implementation"]["components"],
+            )
+            self.assertIn(
+                "src/emuflow/chimew_refinement.py",
+                nodes["physical-lookahead"]["implementation"]["components"],
+            )
+            self.assertIn(
+                "src/native/chimew_position_refiner.cpp",
+                nodes["physical-lookahead"]["implementation"]["components"],
             )
             self.assertIn("--hop-refiner", nodes["partition"]["command"])
             self.assertEqual(

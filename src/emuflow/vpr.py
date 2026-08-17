@@ -619,6 +619,34 @@ def validate_vpr_pack_place_checkpoint(
         or report.get("configuration") != {"seed": seed}
     ):
         raise ValidationError("VPR pack/place checkpoint identity is invalid")
+
+    stored_log = report.get("log")
+    if not isinstance(stored_log, str):
+        raise ValidationError("VPR pack/place checkpoint log is missing")
+    stored_output_dir = Path(stored_log)
+    if not stored_output_dir.is_absolute():
+        raise ValidationError("VPR pack/place checkpoint paths are invalid")
+    stored_output_dir = stored_output_dir.parent
+    stored_physical_root = stored_output_dir.parent.parent
+    current_physical_root = output_dir.parent.parent
+
+    def _path_matches(stored_value: Any, expected: Path) -> bool:
+        if not isinstance(stored_value, str):
+            return False
+        stored = Path(stored_value)
+        if stored == expected:
+            return True
+        # A failed cache attempt is atomically moved from staging/ to failures/.
+        # Accept only that root relocation: the old absolute path must be gone,
+        # and the path below the physical-flow root must remain identical.
+        if not stored.is_absolute() or stored.exists():
+            return False
+        try:
+            stored_relative = stored.relative_to(stored_physical_root)
+            expected_relative = expected.relative_to(current_physical_root)
+        except ValueError:
+            return False
+        return stored_relative == expected_relative
     for label, expected in (
         ("architecture", architecture),
         ("circuit", circuit),
@@ -626,7 +654,7 @@ def validate_vpr_pack_place_checkpoint(
         binding = report.get(label)
         if (
             not isinstance(binding, dict)
-            or binding.get("path") != str(expected)
+            or not _path_matches(binding.get("path"), expected)
             or binding.get("sha256") != _sha256(expected)
         ):
             raise ValidationError(
@@ -647,7 +675,7 @@ def validate_vpr_pack_place_checkpoint(
         if (
             not isinstance(binding, dict)
             or set(binding) != {"path", "bytes", "sha256"}
-            or binding.get("path") != str(expected)
+            or not _path_matches(binding.get("path"), expected)
             or expected.is_symlink()
             or not expected.is_file()
             or binding.get("bytes") != expected.stat().st_size
@@ -658,7 +686,7 @@ def validate_vpr_pack_place_checkpoint(
             )
     log_path = output_dir / "vpr.console.log"
     if (
-        report.get("log") != str(log_path)
+        not _path_matches(report.get("log"), log_path)
         or log_path.is_symlink()
         or not log_path.is_file()
     ):
@@ -676,7 +704,18 @@ def validate_vpr_pack_place_checkpoint(
         or report.get("metrics") != expected_metrics
     ):
         raise ValidationError("VPR pack/place checkpoint metrics disagree")
-    return report
+    # The sealed checkpoint may have been atomically relocated from a failed
+    # cache staging tree.  Keep the on-disk report immutable, but return a
+    # runtime view whose consumable paths point at the independently validated
+    # current tree.  Returning the stale sealed paths would make the validator
+    # pass and then fail immediately in the next physical-flow stage.
+    validated = json.loads(json.dumps(report))
+    validated["architecture"]["path"] = str(architecture)
+    validated["circuit"]["path"] = str(circuit)
+    validated["log"] = str(log_path)
+    for label, expected in expected_artifacts.items():
+        validated["artifacts"][label]["path"] = str(expected)
+    return validated
 
 
 def run_vpr_route_packed(

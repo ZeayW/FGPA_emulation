@@ -736,7 +736,10 @@ LUT6/DFF plus multiplier/RAM mapping, exact VPR packing, the checked
 packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
 routing, timing analysis, independent route/RR-graph verification, and
 endpoint-keyed interface timing extracted directly from VPR's routed Tatum
-graph. Additional architecture mapping profiles remain open gates.
+graph. The pinned VPR build keeps SDC edge arithmetic in 64 bits, so the long
+virtual DUT periods produced by large emulation frame ratios remain exact
+after VPR's nanosecond-to-picosecond scaling. Additional architecture mapping
+profiles remain open gates.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.
@@ -1111,8 +1114,11 @@ that prepass is a separate fixed-seed checkpoint shared by every applicable
 provider; it is not silently regenerated for each final physical seed.
 Experiment DAG stages are not limited to the Phase 1--7 names, and a node may
 depend on multiple earlier checkpoints when its semantic contract requires
-them.  Repeating a planner invocation validates every cached
-artifact and reports each node as:
+them.  Publishing/import and explicit checkpoint or evidence validation hash
+every declared artifact. Repeating a planner invocation fully rehashes mutable
+external references; for a managed checkpoint it instead validates the sealed
+digest table, non-writable manifest, and immutable output tree without rereading
+multi-gigabyte payloads. The planner reports each node as:
 
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
 - `revalidate`: execution output is reusable but the independent validator
@@ -1129,6 +1135,9 @@ binaries used by that stage. The validation key independently binds the
 validator's own closure and argv. Thus a Phase 4 implementation change does
 not invalidate Phase 1--3, and a validator-only change produces `revalidate`
 without recomputing output.
+Closures include transitive stage algorithms as well as their orchestration;
+for example, the physical-lookahead identity seals the Chimew grouping and
+position-refinement modules and native kernels that materialize its outputs.
 Runtime argv and identity argv are deliberately separate. Absolute versioned
 install and source paths remain in the executable command, while the identity
 argv replaces them with labels such as `{input:tool.yosys}` whose SHA-256 is
@@ -1215,8 +1224,13 @@ enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
 per provider, nine physical Phase 7 nodes (three providers by seeds 1, 2, and
 3), and one final paired QoR-comparison node. The comparison independently
 reconstructs every whole-design target/runtime-clock WNS/TNS result, verifies
-the frozen Phase 1/3/4/5 hashes, and reports per-seed deltas plus mean/median
-statistics. Tool bytes and per-stage implementation closures are part of node
+the common frozen Phase 1/3/4 hashes, records the shared Phase 5 schedule, and
+verifies that all three physical seeds for each provider consume one identical
+provider-effective Phase 6 schedule and split manifest. This distinction is
+required because a Phase 6 provider may legitimately materialize a schedule
+that differs from the shared Phase 5 checkpoint. The report includes paired
+per-seed deltas plus mean/median statistics. Tool bytes and per-stage
+implementation closures are part of node
 identity, so a router-only change preserves frontend, STA, and partition
 checkpoints while invalidating routing and its descendants.  The OpenPARF
 manifest is itself an `experiment-implementation-closure/v1` rooted at the
@@ -1271,6 +1285,27 @@ absolute path and SHA-256 in the farm manifest.  Preparation, validation, and
 submission all reject a replaced launcher.  The launcher enters the worker
 runtime once; experiment-stage commands and independent validators execute
 inside that same worker rather than nesting containers per tool invocation.
+For a multi-argument wrapper, repeat `--worker-arg` in exact argv order;
+`{install}` is expanded by the validation farm on the selected node. For
+example:
+
+```bash
+emuflow experiment-cache farm-spec \
+  --plan /research/d4/gds/ziyiwang21/emuflow/experiments/design.plan.json \
+  --install-dir /research/d4/gds/ziyiwang21/emuflow/install/$COMMIT \
+  --node hpc1 --farm-id wrapped-frontier \
+  --worker-arg /research/d4/gds/ziyiwang21/emuflow/bin/emuflow-run \
+  --worker-arg env \
+  --worker-arg 'PYTHONPATH={install}/lib' \
+  --worker-arg '{install}/bin/emuflow' \
+  --out /research/d4/gds/ziyiwang21/emuflow/experiments/design.frontier.farm.json
+```
+
+Omitting both options retains the direct-install worker used by self-contained
+installations. `--worker-launcher` and `--worker-arg` are mutually exclusive.
+The former additionally seals the launcher executable bytes; the latter seals
+the exact wrapper argv in the farm specification and is intended for stable,
+externally qualified runtime commands.
 
 Omit `--experiment-node` to submit the complete ready/revalidate frontier.
 Repeat it to submit a storage-bounded subset of that same sealed frontier; a
@@ -1299,15 +1334,43 @@ emuflow experiment-cache import \
 ```
 
 Import first runs the same independent semantic validator used after a new
-execution, then recomputes and seals every declared file or directory.  The cache keeps
-a validated external reference instead of copying a large physical run; if the
-old artifact is later changed or removed, subsequent planning fails loudly.
+execution, then recomputes and seals every declared file or directory.  For an
+artifact outside the object store, the cache keeps a validated external
+reference instead of copying a large physical run; if it is later changed or
+removed, subsequent planning fails loudly and therefore rehashes it at every
+reuse boundary.  An imported output already owned by the object store is made
+read-only and registered as a managed alias, so later plans check immutable
+metadata while explicit validation still rehashes its bytes.
 Directory names, mtimes, and a report that merely says `pass` never authorize
 reuse.  Experiment plans and resulting farm tasks remain outside the source
 repository, while reusable policy and canonical registries stay checked in.
 Force-runs are exceptional (for example, deliberate nondeterminism or noise
 replication), must record their reason, and must use a distinct declared
 identity instead of overwriting or bypassing a valid checkpoint.
+
+An interrupted physical-lookahead node can reuse validated per-FPGA VPR
+pack/place work without pretending that the partial node passed.  Copy-on-write
+materialize the failed `physical/` tree into a new attempt, complete it with
+`multi-fpga physical --resume`, then finish the stage around that physical tree:
+
+```bash
+emuflow experiment-stage lookahead-resume \
+  --shared /research/d4/gds/ziyiwang21/checkpoints/shared-phase1-5 \
+  --baseline-phase6 /research/d4/gds/ziyiwang21/checkpoints/phase6-baseline \
+  --platform /research/d4/gds/ziyiwang21/inputs/boarddb.json \
+  --architecture /research/d4/gds/ziyiwang21/inputs/vtr-flagship.xml \
+  --seed 1 --workers 8 --region-count 4 --route-channel-width 300 \
+  --out /research/d4/gds/ziyiwang21/attempts/lookahead-recovered
+```
+
+The output root must contain only the completed `physical/` directory before
+this command starts.  It rechecks the physical report, Phase 6 manifest, FPGA
+coverage, seed, worker count, architecture digest, and channel width before
+materializing the lookahead artifacts.  Only the resulting complete root may
+be passed to `experiment-cache import`; the original failed attempt remains
+append-only evidence.  If sealing moved the attempt, the resume gate infers
+one original `physical/` root from the per-FPGA reports and safely rebases only
+its descendants into the new copy; external inputs are never rewritten.
 
 Build and verify the portable implementation closure used by a v2 node:
 
@@ -1346,7 +1409,9 @@ emuflow experiment-cache evidence-validate /research/d4/gds/ziyiwang21/emuflow/e
 An evidence bundle recursively materializes every required artifact for its
 terminal nodes and ancestors and validates without the source cache. Cache
 reclamation is a separate two-step operation. `gc-plan` roots active plans,
-records every candidate's current content digest, and performs no mutation;
+including both each logical execution key and any cache-local immutable
+payload-object alias recorded by an imported or re-keyed checkpoint's
+`output_dir`, records every candidate's current content digest, and performs no mutation;
 `gc-apply` requires the exact plan-file SHA-256 and aborts if an object changed
 or became referenced. Legacy `runs` first receive a read-only migration plan:
 
@@ -1903,6 +1968,18 @@ is deliberately `N=1`; large HPC runs should set it explicitly and record the
 same value for both sides of an A/B comparison. For a 32-FPGA run, start from a
 measured value such as 8 and raise it only after checking memory and tool-token
 pressure.
+
+Endpoint-complete physical timing retains two sealed STA artifacts with
+different roles. `path-database.json` is the complete pre-partition population;
+canonical v3 checkpoints project it into Phase 4/5, use it for same-FPGA local
+paths, and use the same member-ID namespace for routed cross-FPGA logic
+segments. `cut-path-database.json` is a directed through-net qualification run
+that proves every actual cut net was queried and structurally classified; it is
+not allowed to truncate the Phase 4/5 timing population. Canonical experiment
+stages inspect the sealed projection provenance and bind `--logic-path-database`
+to the matching namespace automatically. Legacy v2 checkpoints that projected
+the through-cut database remain readable, but they are not valid evidence for
+endpoint-complete whole-design WNS/TNS.
 
 To use the identical flow boundary with a concrete Xilinx part, select the
 Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:
@@ -2775,7 +2852,12 @@ BoardDB domain order, so the parallel and serial artifacts are byte-identical;
 the default remains one worker unless the caller explicitly allocates more.
 
 Four Chimew kernels now sit beside that production baseline and are composed
-by the default open academic physical path described above. The first
+by the default open academic physical path described above.  Its electrical
+materializer follows the BoardDB capacity contract: full-duplex
+`per_direction` links use two direction-qualified assignment domains, while
+`shared_bidirectional` contest links put both directional groups in one
+exclusive lane domain with direction-agnostic channels.  It never widens a
+shared contest link into two independent lane pools merely to run Chimew. The first
 reproduces FPGA 2026 Algorithm 1 from explicit,
 source-qualified physical SLL-crossing encodings. The second only swaps
 equal-encoding signals using physical-site source-y coordinates, preserving
@@ -3012,11 +3094,17 @@ unprotected groups still run the normal Chimew grouping, position refinement,
 and bank/channel matching over the remaining lanes.  The guard is recorded in
 the lookahead report and independently checked before refinement and matching.
 This is an EmuFlow timing-integration constraint, not part of the published
-Chimew algorithm.  On academic platforms without a real package-pin BSP, only
-these timing-covered groups become physical placement anchors, and their anchor
-coordinate is the source/sink placement centroid from the sealed prepass.
-Unprotected channel coordinates remain optimization/certificate data and are
-not misrepresented as real package-pin constraints.
+Chimew algorithm.  On academic platforms without a revision-controlled
+package-pin BSP, all synthesized channel coordinates remain optimization and
+certificate data; none are promoted to fixed Phase 7 I/O targets.  Timing-
+covered groups still preserve their lane identity and transport membership.
+Only a real source-qualified BSP may declare physical placement anchors.
+When the input is a real Phase 5 schedule, its explicit slot is also part of
+the refinement exchange domain.  Equal-encoding signals may therefore move
+only among groups at the same frozen slot; native refinement and the Python
+replay both preserve per-group slot uniqueness before the final pin-plan
+validator checks every physical lane/slot.  Paper-only fixtures without an
+explicit Phase 5 slot retain the unconstrained published-kernel behavior.
 
 The correlation gate accepts only `byte-bound-source-artifacts` Chimew bundles
 and relocatable Vivado board-flow v3 bundles. The manifest fixes both report

@@ -749,11 +749,10 @@ def materialize_academic_chimew_inputs(
             if (entry["from"], entry["to"]) == (endpoint_a, endpoint_b)
             else "b_to_a"
         )
-        # Full-duplex/per-direction BoardDB links expose an independent lane
-        # budget in each direction.  Keep those budgets in distinct Chimew
-        # assignment domains: the paper-facing bank/channel optimizer does not
-        # otherwise know an electrical channel's direction and would make the
-        # two directions incorrectly compete for one lane pool.
+        # Keep direction in the grouping identity even when the BoardDB shares
+        # capacity across directions.  A Chimew group itself always has one
+        # source and one sink direction; only the downstream physical-channel
+        # assignment domain changes with the BoardDB capacity contract.
         key = (entry["link"], direction, group_by_entry[entry["id"]])
         source = entry_points[entry["id"]]["source"]
         sink = entry_points[entry["id"]]["sink"]
@@ -807,10 +806,10 @@ def materialize_academic_chimew_inputs(
     for link_id in sorted({key[0] for key in grouped}):
         link = link_by_id[link_id]
         endpoint_a, endpoint_b = link.endpoints
-        if link.direction != "full_duplex" or link.capacity_sharing != "per_direction":
+        if link.direction != "full_duplex":
             raise ValidationError(
-                "academic Chimew default currently requires full-duplex, "
-                f"per-direction BoardDB links; {link_id!r} is incompatible"
+                "academic Chimew default currently requires full-duplex "
+                f"BoardDB links; {link_id!r} is incompatible"
             )
         lane_count = link.transport_bits_per_cycle_per_direction
         a_y_min, a_y_max = fpga_y_bounds[endpoint_a]
@@ -818,11 +817,41 @@ def materialize_academic_chimew_inputs(
         active_directions = sorted(
             {key[1] for key in grouped if key[0] == link_id}
         )
-        for direction in active_directions:
-            base_domain_id = f"{link_id}:{direction}"
-            group_keys = sorted(
-                key for key in grouped if key[:2] == (link_id, direction)
+        if link.capacity_sharing == "per_direction":
+            # A full-duplex/per-direction link exposes an independent lane
+            # budget in each direction, so opposite directions may reuse the
+            # same physical lane index and direction-qualified package pins.
+            domain_partitions = [
+                (
+                    direction,
+                    direction,
+                    sorted(
+                        key
+                        for key in grouped
+                        if key[:2] == (link_id, direction)
+                    ),
+                )
+                for direction in active_directions
+            ]
+        elif link.capacity_sharing == "shared_bidirectional":
+            # Contest BoardDBs model one lane pool shared by both directions.
+            # Put all directional groups in one optimizer domain and expose
+            # each synthetic electrical channel as direction-agnostic.  The
+            # one-to-one assignment then prevents opposite directions from
+            # silently consuming the same concrete lane.
+            domain_partitions = [
+                (
+                    "shared_bidirectional",
+                    "either",
+                    sorted(key for key in grouped if key[0] == link_id),
+                )
+            ]
+        else:  # Platform validation should make this unreachable.
+            raise ValidationError(
+                f"academic Chimew link {link_id!r} has unsupported capacity sharing"
             )
+        for domain_qualifier, channel_direction, group_keys in domain_partitions:
+            base_domain_id = f"{link_id}:{domain_qualifier}"
             fixed_groups = {
                 fixed_lane_by_group[key]: key
                 for key in group_keys
@@ -864,6 +893,7 @@ def materialize_academic_chimew_inputs(
                 guarded_points = None
                 if guarded_domain:
                     guarded_members = grouped[domain_groups[0]]
+                    guarded_direction = domain_groups[0][1]
                     source_y = sum(
                         member["fanout"]["y"] for member in guarded_members
                     ) / len(guarded_members)
@@ -872,7 +902,7 @@ def materialize_academic_chimew_inputs(
                     ) / len(guarded_members)
                     guarded_points = (
                         (source_y, sink_y)
-                        if direction == "a_to_b"
+                        if guarded_direction == "a_to_b"
                         else (sink_y, source_y)
                     )
                 for group_key in domain_groups:
@@ -889,7 +919,7 @@ def materialize_academic_chimew_inputs(
                 raw_channels = []
                 for domain_order, lane in enumerate(domain_lanes):
                     channel_id = (
-                        f"academic-{link_id}-{direction}-channel-{lane:04d}"
+                        f"academic-{link_id}-{domain_qualifier}-channel-{lane:04d}"
                     )
                     fraction = (
                         0.5
@@ -920,15 +950,15 @@ def materialize_academic_chimew_inputs(
                             },
                         }
                     )
-                    # A full-duplex physical lane has distinct transmit/receive
-                    # package pins.  Direction-qualified synthetic identities keep
-                    # the academic model honest while allowing the BoardDB's
-                    # per-direction lane capacity to be used concurrently.
+                    # Per-direction full-duplex capacity has distinct
+                    # direction-qualified synthetic pin identities.  Shared
+                    # bidirectional capacity has one identity which can serve
+                    # either direction, but only one assigned Chimew group.
                     pin_a = (
-                        f"ACADEMIC_{endpoint_a}_{link_id}_{direction}_P{lane}"
+                        f"ACADEMIC_{endpoint_a}_{link_id}_{domain_qualifier}_P{lane}"
                     )
                     pin_b = (
-                        f"ACADEMIC_{endpoint_b}_{link_id}_{direction}_P{lane}"
+                        f"ACADEMIC_{endpoint_b}_{link_id}_{domain_qualifier}_P{lane}"
                     )
                     package_records.extend(
                         [
@@ -941,7 +971,7 @@ def materialize_academic_chimew_inputs(
                             "chimew_channel": channel_id,
                             "link": link_id,
                             "physical_lane": lane,
-                            "direction": direction,
+                            "direction": channel_direction,
                             "bank_a": bank_a_id,
                             "bank_b": bank_b_id,
                             "package_pin_a": pin_a,
@@ -951,7 +981,11 @@ def materialize_academic_chimew_inputs(
                             "bank_voltage": 1.8,
                             "electrical_class": "single_ended_parallel",
                             "reserved": False,
-                            "placement_anchor": guarded_domain,
+                            # Academic platforms synthesize virtual package-pin
+                            # coordinates for optimization and certification only.
+                            # They are not revision-controlled BSP constraints and
+                            # therefore must never become fixed Phase 7 I/O targets.
+                            "placement_anchor": False,
                         }
                     )
                 bank_pairs.append(

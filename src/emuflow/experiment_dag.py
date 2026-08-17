@@ -658,6 +658,7 @@ def validate_experiment_checkpoint(
     manifest_path: Path,
     *,
     expected_key: Optional[str] = None,
+    verify_artifact_content: bool = True,
 ) -> Dict[str, Any]:
     value = read_json(manifest_path)
     schema = value.get("schema")
@@ -690,11 +691,26 @@ def validate_experiment_checkpoint(
         if not isinstance(record, dict):
             raise ValidationError("experiment checkpoint artifact record is invalid")
         path = _safe_artifact(output_dir, relative)
-        kind, digest, size = _artifact_digest(path)
-        if record != {"kind": kind, "sha256": digest, "bytes": size}:
-            raise ValidationError(
-                f"experiment checkpoint artifact seal is broken: {relative}"
-            )
+        if verify_artifact_content:
+            kind, digest, size = _artifact_digest(path)
+            if record != {"kind": kind, "sha256": digest, "bytes": size}:
+                raise ValidationError(
+                    f"experiment checkpoint artifact seal is broken: {relative}"
+                )
+        else:
+            if (
+                sorted(record) != ["bytes", "kind", "sha256"]
+                or record.get("kind") not in {"file", "directory"}
+                or not isinstance(record.get("bytes"), int)
+                or record["bytes"] < 0
+                or not isinstance(record.get("sha256"), str)
+                or _DIGEST_RE.fullmatch(record["sha256"]) is None
+                or (record["kind"] == "file" and not path.is_file())
+                or (record["kind"] == "directory" and not path.is_dir())
+            ):
+                raise ValidationError(
+                    f"experiment checkpoint artifact record is invalid: {relative}"
+                )
     if value.get("status") != "pass":
         raise ValidationError("experiment checkpoint did not pass")
     if value.get("storage") == "managed" and (
@@ -732,7 +748,17 @@ def _cached_checkpoint(cache_root: Path, key: str) -> Optional[Dict[str, Any]]:
     manifest = _checkpoint_manifest(cache_root, key)
     if not manifest.is_file():
         return None
-    return validate_experiment_checkpoint(manifest, expected_key=key)
+    value = read_json(manifest)
+    managed_immutable = (
+        value.get("storage") == "managed"
+        and value.get("output_immutable") is True
+        and manifest.stat().st_mode & 0o222 == 0
+    )
+    return validate_experiment_checkpoint(
+        manifest,
+        expected_key=key,
+        verify_artifact_content=not managed_immutable,
+    )
 
 
 def plan_experiment(
@@ -844,9 +870,14 @@ def _seal_checkpoint(
         output_dir,
         storage=storage,
     )
-    write_json(object_root / "checkpoint.json", manifest)
+    manifest_path = object_root / "checkpoint.json"
+    write_json(manifest_path, manifest)
+    if storage == "managed":
+        manifest_path.chmod(0o444)
     return validate_experiment_checkpoint(
-        object_root / "checkpoint.json", expected_key=node["key"]
+        manifest_path,
+        expected_key=node["key"],
+        verify_artifact_content=storage != "managed",
     )
 
 
@@ -896,6 +927,21 @@ def _validate_tree_immutable(root: Path) -> None:
             raise ValidationError(
                 f"managed checkpoint output is writable: {path}"
             )
+
+
+def _is_cache_resident_output(cache_root: Path, output_dir: Path) -> bool:
+    """Return whether an imported output is an object-store-owned tree."""
+
+    try:
+        relative = output_dir.resolve().relative_to((cache_root / "objects").resolve())
+    except ValueError:
+        return False
+    return (
+        len(relative.parts) == 2
+        and _DIGEST_RE.fullmatch(relative.parts[0]) is not None
+        and relative.parts[1] == "output"
+        and not output_dir.is_symlink()
+    )
 
 
 def _seal_validation(cache_root: Path, node: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1001,10 +1047,41 @@ def import_experiment_checkpoint(
     cache_root = validate_experiment_write_path(Path(plan["cache_root"]))
     existing = _cached_checkpoint(cache_root, node["key"])
     if existing is not None:
+        promoted_existing = False
+        if (
+            existing.get("storage") == "external-validated"
+            and _is_cache_resident_output(
+                cache_root, Path(existing["output_dir"])
+            )
+        ):
+            # The full-content check in _cached_checkpoint() just proved this
+            # legacy alias still matches its seal.  Make the object-store-owned
+            # tree immutable and publish the same digest table as a managed
+            # alias so subsequent planning is metadata-only.
+            output_dir = Path(existing["output_dir"])
+            _make_tree_immutable(output_dir)
+            promoted = {
+                **existing,
+                "storage": "managed",
+                "output_immutable": True,
+            }
+            manifest = _checkpoint_manifest(cache_root, node["key"])
+            manifest.chmod(0o644)
+            write_json(manifest, promoted)
+            manifest.chmod(0o444)
+            existing = validate_experiment_checkpoint(
+                manifest,
+                expected_key=node["key"],
+                verify_artifact_content=False,
+            )
+            promoted_existing = True
         if "validation_key" not in node or _validated_certificate(
             cache_root, node["key"], node["validation_key"]
         ) is not None:
-            return {"status": "reused", "checkpoint": existing}
+            return {
+                "status": "promoted" if promoted_existing else "reused",
+                "checkpoint": existing,
+            }
         validation = _run_validator(node, cache_root, Path(existing["output_dir"]))
         if validation.returncode != 0:
             raise ValidationError(
@@ -1029,8 +1106,14 @@ def import_experiment_checkpoint(
             f"experiment node {node_id} independent validator failed: "
             f"{validation.stderr.decode('utf-8', errors='replace')[-2048:]}"
         )
+    managed_alias = _is_cache_resident_output(cache_root, artifact_root)
+    if managed_alias:
+        _make_tree_immutable(artifact_root)
     checkpoint = _seal_checkpoint(
-        cache_root, node, artifact_root, storage="external-validated"
+        cache_root,
+        node,
+        artifact_root,
+        storage="managed" if managed_alias else "external-validated",
     )
     result = {"status": "imported", "checkpoint": checkpoint}
     if "validation_key" in node:
@@ -1171,7 +1254,9 @@ def run_experiment_node(
         (staging / "checkpoint.json").chmod(0o444)
         staging.rename(final_root)
         checkpoint = validate_experiment_checkpoint(
-            final_root / "checkpoint.json", expected_key=node["key"]
+            final_root / "checkpoint.json",
+            expected_key=node["key"],
+            verify_artifact_content=False,
         )
         report = {
             "status": "pass",
@@ -1195,6 +1280,7 @@ def build_experiment_farm_spec(
     farm_id: str,
     output_path: Path,
     experiment_nodes: Optional[list[str]] = None,
+    worker_argv: Optional[list[str]] = None,
     *,
     worker_launcher: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -1226,6 +1312,19 @@ def build_experiment_farm_spec(
         _identifier(node, "HPC node")
     if len(nodes) != len(set(nodes)):
         raise ValidationError("experiment farm HPC nodes must be unique")
+    if worker_launcher is not None and worker_argv is not None:
+        raise ValidationError(
+            "experiment farm worker launcher and worker argv are mutually exclusive"
+        )
+    if worker_argv is not None:
+        if not isinstance(worker_argv, list) or not worker_argv:
+            raise ValidationError(
+                "experiment farm worker argv must be a non-empty string list"
+            )
+        if any(not isinstance(item, str) or not item.strip() for item in worker_argv):
+            raise ValidationError(
+                "experiment farm worker argv must contain non-empty strings"
+            )
     plan_path = plan_path.resolve()
     plan_sha256 = _sha256(plan_path)
     launcher_binding = None
@@ -1280,6 +1379,8 @@ def build_experiment_farm_spec(
             "{install}/bin/emuflow",
         ]
         spec["worker_launcher"] = launcher_binding
+    elif worker_argv is not None:
+        spec["worker_argv"] = list(worker_argv)
     write_json(output_path, spec)
     return {
         "status": "pass",
