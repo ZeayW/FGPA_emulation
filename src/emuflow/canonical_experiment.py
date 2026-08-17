@@ -613,6 +613,7 @@ def compile_canonical_experiment_spec(
     timing_command = [
         executable, "experiment-stage", "timing-run", "--frontend", "{dependency:frontend}",
         "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing),
+        "--opensta", str(tools["opensta"]),
     ]
     for value in period_args:
         timing_command.extend(("--clock-period", value))
@@ -671,7 +672,6 @@ def compile_canonical_experiment_spec(
         executable, "experiment-stage", "cut-timing-run", "--frontend", "{dependency:frontend}",
         "--timing", "{dependency:timing}", "--partition", "{dependency:partition}",
         "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing),
-        "--opensta", str(tools["opensta"]),
     ]
     for value in period_args:
         cut_command.extend(("--clock-period", value))

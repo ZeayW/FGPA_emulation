@@ -183,6 +183,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn(
                 "{dependency:timing}", nodes["cut-timing"]["validator"]
             )
+            self.assertIn("--opensta", nodes["timing"]["command"])
+            self.assertNotIn("--opensta", nodes["cut-timing"]["command"])
             self.assertEqual(nodes["tdm"]["dependencies"], ["route"])
             self.assertIn("--route-constraints", nodes["partition"]["command"])
             self.assertEqual(
