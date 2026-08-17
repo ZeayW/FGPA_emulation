@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 import shutil
 import tempfile
 from pathlib import Path
@@ -32,12 +33,15 @@ from .pin_planning import (
     validate_pin_plan,
 )
 from .platform import Platform
+from .runtime import QOR_REPORT_SCHEMA
 from .vpr import VTR_HARD_BLOCK_PROFILE
 
 
 EXPERIMENT_LOOKAHEAD_SCHEMA = "emuflow.experiment-physical-lookahead/v1"
 EXPERIMENT_PHASE6_SCHEMA = "emuflow.experiment-phase6-checkpoint/v1"
-EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
+LEGACY_EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
+EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v2"
+PHASE7_QOR_PROJECTION_SCHEMA = "emuflow.phase7-qor-projection/v1"
 _PROVIDERS = {"baseline", "placement-aware", "chimew"}
 
 
@@ -74,6 +78,101 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _finite_number(value: Any, label: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise ValidationError(f"experiment Phase 7 {label} must be finite")
+    return float(value)
+
+
+def _phase7_qor_projection(qor: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return the small, replayable subset needed for experiment comparison.
+
+    The complete QoR artifact remains authoritative and hash sealed.  This
+    projection prevents every downstream comparison from parsing and embedding
+    the complete (potentially hundreds-of-megabytes) timing evidence again.
+    """
+
+    if qor.get("schema") != QOR_REPORT_SCHEMA or qor.get("status") != "pass":
+        raise ValidationError("experiment Phase 7 QoR report is invalid")
+    design = qor.get("design")
+    platform = qor.get("platform")
+    if (
+        not isinstance(design, str)
+        or not design
+        or not isinstance(platform, str)
+        or not platform
+    ):
+        raise ValidationError("experiment Phase 7 QoR identity is invalid")
+    timing = qor.get("timing")
+    physical = qor.get("physical")
+    if not isinstance(timing, dict) or timing.get("status") != "pass":
+        raise ValidationError("experiment Phase 7 timing evidence is invalid")
+    if not isinstance(physical, dict) or physical.get("status") != "pass":
+        raise ValidationError("experiment Phase 7 physical evidence is invalid")
+
+    clocks: Dict[str, Dict[str, Any]] = {}
+    for name in ("target_clock", "runtime_clock"):
+        clock = timing.get(name)
+        if not isinstance(clock, dict):
+            raise ValidationError(f"experiment Phase 7 {name} evidence is missing")
+        failing = clock.get("negative_slack_paths")
+        if isinstance(failing, bool) or not isinstance(failing, int) or failing < 0:
+            raise ValidationError(
+                f"experiment Phase 7 {name} negative-slack count is invalid"
+            )
+        tns = _finite_number(
+            clock.get("total_negative_slack_bound_ns"), f"{name} TNS"
+        )
+        if tns > 1.0e-12:
+            raise ValidationError(f"experiment Phase 7 {name} TNS is positive")
+        clocks[name] = {
+            "worst_slack_bound_ns": _finite_number(
+                clock.get("worst_slack_bound_ns"), f"{name} WNS"
+            ),
+            "total_negative_slack_bound_ns": tns,
+            "negative_slack_paths": failing,
+        }
+
+    unrouted = physical.get("unrouted_nets")
+    drc = physical.get("drc_violations")
+    if (
+        isinstance(unrouted, bool)
+        or not isinstance(unrouted, int)
+        or unrouted < 0
+        or isinstance(drc, bool)
+        or not isinstance(drc, int)
+        or drc < 0
+    ):
+        raise ValidationError("experiment Phase 7 physical violation count is invalid")
+    return {
+        "schema": PHASE7_QOR_PROJECTION_SCHEMA,
+        "status": "pass",
+        "design": design,
+        "platform": platform,
+        "timing": {
+            "status": "pass",
+            "qualification": copy.deepcopy(timing.get("qualification")),
+            "path_exactness": copy.deepcopy(timing.get("path_exactness")),
+            **clocks,
+        },
+        "physical": {
+            "status": "pass",
+            "worst_wns_ns": _finite_number(
+                physical.get("worst_wns_ns"), "per-FPGA worst WNS"
+            ),
+            "total_tns_ns": _finite_number(
+                physical.get("total_tns_ns"), "per-FPGA total TNS"
+            ),
+            "unrouted_nets": unrouted,
+            "drc_violations": drc,
+        },
+    }
 
 
 def _require_file(root: Path, relative: str) -> Path:
@@ -1024,9 +1123,16 @@ def run_phase7_checkpoint(
             "routes_sha256": _sha256(paths["routes"]),
             "schedule_sha256": _sha256(phase6_root / "schedule.json"),
         },
-        "physical_summary_sha256": _sha256(output_dir / "physical/physical-summary.json"),
+        "physical_summary_sha256": _sha256(
+            output_dir / "physical/physical-summary.json"
+        ),
+        "physical_flow_report_sha256": _sha256(
+            output_dir / "physical/multi-fpga-physical-flow-report.json"
+        ),
         "qor_sha256": _sha256(output_dir / "runtime/qor_report.json"),
-        "qor": read_json(output_dir / "runtime/qor_report.json"),
+        "qor_projection": _phase7_qor_projection(
+            read_json(output_dir / "runtime/qor_report.json")
+        ),
     }
     write_json(output_dir / "experiment-phase7-report.json", report)
     validate_phase7_checkpoint(
@@ -1061,8 +1167,9 @@ def validate_phase7_checkpoint(
         _validation_session=session,
     )
     report = read_json(_require_file(root, "experiment-phase7-report.json"))
+    schema = report.get("schema")
     if (
-        report.get("schema") != EXPERIMENT_PHASE7_SCHEMA
+        schema not in {LEGACY_EXPERIMENT_PHASE7_SCHEMA, EXPERIMENT_PHASE7_SCHEMA}
         or report.get("status") != "pass"
         or report.get("provider") != phase6["provider"]
     ):
@@ -1087,7 +1194,7 @@ def validate_phase7_checkpoint(
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
-    validate_multi_fpga_physical_report(physical_report)
+    session.validate_physical(physical_report)
     if expected_workers is not None and physical_report.get("execution", {}).get(
         "requested_workers"
     ) != expected_workers:
@@ -1105,10 +1212,25 @@ def validate_phase7_checkpoint(
                 "route_channel_width"
             ) != expected_route_channel_width:
                 raise ValidationError("experiment Phase 7 VPR channel width disagrees")
-    if report.get("physical_summary_sha256") != _sha256(
-        root / "physical/physical-summary.json"
-    ) or report.get("qor_sha256") != _sha256(root / "runtime/qor_report.json"):
+    physical_report_path = root / "physical/multi-fpga-physical-flow-report.json"
+    if (
+        report.get("physical_summary_sha256")
+        != _sha256(root / "physical/physical-summary.json")
+        or report.get("qor_sha256") != _sha256(root / "runtime/qor_report.json")
+        or (
+            schema == EXPERIMENT_PHASE7_SCHEMA
+            and report.get("physical_flow_report_sha256")
+            != _sha256(physical_report_path)
+        )
+    ):
         raise ValidationError("experiment Phase 7 checkpoint seal is broken")
+    qor = read_json(root / "runtime/qor_report.json")
+    projection = _phase7_qor_projection(qor)
+    if schema == EXPERIMENT_PHASE7_SCHEMA:
+        if report.get("qor_projection") != projection or "qor" in report:
+            raise ValidationError("experiment Phase 7 QoR projection is invalid")
+    elif report.get("qor") != qor:
+        raise ValidationError("experiment Phase 7 legacy QoR seal is broken")
     with tempfile.TemporaryDirectory() as temporary:
         replay = run_phase7c(
             phase6_root / "schedule.json",
@@ -1124,11 +1246,11 @@ def validate_phase7_checkpoint(
         )
         if replay.get("status") != "pass" or read_json(
             Path(temporary) / "qor_report.json"
-        ) != read_json(root / "runtime/qor_report.json"):
+        ) != qor:
             raise ValidationError("experiment Phase 7 QoR replay disagrees")
     return {
         "status": "pass",
         "provider": report["provider"],
         "physical_seed": report["physical_seed"],
-        "qor": report["qor"],
+        "qor_projection": projection,
     }

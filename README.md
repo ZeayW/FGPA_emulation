@@ -1131,6 +1131,13 @@ physical summary and full multi-FPGA physical-flow report. The much larger
 per-FPGA placement/routing work directory is a diagnostic artifact: it remains
 available in the checkpoint until retention/GC policy collects it, but it is
 not multiplied into every permanent evidence bundle.
+Phase 7 checkpoint reports use a compact v2 QoR projection for design/platform,
+whole-design target/runtime WNS/TNS, and physical closure counters.  The full
+QoR and physical-flow reports remain immutable artifacts covered by SHA-256,
+and the standalone validator still reconstructs the projection from the full
+QoR and replays Phase 7C.  Legacy v1 reports embedding the full QoR remain
+readable.  Canonical nine-arm aggregation parses each full artifact once rather
+than repeatedly embedding or rereading hundreds of megabytes of timing paths.
 
 New experiment specs use `emuflow.experiment-dag-spec/v2`; v1 remains readable
 only for migration compatibility. A deliberately
