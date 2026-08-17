@@ -26,17 +26,17 @@ class ExperimentUpstreamTest(unittest.TestCase):
     @mock.patch("emuflow.experiment_upstream.validate_cut_timing_checkpoint")
     @mock.patch("emuflow.experiment_upstream._sha256", return_value="0" * 64)
     @mock.patch("emuflow.experiment_upstream.project_sta_path_database")
-    @mock.patch("emuflow.experiment_upstream.run_opensta_path_database")
+    @mock.patch("emuflow.experiment_upstream.build_cut_segment_qualification")
     @mock.patch("emuflow.experiment_upstream.validate_timing_checkpoint")
     def test_cut_timing_projects_complete_prepartition_database(
         self,
         _validate_timing,
-        run_opensta,
+        build_qualification,
         project,
         _sha,
         _validate_cut,
     ) -> None:
-        run_opensta.return_value = {"status": "pass"}
+        build_qualification.return_value = {"status": "pass"}
         project.return_value = {"status": "pass"}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -72,7 +72,15 @@ class ExperimentUpstreamTest(unittest.TestCase):
 
             self.assertEqual(project.call_args.args[0], complete.resolve())
             self.assertNotEqual(
-                project.call_args.args[0], output / "cut-path-database.json"
+                project.call_args.args[0], output / "cut-segment-qualification.json"
+            )
+            self.assertEqual(
+                build_qualification.call_args.args[:3],
+                (
+                    (frontend / "phase1/design.emuir.json").resolve(),
+                    (partition / "assignment.json").resolve(),
+                    complete.resolve(),
+                ),
             )
             self.assertEqual(
                 _validate_cut.call_args.args[:3],

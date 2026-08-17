@@ -1992,17 +1992,19 @@ same value for both sides of an A/B comparison. For a 32-FPGA run, start from a
 measured value such as 8 and raise it only after checking memory and tool-token
 pressure.
 
-Endpoint-complete physical timing retains two sealed STA artifacts with
-different roles. `path-database.json` is the complete pre-partition population;
-canonical v3 checkpoints project it into Phase 4/5, use it for same-FPGA local
-paths, and use the same member-ID namespace for routed cross-FPGA logic
-segments. `cut-path-database.json` is a directed through-net qualification run
-that proves every actual cut net was queried and structurally classified; it is
-not allowed to truncate the Phase 4/5 timing population. Canonical experiment
-stages inspect the sealed projection provenance and bind `--logic-path-database`
-to the matching namespace automatically. Legacy v2 checkpoints that projected
-the through-cut database remain readable, but they are not valid evidence for
-endpoint-complete whole-design WNS/TNS.
+Endpoint-complete physical timing retains the complete pre-partition
+`path-database.json` as its single original-member namespace. Canonical v3+
+checkpoints project it into Phase 4/5, use it for same-FPGA local paths, and use
+the same member IDs for routed cross-FPGA logic segments. A separate
+`cut-segment-qualification.json` binds every partition cut to independently
+reconstructed EmuIR timed-endpoint reachability, any enumerated original path
+members, and the static-exact source/capture segment identities. Its pre-route
+delay evidence is explicitly `contract-budget-provisional`; endpoint-exact or
+conservative routed segment delay remains mandatory in Phase 7. Canonical
+experiment stages inspect the sealed projection provenance and bind
+`--logic-path-database` to the complete namespace automatically. Legacy v2
+checkpoints that projected a through-cut database remain readable, but they are
+not valid evidence for endpoint-complete whole-design WNS/TNS.
 
 To use the identical flow boundary with a concrete Xilinx part, select the
 Vivado provider and a platform whose FPGA `part` fields are valid Vivado parts:
@@ -2053,12 +2055,17 @@ launch/capture identities even when OpenSTA's Tcl export adds a second
 backslash-escaping layer.  The adapter accepts only a unique exact alias and
 rejects ambiguous spellings, so a structured endpoint certificate cannot be
 silently attached to the wrong instance.
-After a partition is selected, the provider can also issue directed
-through-net queries for the actual cut nets, so a timing-relevant cut is not
-silently absent merely because it fell outside the global worst-path prefix.
-The reusable cut-timing checkpoint seals `through-net-coverage.json`; its
-independent validator rebuilds both the cut-net set and structural endpoint
-classification instead of trusting the producer's pass status.
+OpenSTA 2.6 directed internal-net queries are not used as the cut qualification
+gate. In a reconvergent cone, both `-through` and an internal driver `-from`
+constraint can return the unrelated worst sibling path; inserting the requested
+net into that returned path would be unsound. The reusable v4 cut-timing
+checkpoint instead seals `cut-segment-qualification.json`. Its independent
+validator rebuilds the cut-net set, structural endpoint reachability, original
+member associations, and segment identities from EmuIR, the assignment, the
+timing-cell contract, and the complete original TimingPathDB. Functional-only
+cuts are allowed to have no bounded enumerated member, but they still require
+the normal routed Phase 7 segment deadline evidence before physical
+qualification.
 
 For a Xilinx platform, `--timing-backend vivado --timing-vivado PATH` replaces
 only that TimingPathDB producer. The downstream partitioning, system routing,

@@ -142,10 +142,10 @@ def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
     """Return the local and routed-member STA databases for physical timing.
 
     Local intra-FPGA queries always use the complete pre-partition database.
-    Cross-FPGA logic segments must use the database that produced the sealed
-    Phase 4 timing population, because its compressed member IDs define the
-    routed paths.  Canonical v3 checkpoints project the complete database;
-    legacy v2 checkpoints projected the through-cut qualification database.
+    Cross-FPGA logic segments use the database that produced the sealed Phase 4
+    timing population, because its compressed member IDs define the routed
+    paths.  Canonical v3+ checkpoints project the complete database; legacy v2
+    checkpoints projected the through-cut qualification database.
     """
 
     full = _sta_path_database(root)
@@ -155,10 +155,6 @@ def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
         raise ValidationError(
             "physical timing has a through-cut STA database without the "
             "complete original STA path database"
-        )
-    if full is not None and cut is None:
-        raise ValidationError(
-            "physical timing requires the through-cut STA path database"
         )
     if full is None:
         return None, None
@@ -174,7 +170,7 @@ def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
     source_name = Path(source_input).name
     if source_name == full.name:
         return full, full
-    if source_name == cut.name:
+    if cut is not None and source_name == cut.name:
         return full, cut
     raise ValidationError(
         "physical timing population names an unknown STA database"

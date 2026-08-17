@@ -613,7 +613,6 @@ def compile_canonical_experiment_spec(
     timing_command = [
         executable, "experiment-stage", "timing-run", "--frontend", "{dependency:frontend}",
         "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing),
-        "--opensta", str(tools["opensta"]),
     ]
     for value in period_args:
         timing_command.extend(("--clock-period", value))
@@ -680,10 +679,10 @@ def compile_canonical_experiment_spec(
     node(
         "cut-timing", "cut-timing", ["frontend", "timing", "partition"], cut_command,
         [executable, "experiment-stage", "cut-timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing)],
-        [_artifact("cut-path-database.json", "consumer-checkpoint"), _artifact("cut-timing-paths.json", "consumer-checkpoint"), _artifact("through-net-coverage.json", "evidence-critical"), _artifact("experiment-cut-timing-report.json", "evidence-critical")],
-        inputs=("timing_model", "architecture_timing_db", "tool.emuflow", "tool.opensta"),
-        configuration={"clock_periods": periods, "max_paths": 200000},
-        peak_gib=16, retained_gib=4,
+        [_artifact("cut-timing-paths.json", "consumer-checkpoint"), _artifact("cut-segment-qualification.json", "evidence-critical"), _artifact("experiment-cut-timing-report.json", "evidence-critical")],
+        inputs=("timing_model", "architecture_timing_db", "tool.emuflow"),
+        configuration={"clock_periods": periods},
+        peak_gib=4, retained_gib=1,
     )
     route_provider = (
         NATIVE_TIMING_EVALUATED_PROVIDER

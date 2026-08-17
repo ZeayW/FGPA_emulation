@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/cut-segment-timing-qualification-v1.schema.json",
+  "title": "EmuFlow Cut Segment Timing Qualification v1",
+  "type": "object",
+  "required": [
+    "schema", "status", "provider", "qualification", "delay_evidence",
+    "routed_deadline_gate", "cut_nets", "records", "summary"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.cut-segment-timing-qualification/v1"},
+    "status": {"const": "pass"},
+    "provider": {"const": "emuir-structural-cut-segment-qualification-v1"},
+    "qualification": {"const": "pre-route-structural-contract-bound"},
+    "delay_evidence": {"const": "contract-budget-provisional"},
+    "routed_deadline_gate": {"const": "required-phase7-endpoint-exact-or-conservative-bound"},
+    "cut_nets": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "records": {"type": "array"},
+    "summary": {"type": "object"}
+  },
+  "additionalProperties": false
+}

@@ -17,6 +17,7 @@ from .board_link_timing import (
 from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import run_chimew_phase6_pipeline
 from .cross_stage import run_cross_stage_optimization
+from .cut_segment_qualification import build_cut_segment_qualification
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
     run_frame_length_search,
@@ -195,7 +196,7 @@ def finalize_multi_fpga_physical_checkpoint(
     optional = {
         "timing_path_database": root / "timing/path-database.json",
         "partition_net_weights": root / "timing/partition-net-weights.json",
-        "cut_path_database": root / "timing/cut-path-database.json",
+        "cut_segment_qualification": root / "timing/cut-segment-qualification.json",
         "cut_timing_paths": root / "timing/cut-timing-paths.json",
     }
     for name, path in optional.items():
@@ -1286,7 +1287,7 @@ def run_multi_fpga_flow(
 
     timing_root = output_dir / "timing"
     path_database_path = timing_root / "path-database.json"
-    cut_path_database_path = None
+    cut_segment_qualification_path = None
     net_weights_path = timing_root / "partition-net-weights.json"
     timing_report = None
     if internal_timing_database:
@@ -1458,36 +1459,23 @@ def run_multi_fpga_flow(
 
     projected_timing_paths = timing_paths
     if internal_timing_database and not cross_stage_iterations:
-        if timing_backend == "opensta":
-            assignment = read_json(assignment_path)
-            cut_net_ids = sorted(
-                cut["net"]
-                for cut in assignment.get("cut_nets", [])
-                if isinstance(cut, dict)
-                and isinstance(cut.get("net"), str)
-            )
-            if not cut_net_ids:
-                raise ValidationError(
-                    "TimingPathDB projection requires partition cut nets"
-                )
-            cut_path_database_path = timing_root / "cut-path-database.json"
-            cut_sta_report = run_opensta_path_database(
-                ir_path=ir_path,
-                output_path=cut_path_database_path,
-                clocks=clock_periods,
-                timing_model_path=timing_model,
-                architecture_timing_db_path=architecture_timing_db,
-                executable=opensta,
-                max_paths=max(sta_max_paths, len(cut_net_ids)),
-                log_path=timing_root / "opensta-cut-paths.log",
-                through_nets=cut_net_ids,
-            )
-            timing_report["cut_path_sta"] = cut_sta_report
+        cut_segment_qualification_path = (
+            timing_root / "cut-segment-qualification.json"
+        )
+        cut_qualification = build_cut_segment_qualification(
+            ir_path,
+            assignment_path,
+            path_database_path,
+            timing_model_path=timing_model,
+            architecture_timing_db_path=architecture_timing_db,
+        )
+        write_json(cut_segment_qualification_path, cut_qualification)
+        timing_report["cut_segment_qualification"] = cut_qualification
         projected_timing_paths = timing_root / "cut-timing-paths.json"
         # Phase 4/5 must optimize the same complete original TimingPathDB
         # population that Phase 7C later reports.  The post-partition
-        # through-net STA run is useful qualification evidence, but using it
-        # as the routing population silently drops original cross-FPGA paths.
+        # structural cut-segment qualification is intentionally separate from
+        # this original-path population.
         projection_report = project_sta_path_database(
             path_database_path,
             assignment_path,
@@ -2166,12 +2154,12 @@ def run_multi_fpga_flow(
                     },
                     **(
                         {
-                            "cut_path_database": {
-                                "path": "timing/cut-path-database.json",
-                                "sha256": _sha256(cut_path_database_path),
+                            "cut_segment_qualification": {
+                                "path": "timing/cut-segment-qualification.json",
+                                "sha256": _sha256(cut_segment_qualification_path),
                             }
                         }
-                        if cut_path_database_path is not None
+                        if cut_segment_qualification_path is not None
                         else {}
                     ),
                     **(

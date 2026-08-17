@@ -66,15 +66,27 @@ class ExperimentStagesTest(unittest.TestCase):
                 ),
             )
 
-    def test_physical_timing_requires_both_sta_database_namespaces(self) -> None:
+    def test_physical_timing_requires_original_database_and_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             timing = root / "timing"
             timing.mkdir()
             self.assertEqual(_physical_timing_databases(root), (None, None))
             (timing / "path-database.json").write_text("{}", encoding="utf-8")
-            with self.assertRaisesRegex(Exception, "through-cut STA"):
+            with self.assertRaisesRegex(Exception, "sealed Phase 4"):
                 _physical_timing_databases(root)
+            write_json(
+                timing / "cut-timing-paths.json",
+                {"source": {"input": "path-database.json"}},
+            )
+            self.assertEqual(
+                _physical_timing_databases(root),
+                (
+                    timing / "path-database.json",
+                    timing / "path-database.json",
+                ),
+            )
+            (timing / "cut-timing-paths.json").unlink()
             (timing / "path-database.json").unlink()
             (timing / "cut-path-database.json").write_text(
                 "{}", encoding="utf-8"
