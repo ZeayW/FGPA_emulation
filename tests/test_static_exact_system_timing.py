@@ -1,5 +1,7 @@
 import copy
+import json
 import unittest
+from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.static_exact_timing import (
@@ -160,6 +162,22 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             result, self.schedule, self.physical, self.platform
         )
         self.assertEqual(validation["status"], "pass")
+
+    def test_deadline_schema_tracks_the_complete_producer_contract(self):
+        result = build_static_exact_segment_deadlines(
+            self.schedule, self.physical, self.platform
+        )
+        schema_path = (
+            Path(__file__).resolve().parents[1]
+            / "schemas/static-exact-segment-deadlines-v1.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.assertEqual(schema["properties"]["schema"]["const"], result["schema"])
+        self.assertEqual(set(schema["required"]), set(result))
+        self.assertEqual(set(schema["properties"]), set(result))
+        segment_schema = schema["properties"]["segments"]["items"]
+        self.assertTrue(set(segment_schema["required"]).issubset(result["segments"][0]))
+        self.assertFalse(set(result["segments"][0]) - set(segment_schema["properties"]))
 
     def test_source_ready_fails_even_when_aggregate_period_is_large(self):
         physical = copy.deepcopy(self.physical)

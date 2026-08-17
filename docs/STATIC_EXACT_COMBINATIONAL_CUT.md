@@ -53,7 +53,7 @@ local `+1` rules.
 
 ## Semantic contract
 
-Phase 3 emits one versioned sub-contract. Subsequent increments will bind it
+Phase 3 emits one versioned sub-contract. The implemented opt-in path binds it
 through routes, schedule, Phase 6 split, and Phase 7C:
 
 ```json
@@ -82,6 +82,9 @@ timing-path sample can never define functional coverage.
 
 The first version is intentionally fail-closed:
 
+- exactly one virtual DUT clock is required; zero-clock, multi-clock,
+  generated-clock, and general CDC designs are rejected before exact cuts are
+  released;
 - only single-driver, acyclic, mapped LUT soft logic is potentially cuttable;
 - FF/memory state, DSP/carry/memory cascades, clock/reset, multi-driver nets,
   latches, opaque primitives, asynchronous controls, and combinational SCCs
@@ -122,6 +125,8 @@ feasibility, and physical segment deadlines.
    Contract-bound routed `launch_to_tx`, `rx_to_tx`, and `rx_to_capture`
    evidence, independent causal deadline reconstruction, explicit missing-
    evidence incompleteness, and global target-clock/virtual-runtime WNS/TNS.
+   The public `schemas/static-exact-segment-deadlines-v1.schema.json` contract
+   fixes the complete routed-deadline report surface.
 6. **Optimizer integration.** Path-local readiness precedes any timing-DAG or
    ratio-provider promotion; V1 depth 2 continues to use the dedicated exact
    scheduler.

@@ -422,6 +422,13 @@ def compile_canonical_experiment_spec(
         )
     ):
         raise ValidationError("canonical experiment clocks/periods are invalid")
+    cut_mode = config.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
+        raise ValidationError("canonical experiment cut_mode is invalid")
+    if cut_mode == CUT_MODE_STATIC_EXACT and len(clocks) != 1:
+        raise ValidationError(
+            "canonical static exact cut requires exactly one virtual DUT clock"
+        )
     contract = _canonical_case_contract(
         repository_root,
         case_id,
@@ -457,9 +464,6 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical experiment partition_repair_balance must be boolean"
         )
-    cut_mode = config.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
-    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
-        raise ValidationError("canonical experiment cut_mode is invalid")
     max_cross_fpga_dependency_depth = _positive_integer(
         config.get("max_cross_fpga_dependency_depth", 1),
         "max_cross_fpga_dependency_depth",

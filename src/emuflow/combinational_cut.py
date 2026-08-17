@@ -1,9 +1,11 @@
-"""Read-only characterization for future static exact combinational cuts.
+"""Characterization and semantic contracts for static exact cuts.
 
-This module deliberately does not change partition legality.  It reconstructs
-the combinational instance graph from EmuIR, identifies a conservative set of
-potential cut nets, and reports the dependency depth that a future exact
-scheduler would have to honor.
+The read-only characterization path reconstructs the combinational instance
+graph from EmuIR and identifies a conservative potential-cut set.  The opt-in
+Phase 3 path additionally uses the same independent graph model to build the
+versioned depth-1/depth-2 semantic contract consumed by routing, scheduling,
+macro-cycle equivalence, and routed deadline qualification.  The production
+``sequential-only`` policy remains unchanged.
 """
 
 from __future__ import annotations

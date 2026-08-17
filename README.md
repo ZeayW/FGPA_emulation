@@ -288,14 +288,17 @@ checkers between stages. This makes it possible to:
 
 The current semantic model supports a single virtual DUT clock, synchronous
 reset, deterministic static communication schedules, and lockstep execution
-with a global frame barrier. Partition cuts are restricted to safe sequential
-boundaries; combinational loops and hard macros remain atomic. Consequently,
-a large combinational connected component can become one indivisible
-partition vertex. The reports expose any balance relaxation needed to place
-such a vertex; a run with relaxed balance is a legal capacity/topology result,
-not evidence of high-quality balanced partitioning. Supporting controlled
-combinational cuts requires an explicit multi-phase settling and equivalence
-contract and is an opt-in staged extension, not a partitioner tuning flag.
+with a global frame barrier. The safe default restricts partition cuts to
+sequential boundaries; combinational loops and hard macros remain atomic. An
+opt-in static-exact V1 path can release a conservative mapped-LUT subset only
+after binding its dependency schedule, macro-cycle equivalence, and routed
+segment deadlines. It rejects zero-clock, multi-clock, generated-clock, and
+general CDC designs before releasing exact cuts. Without that opt-in contract,
+a large combinational connected component remains one indivisible partition
+vertex. The reports expose any balance relaxation needed to place such a
+vertex; a run with relaxed balance is a legal capacity/topology result, not
+evidence of high-quality balanced partitioning. Static-exact mode is a staged
+semantic contract, not a partitioner tuning flag.
 The characterization increment is deliberately read-only:
 
 ```bash
@@ -366,6 +369,8 @@ each physical seed. Unsealed standalone inputs remain full-replay by default.
 Phase 7C now independently reconstructs every exact
 segment's routed settle window and refuses missing evidence or a late
 source/capture even when aggregate virtual-runtime slack is positive. This is
+sealed by the checked-in
+`schemas/static-exact-segment-deadlines-v1.schema.json` report contract. This is
 also reflected at the one-command CLI boundary: exact mode defaults slot
 refinement to zero, while an explicit nonzero request remains fail-closed until
 that optimizer is dependency-qualified. This is

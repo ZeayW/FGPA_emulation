@@ -469,6 +469,26 @@ class CanonicalExperimentTest(unittest.TestCase):
                 {("baseline", seed) for seed in (1, 2, 3)},
             )
 
+    def test_static_exact_mode_rejects_multiple_virtual_clocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config.update(
+                {
+                    "cut_mode": "static-exact-combinational",
+                    "clocks": ["clk", "aux_clk"],
+                    "clock_periods": {"clk": 10.0, "aux_clk": 10.0},
+                }
+            )
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "exactly one virtual DUT clock"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "spec.json"
+                )
+
     def test_partition_seed_attempts_must_be_positive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

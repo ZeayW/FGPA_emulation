@@ -119,7 +119,14 @@ def _chain_ir():
             "ports": [],
             "instances": instances,
             "nets": nets,
-            "clocks": [],
+            "clocks": [
+                {
+                    "id": "clk",
+                    "name": "clk",
+                    "source_port": "clk",
+                    "period_ns": None,
+                }
+            ],
             "warnings": [],
         }
     )
@@ -179,7 +186,14 @@ def _wide_fanout_ir(width=32):
             "ports": [],
             "instances": instances,
             "nets": nets,
-            "clocks": [],
+            "clocks": [
+                {
+                    "id": "clk",
+                    "name": "clk",
+                    "source_port": "clk",
+                    "period_ns": None,
+                }
+            ],
             "warnings": [],
         }
     )
@@ -263,7 +277,14 @@ def _reconvergent_ir():
             "ports": [],
             "instances": instances,
             "nets": nets,
-            "clocks": [],
+            "clocks": [
+                {
+                    "id": "clk",
+                    "name": "clk",
+                    "source_port": "clk",
+                    "period_ns": None,
+                }
+            ],
             "warnings": [],
         }
     )
@@ -687,6 +708,31 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
         self.assertEqual(implicit, explicit)
         self.assertNotIn("cut_mode", implicit["policy"])
+
+    def test_exact_mode_rejects_zero_or_multiple_virtual_clocks(self):
+        for clocks in (
+            [],
+            [
+                *self.ir.value["clocks"],
+                {
+                    "id": "aux_clk",
+                    "name": "aux_clk",
+                    "source_port": "aux_clk",
+                    "period_ns": None,
+                },
+            ],
+        ):
+            with self.subTest(clock_count=len(clocks)):
+                value = copy.deepcopy(self.ir.value)
+                value["clocks"] = clocks
+                with self.assertRaisesRegex(
+                    ValidationError, "exactly one virtual DUT clock"
+                ):
+                    build_clusters(
+                        EmuIR(value),
+                        self.constraints,
+                        cut_mode=CUT_MODE_STATIC_EXACT,
+                    )
 
     def test_depth_one_cut_has_independently_validated_contract(self):
         safe = build_clusters(self.ir, self.constraints)

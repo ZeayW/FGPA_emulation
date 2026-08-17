@@ -1306,7 +1306,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     combinational_cut = subparsers.add_parser(
         "combinational-cut",
-        help="analyze future static exact combinational-cut eligibility",
+        help="characterize and validate static exact combinational-cut eligibility",
     )
     combinational_cut_subparsers = combinational_cut.add_subparsers(
         dest="combinational_cut_command", required=True
