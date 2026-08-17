@@ -87,10 +87,16 @@ class _UnionFind:
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
-    encoded = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(
-        "utf-8"
-    )
-    return hashlib.sha256(encoded).hexdigest()
+    # Keep the byte identity of ``json.dumps(..., indent=2, sort_keys=True)``
+    # without materializing a second, potentially multi-gigabyte string for a
+    # production EmuIR.  JSONEncoder.iterencode preserves the same canonical
+    # token stream while bounding the additional hashing memory to one chunk.
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(indent=2, sort_keys=True)
+    for chunk in encoder.iterencode(value):
+        digest.update(chunk.encode("utf-8"))
+    digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def semantic_contract_sha256(value: Mapping[str, Any]) -> str:

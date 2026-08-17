@@ -204,7 +204,10 @@ qualified. The compiler produces three independently sealed physical Phase 7
 terminals. This is
 the evidence path; the one-command flow above remains a convenience path.
 
-Characterization is deterministic and near-linear apart from sorting. The
+Characterization is deterministic and near-linear apart from sorting. Its
+canonical EmuIR hash preserves the existing pretty-JSON byte identity through
+incremental encoder chunks rather than allocating another complete serialized
+design in memory. The
 validator reconstructs the complete report from EmuIR and rejects changed
 eligibility, SCC, dependency, depth, source identity, or metric fields.
 The Phase 3 validator also regenerates the exact cluster release policy and

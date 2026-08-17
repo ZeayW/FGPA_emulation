@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import io
 import json
 import shutil
@@ -318,6 +319,22 @@ def _three_fpga_platform(topology="line"):
 
 
 class CombinationalCutCharacterizationTest(unittest.TestCase):
+    def test_canonical_hash_streams_the_legacy_pretty_json_identity(self):
+        value = {
+            "z": [1, {"unicode": "π", "enabled": True}],
+            "a": {"nested": None},
+        }
+        expected = hashlib.sha256(
+            (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        with patch(
+            "emuflow.combinational_cut.json.dumps",
+            side_effect=AssertionError("canonical hashing must stream"),
+        ):
+            self.assertEqual(semantic_contract_sha256(value), expected)
+
     def test_mapped_model_evaluates_reverse_named_chain_once_per_cell(self):
         width = 256
         instance_ids = [f"lut_{index:04d}" for index in reversed(range(width))]
