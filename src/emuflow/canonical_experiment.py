@@ -480,6 +480,27 @@ def compile_canonical_experiment_spec(
         config.get("comb_segment_budget_slots", 1),
         "comb_segment_budget_slots",
     )
+    minimum_combinational_cut_nets = config.get(
+        "minimum_combinational_cut_nets",
+        1 if cut_mode == CUT_MODE_STATIC_EXACT else 0,
+    )
+    if (
+        isinstance(minimum_combinational_cut_nets, bool)
+        or not isinstance(minimum_combinational_cut_nets, int)
+        or minimum_combinational_cut_nets < 0
+        or (
+            cut_mode == CUT_MODE_STATIC_EXACT
+            and minimum_combinational_cut_nets < 1
+        )
+        or (
+            cut_mode != CUT_MODE_STATIC_EXACT
+            and minimum_combinational_cut_nets != 0
+        )
+    ):
+        raise ValidationError(
+            "canonical experiment minimum_combinational_cut_nets must be "
+            "positive for static exact mode and zero otherwise"
+        )
     if (
         cut_mode == CUT_MODE_STATIC_EXACT
         and max_cross_fpga_dependency_depth not in {1, 2}
@@ -614,6 +635,8 @@ def compile_canonical_experiment_spec(
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
         "--comb-segment-budget-slots", str(comb_segment_budget_slots),
+        "--minimum-combinational-cut-nets",
+        str(minimum_combinational_cut_nets),
         "--route-constraints", str(route_constraints), "--openroad", str(tools["openroad"]), "--hop-refiner", str(tools["hop_refiner"]),
         "--out", "{output_dir}",
     ]
@@ -627,6 +650,8 @@ def compile_canonical_experiment_spec(
         "--max-cross-fpga-dependency-depth",
         str(max_cross_fpga_dependency_depth),
         "--comb-segment-budget-slots", str(comb_segment_budget_slots),
+        "--minimum-combinational-cut-nets",
+        str(minimum_combinational_cut_nets),
     ]
     if partition_repair_balance:
         partition_command.insert(-2, "--repair-balance")
@@ -640,7 +665,7 @@ def compile_canonical_experiment_spec(
         partition_validator,
         [_artifact("clusters.json", "consumer-checkpoint"), _artifact("constraints.normalized.json", "consumer-checkpoint"), _artifact("assignment.json", "consumer-checkpoint"), _artifact("phase3_report.json", "consumer-checkpoint"), _artifact("experiment-partition-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.openroad", "tool.hop_refiner"),
-        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots},
+        configuration={"provider": "tritonpart", "seed": partition_seed, "seed_attempts": partition_seed_attempts, "repair_balance": partition_repair_balance, "route_constraints": contract["route_constraints"], "timeout_seconds": 3600, "num_initial_solutions": 50, "num_best_initial_solutions": 10, "cut_mode": cut_mode, "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth, "comb_segment_budget_slots": comb_segment_budget_slots, "minimum_combinational_cut_nets": minimum_combinational_cut_nets},
         peak_gib=24, retained_gib=6,
     )
     cut_command = [

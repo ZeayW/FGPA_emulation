@@ -37,18 +37,42 @@ ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = (
     ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json"
 )
+STATIC_EXACT_PLATFORM = (
+    ROOT / "platforms/virtual/static_exact_acceptance_2fpga.json"
+)
 FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_static_exact_acceptance_fixture_is_not_vacuous(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                EmuFlowError, "cannot populate|required FPGA|capacity"
+            ):
+                run_multi_fpga_flow(
+                    platform_path=STATIC_EXACT_PLATFORM,
+                    output_dir=Path(temporary_directory) / "sequential",
+                    yosys_json=(
+                        ROOT / "examples/yosys/static_exact_chain.json"
+                    ),
+                    top="static_exact_chain",
+                    clocks=["clk"],
+                    partition_provider="greedy",
+                    timing_driven=False,
+                    clock_periods={"clk": 10.0},
+                    opensta=str(FAKE_OPENSTA),
+                    frame_slots=32,
+                    equivalence_cycles=2,
+                )
+
     def test_one_command_static_exact_flow_reaches_phase7c_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "static-exact"
             report = run_multi_fpga_flow(
-                platform_path=PLATFORM,
+                platform_path=STATIC_EXACT_PLATFORM,
                 output_dir=root,
-                yosys_json=ROOT / "examples/yosys/counter.json",
-                top="counter",
+                yosys_json=ROOT / "examples/yosys/static_exact_chain.json",
+                top="static_exact_chain",
                 clocks=["clk"],
                 partition_provider="greedy",
                 timing_driven=False,
@@ -65,6 +89,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertEqual(
                 report["stages"]["partition"]["validation"]["cut_mode"],
                 "static-exact-combinational",
+            )
+            self.assertGreater(
+                report["stages"]["partition"]["validation"][
+                    "combinational_cut_nets"
+                ],
+                0,
             )
             self.assertEqual(
                 report["stages"]["tdm"]["provider"],

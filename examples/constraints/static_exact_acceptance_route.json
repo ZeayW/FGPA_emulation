@@ -1,0 +1,7 @@
+{
+  "schema": "emuflow.system-route-constraints/v1",
+  "frame_slots": 32,
+  "max_route_hops": 1,
+  "tdm_ratio_quantum": 1,
+  "tdm_min_ratio": 1
+}

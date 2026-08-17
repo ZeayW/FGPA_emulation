@@ -1,0 +1,95 @@
+{
+  "creator": "EmuFlow deterministic static-exact integration fixture",
+  "modules": {
+    "static_exact_chain": {
+      "attributes": {"top": "1"},
+      "ports": {
+        "clk": {"direction": "input", "bits": [2]},
+        "rst": {"direction": "input", "bits": [3]},
+        "data": {"direction": "input", "bits": [4, 5, 6, 7, 8, 9, 10]},
+        "q": {"direction": "output", "bits": [11]}
+      },
+      "cells": {
+        "lut0": {
+          "hide_name": 0,
+          "type": "LUT2",
+          "parameters": {"INIT": "0110"},
+          "attributes": {},
+          "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+          "connections": {"I0": [11], "I1": [4], "O": [12]}
+        },
+        "lut1": {
+          "hide_name": 0,
+          "type": "LUT2",
+          "parameters": {"INIT": "0110"},
+          "attributes": {},
+          "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+          "connections": {"I0": [12], "I1": [5], "O": [13]}
+        },
+        "lut2": {
+          "hide_name": 0,
+          "type": "LUT2",
+          "parameters": {"INIT": "0110"},
+          "attributes": {},
+          "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+          "connections": {"I0": [13], "I1": [6], "O": [14]}
+        },
+        "lut3": {
+          "hide_name": 0,
+          "type": "LUT2",
+          "parameters": {"INIT": "0110"},
+          "attributes": {},
+          "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+          "connections": {"I0": [14], "I1": [7], "O": [15]}
+        },
+        "lut4": {
+          "hide_name": 0,
+          "type": "LUT2",
+          "parameters": {"INIT": "0110"},
+          "attributes": {},
+          "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+          "connections": {"I0": [15], "I1": [8], "O": [16]}
+        },
+        "lut5": {
+          "hide_name": 0,
+          "type": "LUT2",
+          "parameters": {"INIT": "0110"},
+          "attributes": {},
+          "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+          "connections": {"I0": [16], "I1": [9], "O": [17]}
+        },
+        "lut6": {
+          "hide_name": 0,
+          "type": "LUT2",
+          "parameters": {"INIT": "0110"},
+          "attributes": {},
+          "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+          "connections": {"I0": [17], "I1": [10], "O": [18]}
+        },
+        "q_reg": {
+          "hide_name": 0,
+          "type": "FDRE",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "C": "input", "CE": "input", "D": "input", "Q": "output", "R": "input"
+          },
+          "connections": {"C": [2], "CE": ["1"], "D": [18], "Q": [11], "R": [3]}
+        }
+      },
+      "netnames": {
+        "clk": {"hide_name": 0, "bits": [2], "attributes": {}},
+        "rst": {"hide_name": 0, "bits": [3], "attributes": {}},
+        "data": {"hide_name": 0, "bits": [4, 5, 6, 7, 8, 9, 10], "attributes": {}},
+        "q": {"hide_name": 0, "bits": [11], "attributes": {}},
+        "n0": {"hide_name": 0, "bits": [12], "attributes": {}},
+        "n1": {"hide_name": 0, "bits": [13], "attributes": {}},
+        "n2": {"hide_name": 0, "bits": [14], "attributes": {}},
+        "n3": {"hide_name": 0, "bits": [15], "attributes": {}},
+        "n4": {"hide_name": 0, "bits": [16], "attributes": {}},
+        "n5": {"hide_name": 0, "bits": [17], "attributes": {}},
+        "d": {"hide_name": 0, "bits": [18], "attributes": {}}
+      }
+    }
+  }
+}

@@ -39,6 +39,12 @@ physical logic-segment evidence to the semantic contract and independently
 checks source-ready and final-capture deadlines. A real routed complete-flow
 acceptance result is still pending; the production default therefore remains
 sequential-only.
+Canonical Experiment v2 exact-mode evidence additionally requires at least one
+independently reconstructed selected combinational cut. A legal zero-cut run
+remains useful as a compatibility smoke but cannot satisfy this acceptance
+gate. The capacity-limited `static_exact_acceptance` RTL/BoardDB pair is kept
+separate from the benchmark registry and exists only to exercise the complete
+open physical path without making a QoR claim.
 
 ## 2. Architectural layers
 

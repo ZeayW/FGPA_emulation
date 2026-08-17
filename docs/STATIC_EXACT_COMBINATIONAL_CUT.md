@@ -191,7 +191,8 @@ Experiment v2 compiler by adding these fields to the case config:
 {
   "cut_mode": "static-exact-combinational",
   "max_cross_fpga_dependency_depth": 1,
-  "comb_segment_budget_slots": 1
+  "comb_segment_budget_slots": 1,
+  "minimum_combinational_cut_nets": 1
 }
 ```
 
@@ -203,6 +204,21 @@ explicit nonzero request is still rejected until that optimizer is dependency-
 qualified. The compiler produces three independently sealed physical Phase 7
 terminals. This is
 the evidence path; the one-command flow above remains a convenience path.
+Canonical exact evidence cannot set `minimum_combinational_cut_nets` below one.
+The producer records this threshold and the separately invoked Phase 3
+validator reconstructs the assignment's actual combinational-cut count before
+accepting it. Generic Phase 3 and the one-command convenience path still allow
+zero selected combinational cuts because some otherwise valid designs do not
+need one; such a run is simply not exact-cut qualification evidence.
+
+`examples/rtl/static_exact_acceptance.v` is the small real-RTL acceptance
+source. Its 33-input next-state parity needs at least seven 6-input LUTs, while
+each FPGA in
+`platforms/virtual/static_exact_acceptance_2fpga.json` exposes only six LUTs
+after utilization derating. Sequential-only clustering therefore cannot place
+the atomic combinational cone, whereas exact mode must select and validate an
+actual internal LUT-to-LUT cut. This pair exists only for functional and open
+physical Phase 1--7 acceptance; it is explicitly not a QoR benchmark.
 
 Characterization is deterministic and near-linear apart from sorting. Its
 canonical EmuIR hash preserves the existing pretty-JSON byte identity through

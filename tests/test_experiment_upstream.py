@@ -330,6 +330,68 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     frontend, timing, platform, partition
                 )
 
+    @mock.patch("emuflow.experiment_partition.validate_phase3")
+    def test_partition_validator_enforces_actual_exact_cut_evidence(
+        self, validate_phase3
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            frontend, timing, platform, partition = self._partition_fixture(
+                Path(temporary)
+            )
+            clusters_path = partition / "clusters.json"
+            clusters_path.write_text(
+                json.dumps(
+                    {
+                        "policy": {
+                            "cut_mode": "static-exact-combinational",
+                            "max_cross_fpga_dependency_depth": 1,
+                            "comb_segment_budget_slots": 1,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path = partition / "experiment-partition-report.json"
+            report = json.loads(report_path.read_text())
+            report.update(
+                {
+                    "clusters_sha256": _sha256(clusters_path),
+                    "cut_mode": "static-exact-combinational",
+                    "max_cross_fpga_dependency_depth": 1,
+                    "comb_segment_budget_slots": 1,
+                    "minimum_combinational_cut_nets": 1,
+                }
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            validate_phase3.return_value = {
+                "status": "pass",
+                "cut_mode": "static-exact-combinational",
+                "combinational_cut_nets": 0,
+            }
+            with self.assertRaisesRegex(
+                ValidationError, "fewer combinational cut nets"
+            ):
+                validate_partition_checkpoint(
+                    frontend,
+                    timing,
+                    platform,
+                    partition,
+                    expected_minimum_combinational_cut_nets=1,
+                )
+
+            validate_phase3.return_value[
+                "combinational_cut_nets"
+            ] = 1
+            checked = validate_partition_checkpoint(
+                frontend,
+                timing,
+                platform,
+                partition,
+                expected_minimum_combinational_cut_nets=1,
+            )
+            self.assertEqual(checked["combinational_cut_nets"], 1)
+
     @mock.patch("emuflow.experiment_upstream.validate_phase5")
     def test_tdm_validator_binds_academic_optimization_provider(
         self, validate_phase5

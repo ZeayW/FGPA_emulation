@@ -584,6 +584,9 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--comb-segment-budget-slots", type=int, default=1
     )
+    partition_run.add_argument(
+        "--minimum-combinational-cut-nets", type=int, default=0
+    )
     partition_run.add_argument("--out", type=Path, required=True)
     partition_validate = experiment_stage_subparsers.add_parser(
         "partition-validate", help="independently validate a Phase 3 checkpoint"
@@ -609,6 +612,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-cross-fpga-dependency-depth", type=int
     )
     partition_validate.add_argument("--comb-segment-budget-slots", type=int)
+    partition_validate.add_argument(
+        "--minimum-combinational-cut-nets", type=int
+    )
 
     cut_timing_run = experiment_stage_subparsers.add_parser(
         "cut-timing-run", help="extract and project partition cut timing paths"
@@ -3323,6 +3329,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.max_cross_fpga_dependency_depth
                 ),
                 comb_segment_budget_slots=args.comb_segment_budget_slots,
+                minimum_combinational_cut_nets=(
+                    args.minimum_combinational_cut_nets
+                ),
             )
         elif args.experiment_stage_command == "partition-validate":
             report = validate_partition_checkpoint(
@@ -3341,6 +3350,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 expected_comb_segment_budget_slots=(
                     args.comb_segment_budget_slots
+                ),
+                expected_minimum_combinational_cut_nets=(
+                    args.minimum_combinational_cut_nets
                 ),
             )
         elif args.experiment_stage_command == "cut-timing-run":

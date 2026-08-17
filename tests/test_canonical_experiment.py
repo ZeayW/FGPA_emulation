@@ -450,12 +450,36 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertEqual(
                 partition["configuration"][
+                    "minimum_combinational_cut_nets"
+                ],
+                1,
+            )
+            self.assertEqual(
+                partition["configuration"][
                     "max_cross_fpga_dependency_depth"
                 ],
                 2,
             )
             self.assertIn("--cut-mode", partition["command"])
             self.assertIn("--cut-mode", partition["validator"])
+            self.assertEqual(
+                partition["command"][
+                    partition["command"].index(
+                        "--minimum-combinational-cut-nets"
+                    )
+                    + 1
+                ],
+                "1",
+            )
+            self.assertEqual(
+                partition["validator"][
+                    partition["validator"].index(
+                        "--minimum-combinational-cut-nets"
+                    )
+                    + 1
+                ],
+                "1",
+            )
             route = nodes["route"]
             self.assertEqual(
                 route["configuration"]["provider"],
@@ -498,6 +522,37 @@ class CanonicalExperimentTest(unittest.TestCase):
             ):
                 compile_canonical_experiment_spec(
                     config_path, REPOSITORY, root / "spec.json"
+                )
+
+    def test_static_exact_evidence_requires_an_actual_combinational_cut(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config.update(
+                {
+                    "cut_mode": "static-exact-combinational",
+                    "minimum_combinational_cut_nets": 0,
+                }
+            )
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "minimum_combinational_cut_nets"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "spec.json"
+                )
+
+            config["cut_mode"] = "sequential-only"
+            config["minimum_combinational_cut_nets"] = 1
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "minimum_combinational_cut_nets"
+            ):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "safe-spec.json"
                 )
 
     def test_partition_seed_attempts_must_be_positive(self) -> None:

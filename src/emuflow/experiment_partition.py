@@ -46,7 +46,23 @@ def run_partition_checkpoint(
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = 1,
     comb_segment_budget_slots: int = 1,
+    minimum_combinational_cut_nets: int = 0,
 ) -> Dict[str, Any]:
+    if (
+        isinstance(minimum_combinational_cut_nets, bool)
+        or not isinstance(minimum_combinational_cut_nets, int)
+        or minimum_combinational_cut_nets < 0
+    ):
+        raise ValidationError(
+            "minimum combinational cut nets must be a non-negative integer"
+        )
+    if (
+        minimum_combinational_cut_nets
+        and cut_mode == CUT_MODE_SEQUENTIAL_ONLY
+    ):
+        raise ValidationError(
+            "minimum combinational cut nets requires static exact cut mode"
+        )
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     validate_timing_checkpoint(frontend_root, timing_root)
     weights_path = _require(timing_root, "partition-net-weights.json")
@@ -85,6 +101,7 @@ def run_partition_checkpoint(
             max_cross_fpga_dependency_depth
         ),
         "comb_segment_budget_slots": comb_segment_budget_slots,
+        "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
         "emuir_sha256": _sha256(ir_path),
         "platform_sha256": _sha256(platform_path.resolve()),
         "weights_sha256": _sha256(weights_path),
@@ -114,6 +131,9 @@ def run_partition_checkpoint(
             max_cross_fpga_dependency_depth
         ),
         expected_comb_segment_budget_slots=comb_segment_budget_slots,
+        expected_minimum_combinational_cut_nets=(
+            minimum_combinational_cut_nets
+        ),
     )
     return report
 
@@ -132,6 +152,7 @@ def validate_partition_checkpoint(
     expected_cut_mode: str | None = None,
     expected_max_cross_fpga_dependency_depth: int | None = None,
     expected_comb_segment_budget_slots: int | None = None,
+    expected_minimum_combinational_cut_nets: int | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     weights = _require(timing_root, "partition-net-weights.json")
@@ -159,6 +180,7 @@ def validate_partition_checkpoint(
         "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
         "max_cross_fpga_dependency_depth": 1,
         "comb_segment_budget_slots": 1,
+        "minimum_combinational_cut_nets": 0,
     }
     for field, expected in (
         ("cut_mode", expected_cut_mode),
@@ -167,6 +189,10 @@ def validate_partition_checkpoint(
             expected_max_cross_fpga_dependency_depth,
         ),
         ("comb_segment_budget_slots", expected_comb_segment_budget_slots),
+        (
+            "minimum_combinational_cut_nets",
+            expected_minimum_combinational_cut_nets,
+        ),
     ):
         if (
             expected is not None
@@ -220,6 +246,33 @@ def validate_partition_checkpoint(
         seals["clusters_sha256"],
         seals["assignment_sha256"],
     )
+    minimum_combinational_cut_nets = report.get(
+        "minimum_combinational_cut_nets", 0
+    )
+    if (
+        isinstance(minimum_combinational_cut_nets, bool)
+        or not isinstance(minimum_combinational_cut_nets, int)
+        or minimum_combinational_cut_nets < 0
+    ):
+        raise ValidationError(
+            "partition minimum-combinational-cut-nets contract is invalid"
+        )
+    if minimum_combinational_cut_nets and report.get(
+        "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
+    ) == CUT_MODE_SEQUENTIAL_ONLY:
+        raise ValidationError(
+            "partition minimum combinational cut nets requires static exact mode"
+        )
+    actual_combinational_cut_nets = checked.get("combinational_cut_nets", 0)
+    if (
+        isinstance(actual_combinational_cut_nets, bool)
+        or not isinstance(actual_combinational_cut_nets, int)
+        or actual_combinational_cut_nets < minimum_combinational_cut_nets
+    ):
+        raise ValidationError(
+            "partition exact-cut evidence selected fewer combinational cut "
+            "nets than required"
+        )
     cut_policy = read_json(seals["clusters_sha256"]).get("policy", {})
     independently_reconstructed = {
         "cut_mode": cut_policy.get(

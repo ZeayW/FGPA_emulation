@@ -379,6 +379,15 @@ that optimizer is dependency-qualified. This is
 implemented qualification machinery; a real routed complete Phase 1--7 result
 is still pending and the mode remains opt-in.
 
+Canonical Experiment v2 static-exact runs are evidence runs, not mere mode
+smokes: their Phase 3 task and independent validator require at least one
+actually selected combinational cut (`--minimum-combinational-cut-nets 1`).
+This prevents a legal but vacuous exact-mode run from being reported as feature
+qualification. The checked-in `static_exact_acceptance` RTL and
+`static_exact_acceptance_2fpga` BoardDB are a deliberately capacity-limited
+functional/physical acceptance fixture for this gate; they are not a QoR
+benchmark and must not be mixed into benchmark-comparison tables.
+
 ```bash
 emuflow phase6 \
   --ir build/phase1/design.emuir.json \

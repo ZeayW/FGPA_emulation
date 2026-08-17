@@ -1,0 +1,47 @@
+{
+  "schema": "emuflow.boarddb/v1",
+  "platform": {
+    "name": "static_exact_acceptance_2fpga",
+    "kind": "virtual",
+    "description": "Capacity-limited academic VTR platform for functional static-exact Phase 1-7 acceptance; not a QoR benchmark"
+  },
+  "fpgas": [
+    {
+      "id": "fpga0",
+      "part": "vtr-flagship-k6-n10-40nm-virtual",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 8,
+        "ff": 8,
+        "bram": 0,
+        "dsp": 0,
+        "io": 64,
+        "other": 16
+      }
+    },
+    {
+      "id": "fpga1",
+      "part": "vtr-flagship-k6-n10-40nm-virtual",
+      "utilization_limit": 0.75,
+      "capacity": {
+        "lut": 8,
+        "ff": 8,
+        "bram": 0,
+        "dsp": 0,
+        "io": 64,
+        "other": 16
+      }
+    }
+  ],
+  "links": [
+    {
+      "id": "link_0_1",
+      "endpoints": ["fpga0", "fpga1"],
+      "direction": "full_duplex",
+      "mode": "abstract",
+      "data_lanes_per_direction": 8,
+      "fabric_clock_mhz": 250.0,
+      "latency_cycles": 2
+    }
+  ]
+}
