@@ -7,7 +7,7 @@ import hashlib
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import (
@@ -39,6 +39,33 @@ EXPERIMENT_LOOKAHEAD_SCHEMA = "emuflow.experiment-physical-lookahead/v1"
 EXPERIMENT_PHASE6_SCHEMA = "emuflow.experiment-phase6-checkpoint/v1"
 EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
 _PROVIDERS = {"baseline", "placement-aware", "chimew"}
+
+
+class _ValidationSession:
+    """Deduplicate dependency validation within one stage process.
+
+    Public validator calls create a fresh session, so a later standalone
+    validation still observes filesystem changes.  Nested validators in one
+    run share the session and therefore do not repeatedly parse the same large
+    immutable dependency reports.
+    """
+
+    def __init__(self) -> None:
+        self.shared: Dict[tuple[str, str], Dict[str, Any]] = {}
+        self.phase6: Dict[tuple[str, str, str | None, str], Dict[str, Any]] = {}
+        self.lookahead: Dict[tuple[Any, ...], Dict[str, Any]] = {}
+        self.physical: Dict[int, tuple[Mapping[str, Any], Dict[str, Any]]] = {}
+
+    def validate_physical(
+        self, report: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        key = id(report)
+        cached = self.physical.get(key)
+        if cached is not None and cached[0] is report:
+            return copy.deepcopy(cached[1])
+        result = validate_multi_fpga_physical_report(report)
+        self.physical[key] = (report, copy.deepcopy(result))
+        return result
 
 
 def _sha256(path: Path) -> str:
@@ -210,10 +237,19 @@ def _placement_aware_positions(
     }
 
 
-def validate_shared_phase1_5(root: Path, platform_path: Path) -> Dict[str, Any]:
+def validate_shared_phase1_5(
+    root: Path,
+    platform_path: Path,
+    *,
+    _validation_session: _ValidationSession | None = None,
+) -> Dict[str, Any]:
+    session = _validation_session or _ValidationSession()
     root = root.resolve()
-    paths = _shared_paths(root)
     platform_path = platform_path.resolve()
+    key = (str(root), str(platform_path))
+    if key in session.shared:
+        return copy.deepcopy(session.shared[key])
+    paths = _shared_paths(root)
     validate_phase3(paths["ir"], platform_path, paths["clusters"], paths["assignment"])
     validate_phase4(
         paths["assignment"],
@@ -230,7 +266,7 @@ def validate_shared_phase1_5(root: Path, platform_path: Path) -> Dict[str, Any]:
     )
     ir = EmuIR.load(paths["ir"])
     platform = Platform.load(platform_path)
-    return {
+    result = {
         "status": "pass",
         "design": ir.value["design"]["name"],
         "platform": platform.name,
@@ -239,6 +275,8 @@ def validate_shared_phase1_5(root: Path, platform_path: Path) -> Dict[str, Any]:
             for label in ("ir", "assignment", "routes", "schedule")
         },
     }
+    session.shared[key] = copy.deepcopy(result)
+    return result
 
 
 def run_physical_lookahead(
@@ -261,7 +299,10 @@ def run_physical_lookahead(
     openparf_python: Path | None = None,
     route_channel_width: int = 300,
 ) -> Dict[str, Any]:
-    shared = validate_shared_phase1_5(shared_root, platform_path)
+    session = _ValidationSession()
+    shared = validate_shared_phase1_5(
+        shared_root, platform_path, _validation_session=session
+    )
     paths = _shared_paths(shared_root)
     split_root = (
         baseline_phase6_root / "split"
@@ -270,7 +311,11 @@ def run_physical_lookahead(
     )
     if baseline_phase6_root is not None:
         baseline = validate_phase6_checkpoint(
-            baseline_phase6_root, shared_root, None, platform_path
+            baseline_phase6_root,
+            shared_root,
+            None,
+            platform_path,
+            _validation_session=session,
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
@@ -312,6 +357,7 @@ def run_physical_lookahead(
         architecture=architecture,
         architecture_id=architecture_id,
         route_channel_width=route_channel_width,
+        _validation_session=session,
     )
 
 
@@ -359,6 +405,7 @@ def resume_physical_lookahead(
         architecture=architecture,
         architecture_id=architecture_id,
         route_channel_width=route_channel_width,
+        _validation_session=_ValidationSession(),
     )
 
 
@@ -438,8 +485,12 @@ def _finish_physical_lookahead(
     architecture: Path | None,
     architecture_id: str,
     route_channel_width: int,
+    _validation_session: _ValidationSession | None = None,
 ) -> Dict[str, Any]:
-    shared = validate_shared_phase1_5(shared_root, platform_path)
+    session = _validation_session or _ValidationSession()
+    shared = validate_shared_phase1_5(
+        shared_root, platform_path, _validation_session=session
+    )
     paths = _shared_paths(shared_root)
     split_root = (
         baseline_phase6_root / "split"
@@ -448,11 +499,15 @@ def _finish_physical_lookahead(
     )
     if baseline_phase6_root is not None:
         baseline = validate_phase6_checkpoint(
-            baseline_phase6_root, shared_root, None, platform_path
+            baseline_phase6_root,
+            shared_root,
+            None,
+            platform_path,
+            _validation_session=session,
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
-    validate_multi_fpga_physical_report(physical)
+    session.validate_physical(physical)
     if physical.get("execution", {}).get("requested_workers") != workers:
         raise ValidationError("resumed physical-lookahead worker count disagrees")
     physical_architecture = physical.get("architecture", {})
@@ -516,7 +571,12 @@ def _finish_physical_lookahead(
     }
     write_json(output_dir / "experiment-lookahead-report.json", report)
     validate_physical_lookahead(
-        output_dir, shared_root, baseline_phase6_root, platform_path
+        output_dir,
+        shared_root,
+        baseline_phase6_root,
+        platform_path,
+        _validation_session=session,
+        _physical_report=physical,
     )
     return report
 
@@ -532,8 +592,39 @@ def validate_physical_lookahead(
     expected_region_count: int | None = None,
     expected_architecture: Path | None = None,
     expected_route_channel_width: int | None = None,
+    _validation_session: _ValidationSession | None = None,
+    _physical_report: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    validate_shared_phase1_5(shared_root, platform_path)
+    session = _validation_session or _ValidationSession()
+    root = root.resolve()
+    shared_root = shared_root.resolve()
+    platform_path = platform_path.resolve()
+    baseline_key = (
+        str(baseline_phase6_root.resolve())
+        if baseline_phase6_root is not None
+        else None
+    )
+    architecture_key = (
+        str(expected_architecture.resolve())
+        if expected_architecture is not None
+        else None
+    )
+    cache_key = (
+        str(root),
+        str(shared_root),
+        baseline_key,
+        str(platform_path),
+        expected_seed,
+        expected_workers,
+        expected_region_count,
+        architecture_key,
+        expected_route_channel_width,
+    )
+    if cache_key in session.lookahead:
+        return copy.deepcopy(session.lookahead[cache_key])
+    validate_shared_phase1_5(
+        shared_root, platform_path, _validation_session=session
+    )
     split_root = (
         baseline_phase6_root / "split"
         if baseline_phase6_root is not None
@@ -541,7 +632,11 @@ def validate_physical_lookahead(
     )
     if baseline_phase6_root is not None:
         baseline = validate_phase6_checkpoint(
-            baseline_phase6_root, shared_root, None, platform_path
+            baseline_phase6_root,
+            shared_root,
+            None,
+            platform_path,
+            _validation_session=session,
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")
@@ -549,8 +644,12 @@ def validate_physical_lookahead(
     if report.get("schema") != EXPERIMENT_LOOKAHEAD_SCHEMA or report.get("status") != "pass":
         raise ValidationError("experiment physical-lookahead report is invalid")
     physical_path = _require_file(root, "physical/multi-fpga-physical-flow-report.json")
-    physical_report = read_json(physical_path)
-    validate_multi_fpga_physical_report(physical_report)
+    physical_report = (
+        _physical_report
+        if _physical_report is not None
+        else read_json(physical_path)
+    )
+    session.validate_physical(physical_report)
     expected = {
         "seed": expected_seed,
         "workers": expected_workers,
@@ -627,7 +726,9 @@ def validate_physical_lookahead(
         path = _require_file(root, f"lookahead/inputs/{label}.json")
         if lookahead.get("artifacts", {}).get(label, {}).get("sha256") != _sha256(path):
             raise ValidationError(f"experiment Chimew lookahead {label} seal is broken")
-    return {"status": "pass", "seed": report["seed"], "metrics": report["metrics"]}
+    result = {"status": "pass", "seed": report["seed"], "metrics": report["metrics"]}
+    session.lookahead[cache_key] = copy.deepcopy(result)
+    return result
 
 
 def run_phase6_checkpoint(
@@ -645,9 +746,12 @@ def run_phase6_checkpoint(
     chimew_rudy: str | None = None,
     chimew_assigner: str | None = None,
 ) -> Dict[str, Any]:
+    session = _ValidationSession()
     if provider not in _PROVIDERS:
         raise ValidationError("experiment Phase 6 provider is invalid")
-    shared = validate_shared_phase1_5(shared_root, platform_path)
+    shared = validate_shared_phase1_5(
+        shared_root, platform_path, _validation_session=session
+    )
     if provider == "baseline":
         lookahead = None
     else:
@@ -656,7 +760,11 @@ def run_phase6_checkpoint(
                 f"experiment Phase 6 provider {provider} requires physical lookahead"
             )
         lookahead = validate_physical_lookahead(
-            lookahead_root, shared_root, None, platform_path
+            lookahead_root,
+            shared_root,
+            None,
+            platform_path,
+            _validation_session=session,
         )
     paths = _shared_paths(shared_root)
     output_dir = _prepare_empty_output(output_dir, "Phase 6 checkpoint")
@@ -749,7 +857,13 @@ def run_phase6_checkpoint(
         "equivalence": phase6["equivalence"],
     }
     write_json(output_dir / "experiment-phase6-report.json", report)
-    validate_phase6_checkpoint(output_dir, shared_root, lookahead_root, platform_path)
+    validate_phase6_checkpoint(
+        output_dir,
+        shared_root,
+        lookahead_root,
+        platform_path,
+        _validation_session=session,
+    )
     return report
 
 
@@ -760,8 +874,24 @@ def validate_phase6_checkpoint(
     platform_path: Path,
     *,
     expected_provider: str | None = None,
+    _validation_session: _ValidationSession | None = None,
 ) -> Dict[str, Any]:
-    validate_shared_phase1_5(shared_root, platform_path)
+    session = _validation_session or _ValidationSession()
+    root = root.resolve()
+    shared_root = shared_root.resolve()
+    platform_path = platform_path.resolve()
+    lookahead_key = (
+        str(lookahead_root.resolve()) if lookahead_root is not None else None
+    )
+    cache_key = (str(root), str(shared_root), lookahead_key, str(platform_path))
+    cached = session.phase6.get(cache_key)
+    if cached is not None:
+        if expected_provider is not None and cached["provider"] != expected_provider:
+            raise ValidationError("experiment Phase 6 provider contract disagrees")
+        return copy.deepcopy(cached)
+    validate_shared_phase1_5(
+        shared_root, platform_path, _validation_session=session
+    )
     report = read_json(_require_file(root, "experiment-phase6-report.json"))
     provider = report.get("provider")
     if report.get("schema") != EXPERIMENT_PHASE6_SCHEMA or provider not in _PROVIDERS:
@@ -777,7 +907,11 @@ def validate_phase6_checkpoint(
                 f"experiment Phase 6 provider {provider} requires physical lookahead"
             )
         validate_physical_lookahead(
-            lookahead_root, shared_root, None, platform_path
+            lookahead_root,
+            shared_root,
+            None,
+            platform_path,
+            _validation_session=session,
         )
     paths = _shared_paths(shared_root)
     manifest = _require_file(root, "split/manifest.json")
@@ -797,7 +931,13 @@ def validate_phase6_checkpoint(
         "manifest_sha256"
     ) != _sha256(manifest):
         raise ValidationError("experiment Phase 6 checkpoint seal is broken")
-    return {"status": "pass", "provider": provider, "equivalence": report["equivalence"]}
+    result = {
+        "status": "pass",
+        "provider": provider,
+        "equivalence": report["equivalence"],
+    }
+    session.phase6[cache_key] = copy.deepcopy(result)
+    return result
 
 
 def run_phase7_checkpoint(
@@ -818,8 +958,13 @@ def run_phase7_checkpoint(
     openparf_python: Path | None = None,
     route_channel_width: int = 300,
 ) -> Dict[str, Any]:
+    session = _ValidationSession()
     phase6 = validate_phase6_checkpoint(
-        phase6_root, shared_root, lookahead_root, platform_path
+        phase6_root,
+        shared_root,
+        lookahead_root,
+        platform_path,
+        _validation_session=session,
     )
     paths = _shared_paths(shared_root)
     path_database, logic_path_database = _physical_timing_databases(shared_root)
@@ -885,7 +1030,12 @@ def run_phase7_checkpoint(
     }
     write_json(output_dir / "experiment-phase7-report.json", report)
     validate_phase7_checkpoint(
-        output_dir, shared_root, lookahead_root, phase6_root, platform_path
+        output_dir,
+        shared_root,
+        lookahead_root,
+        phase6_root,
+        platform_path,
+        _validation_session=session,
     )
     return report
 
@@ -900,9 +1050,15 @@ def validate_phase7_checkpoint(
     expected_seed: int | None = None,
     expected_workers: int | None = None,
     expected_route_channel_width: int | None = None,
+    _validation_session: _ValidationSession | None = None,
 ) -> Dict[str, Any]:
+    session = _validation_session or _ValidationSession()
     phase6 = validate_phase6_checkpoint(
-        phase6_root, shared_root, lookahead_root, platform_path
+        phase6_root,
+        shared_root,
+        lookahead_root,
+        platform_path,
+        _validation_session=session,
     )
     report = read_json(_require_file(root, "experiment-phase7-report.json"))
     if (

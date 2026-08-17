@@ -6,6 +6,7 @@ from unittest import mock
 from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
+    _ValidationSession,
     _physical_timing_databases,
     _placement_aware_positions,
     _prepare_empty_output,
@@ -22,6 +23,19 @@ from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
+    def test_validation_session_deduplicates_one_physical_report(self) -> None:
+        report = {"schema": "fixture"}
+        session = _ValidationSession()
+        with mock.patch(
+            "emuflow.experiment_stages.validate_multi_fpga_physical_report",
+            return_value={"status": "pass"},
+        ) as validate:
+            first = session.validate_physical(report)
+            first["status"] = "mutated-by-caller"
+            second = session.validate_physical(report)
+        validate.assert_called_once_with(report)
+        self.assertEqual(second, {"status": "pass"})
+
     def test_shared_timing_uses_partition_projected_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

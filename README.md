@@ -1006,6 +1006,13 @@ external references; for a managed checkpoint it instead validates the sealed
 digest table, non-writable manifest, and immutable output tree without rereading
 multi-gigabyte payloads. The planner reports each node as:
 
+Within one stage process, nested validators share a validation session. A
+dependency already checked by that process is not reparsed when the producer
+self-validates its output or when a child validator reaches the same ancestor.
+The cache exists only for that process: every later standalone validator starts
+a fresh session and therefore still detects filesystem changes. This avoids
+quadratic NFS reads without converting a previous run's `pass` label into trust.
+
 - `reuse`: a byte-valid content-addressed checkpoint already exists;
 - `revalidate`: execution output is reusable but the independent validator
   implementation changed and must certify it again;
