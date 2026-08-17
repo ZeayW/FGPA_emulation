@@ -6,6 +6,7 @@ from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
+    _architectural_launch_endpoints,
     _boundary_tx_port,
     _vivado_object,
     _vpr_atom_pin,
@@ -22,6 +23,120 @@ from emuflow.local_path_timing import (
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_exact_launch_cone_keeps_all_local_launches_and_stops_at_cuts(self):
+        ir = EmuIR(
+            {
+                "schema": "emuflow.emuir/v1",
+                "design": {
+                    "name": "dut",
+                    "top": "dut",
+                    "source_format": "test",
+                },
+                "ports": [
+                    {
+                        "id": "a",
+                        "name": "a",
+                        "direction": "input",
+                        "width": 1,
+                        "clock": False,
+                    }
+                ],
+                "instances": [
+                    {
+                        "id": "state",
+                        "name": "state",
+                        "type": "$_DFF_P_",
+                        "resources": {"ff": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                    {
+                        "id": "remote",
+                        "name": "remote",
+                        "type": "$lut",
+                        "resources": {"lut": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                    {
+                        "id": "logic",
+                        "name": "logic",
+                        "type": "$lut",
+                        "resources": {"lut": 1},
+                        "parameters": {},
+                        "attributes": {},
+                        "constant_connections": [],
+                    },
+                ],
+                "nets": [
+                    {
+                        "id": "primary",
+                        "name": "primary",
+                        "drivers": [
+                            {"instance": None, "port": "a", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": "logic", "port": "A", "bit": 0}
+                        ],
+                        "fanout": 1,
+                        "cut_class": "primary_input",
+                    },
+                    {
+                        "id": "state_net",
+                        "name": "state_net",
+                        "drivers": [
+                            {"instance": "state", "port": "Q", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": "logic", "port": "A", "bit": 1}
+                        ],
+                        "fanout": 1,
+                        "cut_class": "register_output",
+                    },
+                    {
+                        "id": "incoming_cut",
+                        "name": "incoming_cut",
+                        "drivers": [
+                            {"instance": "remote", "port": "Y", "bit": 0}
+                        ],
+                        "sinks": [
+                            {"instance": "logic", "port": "A", "bit": 2}
+                        ],
+                        "fanout": 1,
+                        "cut_class": "combinational",
+                    },
+                    {
+                        "id": "sink_cut",
+                        "name": "sink_cut",
+                        "drivers": [
+                            {"instance": "logic", "port": "Y", "bit": 0}
+                        ],
+                        "sinks": [],
+                        "fanout": 0,
+                        "cut_class": "combinational",
+                    },
+                ],
+                "clocks": [],
+                "warnings": [],
+            }
+        )
+        result = _architectural_launch_endpoints(
+            ir,
+            {"state": "fpga0", "logic": "fpga0", "remote": "fpga1"},
+            "sink_cut",
+            "fpga0",
+            {"incoming_cut", "sink_cut"},
+        )
+        self.assertEqual(
+            result,
+            [
+                {"instance": None, "port": "a", "bit": 0},
+                {"instance": "state", "port": "Q", "bit": 0},
+            ],
+        )
+
     def test_vpr_boundary_alias_and_explicit_local_path_chain_are_checked(self):
         ir = EmuIR(
             {

@@ -7,7 +7,7 @@ import math
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
 from .errors import ValidationError
@@ -42,6 +42,77 @@ _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 )
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
+_STATE_RESOURCES = {"ff", "bram", "bram18k", "uram288"}
+
+
+def _architectural_launch_endpoints(
+    ir: EmuIR,
+    instance_assignment: Mapping[str, str],
+    sink_net: str,
+    fpga: str,
+    transported_cut_nets: Set[str],
+) -> List[Mapping[str, Any]]:
+    """Return every local architectural source in a cut-net fan-in cone.
+
+    Incoming transported cuts are deliberate stop points: their independently
+    routed RX-to-TX contracts cover those branches.  All remaining primary
+    inputs and state/memory outputs are retained so a reconvergent
+    launch-to-TX segment cannot be certified by measuring only the single
+    representative path selected by the original STA database.
+    """
+
+    nets = {item["id"]: item for item in ir.value["nets"]}
+    instances = {item["id"]: item for item in ir.value["instances"]}
+    incoming: Dict[str, List[str]] = defaultdict(list)
+    for net in ir.value["nets"]:
+        for endpoint in net["sinks"]:
+            instance = endpoint["instance"]
+            if instance is not None:
+                incoming[instance].append(net["id"])
+    if sink_net not in nets:
+        raise ValidationError(
+            f"static exact launch sink net {sink_net!r} is absent"
+        )
+    launches: Dict[Tuple[str, str, int], Mapping[str, Any]] = {}
+    pending = [sink_net]
+    visited = set()
+    while pending:
+        net_id = pending.pop()
+        if net_id in visited:
+            continue
+        visited.add(net_id)
+        if net_id != sink_net and net_id in transported_cut_nets:
+            continue
+        net = nets.get(net_id)
+        if net is None:
+            raise ValidationError(
+                f"static exact launch cone net {net_id!r} is absent"
+            )
+        for driver in net["drivers"]:
+            instance_id = driver["instance"]
+            if instance_id is None:
+                key = ("", driver["port"], driver["bit"])
+                launches[key] = driver
+                continue
+            instance = instances.get(instance_id)
+            if instance is None:
+                raise ValidationError(
+                    f"static exact launch driver {instance_id!r} is absent"
+                )
+            if instance_assignment.get(instance_id) != fpga:
+                if net_id in transported_cut_nets:
+                    continue
+                raise ValidationError(
+                    "static exact launch cone crosses an undeclared "
+                    f"partition boundary at {net_id!r}"
+                )
+            resources = instance.get("resources", {})
+            if any(resources.get(field, 0) for field in _STATE_RESOURCES):
+                key = (instance_id, driver["port"], driver["bit"])
+                launches[key] = driver
+                continue
+            pending.extend(incoming.get(instance_id, []))
+    return [launches[key] for key in sorted(launches)]
 
 
 def _instance_pin_inventory(ir: EmuIR) -> Dict[str, set[tuple[str, int]]]:
@@ -369,9 +440,18 @@ def _write_logic_segment_query(
     if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
         raise ValidationError("logic segment merged IR target is invalid")
     endpoints, _ = _boundary_maps(boundary_identity)
+    endpoints_by_schedule_kind = {
+        (item["schedule_entry"], item["kind"]): item["id"]
+        for item in boundary_identity["endpoints"]
+    }
+    if len(endpoints_by_schedule_kind) != len(boundary_identity["endpoints"]):
+        raise ValidationError(
+            "logic segment boundary schedule/kind identities duplicate"
+        )
     exact_contract = schedule.get("semantic_contract")
     exact_contract_sha256 = None
     exact_segment_by_key = {}
+    exact_captures: Dict[str, Mapping[str, Any]] = {}
     if isinstance(exact_contract, dict) and exact_contract.get("mode") == (
         "static-exact-combinational"
     ):
@@ -385,6 +465,7 @@ def _write_logic_segment_query(
         captures = {
             item["id"]: item for item in exact_contract["capture_requirements"]
         }
+        exact_captures = captures
         for item in exact_contract["logic_segments"]:
             if item["kind"] == "launch_to_tx":
                 key = (
@@ -710,6 +791,196 @@ def _write_logic_segment_query(
                         }
                     )
                 segments.append(segment)
+    if exact_contract_sha256 is not None:
+        schedule_entries = list(schedule["entries"])
+        transported_cut_nets = {
+            item["net"] for item in exact_contract["cut_nodes"]
+        }
+
+        def entry_endpoint(
+            entry: Mapping[str, Any], kind: str
+        ) -> str:
+            endpoint_id = endpoints_by_schedule_kind.get((entry["id"], kind))
+            if endpoint_id is None:
+                raise ValidationError(
+                    f"static exact schedule entry {entry['id']!r} lacks "
+                    f"one {kind.upper()} physical boundary"
+                )
+            return endpoint_id
+
+        def tx_entries(net: str, source_fpga: str) -> List[Mapping[str, Any]]:
+            result = [
+                item
+                for item in schedule_entries
+                if item["net"] == net and item["from"] == source_fpga
+            ]
+            if not result:
+                raise ValidationError(
+                    f"static exact cut {net!r} has no TX from {source_fpga!r}"
+                )
+            return sorted(result, key=lambda item: item["id"])
+
+        def rx_entry(net: str, sink_fpga: str) -> Mapping[str, Any]:
+            result = [
+                item
+                for item in schedule_entries
+                if item["net"] == net and item["to"] == sink_fpga
+            ]
+            if len(result) != 1:
+                raise ValidationError(
+                    f"static exact cut {net!r} does not have one arrival "
+                    f"at {sink_fpga!r}"
+                )
+            return result[0]
+
+        def capture_endpoint(capture: Mapping[str, Any]) -> Mapping[str, Any]:
+            endpoint = capture["endpoint"]
+            if capture["kind"] == "top-output":
+                match = re.fullmatch(r"top:(.+)\[(\d+)\]", endpoint)
+                if match is None:
+                    raise ValidationError(
+                        "static exact top-output capture identity is invalid"
+                    )
+                return {
+                    "instance": None,
+                    "port": match.group(1),
+                    "bit": int(match.group(2)),
+                }
+            instance = merged_instances.get(endpoint)
+            if (
+                capture["kind"] != "architectural-state"
+                or instance is None
+                or not any(
+                    instance.get("resources", {}).get(field, 0)
+                    for field in _STATE_RESOURCES
+                )
+            ):
+                raise ValidationError(
+                    f"static exact capture endpoint {endpoint!r} is unsupported"
+                )
+            return {"instance": endpoint, "port": "D", "bit": 0}
+
+        existing = {
+            (
+                item.get("static_exact_segment_id"),
+                item["start_pin"],
+                item["end_pin"],
+            )
+            for item in segments
+        }
+
+        def add_contract_segment(
+            semantic: Mapping[str, Any],
+            role: str,
+            start: Union[Mapping[str, Any], str],
+            end_tx: Optional[str],
+            ordinal: int,
+        ) -> None:
+            start_kind, start_pin = (
+                rx_object(start) if isinstance(start, str)
+                else endpoint_object(start)
+            )
+            if end_tx is None:
+                capture = exact_captures[semantic["capture_requirement"]]
+                end_kind, end_pin = endpoint_object(
+                    capture_endpoint(capture)
+                )
+            else:
+                end_kind, end_pin = tx_object(end_tx)
+            dedup = (semantic["id"], start_pin, end_pin)
+            if dedup in existing:
+                return
+            existing.add(dedup)
+            identity = hashlib.sha256(
+                "\0".join(
+                    (semantic["id"], start_pin, end_pin, str(ordinal))
+                ).encode("utf-8")
+            ).hexdigest()[:24]
+            segment = {
+                "id": f"static_exact_{identity}_{role}",
+                "kind": role,
+                "system_path": f"static-exact-contract:{semantic['id']}",
+                "member_path": (
+                    f"static-exact-contract:{semantic['id']}:{identity}"
+                ),
+                "cut_index": ordinal,
+                "fpga": fpga,
+                "replace_tx_endpoint": end_tx,
+                "start_pin": start_pin,
+                "end_pin": end_pin,
+                "static_exact_segment_id": semantic["id"],
+            }
+            if object_provider == "vivado":
+                segment.update(
+                    {
+                        "start_object_kind": start_kind,
+                        "end_object_kind": end_kind,
+                    }
+                )
+                if end_tx is not None:
+                    anchor_kind, anchor_pin = cone_anchor_object(
+                        semantic["sink_cut_net"]
+                    )
+                    segment.update(
+                        {
+                            "cone_anchor_object_kind": anchor_kind,
+                            "cone_anchor_pin": anchor_pin,
+                        }
+                    )
+            segments.append(segment)
+
+        for semantic in exact_contract["logic_segments"]:
+            if semantic["fpga"] != fpga:
+                continue
+            kind = semantic["kind"]
+            if kind == "launch_to_tx":
+                starts = _architectural_launch_endpoints(
+                    original_ir,
+                    instance_assignment,
+                    semantic["sink_cut_net"],
+                    fpga,
+                    transported_cut_nets,
+                )
+                if not starts:
+                    # A dependency-free constant cone has no timed launch
+                    # endpoint.  Leave it unmeasured so deadline closure stays
+                    # explicitly incomplete instead of inventing zero delay.
+                    continue
+                destinations = [
+                    entry_endpoint(item, "tx")
+                    for item in tx_entries(semantic["sink_cut_net"], fpga)
+                ]
+                for ordinal, (start, destination) in enumerate(
+                    (start, destination)
+                    for start in starts
+                    for destination in destinations
+                ):
+                    add_contract_segment(
+                        semantic, "launch", start, destination, ordinal
+                    )
+            elif kind == "rx_to_tx":
+                source = entry_endpoint(
+                    rx_entry(semantic["source_cut_net"], fpga), "rx"
+                )
+                for ordinal, destination in enumerate(
+                    entry_endpoint(item, "tx")
+                    for item in tx_entries(semantic["sink_cut_net"], fpga)
+                ):
+                    add_contract_segment(
+                        semantic,
+                        "transition",
+                        source,
+                        destination,
+                        ordinal,
+                    )
+            else:
+                source = entry_endpoint(
+                    rx_entry(semantic["source_cut_net"], fpga), "rx"
+                )
+                add_contract_segment(
+                    semantic, "capture", source, None, 0
+                )
+
     segments.sort(key=lambda item: item["id"])
     identity = {
         "schema": LOGIC_SEGMENT_IDENTITY_SCHEMA,

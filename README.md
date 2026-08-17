@@ -376,6 +376,14 @@ segment's routed settle window and refuses missing evidence or a late
 source/capture even when aggregate virtual-runtime slack is positive. This is
 sealed by the checked-in
 `schemas/static-exact-segment-deadlines-v1.schema.json` report contract. This is
+not limited to the representative paths retained by the original STA export:
+the physical query set also walks each cut-net fan-in cone, measures every
+local primary-input/state launch, every transported RX-to-TX dependency, and
+every final RX-to-capture requirement. Incoming cut nets are explicit cone
+stop points, so parallel and reconvergent semantic branches cannot inherit the
+timing evidence of an unrelated representative path. A constant cone with no
+timed launch remains explicitly incomplete rather than being assigned a
+fabricated zero delay. This is
 also reflected at the one-command CLI boundary: exact mode defaults slot
 refinement to zero, while an explicit nonzero request remains fail-closed until
 that optimizer is dependency-qualified. This is
