@@ -225,8 +225,22 @@ complete original TimingPathDB, so every original path that becomes
 cross-partition is optimized and remains identifiable at Phase 7C. An
 additional post-partition OpenSTA through-cut query is retained as diagnostic
 coverage evidence for the selected cut nets; it is not substituted for the
-complete original path population. The physical stage likewise keeps the
-complete database for same-FPGA and final set-hash coverage, while using the
+complete original path population. Directed extraction records a sealed
+per-cut-net query certificate (driver count and queried/emitted path counts).
+The validator independently reconstructs timed-endpoint reachability from
+EmuIR connectivity plus the selected timing-cell model. A net may be absent
+only when OpenSTA reports zero paths and that independent graph proves there
+is no reachable sequential data/setup endpoint; a queried path whose launch
+net was omitted from OpenSTA's point list retains the uniquely bound launch-net
+identity explicitly. If OpenSTA declines to treat an internal cut-net driver
+as a timing startpoint but the independent model proves that the net directly
+feeds a sequential data/setup pin, directed extraction queries that exact
+endpoint instead and preserves the proven cut net at the tail of the ordered
+path. This fallback is restricted to structurally identified direct timing
+endpoints; it does not guess endpoint reachability, weaken the final per-net
+coverage check, or treat arbitrary internal pins as timing starts. The physical
+stage likewise keeps the complete database for same-FPGA and final set-hash
+coverage, while using the
 projected member identities for routed cross-FPGA logic-segment queries.
 Both original-target-clock and virtual-runtime-clock system slack are
 reported.
@@ -821,6 +835,15 @@ PyTorch installation is insufficient. Set
 CUDA toolkit are compatible. See the upstream links and license information in
 [Open-source components and provenance](OPEN_SOURCE_COMPONENTS.md).
 
+The bundled OpenPARF integration keeps utilization reporting masks separate
+from the live optimization subspace. Once a resource type is legalized and
+locked, its density remains reportable but it is removed from the electric
+potential solve, multiplier normalization, and position-gradient updates. An
+empty active subspace is a finite no-op and terminates global optimization;
+zero-curvature Nesterov estimates retain the previous finite step instead of
+evaluating a zero-gradient division. Non-finite inputs remain hard failures
+rather than being hidden by an arbitrary epsilon.
+
 For fast work on EmuFlow's first-party kernels and artifact contracts, a
 developer may explicitly disable the large imported engines. This is a partial
 developer build, not the source-complete release configuration:
@@ -1108,6 +1131,13 @@ this substitution independently and rejects a claimed portable identity that
 does not match its runtime bindings. Stage-specific policy also lives in a
 stage-specific closure component, so a partition-only change cannot invalidate
 the frontend through an unrelated shared orchestration file.
+For Python orchestration modules that intentionally expose several independent
+stage runners, a component may use `path.py::entrypoint,...`.  EmuFlow hashes a
+recursive canonical-AST closure of those entry points, including referenced
+module helpers, constants, and imports.  A change to an unrelated runner or
+formatting therefore preserves the stage key, while a called helper change
+still invalidates it.  Directories, binaries, Tcl, and other components remain
+byte-exact whole-file closures.
 Changing any node input invalidates only that node and its descendants.  For
 example, a Chimew parameter invalidates only Chimew Phase 6 and its Phase 7
 descendants, while changing RTL or BoardDB invalidates the shared Phase 1--5
@@ -1277,6 +1307,7 @@ Build and verify the portable implementation closure used by a v2 node:
 ```bash
 emuflow experiment-cache implementation-closure \
   --root /path/to/versioned/source \
+  --component 'src/emuflow/experiment_upstream.py::run_route_checkpoint,validate_route_checkpoint' \
   --component src/emuflow/phase4.py \
   --component install/bin/emuflow-system-router \
   --out /research/d4/gds/ziyiwang21/experiments/phase4-implementation.json
@@ -1329,11 +1360,31 @@ emuflow experiment-cache gc-apply --plan /research/d4/gds/ziyiwang21/experiments
   --expected-plan-sha256 "$GC_PLAN_SHA256"
 ```
 
+The migration plan reports logical and allocated size separately, plus
+`exclusive_reclaimable_bytes` after accounting for hard links outside each
+tree; deleting a second pathname to shared blocks must not be advertised as
+newly freed capacity.  Its totals also distinguish bytes reclaimable by
+retiring one entry from bytes freed only when the complete inventoried root is
+retired.
+
 Retirement is only for an explicitly selected noncanonical legacy tree.  It
 content-seals the complete tree, revalidates all candidates before deleting the
 first byte, rejects evidence/archive candidates, and retains marker tombstones
 with a receipt labelled as non-evidence.  It is not a substitute for importing
-reusable checkpoints or building replay-complete evidence.
+reusable checkpoints or building replay-complete evidence.  A legacy farm is
+also protected while any task is prepared, submitting, waiting, running,
+retryable, storage-blocked, submit-failed, malformed, or otherwise
+unreconciled.  An expired lease is still protected: run the normal farm
+reconciler, which probes the pinned worker, rather than inferring process death
+from time.  Retirement accepts only farms whose task states are all final
+`pass` or `failed`, requires every farm to have a safe `launch.lock`, and holds
+all such locks while sealing and committing a `RETIREMENT_PENDING` marker.
+Launchers check that marker both before and after acquiring the same lock. The
+retirement path atomically renames the selected top-level tree to a sealed
+quarantine path while still locked, then closes every lock descriptor before
+recursive removal. This avoids NFS `.nfs*` remnants without reopening a
+concurrent-launch race, and a partial removal cannot restore the original farm
+path.
 
 On linux10/hpc1--hpc8 all controlled writes and temporary files are
 code-enforced below `/research/d4/gds/ziyiwang21`. Every v2 node supplies a peak
@@ -1898,6 +1949,9 @@ silently attached to the wrong instance.
 After a partition is selected, the provider can also issue directed
 through-net queries for the actual cut nets, so a timing-relevant cut is not
 silently absent merely because it fell outside the global worst-path prefix.
+The reusable cut-timing checkpoint seals `through-net-coverage.json`; its
+independent validator rebuilds both the cut-net set and structural endpoint
+classification instead of trusting the producer's pass status.
 
 For a Xilinx platform, `--timing-backend vivado --timing-vivado PATH` replaces
 only that TimingPathDB producer. The downstream partitioning, system routing,

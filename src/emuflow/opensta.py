@@ -29,6 +29,7 @@ from .vtr_architecture import (
 FPGA_TIMING_MODEL_SCHEMA = "emuflow.fpga-timing-model/v1"
 FPGA_TIMING_MODEL_SCHEMA_V2 = "emuflow.fpga-timing-model/v2"
 OPENSTA_PROVIDER = "opensta-fpga-path-database-v1"
+OPENSTA_THROUGH_COVERAGE_SCHEMA = "emuflow.opensta-through-net-coverage/v1"
 
 
 def _runtime_data_path(relative: Path) -> Path:
@@ -821,6 +822,180 @@ def validate_timing_model_coverage(
     }
 
 
+def _scalar_endpoint_pin(
+    endpoint: Mapping[str, Any],
+    pin_sets: Mapping[str, Mapping[str, set[tuple[str, int]]]],
+) -> str:
+    instance = endpoint["instance"]
+    if instance is None:
+        return endpoint["port"]
+    pins = pin_sets[instance]["inputs"] | pin_sets[instance]["outputs"]
+    width = max(
+        (
+            bit + 1
+            for port, bit in pins
+            if port == endpoint["port"]
+        ),
+        default=0,
+    )
+    if width <= endpoint["bit"]:
+        raise ValidationError(
+            "OpenSTA endpoint pin is absent from the mapped pin contract"
+        )
+    return (
+        endpoint["port"]
+        if width == 1
+        else f"{endpoint['port']}__{endpoint['bit']}"
+    )
+
+
+def classify_through_net_timing_endpoints(
+    ir: EmuIR,
+    model: Mapping[str, Any],
+    through_nets: Sequence[str],
+    instance_cell_types: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Independently classify whether each net can reach a timed endpoint.
+
+    This graph walk uses only EmuIR connectivity and the validated timing-cell
+    contract.  It intentionally does not consume OpenSTA's query results, so a
+    zero-path result is accepted only when a second implementation proves that
+    no sequential data/setup endpoint is reachable through combinational logic.
+    """
+    net_by_id = {net["id"]: net for net in ir.value["nets"]}
+    if len(net_by_id) != len(ir.value["nets"]):
+        raise ValidationError("OpenSTA structural timing net IDs are not unique")
+    unknown = sorted(set(through_nets) - set(net_by_id))
+    if unknown:
+        raise ValidationError(
+            f"OpenSTA structural timing nets are absent from EmuIR: {unknown}"
+        )
+    instance_by_id = {
+        instance["id"]: instance for instance in ir.value["instances"]
+    }
+    pin_sets = _instance_pin_sets(ir)
+    output_nets: DefaultDict[tuple[str, str], list[str]] = defaultdict(list)
+    for net in ir.value["nets"]:
+        for driver in net["drivers"]:
+            if driver["instance"] is not None:
+                output_nets[
+                    (
+                        driver["instance"],
+                        _scalar_endpoint_pin(driver, pin_sets),
+                    )
+                ].append(net["id"])
+
+    reverse_edges: DefaultDict[str, set[str]] = defaultdict(set)
+    direct_timed: set[str] = set()
+    direct_timed_counts: DefaultDict[str, int] = defaultdict(int)
+    direct_timed_pins: DefaultDict[str, set[str]] = defaultdict(set)
+    top_level_sink_counts: DefaultDict[str, int] = defaultdict(int)
+    for net_id, net in net_by_id.items():
+        for sink in net["sinks"]:
+            if sink["instance"] is None:
+                top_level_sink_counts[net_id] += 1
+                continue
+            instance_id = sink["instance"]
+            instance = instance_by_id[instance_id]
+            cell_type = (
+                instance_cell_types.get(instance_id, instance["type"])
+                if instance_cell_types is not None
+                else instance["type"]
+            )
+            cell = model["cells"].get(cell_type)
+            if cell is None:
+                raise ValidationError(
+                    f"OpenSTA structural timing model lacks {cell_type!r}"
+                )
+            pin = _scalar_endpoint_pin(sink, pin_sets)
+            kind = cell["kind"]
+            if kind == "combinational":
+                if pin not in cell["inputs"]:
+                    raise ValidationError(
+                        "OpenSTA combinational sink pin is absent from the "
+                        f"timing model: {cell_type}.{pin}"
+                    )
+                for output in cell.get("outputs", [cell.get("output")]):
+                    for successor in output_nets.get((instance_id, output), ()):
+                        reverse_edges[successor].add(net_id)
+            elif kind == "rising_edge_ff":
+                if pin == cell["data"]:
+                    direct_timed.add(net_id)
+                    direct_timed_counts[net_id] += 1
+                    direct_timed_pins[net_id].add(f"{instance_id}/{pin}")
+                elif pin != cell["clock"] and pin not in cell["controls"]:
+                    raise ValidationError(
+                        f"OpenSTA FF sink pin is unmodelled: {cell_type}.{pin}"
+                    )
+            elif kind == "rising_edge_bank":
+                if pin in cell["inputs"]:
+                    direct_timed.add(net_id)
+                    direct_timed_counts[net_id] += 1
+                    direct_timed_pins[net_id].add(f"{instance_id}/{pin}")
+                elif pin != cell["clock"]:
+                    raise ValidationError(
+                        "OpenSTA sequential-bank sink pin is unmodelled: "
+                        f"{cell_type}.{pin}"
+                    )
+            elif kind != "constant":
+                raise ValidationError(
+                    f"OpenSTA structural timing kind is unsupported: {kind!r}"
+                )
+
+    reaches_timed = set(direct_timed)
+    pending = list(direct_timed)
+    while pending:
+        successor = pending.pop()
+        for predecessor in reverse_edges.get(successor, ()):
+            if predecessor not in reaches_timed:
+                reaches_timed.add(predecessor)
+                pending.append(predecessor)
+    return {
+        net: {
+            "status": "timed" if net in reaches_timed else "no_timed_endpoint",
+            "direct_timed_endpoints": direct_timed_counts[net],
+            "direct_timed_endpoint_pins": sorted(direct_timed_pins[net]),
+            "direct_top_level_sinks": top_level_sink_counts[net],
+        }
+        for net in through_nets
+    }
+
+
+def _read_through_coverage_tsv(
+    path: Path, expected_nets: Sequence[str]
+) -> Dict[str, Dict[str, int]]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    expected_header = (
+        "emuir_net_hex\tdriver_count\tqueried_paths\temitted_paths"
+    )
+    if not lines or lines[0] != expected_header:
+        raise EmuFlowError("OpenSTA through-net coverage TSV header is invalid")
+    records: Dict[str, Dict[str, int]] = {}
+    for line in lines[1:]:
+        fields = line.split("\t")
+        if len(fields) != 4:
+            raise EmuFlowError("OpenSTA through-net coverage TSV row is invalid")
+        try:
+            net = bytes.fromhex(fields[0]).decode("utf-8")
+            counts = [int(value) for value in fields[1:]]
+        except (UnicodeDecodeError, ValueError) as error:
+            raise EmuFlowError(
+                "OpenSTA through-net coverage TSV value is invalid"
+            ) from error
+        if net in records or any(value < 0 for value in counts):
+            raise EmuFlowError(
+                "OpenSTA through-net coverage TSV has duplicate or negative data"
+            )
+        records[net] = dict(
+            zip(("driver_count", "queried_paths", "emitted_paths"), counts)
+        )
+    if set(records) != set(expected_nets):
+        raise EmuFlowError(
+            "OpenSTA through-net coverage TSV does not exactly cover requests"
+        )
+    return records
+
+
 def _clock_map(
     ir: EmuIR,
     clocks: Optional[Mapping[str, float]],
@@ -886,6 +1061,7 @@ def run_opensta_path_database(
     max_paths: int = 200000,
     log_path: Optional[Path] = None,
     through_nets: Optional[Sequence[str]] = None,
+    through_coverage_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
@@ -916,6 +1092,13 @@ def run_opensta_path_database(
     )
     clock_map = _clock_map(ir, clocks)
     opensta = resolve_native_executable("sta", executable)
+    structural = (
+        classify_through_net_timing_endpoints(
+            ir, model, through_net_ids, instance_cell_types
+        )
+        if through_net_ids
+        else {}
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="emuflow-opensta-") as temporary:
@@ -926,6 +1109,8 @@ def run_opensta_path_database(
         clock_path = root / "clocks.tsv"
         raw_path = root / "paths.tsv"
         through_path = root / "through-nets.tsv"
+        through_endpoint_path = root / "through-endpoints.tsv"
+        raw_through_coverage_path = root / "through-net-coverage.tsv"
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
         # Those constructs do not affect static timing connectivity.
@@ -949,6 +1134,13 @@ def run_opensta_path_database(
                     stream.write(
                         f"{mapped.encode().hex()}\t{net.encode().hex()}\n"
                     )
+            with through_endpoint_path.open("w", encoding="utf-8") as stream:
+                stream.write("emuir_net_hex\tendpoint_pin_hex\n")
+                for net in through_net_ids:
+                    for pin in structural[net]["direct_timed_endpoint_pins"]:
+                        stream.write(
+                            f"{net.encode().hex()}\t{pin.encode().hex()}\n"
+                        )
         with clock_path.open("w", encoding="utf-8") as stream:
             stream.write("clock_hex\tperiod_ns\n")
             for name, period in clock_map.items():
@@ -966,6 +1158,12 @@ def run_opensta_path_database(
                 "EMUFLOW_STA_MAX_PATHS": str(max_paths),
                 "EMUFLOW_STA_THROUGH_NETS": (
                     str(through_path) if through_net_ids else ""
+                ),
+                "EMUFLOW_STA_THROUGH_COVERAGE": (
+                    str(raw_through_coverage_path) if through_net_ids else ""
+                ),
+                "EMUFLOW_STA_THROUGH_ENDPOINTS": (
+                    str(through_endpoint_path) if through_net_ids else ""
                 ),
             }
         )
@@ -1008,8 +1206,17 @@ def run_opensta_path_database(
             },
         )
 
+        through_query_records = (
+            _read_through_coverage_tsv(
+                raw_through_coverage_path, through_net_ids
+            )
+            if through_net_ids
+            else {}
+        )
+
     checked = validate_sta_path_database(output_path, ir_path)
     covered_through_nets = []
+    through_coverage: Dict[str, Any] | None = None
     if through_net_ids:
         database = read_json(output_path)
         path_nets = {
@@ -1017,13 +1224,66 @@ def run_opensta_path_database(
             for path in database["paths"]
             for net in path["path_nets"]
         }
-        missing_through_nets = sorted(set(through_net_ids) - path_nets)
-        if missing_through_nets:
-            raise EmuFlowError(
-                "OpenSTA directed path extraction did not cover requested "
-                f"nets: {missing_through_nets}"
+        coverage_records = []
+        for net in through_net_ids:
+            query = through_query_records[net]
+            if query["driver_count"] <= 0:
+                raise EmuFlowError(
+                    f"OpenSTA through net {net!r} has no timing driver"
+                )
+            emitted = query["emitted_paths"]
+            queried = query["queried_paths"]
+            in_database = net in path_nets
+            if emitted > queried:
+                raise EmuFlowError(
+                    f"OpenSTA through net {net!r} emitted more paths than queried"
+                )
+            if emitted > 0 and not in_database:
+                raise EmuFlowError(
+                    f"OpenSTA through net {net!r} was emitted without database coverage"
+                )
+            if emitted == 0 and queried > 0:
+                raise EmuFlowError(
+                    f"OpenSTA through net {net!r} had timing paths that were not serialized"
+                )
+            if emitted == 0 and structural[net]["status"] != "no_timed_endpoint":
+                raise EmuFlowError(
+                    f"OpenSTA through net {net!r} has a structurally reachable "
+                    "timed endpoint but no exported path"
+                )
+            if emitted > 0 and structural[net]["status"] != "timed":
+                raise EmuFlowError(
+                    f"OpenSTA through net {net!r} exported a path without a "
+                    "structurally reachable timed endpoint"
+                )
+            coverage_records.append(
+                {
+                    "net": net,
+                    **query,
+                    "classification": (
+                        "timed" if emitted > 0 else "no_timing_path"
+                    ),
+                    "structural": structural[net],
+                }
             )
         covered_through_nets = sorted(set(through_net_ids) & path_nets)
+        through_coverage = {
+            "schema": OPENSTA_THROUGH_COVERAGE_SCHEMA,
+            "status": "pass",
+            "provider": OPENSTA_PROVIDER,
+            "requested_nets": len(through_net_ids),
+            "timed_nets": sum(
+                record["classification"] == "timed"
+                for record in coverage_records
+            ),
+            "untimed_nets": sum(
+                record["classification"] == "no_timing_path"
+                for record in coverage_records
+            ),
+            "records": coverage_records,
+        }
+        if through_coverage_path is not None:
+            write_json(through_coverage_path, through_coverage)
     return {
         "status": "pass",
         "design": ir.value["design"]["name"],
@@ -1035,6 +1295,7 @@ def run_opensta_path_database(
         "max_paths": max_paths,
         "through_nets": through_net_ids,
         "covered_through_nets": covered_through_nets,
+        "through_net_coverage": through_coverage,
         "path_limit_reached": imported["paths"] >= max_paths,
         "unique_path_nets": imported["unique_path_nets"],
         "used_cell_types": coverage["used_cell_types"],

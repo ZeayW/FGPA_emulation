@@ -22,16 +22,23 @@ from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
-    def test_shared_checkpoint_uses_projected_paths_for_phase4(self) -> None:
+    def test_shared_timing_uses_partition_projected_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             timing = root / "timing"
             timing.mkdir()
-            cut_database = timing / "cut-path-database.json"
+            (timing / "path-database.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (timing / "cut-path-database.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            self.assertIsNone(_timing_paths(root))
+            self.assertIsNone(_projected_timing_paths(root))
+
             projected = timing / "cut-timing-paths.json"
-            write_json(cut_database, {"schema": "emuflow.sta-path-database/v1"})
             write_json(projected, {"schema": "emuflow.sta-paths/v1"})
-            self.assertEqual(_timing_paths(root), cut_database)
+            self.assertEqual(_timing_paths(root), projected)
             self.assertEqual(_projected_timing_paths(root), projected)
 
     def test_frontend_checkpoint_is_reusable_and_tamper_evident(self) -> None:

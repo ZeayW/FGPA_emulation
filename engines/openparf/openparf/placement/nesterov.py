@@ -17,6 +17,8 @@ from torch.optim.optimizer import Optimizer, required
 import torch.nn as nn
 import pdb
 
+from .numerical import safe_l2_step_size
+
 try:
     from loguru import logger
 except ModuleNotFoundError:
@@ -125,7 +127,9 @@ class NesterovAcceleratedGradientOptimizer(Optimizer):
                 obj_k_1 = group['obj_k_1'][i]
                 if not group['alpha_k']:
                     group['alpha_k'].append(
-                        (v_k - v_k_1).norm(p=2) / (g_k - g_k_1).norm(p=2))
+                        safe_l2_step_size(
+                            v_k - v_k_1, g_k - g_k_1, group['lr']
+                        ))
                 alpha_k = group['alpha_k'][i]
 
                 if group['v_kp1'][i] is None:
@@ -154,9 +158,11 @@ class NesterovAcceleratedGradientOptimizer(Optimizer):
                         cur_metric.grad_dicts = grad_dicts
                         cur_metric.current_grad = g_kp1
                     #tt = time.time()
-                    alpha_kp1 = torch.sqrt(
-                        torch.sum((v_kp1.data - v_k.data)**2) / torch.sum(
-                            (g_kp1.data - g_k.data)**2))
+                    alpha_kp1 = safe_l2_step_size(
+                        v_kp1.data - v_k.data,
+                        g_kp1.data - g_k.data,
+                        alpha_k,
+                    )
                     # alpha_kp1 = torch.dist(v_kp1.data, v_k.data, p=2) / torch.dist(g_kp1.data, g_k.data, p=2)
                     backtrack_cnt += 1
                     group['obj_eval_count'] += 1

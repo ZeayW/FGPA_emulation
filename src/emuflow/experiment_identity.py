@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -41,6 +42,112 @@ def _safe_relative(value: Any, label: str) -> str:
     return path.as_posix()
 
 
+def _component(value: Any) -> tuple[str, tuple[str, ...]]:
+    """Parse ``path`` or ``path::symbol,...`` implementation components.
+
+    Python symbol components let a stage seal the code it actually executes
+    without inheriting unrelated runners that happen to share a module.  The
+    selected definitions are closed recursively over module-level helpers,
+    constants, and imports, then represented by canonical Python AST.  This is
+    deliberately limited to regular ``.py`` files; directories and non-Python
+    tools continue to use byte-exact whole-file identities.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValidationError("experiment implementation component is invalid")
+    fields = value.split("::")
+    if len(fields) > 2:
+        raise ValidationError("experiment implementation component scope is invalid")
+    relative = _safe_relative(fields[0], "component")
+    if len(fields) == 1:
+        return relative, ()
+    if not relative.endswith(".py"):
+        raise ValidationError(
+            "experiment implementation symbol scope requires a Python file"
+        )
+    symbols = tuple(sorted(set(fields[1].split(","))))
+    if (
+        not symbols
+        or any(not symbol or not symbol.isidentifier() for symbol in symbols)
+        or fields[1].split(",") != list(symbols)
+    ):
+        raise ValidationError(
+            "experiment implementation symbols must be sorted unique identifiers"
+        )
+    return relative, symbols
+
+
+def _normalized_component(value: Any) -> str:
+    relative, symbols = _component(value)
+    return relative + ("::" + ",".join(symbols) if symbols else "")
+
+
+def _python_symbol_payload(path: Path, requested: Sequence[str]) -> bytes:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, UnicodeError, SyntaxError) as error:
+        raise ValidationError(
+            f"experiment implementation Python source is invalid: {path.name}"
+        ) from error
+    definitions: dict[str, ast.AST] = {}
+    import_bindings: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            definitions[node.name] = node
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    definitions[target.id] = node
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                import_bindings[name] = ast.Import(names=[alias])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                import_bindings[name] = ast.ImportFrom(
+                    module=node.module,
+                    names=[alias],
+                    level=node.level,
+                )
+    missing = sorted(set(requested) - set(definitions))
+    if missing:
+        raise ValidationError(
+            "experiment implementation Python symbols are missing: "
+            + ", ".join(missing)
+        )
+    selected: dict[str, ast.AST] = {}
+    pending = list(requested)
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        node = definitions.get(name) or import_bindings.get(name)
+        if node is None:
+            continue
+        selected[name] = node
+        referenced = {
+            item.id
+            for item in ast.walk(node)
+            if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load)
+        }
+        available = definitions.keys() | import_bindings.keys()
+        pending.extend(sorted((referenced & available) - selected.keys()))
+    document = {
+        "schema": "emuflow.python-symbol-closure/v1",
+        "requested": list(requested),
+        "definitions": {
+            name: ast.dump(
+                selected[name], annotate_fields=True, include_attributes=False
+            )
+            for name in sorted(selected)
+        },
+    }
+    return json.dumps(
+        document, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+
+
 def _closure_identity(files: Sequence[Mapping[str, Any]]) -> str:
     return _canonical_sha256(
         {
@@ -55,8 +162,9 @@ def _collect_files(root: Path, components: Sequence[str]) -> list[dict[str, Any]
     if not root.is_dir() or root.is_symlink():
         raise ValidationError("experiment implementation root must be a directory")
     selected: dict[str, Path] = {}
+    scoped: dict[str, tuple[Path, tuple[str, ...]]] = {}
     for component in components:
-        relative = _safe_relative(component, "component")
+        relative, symbols = _component(component)
         path = root / relative
         current = root
         for part in Path(relative).parts:
@@ -69,6 +177,13 @@ def _collect_files(root: Path, components: Sequence[str]) -> list[dict[str, Any]
             raise ValidationError(
                 f"experiment implementation component is missing: {relative}"
             )
+        if symbols:
+            if not path.is_file():
+                raise ValidationError(
+                    "experiment implementation symbol component is not a file"
+                )
+            scoped[component] = (path, symbols)
+            continue
         candidates = [path] if path.is_file() else sorted(path.rglob("*"))
         for candidate in candidates:
             if candidate.is_symlink():
@@ -84,7 +199,7 @@ def _collect_files(root: Path, components: Sequence[str]) -> list[dict[str, Any]
                 )
             rel = candidate.relative_to(root).as_posix()
             selected[rel] = candidate
-    return [
+    records = [
         {
             "path": relative,
             "bytes": selected[relative].stat().st_size,
@@ -92,6 +207,17 @@ def _collect_files(root: Path, components: Sequence[str]) -> list[dict[str, Any]
         }
         for relative in sorted(selected)
     ]
+    for component in sorted(scoped):
+        path, symbols = scoped[component]
+        payload = _python_symbol_payload(path, symbols)
+        records.append(
+            {
+                "path": component,
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    return sorted(records, key=lambda item: item["path"])
 
 
 def build_implementation_closure(
@@ -100,7 +226,7 @@ def build_implementation_closure(
     if not components:
         raise ValidationError("experiment implementation closure requires components")
     normalized_components = sorted(
-        {_safe_relative(item, "component") for item in components}
+        {_normalized_component(item) for item in components}
     )
     files = _collect_files(root, normalized_components)
     if not files:
@@ -127,7 +253,7 @@ def validate_implementation_closure(
     if not isinstance(components, list) or not components:
         raise ValidationError("experiment implementation components are invalid")
     normalized_components = sorted(
-        {_safe_relative(item, "component") for item in components}
+        {_normalized_component(item) for item in components}
     )
     if components != normalized_components:
         raise ValidationError(
@@ -140,7 +266,7 @@ def validate_implementation_closure(
     for record in files:
         if not isinstance(record, dict):
             raise ValidationError("experiment implementation file record is invalid")
-        relative = _safe_relative(record.get("path"), "file path")
+        relative = _normalized_component(record.get("path"))
         size = record.get("bytes")
         digest = record.get("sha256")
         if (

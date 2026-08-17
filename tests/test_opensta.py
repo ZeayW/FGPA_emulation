@@ -10,6 +10,7 @@ from emuflow.opensta import (
     FPGA_TIMING_MODEL_SCHEMA_V2,
     OPENSTA_PROVIDER,
     build_vtr_opensta_timing_model,
+    classify_through_net_timing_endpoints,
     load_timing_model,
     parse_clock_definitions,
     render_opensta_liberty,
@@ -78,6 +79,10 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("get_fanin -flat -startpoints_only", script)
         self.assertIn("get_fanout -flat -endpoints_only", script)
         self.assertIn("-from $startpoints -to $endpoints", script)
+        self.assertIn("-from [list $through_pin]", script)
+        self.assertIn("$queried_paths == $before_queried", script)
+        self.assertIn("[info exists timed_endpoints($emuir_name)]", script)
+        self.assertIn("-to $endpoint_pin", script)
         self.assertIn("-endpoint_count 1", script)
         self.assertIn("proc emuflow_emit_timing_paths", script)
         query = script.index("find_timing_paths -path_delay max", script.index("foreach line [lrange $through_lines"))
@@ -278,8 +283,8 @@ class OpenStaProviderTest(unittest.TestCase):
 import os
 from pathlib import Path
 
-net_map = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()
-mapped_hex, emuir_hex = net_map[1].split("\\t")
+through = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()
+_, requested_hex = through[1].split("\\t")
 path_id = "fake opensta path".encode().hex()
 clock = "clk".encode().hex()
 header = (
@@ -288,7 +293,11 @@ header = (
 )
 Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
     header + "\\n"
-    + f"{path_id}\\t{clock}\\t10\\t9.5\\t0.5\\t{emuir_hex}\\n"
+    + f"{path_id}\\t{clock}\\t10\\t9.5\\t0.5\\t{requested_hex}\\n"
+)
+Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
+    "emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths\\n"
+    + f"{requested_hex}\\t1\\t1\\t1\\n"
 )
 print("fake OpenSTA pass")
 """,
@@ -302,7 +311,13 @@ print("fake OpenSTA pass")
                 executable=str(executable),
                 max_paths=8,
                 log_path=log_path,
-                through_nets=[self.ir.value["nets"][0]["id"]],
+                through_nets=[
+                    next(
+                        net["id"]
+                        for net in self.ir.value["nets"]
+                        if net["cut_class"] == "register_input"
+                    )
+                ],
             )
             checked = validate_sta_path_database(output_path, ir_path)
             artifact = json.loads(output_path.read_text(encoding="utf-8"))
@@ -314,7 +329,14 @@ print("fake OpenSTA pass")
         self.assertEqual(report["paths"], 1)
         self.assertEqual(report["max_paths"], 8)
         self.assertEqual(
-            report["through_nets"], [self.ir.value["nets"][0]["id"]]
+            report["through_nets"],
+            [
+                next(
+                    net["id"]
+                    for net in self.ir.value["nets"]
+                    if net["cut_class"] == "register_input"
+                )
+            ],
         )
         self.assertFalse(report["path_limit_reached"])
         self.assertEqual(checked["status"], "pass")
@@ -323,6 +345,150 @@ print("fake OpenSTA pass")
             artifact["source"]["timing_model_qualification"],
             "analytical_uncharacterized",
         )
+
+    def test_structural_endpoint_classifier_distinguishes_data_and_control(self) -> None:
+        model = load_timing_model(DEFAULT_TIMING_MODEL)
+        classified = classify_through_net_timing_endpoints(
+            self.ir,
+            model,
+            [net["id"] for net in self.ir.value["nets"]],
+        )
+        by_class = {
+            net["cut_class"]: classified[net["id"]]["status"]
+            for net in self.ir.value["nets"]
+        }
+        self.assertEqual(by_class["register_input"], "timed")
+        self.assertEqual(by_class["clock"], "no_timed_endpoint")
+        self.assertEqual(by_class["reset"], "no_timed_endpoint")
+        timed = next(
+            net["id"]
+            for net in self.ir.value["nets"]
+            if net["cut_class"] == "register_input"
+        )
+        self.assertTrue(
+            all(
+                pin.endswith("/D")
+                for pin in classified[timed]["direct_timed_endpoint_pins"]
+            )
+        )
+        self.assertGreater(
+            len(classified[timed]["direct_timed_endpoint_pins"]), 0
+        )
+        for net in self.ir.value["nets"]:
+            if net["cut_class"] in {"clock", "reset"}:
+                self.assertEqual(
+                    classified[net["id"]]["direct_timed_endpoint_pins"], []
+                )
+
+    def test_runner_certifies_explicit_zero_path_control_net(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            output_path = root / "database.json"
+            coverage_path = root / "coverage.json"
+            executable = root / "fake-opensta"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            executable.write_text(
+                """#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
+requested_hex = [row.split("\\t")[1] for row in requested]
+endpoints = Path(os.environ["EMUFLOW_STA_THROUGH_ENDPOINTS"]).read_text().splitlines()
+assert endpoints[0] == "emuir_net_hex\\tendpoint_pin_hex"
+assert any(row.split("\\t")[0] == requested_hex[0] for row in endpoints[1:])
+assert all(row.split("\\t")[0] != requested_hex[1] for row in endpoints[1:])
+header = (
+    "path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
+    "slack_ns\\tfixed_delay_ns\\tpath_nets_hex"
+)
+Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
+    header + "\\n" + "timed".encode().hex()
+    + "\\t" + "clk".encode().hex()
+    + f"\\t10\\t9.5\\t0.5\\t{requested_hex[0]}\\n"
+)
+Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
+    "emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths\\n"
+    + f"{requested_hex[0]}\\t1\\t1\\t1\\n"
+    + f"{requested_hex[1]}\\t1\\t0\\t0\\n"
+)
+""",
+                encoding="utf-8",
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            timed = next(
+                net["id"]
+                for net in self.ir.value["nets"]
+                if net["cut_class"] == "register_input"
+            )
+            reset = next(
+                net["id"]
+                for net in self.ir.value["nets"]
+                if net["cut_class"] == "reset"
+            )
+            report = run_opensta_path_database(
+                ir_path,
+                output_path,
+                clocks={"clk": 10.0},
+                executable=str(executable),
+                through_nets=[timed, reset],
+                through_coverage_path=coverage_path,
+            )
+            coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["covered_through_nets"], [timed])
+        self.assertEqual(coverage["timed_nets"], 1)
+        self.assertEqual(coverage["untimed_nets"], 1)
+        self.assertEqual(
+            coverage["records"][1]["structural"]["status"],
+            "no_timed_endpoint",
+        )
+
+    def test_runner_rejects_zero_path_for_reachable_timed_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "ir.json"
+            output_path = root / "database.json"
+            executable = root / "fake-opensta"
+            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            executable.write_text(
+                """#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
+requested_hex = requested[0].split("\\t")[1]
+other_hex = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1].split("\\t")[1]
+header = (
+    "path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
+    "slack_ns\\tfixed_delay_ns\\tpath_nets_hex"
+)
+Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
+    header + "\\n" + "other".encode().hex()
+    + "\\t" + "clk".encode().hex()
+    + f"\\t10\\t9.5\\t0.5\\t{other_hex}\\n"
+)
+Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
+    "emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths\\n"
+    + f"{requested_hex}\\t1\\t0\\t0\\n"
+)
+""",
+                encoding="utf-8",
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            timed = next(
+                net["id"]
+                for net in self.ir.value["nets"]
+                if net["cut_class"] == "register_input"
+            )
+            with self.assertRaisesRegex(Exception, "structurally reachable"):
+                run_opensta_path_database(
+                    ir_path,
+                    output_path,
+                    clocks={"clk": 10.0},
+                    executable=str(executable),
+                    through_nets=[timed],
+                )
 
 
 if __name__ == "__main__":

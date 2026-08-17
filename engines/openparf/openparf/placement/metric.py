@@ -152,17 +152,28 @@ class EvalMetric(object):
         if self.cr_ck_count is not None:
             content += ", CR-CK Count {}".format(iarray2str(self.cr_ck_count))
         if self.grad_dicts is not None:
+            wirelength_grad_norm = self.grad_dicts['wirelength_grad_norm']
+            zero_wirelength_grad = wirelength_grad_norm.item() == 0
             if ('wasll_grad_norm' in self.grad_dicts):
-                s_o_w = self.grad_dicts['wasll_grad_norm'] / self.grad_dicts[
-                    'wirelength_grad_norm']
+                s_o_w = (
+                    0.0
+                    if zero_wirelength_grad
+                    else self.grad_dicts['wasll_grad_norm'] / wirelength_grad_norm
+                )
             else:
                 s_o_w = 0.0
-            d_o_w = self.grad_dicts['density_grad_norm'] / self.grad_dicts[
-                'wirelength_grad_norm']
+            d_o_w = (
+                0.0
+                if zero_wirelength_grad
+                else self.grad_dicts['density_grad_norm'] / wirelength_grad_norm
+            )
             if 'fence_region_grad_norm' in self.grad_dicts:
-                f_o_w = self.grad_dicts[
-                    'fence_region_grad_norm'] / self.grad_dicts[
-                        'wirelength_grad_norm']
+                f_o_w = (
+                    0.0
+                    if zero_wirelength_grad
+                    else self.grad_dicts['fence_region_grad_norm']
+                    / wirelength_grad_norm
+                )
                 content += ", nomalized-grad(wasll/wirelength;density/wirelength;clock/wirelength): %.3E; %.3E; %.3E" % (
                     s_o_w, d_o_w, f_o_w)
             else:

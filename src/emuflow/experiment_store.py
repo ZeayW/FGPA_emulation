@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -25,6 +26,10 @@ from .experiment_dag import (
 )
 from .experiment_storage import validate_experiment_write_path
 from .io import read_json, write_json
+from .validation_farm import (
+    FARM_RETIREMENT_MARKER,
+    FARM_RETIREMENT_MARKER_SCHEMA,
+)
 
 
 EXPERIMENT_INVENTORY_SCHEMA = "emuflow.experiment-store-inventory/v1"
@@ -47,6 +52,8 @@ _MIGRATION_MARKERS = {
     "evidence-manifest.json",
     "evidence-seal.json",
 }
+_LEGACY_FARM_STATE_SCHEMA = "emuflow.validation-farm-state/v1"
+_LEGACY_FARM_RETIREMENT_TERMINAL_STATES = {"pass", "failed"}
 
 
 def _sha256(path: Path) -> str:
@@ -65,6 +72,138 @@ def _tree_bytes(root: Path) -> int:
         for path in root.rglob("*")
         if path.is_file() and not path.is_symlink()
     )
+
+
+def _legacy_farm_retirement_protection(root: Path) -> dict[str, Any]:
+    """Conservatively identify legacy farms that may still accept or run work.
+
+    An expired lease is deliberately still protected here.  Only the farm
+    reconciler is authorized to probe the pinned worker and change its state;
+    storage retirement must not infer process death from a timestamp.
+    """
+
+    manifests = []
+    states = []
+    reasons = []
+    for current, directory_names, file_names in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if not (current_path / name).is_symlink()
+        ]
+        for name in file_names:
+            path = current_path / name
+            if name == FARM_RETIREMENT_MARKER:
+                relative = path.relative_to(root).as_posix()
+                reasons.append(f"farm-retirement-pending:{relative}")
+            if name == "farm-manifest.json":
+                manifests.append(path.relative_to(root).as_posix())
+            if name != "state.json" or current_path.parent.name != "tasks":
+                continue
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink() or not path.is_file():
+                states.append({"path": relative, "status": "invalid"})
+                reasons.append(f"invalid-farm-state:{relative}")
+                continue
+            try:
+                state = read_json(path)
+            except (OSError, ValueError, TypeError):
+                states.append({"path": relative, "status": "invalid"})
+                reasons.append(f"invalid-farm-state:{relative}")
+                continue
+            status = state.get("status")
+            schema = state.get("schema")
+            if (
+                schema != _LEGACY_FARM_STATE_SCHEMA
+                or not isinstance(status, str)
+                or not status
+            ):
+                states.append({"path": relative, "status": "invalid"})
+                reasons.append(f"invalid-farm-state:{relative}")
+                continue
+            states.append(
+                {
+                    "path": relative,
+                    "status": status,
+                    **(
+                        {"lease_expires_at": state["lease_expires_at"]}
+                        if isinstance(state.get("lease_expires_at"), str)
+                        else {}
+                    ),
+                }
+            )
+            if status not in _LEGACY_FARM_RETIREMENT_TERMINAL_STATES:
+                reasons.append(f"nonterminal-farm-state:{status}:{relative}")
+    if manifests and not states:
+        reasons.append("farm-manifest-without-verifiable-task-state")
+    return {
+        "protected": bool(reasons),
+        "reasons": sorted(set(reasons)),
+        "farm_manifests": sorted(manifests),
+        "task_states": sorted(states, key=lambda item: item["path"]),
+    }
+
+
+def _acquire_legacy_farm_launch_locks(root: Path) -> list[tuple[Path, Any]]:
+    """Hold every farm launch lock while a legacy tree is sealed and marked."""
+
+    streams = []
+    manifests = sorted(root.rglob("farm-manifest.json"))
+    try:
+        for manifest in manifests:
+            if manifest.is_symlink() or not manifest.is_file():
+                raise ValidationError("legacy validation farm manifest is unsafe")
+            lock_path = manifest.parent / "launch.lock"
+            if lock_path.is_symlink() or not lock_path.is_file():
+                raise ValidationError(
+                    "legacy validation farm lacks a safe launch lock"
+                )
+            stream = lock_path.open("r+", encoding="utf-8")
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                stream.close()
+                raise ValidationError(
+                    "legacy validation farm launch is active"
+                ) from error
+            streams.append((manifest.parent, stream))
+        return streams
+    except Exception:
+        for _, stream in reversed(streams):
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            stream.close()
+        raise
+
+
+def _release_legacy_farm_launch_locks(
+    streams: Iterable[tuple[Path, Any]],
+) -> None:
+    for _, stream in reversed(list(streams)):
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        stream.close()
+
+
+def _mark_legacy_farms_retiring(
+    locks: Iterable[tuple[Path, Any]], plan_sha256: str
+) -> None:
+    """Commit farm retirement while every corresponding launch lock is held."""
+
+    records = list(locks)
+    for farm_dir, _ in records:
+        if os.path.lexists(farm_dir / FARM_RETIREMENT_MARKER):
+            raise ValidationError("legacy validation farm is already retiring")
+    created_at = datetime.now(timezone.utc).isoformat()
+    for farm_dir, _ in records:
+        write_json(
+            farm_dir / FARM_RETIREMENT_MARKER,
+            {
+                "schema": FARM_RETIREMENT_MARKER_SCHEMA,
+                "status": "retirement-pending",
+                "plan_sha256": plan_sha256,
+                "created_at": created_at,
+            },
+        )
 
 
 def inventory_experiment_store(cache_root: Path) -> dict[str, Any]:
@@ -554,6 +693,9 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
         raise ValidationError("legacy migration root must be a directory")
     records = []
     global_inodes: set[tuple[int, int]] = set()
+    global_link_counts: dict[tuple[int, int], int] = {}
+    global_link_totals: dict[tuple[int, int], int] = {}
+    global_allocated: dict[tuple[int, int], int] = {}
     unique_allocated = 0
     for entry in sorted(root.iterdir()):
         if entry.is_symlink():
@@ -563,6 +705,12 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
                     "path": str(entry),
                     "classification": "unsafe-symlink",
                     "recommended_action": "manual-inspection",
+                    "retirement_protection": {
+                        "protected": True,
+                        "reasons": ["unsafe-top-level-symlink"],
+                        "farm_manifests": [],
+                        "task_states": [],
+                    },
                 }
             )
             continue
@@ -574,6 +722,9 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
         markers = []
         newest = entry.stat().st_mtime
         local_inodes: set[tuple[int, int]] = set()
+        local_link_counts: dict[tuple[int, int], int] = {}
+        local_link_totals: dict[tuple[int, int], int] = {}
+        local_allocated: dict[tuple[int, int], int] = {}
         for current, directory_names, file_names in os.walk(entry, followlinks=False):
             current_path = Path(current)
             directory_names[:] = [
@@ -587,14 +738,21 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
                     continue
                 stat = path.stat()
                 inode = (stat.st_dev, stat.st_ino)
+                block_bytes = stat.st_blocks * 512
                 files += 1
                 logical += stat.st_size
                 newest = max(newest, stat.st_mtime)
+                local_link_counts[inode] = local_link_counts.get(inode, 0) + 1
+                local_link_totals[inode] = stat.st_nlink
+                local_allocated[inode] = block_bytes
+                global_link_counts[inode] = global_link_counts.get(inode, 0) + 1
+                global_link_totals[inode] = stat.st_nlink
+                global_allocated[inode] = block_bytes
                 if inode not in local_inodes:
-                    allocated += stat.st_blocks * 512
+                    allocated += block_bytes
                     local_inodes.add(inode)
                 if inode not in global_inodes:
-                    unique_allocated += stat.st_blocks * 512
+                    unique_allocated += block_bytes
                     global_inodes.add(inode)
                 if name in _MIGRATION_MARKERS:
                     markers.append(
@@ -628,6 +786,14 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
         else:
             classification = "partial-or-diagnostic"
             action = "manual-inspection-before-retention-decision"
+        retirement_protection = _legacy_farm_retirement_protection(entry)
+        if retirement_protection["protected"]:
+            action = "reconcile-farm-before-retention-decision"
+        exclusive_reclaimable = sum(
+            local_allocated[inode]
+            for inode, links in local_link_counts.items()
+            if links == local_link_totals[inode]
+        )
         records.append(
             {
                 "name": entry.name,
@@ -637,8 +803,11 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
                 "files": files,
                 "logical_bytes": logical,
                 "allocated_bytes": allocated,
+                "exclusive_reclaimable_bytes": exclusive_reclaimable,
+                "shared_hardlink_bytes": allocated - exclusive_reclaimable,
                 "newest_mtime": newest,
                 "markers": sorted(markers, key=lambda item: item["path"]),
+                "retirement_protection": retirement_protection,
             }
         )
     plan = {
@@ -654,6 +823,23 @@ def plan_legacy_run_migration(root: Path, output_path: Path) -> dict[str, Any]:
                 item.get("allocated_bytes", 0) for item in records
             ),
             "unique_allocated_bytes": unique_allocated,
+            "exclusive_reclaimable_bytes_if_retired_individually": sum(
+                item.get("exclusive_reclaimable_bytes", 0) for item in records
+            ),
+            "root_reclaimable_bytes_if_all_entries_retired": sum(
+                global_allocated[inode]
+                for inode, links in global_link_counts.items()
+                if links == global_link_totals[inode]
+            ),
+            "retirement_protected_entries": sum(
+                item.get("retirement_protection", {}).get("protected") is True
+                for item in records
+            ),
+            "retirement_protected_allocated_bytes": sum(
+                item.get("allocated_bytes", 0)
+                for item in records
+                if item.get("retirement_protection", {}).get("protected") is True
+            ),
         },
         "safety": {
             "mutated": False,
@@ -708,13 +894,27 @@ def plan_legacy_run_retirement(
             raise ValidationError(
                 f"legacy retirement refuses protected candidate: {name}"
             )
+        recorded_protection = entry.get("retirement_protection", {})
+        if recorded_protection.get("protected") is True:
+            raise ValidationError(
+                f"legacy retirement refuses active or unreconciled farm: {name}"
+            )
         lexical_path = root / name
         if lexical_path.is_symlink():
             raise ValidationError(f"legacy retirement candidate is unsafe: {name}")
         path = lexical_path.resolve()
         if path.parent != root or not path.is_dir():
             raise ValidationError(f"legacy retirement candidate is unsafe: {name}")
-        kind, digest, size = _artifact_digest(path)
+        locks = _acquire_legacy_farm_launch_locks(path)
+        try:
+            protection = _legacy_farm_retirement_protection(path)
+            if protection["protected"]:
+                raise ValidationError(
+                    f"legacy retirement refuses active or unreconciled farm: {name}"
+                )
+            kind, digest, size = _artifact_digest(path)
+        finally:
+            _release_legacy_farm_launch_locks(locks)
         if kind != "directory":
             raise ValidationError("legacy retirement candidate must be a directory")
         candidates.append(
@@ -725,6 +925,7 @@ def plan_legacy_run_retirement(
                 "sha256": digest,
                 "bytes": size,
                 "markers": entry.get("markers", []),
+                "retirement_protection": protection,
             }
         )
     output_path = validate_experiment_write_path(output_path)
@@ -745,6 +946,9 @@ def plan_legacy_run_retirement(
             "all_candidates_prevalidated_before_mutation": True,
             "marker_tombstones_retained": True,
             "canonical_evidence_or_archive_candidates_refused": True,
+            "active_or_unreconciled_farms_refused": True,
+            "farm_launch_locks_held_during_seal_and_retirement_commit": True,
+            "farm_lock_descriptors_closed_before_tree_removal": True,
         },
     }
     write_json(output_path, plan)
@@ -783,57 +987,106 @@ def apply_legacy_run_retirement(
 
     # Validate the complete set before deleting the first byte.
     validated: list[tuple[dict[str, Any], Path]] = []
-    for candidate in plan.get("candidates", []):
-        name = candidate.get("name")
-        if not isinstance(name, str) or Path(name).name != name:
-            raise ValidationError("legacy retirement candidate path is unsafe")
-        lexical_path = root / name
-        if lexical_path.is_symlink():
-            raise ValidationError(f"legacy retirement candidate changed: {name}")
-        path = lexical_path.resolve()
-        if path.parent != root or not path.is_dir():
-            raise ValidationError(f"legacy retirement candidate changed: {name}")
-        kind, digest, size = _artifact_digest(path)
-        if (kind, digest, size) != (
-            candidate.get("kind"),
-            candidate.get("sha256"),
-            candidate.get("bytes"),
-        ):
-            raise ValidationError(f"legacy retirement candidate changed: {name}")
-        for marker in candidate.get("markers", []):
-            marker_path = _safe_artifact(path, marker["path"])
-            if not marker_path.is_file() or _sha256(marker_path) != marker["sha256"]:
-                raise ValidationError(f"legacy retirement marker changed: {name}")
-        validated.append((candidate, path))
+    farm_locks = []
+    try:
+        for candidate in plan.get("candidates", []):
+            name = candidate.get("name")
+            if not isinstance(name, str) or Path(name).name != name:
+                raise ValidationError("legacy retirement candidate path is unsafe")
+            lexical_path = root / name
+            if lexical_path.is_symlink():
+                raise ValidationError(f"legacy retirement candidate changed: {name}")
+            path = lexical_path.resolve()
+            if path.parent != root or not path.is_dir():
+                raise ValidationError(f"legacy retirement candidate changed: {name}")
+            farm_locks.extend(_acquire_legacy_farm_launch_locks(path))
+            protection = _legacy_farm_retirement_protection(path)
+            if protection["protected"]:
+                raise ValidationError(
+                    f"legacy retirement refuses active or unreconciled farm: {name}"
+                )
+            kind, digest, size = _artifact_digest(path)
+            if (kind, digest, size) != (
+                candidate.get("kind"),
+                candidate.get("sha256"),
+                candidate.get("bytes"),
+            ):
+                raise ValidationError(f"legacy retirement candidate changed: {name}")
+            for marker in candidate.get("markers", []):
+                marker_path = _safe_artifact(path, marker["path"])
+                if (
+                    not marker_path.is_file()
+                    or _sha256(marker_path) != marker["sha256"]
+                ):
+                    raise ValidationError(f"legacy retirement marker changed: {name}")
+            validated.append((candidate, path))
 
-    receipt_root.mkdir(parents=True)
-    shutil.copy2(plan_path, receipt_root / "retirement-plan.json")
-    marker_root = receipt_root / "marker-tombstones"
-    for candidate, path in validated:
-        for marker in candidate.get("markers", []):
-            source = _safe_artifact(path, marker["path"])
-            destination = marker_root / candidate["name"] / marker["path"]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
-    receipt_path = receipt_root / "retirement-receipt.json"
-    receipt = {
-        "schema": EXPERIMENT_RETIREMENT_RECEIPT_SCHEMA,
-        "status": "in-progress",
-        "plan_sha256": expected_sha256,
-        "reason": plan["reason"],
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "removed": [],
-        "removed_bytes": 0,
-        "claim_boundary": "retired noncanonical material; not validation evidence",
-    }
-    write_json(receipt_path, receipt)
-    for candidate, path in validated:
-        _make_writable(path)
-        shutil.rmtree(path)
-        receipt["removed"].append(candidate)
-        receipt["removed_bytes"] += candidate["bytes"]
+        receipt_root.mkdir(parents=True)
+        shutil.copy2(plan_path, receipt_root / "retirement-plan.json")
+        marker_root = receipt_root / "marker-tombstones"
+        for candidate, path in validated:
+            for marker in candidate.get("markers", []):
+                source = _safe_artifact(path, marker["path"])
+                destination = marker_root / candidate["name"] / marker["path"]
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+        receipt_path = receipt_root / "retirement-receipt.json"
+        receipt = {
+            "schema": EXPERIMENT_RETIREMENT_RECEIPT_SCHEMA,
+            "status": "in-progress",
+            "plan_sha256": expected_sha256,
+            "reason": plan["reason"],
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "removed": [],
+            "removed_bytes": 0,
+            "quarantine": [
+                {
+                    "name": candidate["name"],
+                    "path": str(
+                        root
+                        / (
+                            f".emuflow-retiring-{candidate['name']}-"
+                            f"{expected_sha256[:12]}"
+                        )
+                    ),
+                    "status": "planned",
+                }
+                for candidate, _ in validated
+            ],
+            "claim_boundary": "retired noncanonical material; not validation evidence",
+        }
         write_json(receipt_path, receipt)
-    receipt["status"] = "pass"
-    receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
-    write_json(receipt_path, receipt)
-    return receipt
+        quarantine = []
+        for record in receipt["quarantine"]:
+            destination = Path(record["path"])
+            if os.path.lexists(destination):
+                raise ValidationError("legacy retirement quarantine path exists")
+        _mark_legacy_farms_retiring(farm_locks, expected_sha256)
+        for (candidate, path), record in zip(validated, receipt["quarantine"]):
+            destination = Path(record["path"])
+            path.rename(destination)
+            record["status"] = "moved"
+            quarantine.append((candidate, destination))
+            write_json(receipt_path, receipt)
+        # NFS retains an unlinked open lock as a .nfs* file.  The marker makes
+        # retirement explicit, while the atomic top-level rename makes the old
+        # launch path permanently unavailable even if recursive removal later
+        # stops partway through. Descriptors can and must be closed before
+        # removing the quarantined directory tree.
+        _release_legacy_farm_launch_locks(farm_locks)
+        farm_locks = []
+        for candidate, path in quarantine:
+            _make_writable(path)
+            shutil.rmtree(path)
+            receipt["removed"].append(candidate)
+            receipt["removed_bytes"] += candidate["bytes"]
+            for record in receipt["quarantine"]:
+                if record["name"] == candidate["name"]:
+                    record["status"] = "removed"
+            write_json(receipt_path, receipt)
+        receipt["status"] = "pass"
+        receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
+        write_json(receipt_path, receipt)
+        return receipt
+    finally:
+        _release_legacy_farm_launch_locks(farm_locks)

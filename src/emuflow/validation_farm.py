@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -31,6 +32,8 @@ FARM_SPEC_SCHEMA = "emuflow.validation-farm-spec/v1"
 FARM_MANIFEST_SCHEMA = "emuflow.validation-farm-manifest/v1"
 FARM_TASK_SCHEMA = "emuflow.validation-farm-task/v1"
 FARM_STATE_SCHEMA = "emuflow.validation-farm-state/v1"
+FARM_RETIREMENT_MARKER = "RETIREMENT_PENDING.json"
+FARM_RETIREMENT_MARKER_SCHEMA = "emuflow.validation-farm-retirement-pending/v1"
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -52,6 +55,31 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _refuse_retiring_farm(farm_dir: Path) -> None:
+    """Reject a farm once retirement has been committed under its launch lock."""
+
+    marker = farm_dir / FARM_RETIREMENT_MARKER
+    if os.path.lexists(marker):
+        raise ValidationError("validation farm is pending retirement")
+
+
+def _open_farm_launch_lock(farm_dir: Path) -> Any:
+    """Open/create the launch lock without following a substituted symlink."""
+
+    path = farm_dir / "launch.lock"
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o644)
+    except OSError as error:
+        raise ValidationError("validation farm launch lock is unsafe") from error
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValidationError("validation farm launch lock is unsafe")
+    return os.fdopen(descriptor, "r+", encoding="utf-8")
 
 
 def _require_string(value: Any, label: str) -> str:
@@ -482,6 +510,7 @@ def prepare_validation_farm(
 
 def validate_validation_farm(farm_dir: Path) -> Dict[str, Any]:
     farm_dir = farm_dir.resolve()
+    _refuse_retiring_farm(farm_dir)
     manifest = read_json(farm_dir / "farm-manifest.json")
     if manifest.get("schema") != FARM_MANIFEST_SCHEMA:
         raise ValidationError("validation farm manifest schema is invalid")
@@ -598,11 +627,42 @@ def _claim_submission(task_dir: Path) -> None:
 
 
 def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str, Any]:
-    """Submit every prepared task through SSH; workers detach on their target nodes."""
+    """Submit every prepared task through SSH; workers detach on their target nodes.
+
+    Detachment deliberately happens in the remote host shell, outside any
+    runtime wrapper present in ``worker_argv``.  Detaching from inside a
+    Singularity/Apptainer payload lets the wrapper's main process exit and can
+    tear down the container runtime view while the orphaned Python worker is
+    still running.  Native children started later by that worker then lose the
+    container libraries they were sealed against.
+    """
 
     if submit_workers < 1:
         raise ValidationError("validation farm submit workers must be positive")
     farm_dir = farm_dir.resolve()
+    _refuse_retiring_farm(farm_dir)
+    launch_lock = _open_farm_launch_lock(farm_dir)
+    try:
+        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        launch_lock.close()
+        raise EmuFlowError("validation farm launch is already in progress") from error
+    try:
+        # Retirement writes its marker while holding this same lock and closes
+        # the descriptor before removing the tree.  Rechecking after lock
+        # acquisition closes the validate-before-lock race.
+        _refuse_retiring_farm(farm_dir)
+        return _launch_validation_farm_locked(farm_dir, submit_workers)
+    finally:
+        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_UN)
+        launch_lock.close()
+
+
+def _launch_validation_farm_locked(
+    farm_dir: Path, submit_workers: int
+) -> Dict[str, Any]:
+    """Launch a farm while its caller holds the exclusive launch lock."""
+
     validate_validation_farm(farm_dir)
     manifest = read_json(farm_dir / "farm-manifest.json")
     ssh = manifest["ssh"]
@@ -658,13 +718,6 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
                 },
             )
 
-    launch_lock = (farm_dir / "launch.lock").open("a+", encoding="utf-8")
-    try:
-        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as error:
-        launch_lock.close()
-        raise EmuFlowError("validation farm launch is already in progress") from error
-
     def submit(record: Mapping[str, Any]) -> Dict[str, Any]:
         if ssh.get("known_hosts") is not None:
             _validate_known_hosts_binding(ssh["known_hosts"])
@@ -704,9 +757,13 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
             "worker",
             "--task",
             str(task_path),
-            "--detach",
         ]
-        remote_command = shlex.join(remote_argv)
+        bootstrap_log = task_dir / "worker-bootstrap.log"
+        remote_command = (
+            f"nohup setsid {shlex.join(remote_argv)} </dev/null "
+            f">>{shlex.quote(str(bootstrap_log))} 2>&1 & "
+            "printf '%s\\n' \"$!\""
+        )
         command = [ssh["executable"], *ssh["arguments"], record["node"], remote_command]
         completed = subprocess.run(command, capture_output=True, text=True)
         if completed.returncode != 0:
@@ -730,27 +787,21 @@ def launch_validation_farm(farm_dir: Path, submit_workers: int = 8) -> Dict[str,
             "remote_response": completed.stdout.strip(),
         }
 
-    try:
-        workers = min(submit_workers, len(manifest["tasks"]))
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            submissions = list(executor.map(submit, manifest["tasks"]))
-        failures = sum(
-            item["status"] == "submit_failed" for item in submissions
-        )
-        skipped = sum(item["status"] == "skipped" for item in submissions)
-        return {
-            "schema": "emuflow.validation-farm-submission/v1",
-            "farm_id": manifest["farm_id"],
-            "source_commit": manifest["source_commit"],
-            "submitted": len(submissions) - failures - skipped,
-            "skipped": skipped,
-            "submit_failed": failures,
-            "tasks": submissions,
-            "status": "pass" if failures == 0 else "failed",
-        }
-    finally:
-        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_UN)
-        launch_lock.close()
+    workers = min(submit_workers, len(manifest["tasks"]))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        submissions = list(executor.map(submit, manifest["tasks"]))
+    failures = sum(item["status"] == "submit_failed" for item in submissions)
+    skipped = sum(item["status"] == "skipped" for item in submissions)
+    return {
+        "schema": "emuflow.validation-farm-submission/v1",
+        "farm_id": manifest["farm_id"],
+        "source_commit": manifest["source_commit"],
+        "submitted": len(submissions) - failures - skipped,
+        "skipped": skipped,
+        "submit_failed": failures,
+        "tasks": submissions,
+        "status": "pass" if failures == 0 else "failed",
+    }
 
 
 def _acquire_slot(task: Mapping[str, Any]) -> tuple[Any, int]:

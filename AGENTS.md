@@ -54,6 +54,10 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   changing those bytes must change it.  Keep stage-specific producer and
   validator code in stage-specific closure components so a Phase 3-only edit
   cannot invalidate Phase 1 merely because both once shared a source file.
+  When independent stage entry points must remain in one Python module, seal a
+  recursive canonical-AST symbol closure (`path.py::entrypoint,...`), not the
+  whole module.  The closure must include referenced module helpers, constants,
+  and imports; unrelated symbols and formatting must not invalidate the stage.
 - The DAG implementation and experiment spec must support arbitrary named
   stages and multiple dependencies; it must not hard-code one current flow's
   phase sequence.  Physical lookahead, source preparation, qualification, and
@@ -132,6 +136,17 @@ complete Phase 1--7 flows.  Phase 6 is only one application of this policy.
   before any mutation, refuses evidence/archive candidates, and preserves
   marker tombstones plus a non-evidence receipt outside `runs`.  Direct
   age/name/glob-based deletion remains forbidden.
+- Legacy validation farms remain retirement-protected while any task state can
+  still run or retry, is malformed, or has not been reconciled. An expired
+  lease alone never permits cleanup. Only farms whose task states are all final
+  `pass` or `failed` may enter a retirement plan, and the planner/apply path
+  must hold every farm `launch.lock` while sealing and committing an explicit
+  retirement marker. Launchers must refuse that marker before and after lock
+  acquisition. Close all lock descriptors before tree removal so NFS cannot
+  retain `.nfs*` lock files; the marker, not an open descriptor, protects the
+  transaction. While still locked, atomically rename each selected top-level
+  tree into its sealed quarantine path; recursively remove only that path after
+  closing locks. A partial removal must never restore the original launch path.
 - A final evidence bundle recursively contains every required artifact for its
   terminal nodes and ancestors and must validate after the source cache is
   unavailable.  A legacy archive containing any hash-only run file is not
@@ -340,6 +355,15 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   seed, derive both placement-aware and Chimew inputs from that same frozen
   placement, and reuse the lookahead itself as baseline Phase 7 at the matching
   seed.  Do not hide a fresh baseline physical run inside either candidate arm.
+- A post-partition OpenSTA directed query is complete only with sealed
+  per-cut-net driver/query/emission evidence and an independently rebuilt
+  EmuIR-plus-timing-model endpoint-reachability classification.  Never silence
+  a missing cut net by dropping the coverage assertion or by treating a
+  producer-reported zero-path result as self-authenticating.
+- OpenPARF legalization locks must project through the electric-potential,
+  multiplier, gradient, and step-size calculations.  An empty active
+  placement subspace is a no-op/termination condition, not a reason to divide
+  a zero gradient or to hide NaN with a broad epsilon clamp.
 - Existing pre-cache results should be registered with `experiment-cache
   import` only after the node's independent semantic validator passes and all
   declared artifacts pass hash sealing.  New node executions use the same

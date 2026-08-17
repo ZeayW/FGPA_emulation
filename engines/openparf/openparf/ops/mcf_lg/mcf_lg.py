@@ -96,4 +96,4 @@ class MinCostFlowLegalizer:
             pos.data.copy_(res)
             for i in range(len(self.inst_ids_groups)):
                 self.data_cls.inst_lock_mask[self.inst_ids_groups[i]] = 1
-            self.data_cls.area_type_lock_mask[self.data_cls.ssr_area_types] = 1
+            self.data_cls.lock_area_types(self.data_cls.ssr_area_types)

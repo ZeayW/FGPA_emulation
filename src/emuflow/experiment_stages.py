@@ -128,14 +128,8 @@ def _shared_paths(root: Path) -> Dict[str, Path]:
 
 
 def _timing_paths(root: Path) -> Path | None:
-    for relative in (
-        "timing/cut-path-database.json",
-        "timing/path-database.json",
-    ):
-        path = root / relative
-        if path.is_file():
-            return path
-    return None
+    path = root / "timing/cut-timing-paths.json"
+    return path if path.is_file() else None
 
 
 def _projected_timing_paths(root: Path) -> Path | None:

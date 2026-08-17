@@ -188,7 +188,7 @@ def _canonical_case_contract(
 
 _COMPONENTS: Dict[str, Sequence[str]] = {
     "frontend": (
-        "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_upstream.py::run_frontend_checkpoint,validate_frontend_checkpoint",
         "src/emuflow/phase1.py",
         "src/emuflow/ir.py",
         "src/emuflow/platform.py",
@@ -200,14 +200,14 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "scripts/yosys",
     ),
     "timing": (
-        "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_upstream.py::run_timing_checkpoint,validate_timing_checkpoint",
         "src/emuflow/opensta.py",
         "src/emuflow/sta.py",
         "src/emuflow/ir.py",
         "scripts/opensta",
     ),
     "partition": (
-        "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_upstream.py::validate_timing_checkpoint",
         "src/emuflow/experiment_partition.py",
         "src/emuflow/phase3.py",
         "src/emuflow/partition.py",
@@ -218,13 +218,13 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/hop_partition_refiner.cpp",
     ),
     "cut-timing": (
-        "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_upstream.py::run_cut_timing_checkpoint,validate_cut_timing_checkpoint",
         "src/emuflow/opensta.py",
         "src/emuflow/sta.py",
         "scripts/opensta",
     ),
     "route": (
-        "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_upstream.py::run_route_checkpoint,validate_route_checkpoint",
         "src/emuflow/phase4.py",
         "src/emuflow/routing.py",
         "src/emuflow/combinational_cut.py",
@@ -236,7 +236,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/tlr_router.cpp",
     ),
     "tdm": (
-        "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_upstream.py::run_tdm_checkpoint,validate_tdm_checkpoint",
         "src/emuflow/phase5.py",
         "src/emuflow/tdm.py",
         "src/emuflow/combinational_cut.py",
@@ -251,7 +251,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/tdm_slot_optimizer.cpp",
     ),
     "shared": (
-        "src/emuflow/experiment_upstream.py",
+        "src/emuflow/experiment_upstream.py::materialize_shared_phase1_5,validate_materialized_shared_phase1_5",
         "src/emuflow/experiment_stages.py",
         "src/emuflow/phase3.py",
         "src/emuflow/phase4.py",
@@ -642,8 +642,8 @@ def compile_canonical_experiment_spec(
     cut_command.extend(("--out", "{output_dir}"))
     node(
         "cut-timing", "cut-timing", ["frontend", "timing", "partition"], cut_command,
-        [executable, "experiment-stage", "cut-timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--partition", "{dependency:partition}"],
-        [_artifact("cut-path-database.json", "consumer-checkpoint"), _artifact("cut-timing-paths.json", "consumer-checkpoint"), _artifact("experiment-cut-timing-report.json", "evidence-critical")],
+        [executable, "experiment-stage", "cut-timing-validate", "{artifact_root}", "--frontend", "{dependency:frontend}", "--partition", "{dependency:partition}", "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing)],
+        [_artifact("cut-path-database.json", "consumer-checkpoint"), _artifact("cut-timing-paths.json", "consumer-checkpoint"), _artifact("through-net-coverage.json", "evidence-critical"), _artifact("experiment-cut-timing-report.json", "evidence-critical")],
         inputs=("timing_model", "architecture_timing_db", "tool.emuflow", "tool.opensta"),
         configuration={"clock_periods": periods, "max_paths": 200000},
         peak_gib=16, retained_gib=4,
@@ -708,7 +708,7 @@ def compile_canonical_experiment_spec(
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]
     node(
         "shared-phase1-5", "shared", shared_dependencies,
-        [executable, "experiment-stage", "shared-materialize", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--route", "{dependency:route}", "--tdm", "{dependency:tdm}", "--platform", str(platform), "--out", "{output_dir}"],
+        [executable, "experiment-stage", "shared-materialize", "--frontend", "{dependency:frontend}", "--timing", "{dependency:timing}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--route", "{dependency:route}", "--tdm", "{dependency:tdm}", "--platform", str(platform), "--timing-model", str(timing_model), "--architecture-timing-db", str(architecture_timing), "--out", "{output_dir}"],
         [executable, "experiment-stage", "shared-validate", "--shared", "{artifact_root}", "--platform", str(platform)],
         [_artifact("frontend", "consumer-checkpoint"), _artifact("timing", "consumer-checkpoint"), _artifact("partition", "consumer-checkpoint"), _artifact("system-route", "consumer-checkpoint"), _artifact("tdm", "consumer-checkpoint"), _artifact("experiment-shared-report.json", "evidence-critical")],
         inputs=("platform", "tool.emuflow"), configuration={"materialization": "same-filesystem-hardlink-or-copy"}, peak_gib=2, retained_gib=1,

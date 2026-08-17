@@ -198,6 +198,14 @@ class CanonicalExperimentTest(unittest.TestCase):
                 nodes["frontend"]["implementation"]["components"],
             )
             self.assertIn(
+                "src/emuflow/experiment_upstream.py::run_frontend_checkpoint,validate_frontend_checkpoint",
+                nodes["frontend"]["implementation"]["components"],
+            )
+            self.assertNotIn(
+                "src/emuflow/experiment_upstream.py",
+                nodes["frontend"]["implementation"]["components"],
+            )
+            self.assertIn(
                 "src/emuflow/experiment_partition.py",
                 nodes["partition"]["implementation"]["components"],
             )

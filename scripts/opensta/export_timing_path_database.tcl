@@ -100,7 +100,8 @@ set queried_paths 0
 # Path handles returned by find_timing_paths are owned by OpenSTA and may be
 # invalidated by a subsequent query.  Serialize each query immediately instead
 # of retaining those handles across the per-cut-net loop.
-proc emuflow_emit_timing_paths {timing_paths output_var emitted_var} {
+proc emuflow_emit_timing_paths {
+    timing_paths output_var emitted_var {forced_net ""} {forced_position "head"}} {
   global emuir_by_mapped_net
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
@@ -125,6 +126,10 @@ proc emuflow_emit_timing_paths {timing_paths output_var emitted_var} {
     set path_nets [list]
     unset -nocomplain seen_net
     array set seen_net {}
+    if {$forced_net ne "" && $forced_position eq "head"} {
+      set seen_net($forced_net) 1
+      lappend path_nets $forced_net
+    }
     foreach point $points {
       set pin [get_property $point pin]
       foreach net [get_nets -quiet -of_objects $pin] {
@@ -141,6 +146,11 @@ proc emuflow_emit_timing_paths {timing_paths output_var emitted_var} {
         }
       }
     }
+    if {$forced_net ne "" && $forced_position eq "tail" &&
+        ![info exists seen_net($forced_net)]} {
+      set seen_net($forced_net) 1
+      lappend path_nets $forced_net
+    }
     if {[llength $path_nets] == 0} {
       continue
     }
@@ -156,6 +166,37 @@ proc emuflow_emit_timing_paths {timing_paths output_var emitted_var} {
 
 if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     $env(EMUFLOW_STA_THROUGH_NETS) ne ""} {
+  if {![info exists env(EMUFLOW_STA_THROUGH_COVERAGE)] ||
+      $env(EMUFLOW_STA_THROUGH_COVERAGE) eq ""} {
+    error "EMUFLOW_STA_THROUGH_COVERAGE is required for directed extraction"
+  }
+  set coverage_path [file normalize $env(EMUFLOW_STA_THROUGH_COVERAGE)]
+  if {![info exists env(EMUFLOW_STA_THROUGH_ENDPOINTS)] ||
+      $env(EMUFLOW_STA_THROUGH_ENDPOINTS) eq ""} {
+    error "EMUFLOW_STA_THROUGH_ENDPOINTS is required for directed extraction"
+  }
+  set endpoint_path [file normalize $env(EMUFLOW_STA_THROUGH_ENDPOINTS)]
+  set endpoint_input [open $endpoint_path r]
+  set endpoint_lines [split [read $endpoint_input] "\n"]
+  close $endpoint_input
+  if {[lindex $endpoint_lines 0] ne "emuir_net_hex\tendpoint_pin_hex"} {
+    error "invalid OpenSTA through-endpoint map header"
+  }
+  array set timed_endpoints {}
+  foreach endpoint_line [lrange $endpoint_lines 1 end] {
+    if {$endpoint_line eq ""} {
+      continue
+    }
+    set endpoint_fields [split $endpoint_line "\t"]
+    if {[llength $endpoint_fields] != 2} {
+      error "malformed OpenSTA through-endpoint map row"
+    }
+    set endpoint_net [emuflow_hex_decode [lindex $endpoint_fields 0]]
+    set endpoint_pin [emuflow_hex_decode [lindex $endpoint_fields 1]]
+    lappend timed_endpoints($endpoint_net) $endpoint_pin
+  }
+  set coverage_output [open $coverage_path w]
+  puts $coverage_output "emuir_net_hex\tdriver_count\tqueried_paths\temitted_paths"
   set through_path [file normalize $env(EMUFLOW_STA_THROUGH_NETS)]
   set through_input [open $through_path r]
   set through_lines [split [read $through_input] "\n"]
@@ -172,6 +213,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
       error "malformed OpenSTA through-net map row"
     }
     set mapped_name [emuflow_hex_decode [lindex $fields 0]]
+    set emuir_name [emuflow_hex_decode [lindex $fields 1]]
     set through_net [get_nets -quiet [list $mapped_name]]
     if {[llength $through_net] != 1} {
       error "through net '$mapped_name' is absent or ambiguous"
@@ -191,6 +233,8 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     # is still checked below (and again by Python) for the requested EmuIR net,
     # so a reconvergent bypass cannot satisfy the coverage certificate.
     set driver_count 0
+    set before_queried $queried_paths
+    set before_emitted $emitted
     foreach through_pin $through_pins {
       if {[get_property $through_pin direction] ne "output"} {
         continue
@@ -212,13 +256,43 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
           -sort_by_slack] {
         set timing_paths [list $path_end]
         incr queried_paths
-        emuflow_emit_timing_paths $timing_paths output emitted
+        # A path launched from this exact driver necessarily traverses the
+        # requested net.  OpenSTA can omit the zero-length launch net from its
+        # returned point list, so preserve that proven identity explicitly.
+        emuflow_emit_timing_paths $timing_paths output emitted $emuir_name
+      }
+    }
+    # A constant-propagated or otherwise non-startpoint LUT output can be a
+    # real cut net that directly feeds a clocked data pin even though OpenSTA
+    # declines to use that internal output as a -from startpoint.  In that
+    # narrow case, query the independently identified direct timed endpoint.
+    # Any path ending at that exact data pin necessarily traverses this net.
+    if {$queried_paths == $before_queried &&
+        [info exists timed_endpoints($emuir_name)]} {
+      foreach endpoint_name $timed_endpoints($emuir_name) {
+        set endpoint_pin [get_pins -quiet [list $endpoint_name]]
+        if {[llength $endpoint_pin] != 1} {
+          error "timed endpoint '$endpoint_name' is absent or ambiguous"
+        }
+        foreach path_end [find_timing_paths -path_delay max \
+            -to $endpoint_pin -group_count 1 -endpoint_count 1 \
+            -sort_by_slack] {
+          set timing_paths [list $path_end]
+          incr queried_paths
+          emuflow_emit_timing_paths \
+            $timing_paths output emitted $emuir_name tail
+        }
+        if {$emitted > $before_emitted} {
+          break
+        }
       }
     }
     if {$driver_count == 0} {
       error "through net '$mapped_name' has no driver pin"
     }
+    puts $coverage_output "[emuflow_hex_encode $emuir_name]\t$driver_count\t[expr {$queried_paths - $before_queried}]\t[expr {$emitted - $before_emitted}]"
   }
+  close $coverage_output
 } else {
   set timing_paths [find_timing_paths -path_delay max \
     -group_count $max_paths -endpoint_count 1 -sort_by_slack]

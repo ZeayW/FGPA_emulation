@@ -22,7 +22,14 @@ from .errors import EmuFlowError, ValidationError
 from .experiment_stages import _prepare_empty_output, validate_shared_phase1_5
 from .io import read_json, write_json
 from .ir import EmuIR
-from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
+from .opensta import (
+    DEFAULT_TIMING_MODEL,
+    OPENSTA_THROUGH_COVERAGE_SCHEMA,
+    build_vtr_opensta_timing_model,
+    classify_through_net_timing_endpoints,
+    load_timing_model,
+    run_opensta_path_database,
+)
 from .phase1 import analyze_clock_topology, run_phase1
 from .phase3 import run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
@@ -44,7 +51,7 @@ from .vtr_netlist import normalize_vtr_hard_block_json
 EXPERIMENT_FRONTEND_SCHEMA = "emuflow.experiment-frontend-checkpoint/v1"
 EXPERIMENT_TIMING_SCHEMA = "emuflow.experiment-timing-checkpoint/v1"
 EXPERIMENT_PARTITION_SCHEMA = "emuflow.experiment-partition-checkpoint/v1"
-EXPERIMENT_CUT_TIMING_SCHEMA = "emuflow.experiment-cut-timing-checkpoint/v1"
+EXPERIMENT_CUT_TIMING_SCHEMA = "emuflow.experiment-cut-timing-checkpoint/v2"
 EXPERIMENT_ROUTE_SCHEMA = "emuflow.experiment-route-checkpoint/v1"
 EXPERIMENT_TDM_SCHEMA = "emuflow.experiment-tdm-checkpoint/v1"
 EXPERIMENT_SHARED_SCHEMA = "emuflow.experiment-shared-phase1-5/v1"
@@ -67,6 +74,26 @@ def _require(root: Path, relative: str) -> Path:
 
 def _float_equal(left: float, right: float) -> bool:
     return math.isclose(float(left), float(right), rel_tol=1.0e-12, abs_tol=1.0e-12)
+
+
+def _portable_cut_timing_projection(
+    artifact: Mapping[str, Any], database_name: str
+) -> Dict[str, Any]:
+    """Canonicalize the location-only provenance in a projected STA artifact."""
+    source = artifact.get("source")
+    if not isinstance(source, dict):
+        raise ValidationError("cut-timing projection source is invalid")
+    input_path = source.get("input")
+    if (
+        source.get("provider") != "partition-projected-sta-paths-v1"
+        or not isinstance(input_path, str)
+        or not input_path
+        or Path(input_path).name != database_name
+    ):
+        raise ValidationError("cut-timing projection source is invalid")
+    portable = dict(artifact)
+    portable["source"] = {**source, "input": database_name}
+    return portable
 
 
 def run_frontend_checkpoint(
@@ -526,6 +553,7 @@ def run_cut_timing_checkpoint(
         max_paths=max(max_paths, len(cut_nets)),
         log_path=output_dir / "opensta-cut-paths.log",
         through_nets=cut_nets,
+        through_coverage_path=output_dir / "through-net-coverage.json",
     )
     projection = project_sta_path_database(
         database, assignment_path, output_dir / "cut-timing-paths.json"
@@ -544,17 +572,31 @@ def run_cut_timing_checkpoint(
             else None
         ),
         "cut_path_database_sha256": _sha256(database),
+        "through_net_coverage_sha256": _sha256(
+            output_dir / "through-net-coverage.json"
+        ),
         "cut_timing_paths_sha256": _sha256(output_dir / "cut-timing-paths.json"),
         "sta": sta,
         "projection": projection,
     }
     write_json(output_dir / "experiment-cut-timing-report.json", report)
-    validate_cut_timing_checkpoint(frontend_root, partition_root, output_dir)
+    validate_cut_timing_checkpoint(
+        frontend_root,
+        partition_root,
+        output_dir,
+        timing_model_path=timing_model_path,
+        architecture_timing_db_path=architecture_timing_db_path,
+    )
     return report
 
 
 def validate_cut_timing_checkpoint(
-    frontend_root: Path, partition_root: Path, root: Path
+    frontend_root: Path,
+    partition_root: Path,
+    root: Path,
+    *,
+    timing_model_path: Path = DEFAULT_TIMING_MODEL,
+    architecture_timing_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.json")
     assignment_path = _require(partition_root, "assignment.json")
@@ -562,6 +604,7 @@ def validate_cut_timing_checkpoint(
     if report.get("schema") != EXPERIMENT_CUT_TIMING_SCHEMA or report.get("status") != "pass":
         raise ValidationError("cut-timing checkpoint report is invalid")
     database = _require(root, "cut-path-database.json")
+    coverage_path = _require(root, "through-net-coverage.json")
     projected = _require(root, "cut-timing-paths.json")
     if report.get("emuir_sha256") != _sha256(ir_path) or report.get(
         "assignment_sha256"
@@ -571,13 +614,112 @@ def validate_cut_timing_checkpoint(
         "cut_timing_paths_sha256"
     ) != _sha256(projected):
         raise ValidationError("cut-timing artifact seal is broken")
+    if report.get("through_net_coverage_sha256") != _sha256(coverage_path):
+        raise ValidationError("cut-timing coverage artifact seal is broken")
+    if report.get("timing_model_sha256") != _sha256(timing_model_path.resolve()):
+        raise ValidationError("cut-timing model seal is broken")
+    expected_architecture_sha = (
+        _sha256(architecture_timing_db_path.resolve())
+        if architecture_timing_db_path is not None
+        else None
+    )
+    if report.get("architecture_timing_db_sha256") != expected_architecture_sha:
+        raise ValidationError("cut-timing architecture timing seal is broken")
+    assignment = read_json(assignment_path)
+    expected_cut_nets = sorted(
+        item["net"]
+        for item in assignment.get("cut_nets", [])
+        if isinstance(item, dict) and isinstance(item.get("net"), str)
+    )
+    if report.get("cut_nets") != expected_cut_nets:
+        raise ValidationError("cut-timing cut-net set is not reconstructed")
     checked = validate_sta_path_database(database, ir_path)
+    coverage = read_json(coverage_path)
+    if (
+        coverage.get("schema") != OPENSTA_THROUGH_COVERAGE_SCHEMA
+        or coverage.get("status") != "pass"
+        or not isinstance(coverage.get("records"), list)
+    ):
+        raise ValidationError("cut-timing coverage report is invalid")
+    if report.get("sta", {}).get("through_net_coverage") != coverage:
+        raise ValidationError("cut-timing embedded coverage report disagrees")
+    records = coverage["records"]
+    if [record.get("net") for record in records] != expected_cut_nets:
+        raise ValidationError("cut-timing coverage net order/set is invalid")
+    ir = EmuIR.load(ir_path)
+    if architecture_timing_db_path is not None:
+        model, instance_cell_types = build_vtr_opensta_timing_model(
+            ir, architecture_timing_db_path
+        )
+    else:
+        model = load_timing_model(timing_model_path)
+        instance_cell_types = None
+    structural = classify_through_net_timing_endpoints(
+        ir, model, expected_cut_nets, instance_cell_types
+    )
+    path_nets = {
+        net
+        for path in read_json(database)["paths"]
+        for net in path["path_nets"]
+    }
+    timed = 0
+    untimed = 0
+    for record in records:
+        net = record["net"]
+        counts = [
+            record.get("driver_count"),
+            record.get("queried_paths"),
+            record.get("emitted_paths"),
+        ]
+        if (
+            any(isinstance(value, bool) or not isinstance(value, int) for value in counts)
+            or counts[0] <= 0
+            or counts[1] < 0
+            or counts[2] < 0
+            or counts[2] > counts[1]
+        ):
+            raise ValidationError("cut-timing coverage counts are invalid")
+        if record.get("structural") != structural[net]:
+            raise ValidationError("cut-timing structural coverage is not reconstructed")
+        if counts[2] > 0:
+            timed += 1
+            if (
+                record.get("classification") != "timed"
+                or net not in path_nets
+                or structural[net]["status"] != "timed"
+            ):
+                raise ValidationError("cut-timing timed-net coverage is inconsistent")
+        else:
+            untimed += 1
+            if (
+                counts[1] != 0
+                or record.get("classification") != "no_timing_path"
+                or net in path_nets
+                or structural[net]["status"] != "no_timed_endpoint"
+            ):
+                raise ValidationError("cut-timing untimed-net certificate is inconsistent")
+    if (
+        coverage.get("requested_nets") != len(expected_cut_nets)
+        or coverage.get("timed_nets") != timed
+        or coverage.get("untimed_nets") != untimed
+        or report.get("sta", {}).get("covered_through_nets")
+        != sorted(path_nets & set(expected_cut_nets))
+    ):
+        raise ValidationError("cut-timing coverage summary is inconsistent")
     with tempfile.TemporaryDirectory(prefix="emuflow-cut-timing-validate-") as temporary:
         rebuilt = Path(temporary) / "projected.json"
         project_sta_path_database(database, assignment_path, rebuilt)
-        if read_json(rebuilt) != read_json(projected):
+        if _portable_cut_timing_projection(
+            read_json(rebuilt), database.name
+        ) != _portable_cut_timing_projection(read_json(projected), database.name):
             raise ValidationError("cut-timing projection reconstruction failed")
-    return {"status": "pass", "paths": checked["paths"], "cut_nets": len(report["cut_nets"])}
+    return {
+        "status": "pass",
+        "paths": checked["paths"],
+        "cut_nets": len(expected_cut_nets),
+        "timed_nets": timed,
+        "untimed_nets": untimed,
+    }
 
 
 def run_route_checkpoint(
@@ -793,7 +935,15 @@ def validate_tdm_checkpoint(
             raise ValidationError(f"TDM checkpoint {label} seal is broken")
     if report.get("phase5") != phase5:
         raise ValidationError("TDM checkpoint embedded Phase 5 report disagrees")
-    if expected_provider is not None and phase5.get("provider") != expected_provider:
+    # The Phase 5 provider selects the optimization policy.  Academic ratio
+    # providers materialize a schedule using a separate, explicitly recorded
+    # schedule provider, so bind the checkpoint contract to the former when it
+    # is present.  Baseline schedules have no optimization provider and retain
+    # the historical direct provider contract.
+    actual_provider = phase5.get(
+        "optimization_provider", phase5.get("provider")
+    )
+    if expected_provider is not None and actual_provider != expected_provider:
         raise ValidationError("TDM checkpoint provider contract disagrees")
     checked = validate_phase5(
         routes, platform_path, schedule, ratio_plan_path=ratio_plan if ratio_plan.is_file() else None
@@ -820,11 +970,20 @@ def materialize_shared_phase1_5(
     tdm_root: Path,
     platform_path: Path,
     output_dir: Path,
+    *,
+    timing_model_path: Path = DEFAULT_TIMING_MODEL,
+    architecture_timing_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     validate_frontend_checkpoint(frontend_root, platform_path)
     validate_timing_checkpoint(frontend_root, timing_root)
     validate_partition_checkpoint(frontend_root, timing_root, platform_path, partition_root)
-    validate_cut_timing_checkpoint(frontend_root, partition_root, cut_timing_root)
+    validate_cut_timing_checkpoint(
+        frontend_root,
+        partition_root,
+        cut_timing_root,
+        timing_model_path=timing_model_path,
+        architecture_timing_db_path=architecture_timing_db_path,
+    )
     validate_route_checkpoint(partition_root, cut_timing_root, platform_path, route_root)
     validate_tdm_checkpoint(route_root, platform_path, tdm_root)
     output_dir = _prepare_empty_output(output_dir, "shared Phase 1-5 checkpoint")
@@ -842,6 +1001,7 @@ def materialize_shared_phase1_5(
         "timing/partition-net-weights.json": timing_root / "partition-net-weights.json",
         "timing/cut-path-database.json": cut_timing_root / "cut-path-database.json",
         "timing/cut-timing-paths.json": cut_timing_root / "cut-timing-paths.json",
+        "timing/through-net-coverage.json": cut_timing_root / "through-net-coverage.json",
     }
     ratio_plan = tdm_root / "ratio_plan.json"
     if ratio_plan.is_file():

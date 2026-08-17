@@ -1,10 +1,12 @@
 import hashlib
+import fcntl
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.experiment_dag import plan_experiment, run_experiment_node
@@ -233,7 +235,29 @@ class ExperimentStoreTest(unittest.TestCase):
                 report["totals"]["unique_allocated_bytes"],
                 report["totals"]["allocated_bytes_before_hardlink_dedup"],
             )
+            self.assertEqual(
+                [item["exclusive_reclaimable_bytes"] for item in report["entries"]],
+                [0, 0],
+            )
+            self.assertGreater(
+                report["totals"]["root_reclaimable_bytes_if_all_entries_retired"],
+                0,
+            )
             self.assertTrue(marker.is_file())
+
+    def test_legacy_migration_protects_top_level_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            outside = root / "outside"
+            runs.mkdir()
+            outside.mkdir()
+            (runs / "escaped").symlink_to(outside, target_is_directory=True)
+            report = plan_legacy_run_migration(runs, root / "migration.json")
+            entry = report["entries"][0]
+            self.assertEqual(entry["classification"], "unsafe-symlink")
+            self.assertTrue(entry["retirement_protection"]["protected"])
+            self.assertEqual(report["totals"]["retirement_protected_entries"], 1)
 
     def test_legacy_retirement_requires_exact_content_and_keeps_marker_tombstone(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -267,6 +291,248 @@ class ExperimentStoreTest(unittest.TestCase):
                 / "receipt/marker-tombstones/synthetic-old/multi-fpga-flow-report.json"
             )
             self.assertEqual(tombstone.read_text(encoding="utf-8"), '{"status":"pass"}')
+
+    def test_legacy_retirement_refuses_running_or_unreconciled_farm(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            farm = runs / "active-farm"
+            task = farm / "tasks/task-a"
+            task.mkdir(parents=True)
+            write_json(farm / "farm-manifest.json", {"status": "pass"})
+            (farm / "launch.lock").touch()
+            write_json(
+                task / "state.json",
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "running",
+                    "lease_expires_at": "2000-01-01T00:00:00+00:00",
+                },
+            )
+            migration_path = root / "migration.json"
+            migration = plan_legacy_run_migration(runs, migration_path)
+            entry = migration["entries"][0]
+            self.assertTrue(entry["retirement_protection"]["protected"])
+            self.assertEqual(
+                entry["recommended_action"],
+                "reconcile-farm-before-retention-decision",
+            )
+            self.assertIn(
+                "nonterminal-farm-state:running:tasks/task-a/state.json",
+                entry["retirement_protection"]["reasons"],
+            )
+            with self.assertRaisesRegex(ValidationError, "active or unreconciled"):
+                plan_legacy_run_retirement(
+                    migration_path,
+                    ["active-farm"],
+                    root / "retirement.json",
+                    reason="must reconcile before retirement",
+                )
+            self.assertTrue(farm.is_dir())
+
+    def test_legacy_retirement_refuses_submit_failed_farm_until_final_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            farm = runs / "retryable-farm"
+            task = farm / "tasks/task-a"
+            task.mkdir(parents=True)
+            write_json(farm / "farm-manifest.json", {"status": "pass"})
+            (farm / "launch.lock").touch()
+            write_json(
+                task / "state.json",
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "submit_failed",
+                },
+            )
+            migration_path = root / "migration.json"
+            migration = plan_legacy_run_migration(runs, migration_path)
+            self.assertTrue(
+                migration["entries"][0]["retirement_protection"]["protected"]
+            )
+            with self.assertRaisesRegex(ValidationError, "active or unreconciled"):
+                plan_legacy_run_retirement(
+                    migration_path,
+                    ["retryable-farm"],
+                    root / "retirement.json",
+                    reason="retry remains possible",
+                )
+
+    def test_completed_legacy_farm_can_be_sealed_and_retired(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            farm = runs / "completed-farm"
+            task = farm / "tasks/task-a"
+            task.mkdir(parents=True)
+            write_json(farm / "farm-manifest.json", {"status": "pass"})
+            (farm / "launch.lock").touch()
+            write_json(
+                task / "state.json",
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "pass",
+                },
+            )
+            (farm / "diagnostic.log").write_text("complete", encoding="utf-8")
+            migration_path = root / "migration.json"
+            migration = plan_legacy_run_migration(runs, migration_path)
+            self.assertFalse(
+                migration["entries"][0]["retirement_protection"]["protected"]
+            )
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["completed-farm"],
+                plan_path,
+                reason="completed noncanonical diagnostic farm",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            import shutil
+
+            remove_tree = shutil.rmtree
+
+            def assert_unlocked_before_removal(path: Path) -> None:
+                self.assertFalse(farm.exists())
+                self.assertTrue((path / "RETIREMENT_PENDING.json").is_file())
+                self.assertTrue(path.name.startswith(".emuflow-retiring-completed-farm-"))
+                with (path / "launch.lock").open("r+", encoding="utf-8") as stream:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                remove_tree(path)
+
+            with mock.patch(
+                "emuflow.experiment_store.shutil.rmtree",
+                side_effect=assert_unlocked_before_removal,
+            ):
+                receipt = apply_legacy_run_retirement(
+                    plan_path, approved, root / "receipt"
+                )
+            self.assertEqual(receipt["status"], "pass")
+            self.assertFalse(farm.exists())
+            self.assertEqual(receipt["quarantine"][0]["status"], "removed")
+
+    def test_legacy_retirement_plan_refuses_concurrent_farm_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            farm = runs / "completed-farm"
+            task = farm / "tasks/task-a"
+            task.mkdir(parents=True)
+            write_json(farm / "farm-manifest.json", {"status": "pass"})
+            launch_lock = farm / "launch.lock"
+            launch_lock.touch()
+            write_json(
+                task / "state.json",
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "pass",
+                },
+            )
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            with launch_lock.open("r+", encoding="utf-8") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    with self.assertRaisesRegex(ValidationError, "launch is active"):
+                        plan_legacy_run_retirement(
+                            migration_path,
+                            ["completed-farm"],
+                            root / "retirement.json",
+                            reason="completed noncanonical diagnostic farm",
+                        )
+                finally:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            self.assertTrue(farm.is_dir())
+
+    def test_legacy_retirement_remains_quarantined_if_removal_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            farm = runs / "completed-farm"
+            task = farm / "tasks/task-a"
+            task.mkdir(parents=True)
+            write_json(farm / "farm-manifest.json", {"status": "pass"})
+            (farm / "launch.lock").touch()
+            write_json(
+                task / "state.json",
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "pass",
+                },
+            )
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["completed-farm"],
+                plan_path,
+                reason="completed noncanonical diagnostic farm",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            with mock.patch(
+                "emuflow.experiment_store.shutil.rmtree",
+                side_effect=OSError("injected removal failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected removal failure"):
+                    apply_legacy_run_retirement(
+                        plan_path, approved, root / "receipt"
+                    )
+            self.assertFalse(farm.exists())
+            receipt = json.loads(
+                (root / "receipt/retirement-receipt.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(receipt["status"], "in-progress")
+            self.assertEqual(receipt["quarantine"][0]["status"], "moved")
+            quarantine = Path(receipt["quarantine"][0]["path"])
+            self.assertTrue(quarantine.is_dir())
+            self.assertTrue((quarantine / "RETIREMENT_PENDING.json").is_file())
+
+    def test_legacy_retirement_apply_rechecks_farm_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            farm = runs / "completed-farm"
+            task = farm / "tasks/task-a"
+            task.mkdir(parents=True)
+            write_json(farm / "farm-manifest.json", {"status": "pass"})
+            (farm / "launch.lock").touch()
+            state_path = task / "state.json"
+            write_json(
+                state_path,
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "pass",
+                },
+            )
+            migration_path = root / "migration.json"
+            plan_legacy_run_migration(runs, migration_path)
+            plan_path = root / "retirement.json"
+            plan_legacy_run_retirement(
+                migration_path,
+                ["completed-farm"],
+                plan_path,
+                reason="completed noncanonical diagnostic farm",
+            )
+            approved = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            write_json(
+                state_path,
+                {
+                    "schema": "emuflow.validation-farm-state/v1",
+                    "status": "running",
+                    "lease_expires_at": "2100-01-01T00:00:00+00:00",
+                },
+            )
+            with self.assertRaisesRegex(ValidationError, "active or unreconciled"):
+                apply_legacy_run_retirement(
+                    plan_path, approved, root / "receipt"
+                )
+            self.assertTrue(farm.is_dir())
+            self.assertFalse((root / "receipt").exists())
 
     def test_legacy_retirement_rejects_candidate_changed_after_planning(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
