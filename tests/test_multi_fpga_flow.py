@@ -14,6 +14,7 @@ from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
     finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
+    validate_multi_fpga_flow_bundle,
     validate_multi_fpga_flow_report,
 )
 from emuflow.platform import Platform
@@ -105,6 +106,20 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "exhaustive-small-model-proof-plus-random-traces",
             )
             self.assertEqual(report["runtime"]["status"], "generated")
+            validation = validate_multi_fpga_flow_bundle(
+                root, minimum_combinational_cut_nets=1
+            )
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(validation["observed_combinational_cut_nets"], 1)
+            with self.assertRaisesRegex(
+                ValidationError, "no completed physical Phase 7"
+            ):
+                validate_multi_fpga_flow_bundle(root, require_physical=True)
+            routes = read_json(root / "system-route/routes.json")
+            routes["design"] = "tampered"
+            write_json(root / "system-route/routes.json", routes)
+            with self.assertRaisesRegex(ValidationError, "SHA-256 disagrees"):
+                validate_multi_fpga_flow_bundle(root)
 
     def test_cli_enables_timing_driven_by_default(self) -> None:
         base = [
@@ -122,6 +137,19 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 [*base, "--no-timing-driven"]
             ).timing_driven
         )
+        validate = _build_parser().parse_args(
+            [
+                "multi-fpga",
+                "validate",
+                "--flow",
+                "build",
+                "--minimum-combinational-cut-nets",
+                "1",
+                "--require-physical",
+            ]
+        )
+        self.assertEqual(validate.minimum_combinational_cut_nets, 1)
+        self.assertTrue(validate.require_physical)
 
     def test_cli_exact_mode_does_not_inherit_slot_refinement_default(self):
         base = [

@@ -182,7 +182,18 @@ emuflow multi-fpga compile design.v \
   --max-cross-fpga-dependency-depth 1 \
   --comb-segment-budget-slots 1 \
   --frame-slots 32 --physical --out build/exact-flow
+
+emuflow multi-fpga validate \
+  --flow build/exact-flow \
+  --minimum-combinational-cut-nets 1 \
+  --require-physical
 ```
+
+`multi-fpga validate` is the independent full-root acceptance gate. It hashes
+the declared artifacts again, replays the Phase 3--6 validators and static
+exact equivalence evidence, reconstructs the runtime contract, and reruns
+Phase 7C QoR from the retained physical summary. `--require-physical` prevents
+a generated-only Phase 7C bundle from satisfying the real acceptance gate.
 
 For retained evidence, the same policy is available through the canonical
 Experiment v2 compiler by adding these fields to the case config:

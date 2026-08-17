@@ -409,7 +409,18 @@ emuflow multi-fpga compile design.v \
   --max-cross-fpga-dependency-depth 1 \
   --comb-segment-budget-slots 1 \
   --frame-slots 32 --physical --out build/exact-flow
+
+emuflow multi-fpga validate \
+  --flow build/exact-flow \
+  --minimum-combinational-cut-nets 1 \
+  --require-physical
 ```
+The validator rehashes every declared flow artifact, compares the live Phase
+3--6 reports with the sealed top-level report, independently reruns Phase 3--6
+legality/equivalence checks, reconstructs the runtime contract, replays Phase
+7C QoR, and rejects a physical acceptance claim when Phase 7 is absent.  It is
+the read-only validator for a monolithic full-flow Experiment v2 checkpoint;
+the minimum-cut gate prevents a vacuous exact-mode result.
 The shared slot-edge convention, semantic contract, fail-closed policy, and
 Phase 3--7 acceptance sequence are specified in
 [Static exact combinational-cut mode](docs/STATIC_EXACT_COMBINATIONAL_CUT.md).

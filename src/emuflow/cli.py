@@ -143,6 +143,7 @@ from .lowering import run_placement_ir_lowering
 from .multi_fpga_flow import (
     finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
+    validate_multi_fpga_flow_bundle,
 )
 from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
 from .multi_fpga_physical_flow import run_multi_fpga_physical_flow
@@ -1490,6 +1491,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "run generic synthesis, partitioning, system routing, TDM, "
             "and per-FPGA split generation"
         ),
+    )
+    multi_fpga_validate = multi_fpga_subparsers.add_parser(
+        "validate",
+        help="rehash and independently replay a complete flow directory",
+    )
+    multi_fpga_validate.add_argument("--flow", type=Path, required=True)
+    multi_fpga_validate.add_argument(
+        "--minimum-combinational-cut-nets", type=int, default=0
+    )
+    multi_fpga_validate.add_argument(
+        "--require-physical", action="store_true"
     )
     multi_fpga_compare = multi_fpga_subparsers.add_parser(
         "compare-routing-tdm",
@@ -4347,6 +4359,17 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "multi-fpga":
+        if args.multi_fpga_command == "validate":
+            _print_json(
+                validate_multi_fpga_flow_bundle(
+                    args.flow,
+                    minimum_combinational_cut_nets=(
+                        args.minimum_combinational_cut_nets
+                    ),
+                    require_physical=args.require_physical,
+                )
+            )
+            return 0
         if args.multi_fpga_command == "compare-routing-tdm-scale":
             report = build_system_route_tdm_scale_comparison(
                 args.assignment,

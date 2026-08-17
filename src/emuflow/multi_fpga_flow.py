@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -32,13 +33,14 @@ from .multi_fpga_bsp_flow import (
 )
 from .opensta import DEFAULT_TIMING_MODEL, run_opensta_path_database
 from .phase1 import run_phase1
-from .phase3 import run_phase3
-from .phase4 import run_phase4
-from .phase5 import run_phase5
-from .phase6 import run_phase6
+from .phase3 import run_phase3, validate_phase3
+from .phase4 import run_phase4, validate_phase4
+from .phase5 import run_phase5, validate_phase5
+from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .platform import Platform
+from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from .tdm import TDM_BASELINE_PROVIDER, TDM_STATIC_EXACT_PROVIDER
 from .timing_routing import (
@@ -713,6 +715,241 @@ def validate_multi_fpga_flow_report(
             if phase6_comparison_validation is not None
             else "not-requested"
         ),
+    }
+
+
+def validate_multi_fpga_flow_bundle(
+    flow_root: Path,
+    *,
+    minimum_combinational_cut_nets: int = 0,
+    require_physical: bool = False,
+) -> Dict[str, Any]:
+    """Rehash and independently replay a complete multi-FPGA flow root."""
+
+    if (
+        isinstance(minimum_combinational_cut_nets, bool)
+        or not isinstance(minimum_combinational_cut_nets, int)
+        or minimum_combinational_cut_nets < 0
+    ):
+        raise ValidationError(
+            "minimum combinational-cut net count must be a non-negative integer"
+        )
+    flow_root = flow_root.expanduser()
+    if flow_root.is_symlink() or not flow_root.is_dir():
+        raise ValidationError("multi-FPGA flow root is missing or is a symlink")
+    flow_root = flow_root.resolve()
+    report = read_json(
+        _checked_flow_member(
+            flow_root,
+            Path("multi-fpga-flow-report.json"),
+            "flow report",
+        )
+    )
+    summary = validate_multi_fpga_flow_report(report)
+
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        raise ValidationError("multi-FPGA flow artifact table is missing")
+    artifact_digests: Dict[str, str] = {}
+    for label, record in sorted(artifacts.items()):
+        if (
+            not isinstance(label, str)
+            or not label
+            or not isinstance(record, dict)
+            or set(record) != {"path", "sha256"}
+            or not isinstance(record.get("path"), str)
+            or not isinstance(record.get("sha256"), str)
+        ):
+            raise ValidationError(
+                f"multi-FPGA flow artifact {label!r} record is invalid"
+            )
+        relative = Path(record["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValidationError(
+                f"multi-FPGA flow artifact {label!r} path is unsafe"
+            )
+        path = _checked_flow_member(flow_root, relative, f"artifact {label}")
+        digest = _sha256(path)
+        if digest != record["sha256"]:
+            raise ValidationError(
+                f"multi-FPGA flow artifact {label!r} SHA-256 disagrees"
+            )
+        artifact_digests[label] = digest
+
+    platform_path = _checked_flow_member(
+        flow_root, Path("frontend/phase1/platform.normalized.json"), "platform"
+    )
+    ir_path = _checked_flow_member(
+        flow_root, Path("frontend/phase1/design.emuir.json"), "EmuIR"
+    )
+    assignment_path = _checked_flow_member(
+        flow_root, Path("partition/assignment.json"), "assignment"
+    )
+    clusters_path = _checked_flow_member(
+        flow_root, Path("partition/clusters.json"), "clusters"
+    )
+    routes_path = _checked_flow_member(
+        flow_root, Path("system-route/routes.json"), "routes"
+    )
+    schedule_path = _checked_flow_member(
+        flow_root, Path("tdm/schedule.json"), "schedule"
+    )
+    manifest_path = _checked_flow_member(
+        flow_root, Path("split/manifest.json"), "split manifest"
+    )
+
+    live_reports = {
+        "partition": "partition/phase3_report.json",
+        "system_route": "system-route/phase4_report.json",
+        "tdm": "tdm/phase5_report.json",
+        "split": "split/phase6_report.json",
+    }
+    for stage, relative in live_reports.items():
+        live = read_json(
+            _checked_flow_member(flow_root, Path(relative), f"{stage} report")
+        )
+        if live != report["stages"][stage]:
+            raise ValidationError(
+                f"multi-FPGA live {stage} report disagrees with the flow report"
+            )
+
+    phase3_validation = validate_phase3(
+        ir_path, platform_path, clusters_path, assignment_path
+    )
+    if phase3_validation != report["stages"]["partition"]["validation"]:
+        raise ValidationError("independent Phase 3 replay disagrees")
+    if minimum_combinational_cut_nets:
+        if phase3_validation.get("cut_mode") != CUT_MODE_STATIC_EXACT:
+            raise ValidationError(
+                "a positive combinational-cut requirement needs static exact mode"
+            )
+        observed = phase3_validation.get("combinational_cut_nets")
+        if not isinstance(observed, int) or observed < minimum_combinational_cut_nets:
+            raise ValidationError(
+                "independent Phase 3 replay found fewer combinational cut nets "
+                "than required"
+            )
+
+    route_provider = report["stages"]["system_route"].get("provider")
+    timing_paths_path = (
+        _checked_flow_member(
+            flow_root,
+            Path("timing/cut-timing-paths.json"),
+            "projected timing paths",
+        )
+        if route_provider != NATIVE_ROUTER_PROVIDER
+        else None
+    )
+    phase4_validation = validate_phase4(
+        assignment_path,
+        platform_path,
+        routes_path,
+        timing_paths_path=timing_paths_path,
+    )
+    if phase4_validation != report["stages"]["system_route"]["validation"]:
+        raise ValidationError("independent Phase 4 replay disagrees")
+
+    ratio_plan_path = flow_root / "tdm/ratio_plan.json"
+    phase5_validation = validate_phase5(
+        routes_path,
+        platform_path,
+        schedule_path,
+        ratio_plan_path=ratio_plan_path if ratio_plan_path.is_file() else None,
+    )
+    timing_validation = phase5_validation.pop("timing", None)
+    if phase5_validation != report["stages"]["tdm"]["validation"]:
+        raise ValidationError("independent Phase 5 replay disagrees")
+    if timing_validation is not None and timing_validation != report["stages"][
+        "tdm"
+    ].get("timing_validation"):
+        raise ValidationError("independent Phase 5 timing replay disagrees")
+
+    phase6_validation = validate_phase6(
+        ir_path,
+        assignment_path,
+        schedule_path,
+        platform_path,
+        manifest_path,
+    )
+    equivalence = phase6_validation.pop("static_exact_equivalence", None)
+    if phase6_validation != report["stages"]["split"]["validation"]:
+        raise ValidationError("independent Phase 6 replay disagrees")
+    if equivalence is not None and (
+        equivalence.get("status") != "pass"
+        or equivalence.get("mismatches") != 0
+    ):
+        raise ValidationError("independent static-exact equivalence replay failed")
+
+    platform = Platform.load(platform_path)
+    runtime_contract = read_json(
+        _checked_flow_member(
+            flow_root, Path("runtime/runtime_contract.json"), "runtime contract"
+        )
+    )
+    runtime_validation = validate_virtual_runtime(
+        runtime_contract, read_json(schedule_path), platform
+    )
+    if runtime_validation != report["runtime"].get("validation"):
+        raise ValidationError("independent runtime replay disagrees")
+
+    physical = report.get("physical")
+    if require_physical and physical is None:
+        raise ValidationError("multi-FPGA flow has no completed physical Phase 7")
+    physical_summary_path = None
+    board_link_timing_path = None
+    if physical is not None:
+        live_physical = read_json(
+            _checked_flow_member(
+                flow_root,
+                Path("physical/multi-fpga-physical-flow-report.json"),
+                "physical flow report",
+            )
+        )
+        if live_physical != physical:
+            raise ValidationError(
+                "live physical report disagrees with the multi-FPGA flow report"
+            )
+        validate_multi_fpga_physical_report(live_physical)
+        physical_summary_path = _checked_flow_member(
+            flow_root,
+            Path("physical/physical-summary.json"),
+            "physical summary",
+        )
+        candidate_link_timing = flow_root / "timing/board-link-timing.json"
+        if candidate_link_timing.is_file():
+            board_link_timing_path = _checked_flow_member(
+                flow_root, candidate_link_timing, "board-link timing"
+            )
+
+    with tempfile.TemporaryDirectory(prefix="emuflow-flow-validate-") as temporary:
+        replay = run_phase7c(
+            schedule_path,
+            platform_path,
+            flow_root / "partition/phase3_report.json",
+            flow_root / "system-route/phase4_report.json",
+            flow_root / "tdm/phase5_report.json",
+            flow_root / "split/phase6_report.json",
+            Path(temporary),
+            physical_summary_path=physical_summary_path,
+            routes_path=routes_path if physical_summary_path is not None else None,
+            board_link_timing_path=board_link_timing_path,
+        )
+        replay_qor = read_json(Path(temporary) / "qor_report.json")
+    if replay_qor != read_json(
+        _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
+    ):
+        raise ValidationError("independent Phase 7C QoR replay disagrees")
+    if replay.get("status") != report["runtime"].get("status"):
+        raise ValidationError("independent Phase 7C status replay disagrees")
+
+    return {
+        **summary,
+        "artifact_count": len(artifact_digests),
+        "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+        "observed_combinational_cut_nets": phase3_validation.get(
+            "combinational_cut_nets", 0
+        ),
+        "physical_required": require_physical,
     }
 
 
