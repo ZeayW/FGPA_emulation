@@ -981,7 +981,11 @@ def materialize_academic_chimew_inputs(
                             "bank_voltage": 1.8,
                             "electrical_class": "single_ended_parallel",
                             "reserved": False,
-                            "placement_anchor": guarded_domain,
+                            # Academic platforms synthesize virtual package-pin
+                            # coordinates for optimization and certification only.
+                            # They are not revision-controlled BSP constraints and
+                            # therefore must never become fixed Phase 7 I/O targets.
+                            "placement_anchor": False,
                         }
                     )
                 bank_pairs.append(

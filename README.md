@@ -2958,11 +2958,11 @@ unprotected groups still run the normal Chimew grouping, position refinement,
 and bank/channel matching over the remaining lanes.  The guard is recorded in
 the lookahead report and independently checked before refinement and matching.
 This is an EmuFlow timing-integration constraint, not part of the published
-Chimew algorithm.  On academic platforms without a real package-pin BSP, only
-these timing-covered groups become physical placement anchors, and their anchor
-coordinate is the source/sink placement centroid from the sealed prepass.
-Unprotected channel coordinates remain optimization/certificate data and are
-not misrepresented as real package-pin constraints.
+Chimew algorithm.  On academic platforms without a revision-controlled
+package-pin BSP, all synthesized channel coordinates remain optimization and
+certificate data; none are promoted to fixed Phase 7 I/O targets.  Timing-
+covered groups still preserve their lane identity and transport membership.
+Only a real source-qualified BSP may declare physical placement anchors.
 When the input is a real Phase 5 schedule, its explicit slot is also part of
 the refinement exchange domain.  Equal-encoding signals may therefore move
 only among groups at the same frozen slot; native refinement and the Python

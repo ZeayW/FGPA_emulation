@@ -459,7 +459,7 @@ class AcademicChimewTest(unittest.TestCase):
                 critical_electrical_channel["physical_lane"],
                 critical_entry["lane"],
             )
-            self.assertTrue(
+            self.assertFalse(
                 critical_electrical_channel["placement_anchor"]
             )
             self.assertTrue(
@@ -514,7 +514,7 @@ class AcademicChimewTest(unittest.TestCase):
                 for binding in electrical_binding["entries"]
                 if critical_entry["id"] in binding["schedule_entries"]
             )
-            self.assertTrue(protected_binding["placement_anchor"])
+            self.assertFalse(protected_binding["placement_anchor"])
             self.assertEqual(
                 qualification["source_binding"]["digests"]["timing_paths"],
                 lookahead["timing_weighting"]["source_sha256"],
