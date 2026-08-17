@@ -40,6 +40,9 @@ class CanonicalQorTest(unittest.TestCase):
             "routes_sha256": _sha256(shared / "system-route/routes.json"),
             "schedule_sha256": _sha256(shared / "tdm/schedule.json"),
         }
+        chimew_schedule_sha256 = hashlib.sha256(
+            b"chimew-provider-effective-schedule"
+        ).hexdigest()
         roots = {}
         records = []
         offsets = {"baseline": 0.0, "placement-aware": 0.1, "chimew": 0.2}
@@ -92,7 +95,17 @@ class CanonicalQorTest(unittest.TestCase):
                         "status": "pass",
                         "provider": provider,
                         "physical_seed": seed,
-                        "frozen_upstream": frozen,
+                        "phase6_manifest_sha256": hashlib.sha256(
+                            f"{provider}-phase6-manifest".encode()
+                        ).hexdigest(),
+                        "frozen_upstream": {
+                            **frozen,
+                            "schedule_sha256": (
+                                chimew_schedule_sha256
+                                if provider == "chimew"
+                                else frozen["schedule_sha256"]
+                            ),
+                        },
                         "physical_summary_sha256": _sha256(summary),
                         "qor_sha256": _sha256(qor_path),
                         "qor": qor,
@@ -118,6 +131,18 @@ class CanonicalQorTest(unittest.TestCase):
             report = run_canonical_qor_comparison(shared, arms, output)
             self.assertEqual(len(report["arms"]), 9)
             self.assertEqual(
+                report["provider_effective_phase6_schedule_sha256"]["chimew"],
+                hashlib.sha256(b"chimew-provider-effective-schedule").hexdigest(),
+            )
+            self.assertEqual(
+                report["provider_effective_phase6_schedule_sha256"]["baseline"],
+                report["shared_phase5_schedule_sha256"],
+            )
+            self.assertEqual(
+                report["provider_effective_phase6_manifest_sha256"]["chimew"],
+                hashlib.sha256(b"chimew-phase6-manifest").hexdigest(),
+            )
+            self.assertEqual(
                 report["comparisons"]["chimew"]["target_clock_result"],
                 "improved",
             )
@@ -132,6 +157,27 @@ class CanonicalQorTest(unittest.TestCase):
                 9,
             )
 
+            mixed_schedule = read_json(
+                arms[("chimew", 2)] / "experiment-phase7-report.json"
+            )
+            original_schedule = mixed_schedule["frozen_upstream"][
+                "schedule_sha256"
+            ]
+            mixed_schedule["frozen_upstream"]["schedule_sha256"] = "f" * 64
+            write_json(
+                arms[("chimew", 2)] / "experiment-phase7-report.json",
+                mixed_schedule,
+            )
+            with self.assertRaisesRegex(ValidationError, "provider Phase 6 schedule"):
+                validate_canonical_qor_comparison(output, shared, arms)
+            mixed_schedule["frozen_upstream"][
+                "schedule_sha256"
+            ] = original_schedule
+            write_json(
+                arms[("chimew", 2)] / "experiment-phase7-report.json",
+                mixed_schedule,
+            )
+
             tampered = read_json(
                 arms[("chimew", 3)] / "experiment-phase7-report.json"
             )
@@ -140,7 +186,7 @@ class CanonicalQorTest(unittest.TestCase):
                 arms[("chimew", 3)] / "experiment-phase7-report.json",
                 tampered,
             )
-            with self.assertRaisesRegex(ValidationError, "arm seal"):
+            with self.assertRaisesRegex(ValidationError, "common upstream seal"):
                 validate_canonical_qor_comparison(output, shared, arms)
 
     def test_arm_parser_rejects_incomplete_matrix(self):

@@ -1097,8 +1097,13 @@ enter the canonical QoR matrix. It emits exactly one reusable Phase 6 checkpoint
 per provider, nine physical Phase 7 nodes (three providers by seeds 1, 2, and
 3), and one final paired QoR-comparison node. The comparison independently
 reconstructs every whole-design target/runtime-clock WNS/TNS result, verifies
-the frozen Phase 1/3/4/5 hashes, and reports per-seed deltas plus mean/median
-statistics. Tool bytes and per-stage implementation closures are part of node
+the common frozen Phase 1/3/4 hashes, records the shared Phase 5 schedule, and
+verifies that all three physical seeds for each provider consume one identical
+provider-effective Phase 6 schedule and split manifest. This distinction is
+required because a Phase 6 provider may legitimately materialize a schedule
+that differs from the shared Phase 5 checkpoint. The report includes paired
+per-seed deltas plus mean/median statistics. Tool bytes and per-stage
+implementation closures are part of node
 identity, so a router-only change preserves frontend, STA, and partition
 checkpoints while invalidating routing and its descendants.  The OpenPARF
 manifest is itself an `experiment-implementation-closure/v1` rooted at the

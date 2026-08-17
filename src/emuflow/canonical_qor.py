@@ -14,7 +14,7 @@ from .multi_fpga_physical_flow import validate_multi_fpga_physical_report
 from .runtime import QOR_REPORT_SCHEMA
 
 
-CANONICAL_QOR_COMPARISON_SCHEMA = "emuflow.canonical-qor-comparison/v1"
+CANONICAL_QOR_COMPARISON_SCHEMA = "emuflow.canonical-qor-comparison/v2"
 _PROVIDERS = ("baseline", "placement-aware", "chimew")
 _SEEDS = (1, 2, 3)
 _ARM_KEYS = {(provider, seed) for provider in _PROVIDERS for seed in _SEEDS}
@@ -119,11 +119,35 @@ def _shared_hashes(shared_root: Path) -> Dict[str, str]:
     }
 
 
+def _digest(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValidationError(f"canonical QoR {label} digest is invalid")
+    return value
+
+
+def _effective_schedule_digest(
+    report: Mapping[str, Any], common_upstream: Mapping[str, str]
+) -> str:
+    """Validate common inputs and return the provider-effective schedule seal."""
+
+    frozen = report.get("frozen_upstream")
+    expected_keys = {*common_upstream, "schedule_sha256"}
+    if not isinstance(frozen, dict) or set(frozen) != expected_keys:
+        raise ValidationError("canonical QoR Phase 7 upstream seal is malformed")
+    if any(frozen.get(key) != digest for key, digest in common_upstream.items()):
+        raise ValidationError("canonical QoR Phase 7 common upstream seal is broken")
+    return _digest(frozen.get("schedule_sha256"), "effective Phase 6 schedule")
+
+
 def _arm_record(
     provider: str,
     seed: int,
     root: Path,
-    frozen_upstream: Mapping[str, str],
+    common_upstream: Mapping[str, str],
 ) -> Dict[str, Any]:
     report_path = _require(root, "experiment-phase7-report.json")
     summary_path = _require(root, "physical/physical-summary.json")
@@ -133,12 +157,17 @@ def _arm_record(
     qor_path = _require(root, "runtime/qor_report.json")
     report = read_json(report_path)
     qor = read_json(qor_path)
+    effective_schedule_sha256 = _effective_schedule_digest(
+        report, common_upstream
+    )
+    phase6_manifest_sha256 = _digest(
+        report.get("phase6_manifest_sha256"), "effective Phase 6 manifest"
+    )
     if (
         report.get("schema") != "emuflow.experiment-phase7-checkpoint/v1"
         or report.get("status") != "pass"
         or report.get("provider") != provider
         or report.get("physical_seed") != seed
-        or report.get("frozen_upstream") != frozen_upstream
         or report.get("physical_summary_sha256") != _sha256(summary_path)
         or report.get("qor_sha256") != _sha256(qor_path)
         or report.get("qor") != qor
@@ -183,6 +212,8 @@ def _arm_record(
     return {
         "provider": provider,
         "physical_seed": seed,
+        "effective_phase6_schedule_sha256": effective_schedule_sha256,
+        "effective_phase6_manifest_sha256": phase6_manifest_sha256,
         "artifacts": {
             "phase7_report_sha256": _sha256(report_path),
             "physical_summary_sha256": _sha256(summary_path),
@@ -283,9 +314,13 @@ def build_canonical_qor_comparison(
     if shared_root.is_symlink() or not shared_root.is_dir():
         raise ValidationError("canonical QoR shared checkpoint is invalid")
     shared_root = shared_root.resolve()
-    frozen = _shared_hashes(shared_root)
+    shared = _shared_hashes(shared_root)
+    common_upstream = {
+        key: shared[key]
+        for key in ("emuir_sha256", "assignment_sha256", "routes_sha256")
+    }
     records = [
-        _arm_record(provider, seed, arm_roots[(provider, seed)], frozen)
+        _arm_record(provider, seed, arm_roots[(provider, seed)], common_upstream)
         for provider in _PROVIDERS
         for seed in _SEEDS
     ]
@@ -303,6 +338,27 @@ def build_canonical_qor_comparison(
     if len(design_platform) != 1:
         raise ValidationError("canonical QoR arms do not share design/platform")
     design, platform = next(iter(design_platform))
+    provider_schedules = {}
+    provider_manifests = {}
+    for provider in _PROVIDERS:
+        schedules = {
+            by_key[(provider, seed)]["effective_phase6_schedule_sha256"]
+            for seed in _SEEDS
+        }
+        if len(schedules) != 1:
+            raise ValidationError(
+                "canonical QoR physical seeds do not share the provider Phase 6 schedule"
+            )
+        provider_schedules[provider] = next(iter(schedules))
+        manifests = {
+            by_key[(provider, seed)]["effective_phase6_manifest_sha256"]
+            for seed in _SEEDS
+        }
+        if len(manifests) != 1:
+            raise ValidationError(
+                "canonical QoR physical seeds do not share the provider Phase 6 manifest"
+            )
+        provider_manifests[provider] = next(iter(manifests))
     return {
         "schema": CANONICAL_QOR_COMPARISON_SCHEMA,
         "status": "pass",
@@ -313,7 +369,10 @@ def build_canonical_qor_comparison(
             "academic contest-topology/device projection; target-clock values "
             "are composed whole-design physical-plus-link/TDM bounds"
         ),
-        "frozen_upstream": frozen,
+        "frozen_common_upstream": common_upstream,
+        "shared_phase5_schedule_sha256": shared["schedule_sha256"],
+        "provider_effective_phase6_schedule_sha256": provider_schedules,
+        "provider_effective_phase6_manifest_sha256": provider_manifests,
         "arms": records,
         "provider_summary": {
             provider: _summary(
