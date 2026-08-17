@@ -113,6 +113,7 @@ def _write_vpr_runtime_sdc(
     fabric_period_ns: float,
     dut_period_ns: float,
     cross_period_ns: float,
+    dut_clock_required: bool = True,
 ) -> Dict[str, Any]:
     """Write VPR constraints matching the provider-neutral runtime contract."""
     clock_nets = eblif_report.get("clock_nets")
@@ -130,7 +131,7 @@ def _write_vpr_runtime_sdc(
             and net
         }
     )
-    if not dut_nets:
+    if not dut_nets and dut_clock_required:
         raise ValidationError("VTR eBLIF report has no DUT clock net")
     lines = [
         "# EmuFlow endpoint-complete Phase 7 timing contract.",
@@ -157,6 +158,8 @@ def _write_vpr_runtime_sdc(
         "sha256": _sha256(path),
         "fabric_clock": "emuflow_fabric_clk",
         "dut_clocks": dut_clocks,
+        "dut_clock_required": dut_clock_required,
+        "dut_clock_present": bool(dut_clocks),
         "periods_ns": {
             "fabric": fabric_period_ns,
             "dut": dut_period_ns,
@@ -165,10 +168,20 @@ def _write_vpr_runtime_sdc(
     }
 
 
+def _partition_declares_dut_clock(netlist: Mapping[str, Any]) -> bool:
+    """Return whether the original split partition exposes a DUT clock."""
+    ports = netlist.get("ports")
+    if not isinstance(ports, list) or any(
+        not isinstance(port, dict) for port in ports
+    ):
+        raise ValidationError("per-FPGA netlist ports are invalid")
+    return any(port.get("clock") is True for port in ports)
+
+
 def _physical_clock_delays(
     route_report: Mapping[str, Any],
     eblif_report: Mapping[str, Any],
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], Dict[str, bool]]:
     metrics = route_report.get("metrics", {})
     overall = metrics.get("critical_path_ns")
     if not isinstance(overall, (int, float)) or overall < 0:
@@ -176,7 +189,13 @@ def _physical_clock_delays(
     domains = metrics.get("clock_domain_cpd_ns", {})
     clock_nets = eblif_report.get("clock_nets", {})
     fabric = clock_nets.get("fabric_clk")
-    dut_nets = set(clock_nets.values()) - ({fabric} if fabric else set())
+    dut_nets = {
+        net
+        for clock_id, net in clock_nets.items()
+        if clock_id not in {"fabric_clk", "virtual_clock_enable"}
+        and isinstance(net, str)
+        and net
+    }
     fabric_delays = []
     dut_delays = []
     cross_delays = []
@@ -198,12 +217,28 @@ def _physical_clock_delays(
                 cross_delays.append(float(delay))
     # VPR reports per-clock CPDs for multi-clock circuits. The fallback to the
     # overall CPD is conservative for old VPR logs that lack that table.
-    return {
-        "overall": float(overall),
-        "fabric": max(fabric_delays, default=float(overall)),
-        "dut": max(dut_delays, default=float(overall)),
-        "cross": max(cross_delays, default=float(overall)),
-    }
+    dut_present = bool(dut_nets)
+    return (
+        {
+            "overall": float(overall),
+            "fabric": max(fabric_delays, default=float(overall)),
+            # A partition containing no original sequential DUT logic has no
+            # local DUT or fabric/DUT clock-domain path.  Its combinational
+            # contribution is certified separately by routed logic-segment
+            # timing and must not be invented from an unrelated fabric CPD.
+            "dut": max(dut_delays, default=float(overall)) if dut_present else 0.0,
+            "cross": (
+                max(cross_delays, default=float(overall))
+                if dut_present
+                else 0.0
+            ),
+        },
+        {
+            "fabric": fabric is not None,
+            "dut": dut_present,
+            "cross": dut_present and fabric is not None,
+        },
+    )
 
 
 def validate_multi_fpga_physical_report(
@@ -581,6 +616,7 @@ def run_multi_fpga_physical_flow(
                 fabric_period_ns=fabric_period,
                 dut_period_ns=dut_period,
                 cross_period_ns=cross_period,
+                dut_clock_required=_partition_declares_dut_clock(netlist),
             )
             pack_report = run_vpr_pack_place(
                 architecture_path,
@@ -830,7 +866,7 @@ def run_multi_fpga_physical_flow(
                     "query": local_query_report,
                     "import": local_import_report,
                 }
-            physical_delays = _physical_clock_delays(
+            physical_delays, clock_domain_presence = _physical_clock_delays(
                 route_report, eblif_report
             )
             timing = {
@@ -879,6 +915,7 @@ def run_multi_fpga_physical_flow(
                     **timing,
                     "critical_path_ns": physical_delays["overall"],
                     "clock_domain_delays_ns": physical_delays,
+                    "clock_domain_presence": clock_domain_presence,
                 },
                 "artifacts": {
                     "eblif": {

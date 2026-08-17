@@ -2079,7 +2079,13 @@ minimum frame that still passes route capacity, ratio legalization, concrete
 lane/slot scheduling, precedence, barrier, collision, and transport checks.
 The open physical backend constrains the actual fabric and DUT clock nets in
 VPR and exports the complete Tatum setup endpoint population. Each
-`physical-partition-result/v1` carries WNS, TNS, logical failing endpoints,
+partition is required to carry a DUT clock only when its original split
+netlist declares one. A legal static-exact partition containing combinational
+DUT logic plus transport registers is constrained by the fabric clock and may
+omit a local DUT clock; its contribution to global timing is accepted only
+from complete routed logic-segment evidence, never from a fabricated clock or
+zero-delay fallback. Every `physical-partition-result/v1` carries WNS, TNS,
+logical failing endpoints,
 failing endpoint constraints, and `timing_met`; negative slack is retained as
 a valid measured result rather than rejected or rewritten as closure. The
 checker binds those values to both VPR's console output and its machine timing

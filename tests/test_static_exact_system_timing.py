@@ -37,10 +37,10 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                     "id": "physical-launch",
                     "kind": "launch",
                     "system_path": "path0",
-                    "member_path": "member0",
+                    "member_path": "path0",
                     "cut_index": 0,
                     "fpga": "fpga0",
-                    "replace_tx_endpoint": f"tx:{entry_by_net['n0']['id']}",
+                    "replace_tx_endpoint": f"__emuflow_tx_{entry_by_net['n0']['id']}",
                     "start_pin": "q0.Q",
                     "end_pin": "tx_n0",
                     "static_exact_segment_id": "segment000000",
@@ -51,7 +51,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                     "id": "physical-capture",
                     "kind": "capture",
                     "system_path": "path0",
-                    "member_path": "member0",
+                    "member_path": "path0",
                     "cut_index": 2,
                     "fpga": "fpga0",
                     "replace_tx_endpoint": None,
@@ -67,10 +67,10 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                     "id": "physical-transition",
                     "kind": "transition",
                     "system_path": "path0",
-                    "member_path": "member0",
+                    "member_path": "path0",
                     "cut_index": 1,
                     "fpga": "fpga1",
-                    "replace_tx_endpoint": f"tx:{entry_by_net['d']['id']}",
+                    "replace_tx_endpoint": f"__emuflow_tx_{entry_by_net['d']['id']}",
                     "start_pin": "rx_n0.Q",
                     "end_pin": "tx_d",
                     "static_exact_segment_id": "segment000001",
@@ -103,10 +103,76 @@ class StaticExactSystemTimingTest(unittest.TestCase):
 
     def _system_physical(self):
         result = copy.deepcopy(self.physical)
+        identities = {}
+        timing = {}
+        for fpga in ("fpga0", "fpga1"):
+            endpoint_records = []
+            timing_records = []
+            for entry in self.schedule["entries"]:
+                for kind, endpoint_fpga in (
+                    ("tx", entry["from"]),
+                    ("rx", entry["to"]),
+                ):
+                    if endpoint_fpga != fpga:
+                        continue
+                    endpoint_id = f"__emuflow_{kind}_{entry['id']}"
+                    endpoint_records.append(
+                        {
+                            "id": endpoint_id,
+                            "kind": kind,
+                            "schedule_entry": entry["id"],
+                        }
+                    )
+                    timing_records.append(
+                        {
+                            "id": endpoint_id,
+                            "kind": kind,
+                            "schedule_entry": entry["id"],
+                            "delay_ns": 0.5,
+                            "start_object": "start",
+                            "end_object": "end",
+                            "measurement": (
+                                "logical-source-to-tx-port"
+                                if kind == "tx"
+                                else "rx-port-to-shadow-capture"
+                            ),
+                        }
+                    )
+            coverage = {
+                "endpoints": len(endpoint_records),
+                "tx": sum(item["kind"] == "tx" for item in endpoint_records),
+                "rx": sum(item["kind"] == "rx" for item in endpoint_records),
+            }
+            identities[fpga] = {
+                "schema": "emuflow.boundary-identity/v1",
+                "status": "pass",
+                "design": self.schedule["design"],
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "provider": "test-boundary-identity",
+                "coverage": {
+                    **coverage,
+                    "external_port_nets": len(endpoint_records),
+                },
+                "endpoints": endpoint_records,
+            }
+            timing[fpga] = {
+                "schema": "emuflow.boundary-timing/v1",
+                "status": "pass",
+                "design": self.schedule["design"],
+                "platform": self.platform.name,
+                "fpga": fpga,
+                "provider": "test-routed-boundary-provider",
+                "qualification": "endpoint-exact",
+                "coverage": coverage,
+                "endpoints": timing_records,
+            }
         result.update(
             {
                 "provider": "test-physical",
                 "qualification": "routed-test-evidence",
+                "boundary_identities": identities,
+                "boundary_timing": timing,
                 "fpgas": [
                     {
                         "fpga": fpga,
@@ -269,6 +335,43 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertGreater(
             failed["runtime_clock"]["worst_slack_bound_ns"], 0.0
         )
+
+    def test_clockless_partition_requires_complete_routed_logic_segments(self):
+        runtime, routes, phase5 = self._system_inputs()
+        physical = self._system_physical()
+        for item in physical["fpgas"]:
+            item["clock_domain_presence"] = {
+                "fabric": True,
+                "dut": item["fpga"] != "fpga1",
+                "cross": item["fpga"] != "fpga1",
+            }
+            if item["fpga"] == "fpga1":
+                item["clock_domain_delays_ns"].update(
+                    {"dut": 0.0, "cross": 0.0}
+                )
+
+        passing = build_system_timing(
+            runtime,
+            routes,
+            self.schedule,
+            phase5,
+            physical,
+            self.platform,
+        )
+        self.assertEqual(passing["status"], "pass")
+
+        del physical["logic_segment_timing"]["fpga1"]
+        with self.assertRaisesRegex(
+            ValidationError, "DUT-clockless partitions without complete"
+        ):
+            build_system_timing(
+                runtime,
+                routes,
+                self.schedule,
+                phase5,
+                physical,
+                self.platform,
+            )
 
 
 if __name__ == "__main__":

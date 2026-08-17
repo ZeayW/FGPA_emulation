@@ -571,6 +571,21 @@ def validate_physical_summary(
                     "must be finite"
                 )
             timing_values[field] = float(value)
+        presence = item.get("clock_domain_presence")
+        if presence is None:
+            dut_present = True
+        elif (
+            not isinstance(presence, dict)
+            or set(presence) != {"fabric", "dut", "cross"}
+            or any(not isinstance(value, bool) for value in presence.values())
+            or not presence["fabric"]
+            or presence["cross"] != presence["dut"]
+        ):
+            raise ValidationError(
+                f"physical summary {fpga_id}.clock_domain_presence is invalid"
+            )
+        else:
+            dut_present = presence["dut"]
         total_cells += item["routed_cells"]
         total_physical_cells += item["physical_cells"]
         total_infrastructure_cells += item["infrastructure_cells"]
@@ -580,24 +595,26 @@ def validate_physical_summary(
         worst_slack = float(slack) if worst_slack is None else min(
             worst_slack, float(slack)
         )
-        worst_dut_slack = (
-            timing_values["dut_wns_ns"]
-            if worst_dut_slack is None
-            else min(worst_dut_slack, timing_values["dut_wns_ns"])
-        )
+        if dut_present:
+            worst_dut_slack = (
+                timing_values["dut_wns_ns"]
+                if worst_dut_slack is None
+                else min(worst_dut_slack, timing_values["dut_wns_ns"])
+            )
         worst_fabric_slack = (
             timing_values["fabric_wns_ns"]
             if worst_fabric_slack is None
             else min(worst_fabric_slack, timing_values["fabric_wns_ns"])
         )
-        worst_cross_slack = (
-            timing_values["fabric_to_dut_wns_ns"]
-            if worst_cross_slack is None
-            else min(
-                worst_cross_slack,
-                timing_values["fabric_to_dut_wns_ns"],
+        if dut_present:
+            worst_cross_slack = (
+                timing_values["fabric_to_dut_wns_ns"]
+                if worst_cross_slack is None
+                else min(
+                    worst_cross_slack,
+                    timing_values["fabric_to_dut_wns_ns"],
+                )
             )
-        )
     return {
         "status": "pass",
         "scope": "per-fpga-local-physical-closure",

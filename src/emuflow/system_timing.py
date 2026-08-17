@@ -39,8 +39,8 @@ def _finite_number(value: Any, context: str) -> float:
 
 def _physical_delay_database(
     physical_summary: Mapping[str, Any],
-) -> Dict[str, Dict[str, float]]:
-    result: Dict[str, Dict[str, float]] = {}
+) -> Dict[str, Dict[str, Any]]:
+    result: Dict[str, Dict[str, Any]] = {}
     for item in physical_summary["fpgas"]:
         fpga = item["fpga"]
         raw_delays = item.get("clock_domain_delays_ns", {})
@@ -67,12 +67,34 @@ def _physical_delay_database(
                 )
             return value
 
+        presence = item.get("clock_domain_presence")
+        if presence is None:
+            dut_present = True
+        elif (
+            not isinstance(presence, dict)
+            or set(presence) != {"fabric", "dut", "cross"}
+            or any(not isinstance(value, bool) for value in presence.values())
+            or not presence["fabric"]
+            or presence["cross"] != presence["dut"]
+        ):
+            raise ValidationError(
+                f"physical summary {fpga}.clock_domain_presence is invalid"
+            )
+        else:
+            dut_present = presence["dut"]
+        dut_delay = delay("dut")
+        cross_delay = delay("cross")
+        if not dut_present and (dut_delay != 0.0 or cross_delay != 0.0):
+            raise ValidationError(
+                f"physical summary {fpga} assigns delay to an absent DUT clock"
+            )
         result[fpga] = {
-            "dut": delay("dut"),
+            "dut": dut_delay,
             # The physical result exposes the maximum constrained crossing
             # delay. Use it for both launch and capture interfaces; this is a
             # conservative bound until endpoint-specific timing is exported.
-            "cross": delay("cross"),
+            "cross": cross_delay,
+            "dut_present": dut_present,
         }
     return result
 
@@ -457,6 +479,15 @@ def build_system_timing(
                         cone_bound_segments,
                     ) in candidates
                 }
+        if member_physical is None:
+            clockless = [
+                fpga for fpga in partitions if not delays[fpga]["dut_present"]
+            ]
+            if clockless:
+                raise ValidationError(
+                    f"system timing path {record['path']} crosses DUT-clockless "
+                    f"partitions without complete routed logic segments: {clockless}"
+                )
         transport_delay = record["transport_delay_ns"]
         transport_model = "phase5-boarddb-model"
         if board_link_delays is not None:

@@ -9,6 +9,8 @@ from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
+    _partition_declares_dut_clock,
+    _physical_clock_delays,
     _record_chimew_fixed_io_target,
     _write_vpr_runtime_sdc,
     run_multi_fpga_physical_flow,
@@ -66,6 +68,70 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_partition_dut_clock_requirement_comes_from_split_ports(self):
+        self.assertTrue(
+            _partition_declares_dut_clock(
+                {"ports": [{"id": "clk", "clock": True}]}
+            )
+        )
+        self.assertFalse(
+            _partition_declares_dut_clock(
+                {"ports": [{"id": "data", "clock": False}]}
+            )
+        )
+        with self.assertRaisesRegex(ValidationError, "ports are invalid"):
+            _partition_declares_dut_clock({"ports": None})
+
+    def test_runtime_sdc_allows_clockless_combinational_dut_partition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "runtime.sdc"
+            report = _write_vpr_runtime_sdc(
+                path,
+                {
+                    "clock_nets": {
+                        "fabric_clk": "fabric_clock_net",
+                        "virtual_clock_enable": "enable_net",
+                    }
+                },
+                fabric_period_ns=20.0,
+                dut_period_ns=200.0,
+                cross_period_ns=180.0,
+                dut_clock_required=False,
+            )
+
+            self.assertFalse(report["dut_clock_present"])
+            self.assertFalse(report["dut_clock_required"])
+            self.assertEqual(report["dut_clocks"], [])
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "# EmuFlow endpoint-complete Phase 7 timing contract.\n"
+                "create_clock -name emuflow_fabric_clk -period 20.000000000 "
+                "[get_ports {fabric_clock_net}]\n",
+            )
+
+    def test_clockless_partition_does_not_treat_enable_as_dut_clock(self):
+        delays, presence = _physical_clock_delays(
+            {
+                "metrics": {
+                    "critical_path_ns": 7.0,
+                    "clock_domain_cpd_ns": {"fabric_net->fabric_net": 3.0},
+                }
+            },
+            {
+                "clock_nets": {
+                    "fabric_clk": "fabric_net",
+                    "virtual_clock_enable": "enable_net",
+                }
+            },
+        )
+
+        self.assertEqual(delays["fabric"], 3.0)
+        self.assertEqual(delays["dut"], 0.0)
+        self.assertEqual(delays["cross"], 0.0)
+        self.assertEqual(
+            presence, {"fabric": True, "dut": False, "cross": False}
+        )
+
     def test_runtime_sdc_preserves_long_virtual_clock_period(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "runtime.sdc"
@@ -160,6 +226,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     fpga_root / "netlist.json",
                     {
                         "instances": [{"id": f"{fpga}_original"}],
+                        "ports": [{"id": "clk", "clock": True}],
                     },
                 )
                 write_json(

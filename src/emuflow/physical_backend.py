@@ -181,6 +181,41 @@ def validate_physical_partition_result(
             raise ValidationError(
                 f"physical result {fpga}.{field} must be finite"
             )
+    presence = timing.get("clock_domain_presence")
+    if presence is not None and (
+        not isinstance(presence, dict)
+        or set(presence) != {"fabric", "dut", "cross"}
+        or any(not isinstance(value, bool) for value in presence.values())
+        or not presence["fabric"]
+        or presence["cross"] != presence["dut"]
+    ):
+        raise ValidationError(
+            f"physical result {fpga}.clock_domain_presence is invalid"
+        )
+    domain_delays = timing.get("clock_domain_delays_ns")
+    if presence is not None:
+        if not isinstance(domain_delays, dict):
+            raise ValidationError(
+                f"physical result {fpga} lacks clock-domain delays"
+            )
+        for domain in ("overall", "fabric", "dut", "cross"):
+            value = domain_delays.get(domain)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0.0
+            ):
+                raise ValidationError(
+                    f"physical result {fpga}.{domain} clock delay is invalid"
+                )
+        if not presence["dut"] and (
+            float(domain_delays["dut"]) != 0.0
+            or float(domain_delays["cross"]) != 0.0
+        ):
+            raise ValidationError(
+                f"physical result {fpga} assigns delay to an absent DUT clock"
+            )
     endpoint_timing = {
         "tns_ns": timing.get("tns_ns"),
         "failing_endpoints": timing.get("failing_endpoints"),
@@ -287,6 +322,11 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
         **(
             {"clock_domain_delays_ns": timing["clock_domain_delays_ns"]}
             if "clock_domain_delays_ns" in timing
+            else {}
+        ),
+        **(
+            {"clock_domain_presence": timing["clock_domain_presence"]}
+            if "clock_domain_presence" in timing
             else {}
         ),
         **(

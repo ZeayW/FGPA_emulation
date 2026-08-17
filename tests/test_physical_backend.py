@@ -75,6 +75,44 @@ class PhysicalBackendContractTest(unittest.TestCase):
         self.assertEqual(summary["physical_cells"], 109)
         self.assertEqual(summary["timing"]["fabric_wns_ns"], 0.5)
 
+    def test_clock_domain_presence_projects_to_phase7b(self):
+        result = self._result()
+        result["timing"]["clock_domain_presence"] = {
+            "fabric": True,
+            "dut": False,
+            "cross": False,
+        }
+        result["timing"]["clock_domain_delays_ns"] = {
+            "overall": 1.0,
+            "fabric": 1.0,
+            "dut": 0.0,
+            "cross": 0.0,
+        }
+        validate_physical_partition_result(
+            result,
+            backend="open",
+            fpga="fpga0",
+            part="academic-part",
+            original_cells=100,
+            transport_cells=5,
+        )
+        summary = physical_summary_item(result)
+        self.assertEqual(
+            summary["clock_domain_presence"],
+            {"fabric": True, "dut": False, "cross": False},
+        )
+
+        result["timing"]["clock_domain_delays_ns"]["dut"] = 1.0
+        with self.assertRaisesRegex(ValidationError, "absent DUT clock"):
+            validate_physical_partition_result(
+                result,
+                backend="open",
+                fpga="fpga0",
+                part="academic-part",
+                original_cells=100,
+                transport_cells=5,
+            )
+
     def test_common_result_rejects_provider_identity_and_accepts_timing_failure(self):
         result = self._result()
         result["identity"]["backend"] = "vivado"
