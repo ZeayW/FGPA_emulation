@@ -101,7 +101,7 @@ set queried_paths 0
 # invalidated by a subsequent query.  Serialize each query immediately instead
 # of retaining those handles across the per-cut-net loop.
 proc emuflow_emit_timing_paths {
-    timing_paths output_var emitted_var {forced_net ""} {forced_position "head"}} {
+    timing_paths output_var emitted_var {required_net ""}} {
   global emuir_by_mapped_net
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
@@ -126,10 +126,6 @@ proc emuflow_emit_timing_paths {
     set path_nets [list]
     unset -nocomplain seen_net
     array set seen_net {}
-    if {$forced_net ne "" && $forced_position eq "head"} {
-      set seen_net($forced_net) 1
-      lappend path_nets $forced_net
-    }
     foreach point $points {
       set pin [get_property $point pin]
       foreach net [get_nets -quiet -of_objects $pin] {
@@ -146,10 +142,12 @@ proc emuflow_emit_timing_paths {
         }
       }
     }
-    if {$forced_net ne "" && $forced_position eq "tail" &&
-        ![info exists seen_net($forced_net)]} {
-      set seen_net($forced_net) 1
-      lappend path_nets $forced_net
+    # A directed cut-net certificate is valid only when the path returned by
+    # OpenSTA actually contains that mapped EmuIR net.  Never insert a requested
+    # net synthetically: reconvergent cones can otherwise make an unrelated
+    # worst path look like proof for a different branch.
+    if {$required_net ne "" && ![info exists seen_net($required_net)]} {
+      continue
     }
     if {[llength $path_nets] == 0} {
       continue
@@ -250,16 +248,30 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
       if {[llength $endpoints] == 0} {
         error "through net '$mapped_name' has no timing endpoints"
       }
-      foreach path_end [find_timing_paths -path_delay max \
-          -from $startpoints -to $endpoints \
-          -group_count 1 -endpoint_count 1 \
-          -sort_by_slack] {
-        set timing_paths [list $path_end]
-        incr queried_paths
-        # A path launched from this exact driver necessarily traverses the
-        # requested net.  OpenSTA can omit the zero-length launch net from its
-        # returned point list, so preserve that proven identity explicitly.
-        emuflow_emit_timing_paths $timing_paths output emitted $emuir_name
+      # Query one structural startpoint/endpoint pair at a time.  Passing the
+      # whole collections asks OpenSTA only for the globally worst path, which
+      # can traverse a sibling of the requested net in a reconvergent cone.
+      # Stop after one path whose returned points independently prove coverage.
+      foreach startpoint $startpoints {
+        foreach endpoint $endpoints {
+          foreach path_end [find_timing_paths -path_delay max \
+              -from [list $startpoint] -to [list $endpoint] \
+              -group_count 1 -endpoint_count 1 \
+              -sort_by_slack] {
+            set timing_paths [list $path_end]
+            incr queried_paths
+            emuflow_emit_timing_paths \
+              $timing_paths output emitted $emuir_name
+          }
+          if {$emitted > $before_emitted ||
+              $queried_paths - $before_queried >= $max_paths} {
+            break
+          }
+        }
+        if {$emitted > $before_emitted ||
+            $queried_paths - $before_queried >= $max_paths} {
+          break
+        }
       }
     }
     # A constant-propagated or otherwise non-startpoint LUT output can be a
@@ -267,7 +279,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     # declines to use that internal output as a -from startpoint.  In that
     # narrow case, query the independently identified direct timed endpoint.
     # Any path ending at that exact data pin necessarily traverses this net.
-    if {$queried_paths == $before_queried &&
+    if {$emitted == $before_emitted &&
         [info exists timed_endpoints($emuir_name)]} {
       foreach endpoint_name $timed_endpoints($emuir_name) {
         set endpoint_pin [get_pins -quiet [list $endpoint_name]]
@@ -280,7 +292,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
           set timing_paths [list $path_end]
           incr queried_paths
           emuflow_emit_timing_paths \
-            $timing_paths output emitted $emuir_name tail
+            $timing_paths output emitted $emuir_name
         }
         if {$emitted > $before_emitted} {
           break

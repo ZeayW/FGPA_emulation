@@ -78,13 +78,22 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("direction] ne \"output\"", script)
         self.assertIn("get_fanin -flat -startpoints_only", script)
         self.assertIn("get_fanout -flat -endpoints_only", script)
-        self.assertIn("-from $startpoints -to $endpoints", script)
-        self.assertIn("-from [list $through_pin]", script)
-        self.assertIn("$queried_paths == $before_queried", script)
+        self.assertIn("foreach startpoint $startpoints", script)
+        self.assertIn("foreach endpoint $endpoints", script)
+        self.assertIn(
+            "-from [list $startpoint] -to [list $endpoint]", script
+        )
+        self.assertIn("$emitted == $before_emitted", script)
         self.assertIn("[info exists timed_endpoints($emuir_name)]", script)
         self.assertIn("-to $endpoint_pin", script)
         self.assertIn("-endpoint_count 1", script)
         self.assertIn("proc emuflow_emit_timing_paths", script)
+        self.assertIn(
+            '$required_net ne "" && ![info exists seen_net($required_net)]',
+            script,
+        )
+        self.assertNotIn("forced_net", script)
+        self.assertNotIn("forced_position", script)
         query = script.index("find_timing_paths -path_delay max", script.index("foreach line [lrange $through_lines"))
         emit = script.index("emuflow_emit_timing_paths", query)
         next_query = script.find("find_timing_paths -path_delay max", query + 1)
