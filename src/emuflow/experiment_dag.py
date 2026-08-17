@@ -764,6 +764,7 @@ def _cached_checkpoint(cache_root: Path, key: str) -> Optional[Dict[str, Any]]:
 def plan_experiment(
     spec_path: Path, cache_root: Path, output_path: Path
 ) -> Dict[str, Any]:
+    output_path = validate_experiment_write_path(output_path)
     spec_raw = read_json(spec_path)
     spec = validate_experiment_spec(spec_raw)
     cache_root = validate_experiment_write_path(cache_root)
@@ -1282,6 +1283,7 @@ def build_experiment_farm_spec(
     experiment_nodes: Optional[list[str]] = None,
     worker_argv: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
+    output_path = validate_experiment_write_path(output_path)
     plan = _load_plan(plan_path)
     ready = [
         item

@@ -16,6 +16,7 @@ from .chimew_pipeline import (
     validate_chimew_phase6_pipeline,
 )
 from .errors import EmuFlowError, ValidationError
+from .experiment_storage import validate_experiment_write_path
 from .io import read_json, write_json
 from .ir import EmuIR
 from .multi_fpga_physical_flow import (
@@ -254,7 +255,7 @@ def _board_link_timing(root: Path) -> Path | None:
 
 
 def _prepare_empty_output(output_dir: Path, label: str) -> Path:
-    output_dir = output_dir.resolve()
+    output_dir = validate_experiment_write_path(output_dir)
     if output_dir.exists() and (
         not output_dir.is_dir() or any(output_dir.iterdir())
     ):
@@ -475,7 +476,7 @@ def resume_physical_lookahead(
 ) -> Dict[str, Any]:
     """Finish a lookahead checkpoint around an independently resumed physical run."""
 
-    output_dir = output_dir.expanduser().resolve()
+    output_dir = validate_experiment_write_path(output_dir)
     if not output_dir.is_dir() or {path.name for path in output_dir.iterdir()} != {
         "physical"
     }:

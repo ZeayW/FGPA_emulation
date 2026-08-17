@@ -956,6 +956,10 @@ the launcher must preflight the user quota and leave a frontier blocked until
 enough space has been reclaimed through evidence-aware retention or archive
 cleanup.  Tool scratch such as `TMPDIR` must likewise point to an isolated
 directory under the required `/research` root.
+The boundary is enforced by the direct `experiment-stage`, canonical
+experiment compiler/QoR aggregator, DAG planner, farm-spec builder, checkpoint,
+evidence, GC, migration, and farm entry points; it is not merely a launcher
+convention.
 
 A full-flow Phase 6 provider comparison is one concrete example.  The reusable
 ancestor is a chain, not a monolithic `shared Phase 1--5` directory:

@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -184,6 +185,14 @@ class ExperimentStagesTest(unittest.TestCase):
             (output / "artifact").write_text("present", encoding="utf-8")
             with self.assertRaisesRegex(EmuFlowError, "must be an empty"):
                 _prepare_empty_output(output, "checkpoint")
+
+    def test_direct_stage_output_obeys_validation_server_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ,
+            {"EMUFLOW_REQUIRE_RESEARCH_STORAGE": "1"},
+        ):
+            with self.assertRaisesRegex(Exception, "restricted"):
+                _prepare_empty_output(Path(temporary) / "outside", "checkpoint")
 
     def test_frontend_source_artifact_cannot_escape_checkpoint(self) -> None:
         repository = Path(__file__).resolve().parents[1]

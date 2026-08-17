@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
+from .experiment_storage import validate_experiment_write_path
 from .io import read_json, write_json
 from .multi_fpga_physical_flow import validate_multi_fpga_physical_report
 from .runtime import QOR_REPORT_SCHEMA
@@ -467,7 +468,7 @@ def run_canonical_qor_comparison(
     arm_roots: Mapping[Tuple[str, int], Path],
     output_dir: Path,
 ) -> Dict[str, Any]:
-    output_dir = output_dir.resolve()
+    output_dir = validate_experiment_write_path(output_dir)
     if output_dir.exists() and (
         not output_dir.is_dir() or any(output_dir.iterdir())
     ):
