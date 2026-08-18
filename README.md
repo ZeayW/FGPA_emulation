@@ -2625,6 +2625,15 @@ against the dense reconstruction, including its negative validation cases;
 this keeps public contest scale runs near-linear without weakening the
 certificate.  Academic ratio and timing-DAG providers still build their dense
 model once and share it across optimization, scheduling, timing, and feedback.
+They evaluate both the exact-displacement and scalable minimum-wire ratio
+legalizers. If one valid ratio candidate cannot be realized as a concrete
+slot schedule, Phase 5 records that candidate as `infeasible` and evaluates
+the remaining strategy instead of aborting the comparison. Passing strategies
+remain in `candidate_selection.candidates`, while rejected strategies and
+their reasons are preserved in `candidate_selection.rejected_candidates`. If
+no strategy is schedulable, the command reports all candidate-specific reasons
+together. This fallback never enlarges the frame or relaxes the configured
+ratio domain.
 Their two-round discrete legalizer jointly optimizes the round boundary and
 ratio buckets. A promotion that does not save a lane at the current boundary
 is not rejected prematurely: the checker recomputes the complete boundary
