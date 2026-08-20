@@ -164,7 +164,43 @@ def _physical_timing_databases(root: Path) -> tuple[Path | None, Path | None]:
             "physical timing requires the sealed Phase 4 timing population"
         )
     projected = read_json(projected_path)
-    source_input = projected.get("source", {}).get("input")
+    source = projected.get("source", {})
+    if not isinstance(source, dict):
+        raise ValidationError("physical timing population provenance is invalid")
+
+    # Canonical v3 projections are portable content-addressed artifacts.  They
+    # deliberately avoid recording the producer-local path because a managed
+    # checkpoint can be moved into the object store after validation.  Retain
+    # the v2 filename form below only for reading existing legacy checkpoints.
+    source_digest = source.get("input_sha256")
+    if source_digest is not None:
+        if not isinstance(source_digest, str) or len(source_digest) != 64:
+            raise ValidationError("physical timing population digest is invalid")
+        candidates = [(full, full)]
+        if cut is not None:
+            candidates.append((cut, cut))
+        matched = [candidate for candidate in candidates if _sha256(candidate[0]) == source_digest]
+        if not matched:
+            raise ValidationError(
+                "physical timing population digest does not name a known STA database"
+            )
+        # Identical complete and through-cut databases are semantically
+        # interchangeable; prefer the complete database in that degenerate
+        # case so local and routed member queries stay on one immutable input.
+        selected = matched[0][1]
+        source_input = source.get("input")
+        if source_input is None:
+            return full, selected
+        if not isinstance(source_input, str) or not source_input:
+            raise ValidationError("physical timing population provenance is invalid")
+        source_name = Path(source_input).name
+        if source_name != selected.name:
+            raise ValidationError(
+                "physical timing population path and digest disagree"
+            )
+        return full, selected
+
+    source_input = source.get("input")
     if not isinstance(source_input, str) or not source_input:
         raise ValidationError("physical timing population provenance is invalid")
     source_name = Path(source_input).name

@@ -147,6 +147,45 @@ class ExperimentStagesTest(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "unknown STA database"):
                 _physical_timing_databases(root)
 
+    def test_physical_timing_accepts_content_addressed_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timing = root / "timing"
+            timing.mkdir()
+            full = timing / "path-database.json"
+            cut = timing / "cut-path-database.json"
+            full.write_text('{"paths":["complete"]}', encoding="utf-8")
+            cut.write_text('{"paths":["through-cut"]}', encoding="utf-8")
+            projected = timing / "cut-timing-paths.json"
+
+            write_json(
+                projected,
+                {"source": {"input_sha256": hashlib.sha256(full.read_bytes()).hexdigest()}},
+            )
+            self.assertEqual(_physical_timing_databases(root), (full, full))
+
+            write_json(
+                projected,
+                {"source": {"input_sha256": hashlib.sha256(cut.read_bytes()).hexdigest()}},
+            )
+            self.assertEqual(_physical_timing_databases(root), (full, cut))
+
+            write_json(projected, {"source": {"input_sha256": "0" * 64}})
+            with self.assertRaisesRegex(Exception, "digest does not name"):
+                _physical_timing_databases(root)
+
+            write_json(
+                projected,
+                {
+                    "source": {
+                        "input": "cut-path-database.json",
+                        "input_sha256": hashlib.sha256(full.read_bytes()).hexdigest(),
+                    }
+                },
+            )
+            with self.assertRaisesRegex(Exception, "path and digest disagree"):
+                _physical_timing_databases(root)
+
     def test_frontend_checkpoint_is_reusable_and_tamper_evident(self) -> None:
         repository = Path(__file__).resolve().parents[1]
         platform = repository / "platforms/virtual/xcvu3p_2fpga_p2p.json"

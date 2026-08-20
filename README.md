@@ -225,7 +225,10 @@ complete original TimingPathDB, so every original path that becomes
 cross-partition is optimized and remains identifiable at Phase 7C. An
 additional post-partition OpenSTA through-cut query is retained as diagnostic
 coverage evidence for the selected cut nets; it is not substituted for the
-complete original path population. Directed extraction records a sealed
+complete original path population. The projected population seals its source
+STA database by content hash rather than a producer-local path, so a validated
+checkpoint remains usable after content-addressed import or relocation.
+Directed extraction records a sealed
 per-cut-net query certificate (driver count and queried/emitted path counts).
 The validator independently reconstructs timed-endpoint reachability from
 EmuIR connectivity plus the selected timing-cell model. A net may be absent
