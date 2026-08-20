@@ -13,6 +13,7 @@ import errno
 import hashlib
 import math
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -77,19 +78,40 @@ def _float_equal(left: float, right: float) -> bool:
 
 
 def _portable_cut_timing_projection(
-    artifact: Mapping[str, Any], database_name: str
+    artifact: Mapping[str, Any],
+    database_name: str,
+    *,
+    database_sha256: str | None = None,
 ) -> Dict[str, Any]:
-    """Canonicalize the location-only provenance in a projected STA artifact."""
+    """Canonicalize projected-STA provenance without retaining staging paths.
+
+    New projections seal their input with ``input_sha256`` so that a checkpoint
+    remains independently reconstructible after an atomic move into the
+    content-addressed store.  Accept the former filename-only form only for
+    reading historical checkpoints; all newly produced projections use the
+    digest form.
+    """
     source = artifact.get("source")
     if not isinstance(source, dict):
         raise ValidationError("cut-timing projection source is invalid")
+    if source.get("provider") != "partition-projected-sta-paths-v1":
+        raise ValidationError("cut-timing projection source is invalid")
+
+    input_sha256 = source.get("input_sha256")
+    if input_sha256 is not None:
+        if not isinstance(input_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", input_sha256):
+            raise ValidationError("cut-timing projection source is invalid")
+        if database_sha256 is not None and input_sha256 != database_sha256:
+            raise ValidationError("cut-timing projection source is invalid")
+        portable = dict(artifact)
+        portable["source"] = {
+            "provider": source["provider"],
+            "input_sha256": input_sha256,
+        }
+        return portable
+
     input_path = source.get("input")
-    if (
-        source.get("provider") != "partition-projected-sta-paths-v1"
-        or not isinstance(input_path, str)
-        or not input_path
-        or Path(input_path).name != database_name
-    ):
+    if not isinstance(input_path, str) or not input_path or Path(input_path).name != database_name:
         raise ValidationError("cut-timing projection source is invalid")
     portable = dict(artifact)
     portable["source"] = {**source, "input": database_name}
@@ -658,9 +680,13 @@ def validate_cut_timing_checkpoint(
             complete_database, assignment_path, rebuilt
         )
         if _portable_cut_timing_projection(
-            read_json(rebuilt), complete_database.name
+            read_json(rebuilt),
+            complete_database.name,
+            database_sha256=_sha256(complete_database),
         ) != _portable_cut_timing_projection(
-            read_json(projected), complete_database.name
+            read_json(projected),
+            complete_database.name,
+            database_sha256=_sha256(complete_database),
         ):
             raise ValidationError("cut-timing projection reconstruction failed")
     return {

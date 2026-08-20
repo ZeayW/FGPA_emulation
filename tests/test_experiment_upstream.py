@@ -94,7 +94,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             "schema": "emuflow.sta-paths/v1",
             "source": {
                 "provider": "partition-projected-sta-paths-v1",
-                "input": "/cache/staging/key/output/cut-path-database.json",
+                "input_sha256": "a" * 64,
             },
             "paths": [{"id": "p0"}],
         }
@@ -107,20 +107,41 @@ class ExperimentUpstreamTest(unittest.TestCase):
         }
         self.assertEqual(
             _portable_cut_timing_projection(
-                artifact, "cut-path-database.json"
+                artifact,
+                "cut-path-database.json",
+                database_sha256="a" * 64,
             ),
             _portable_cut_timing_projection(
-                relocated, "cut-path-database.json"
+                relocated,
+                "cut-path-database.json",
+                database_sha256="a" * 64,
             ),
+        )
+        legacy = {
+            **artifact,
+            "source": {
+                "provider": "partition-projected-sta-paths-v1",
+                "input": "/cache/staging/key/output/cut-path-database.json",
+            },
+        }
+        self.assertEqual(
+            _portable_cut_timing_projection(
+                legacy, "cut-path-database.json", database_sha256="a" * 64
+            )["source"]["input"],
+            "cut-path-database.json",
         )
 
         tampered = {**relocated, "paths": [{"id": "different"}]}
         self.assertNotEqual(
             _portable_cut_timing_projection(
-                artifact, "cut-path-database.json"
+                artifact,
+                "cut-path-database.json",
+                database_sha256="a" * 64,
             ),
             _portable_cut_timing_projection(
-                tampered, "cut-path-database.json"
+                tampered,
+                "cut-path-database.json",
+                database_sha256="a" * 64,
             ),
         )
         with self.assertRaisesRegex(
@@ -129,12 +150,10 @@ class ExperimentUpstreamTest(unittest.TestCase):
             _portable_cut_timing_projection(
                 {
                     **artifact,
-                    "source": {
-                        **artifact["source"],
-                        "input": "/cache/staging/key/output/other.json",
-                    },
+                    "source": {**artifact["source"], "input_sha256": "b" * 64},
                 },
                 "cut-path-database.json",
+                database_sha256="a" * 64,
             )
 
     def _tdm_fixture(
