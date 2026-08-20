@@ -225,18 +225,24 @@ def _vpr_atom_pin(
             return f"{atom}.{port}[0]"
     if cell_type == "VTR_MULTIPLY" and port in {"a", "b", "out"}:
         return f"{atom}.{port}[{bit}]"
-    if cell_type in {"VTR_SP_RAM", "VTR_DP_RAM"}:
-        data_ports = (
-            {"data", "out"}
-            if cell_type == "VTR_SP_RAM"
-            else {"data1", "data2", "out1", "out2"}
-        )
-        atom_bit = bit if port in data_ports else 0
-        pin_bit = (
-            bit
-            if port in {"addr", "addr1", "addr2"}
-            else 0
-        )
+    if cell_type == "VTR_SP_RAM":
+        if port not in {"addr", "data", "we", "out", "clk"}:
+            raise ValidationError(
+                f"unsupported VTR SP-RAM pin {instance_id}.{port}[{bit}]"
+            )
+        atom_bit = bit if port in {"data", "out"} else 0
+        pin_bit = bit if port == "addr" else 0
+        return f"{atom}__bit{atom_bit}.{port}[{pin_bit}]"
+    if cell_type == "VTR_DP_RAM":
+        if port not in {
+            "addr1", "addr2", "data1", "data2", "we1", "we2",
+            "out1", "out2", "clk",
+        }:
+            raise ValidationError(
+                f"unsupported VTR DP-RAM pin {instance_id}.{port}[{bit}]"
+            )
+        atom_bit = bit if port in {"data1", "data2", "out1", "out2"} else 0
+        pin_bit = bit if port in {"addr1", "addr2"} else 0
         return f"{atom}__bit{atom_bit}.{port}[{pin_bit}]"
     raise ValidationError(
         f"unsupported physical logic pin {instance_id}.{port}[{bit}] "
@@ -858,7 +864,19 @@ def _write_logic_segment_query(
                 raise ValidationError(
                     f"static exact capture endpoint {endpoint!r} is unsupported"
                 )
-            return {"instance": endpoint, "port": "D", "bit": 0}
+            port = capture.get("port")
+            bit = capture.get("bit")
+            if (
+                not isinstance(port, str)
+                or isinstance(bit, bool)
+                or not isinstance(bit, int)
+                or bit < 0
+            ):
+                raise ValidationError(
+                    f"static exact capture endpoint {endpoint!r} does not "
+                    "preserve its reached pin"
+                )
+            return {"instance": endpoint, "port": port, "bit": bit}
 
         existing = {
             (

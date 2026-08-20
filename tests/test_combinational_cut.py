@@ -781,6 +781,47 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "partition-legality-only-provisional",
         )
 
+    def test_exact_contract_preserves_reached_memory_capture_pin(self):
+        value = copy.deepcopy(self.ir.value)
+        memory = next(item for item in value["instances"] if item["id"] == "q1")
+        memory.update(
+            {
+                "type": "VTR_DP_RAM",
+                "resources": {"bram": 1},
+                "parameters": {"ADDR_WIDTH": 4, "DATA_WIDTH": 8},
+            }
+        )
+        terminal = next(item for item in value["nets"] if item["id"] == "d")
+        terminal["sinks"] = [
+            {"instance": "q1", "port": "data1", "bit": 3}
+        ]
+        self.ir = EmuIR(value)
+        self.constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        _clusters, assignment = self._exact_artifacts()
+        captures = [
+            item
+            for item in assignment["semantic_contract"]["capture_requirements"]
+            if item["kind"] == "architectural-state"
+            and item["endpoint"] == "q1"
+        ]
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(
+            captures,
+            [
+                {
+                    "id": "capture000000",
+                    "cut_net": "n0",
+                    "fpga": "fpga1",
+                    "kind": "architectural-state",
+                    "endpoint": "q1",
+                    "port": "data1",
+                    "bit": 3,
+                }
+            ],
+        )
+
     def test_contract_tamper_is_rejected(self):
         clusters, assignment = self._exact_artifacts()
         tampered = copy.deepcopy(assignment)

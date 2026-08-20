@@ -686,7 +686,7 @@ def build_static_exact_semantic_contract(
         net = nets[net_id]
         for sink_fpga in sorted(cut["sink_fpgas"]):
             work = [
-                endpoint["instance"]
+                endpoint
                 for endpoint in net["sinks"]
                 if endpoint["instance"] is not None
                 and instance_assignment.get(endpoint["instance"]) == sink_fpga
@@ -703,10 +703,10 @@ def build_static_exact_semantic_contract(
                     )
             visited: Set[str] = set()
             while work:
-                instance_id = work.pop()
-                if instance_id in visited:
-                    continue
-                visited.add(instance_id)
+                endpoint = work.pop()
+                instance_id = endpoint["instance"]
+                if instance_id is None:
+                    raise ValidationError("exact capture endpoint is unexpectedly top-level")
                 classification = classes[instance_id]
                 if classification == "architectural-state-or-memory":
                     capture_records.append(
@@ -715,9 +715,18 @@ def build_static_exact_semantic_contract(
                             "fpga": sink_fpga,
                             "kind": "architectural-state",
                             "endpoint": instance_id,
+                            # A memory macro has many independent state
+                            # inputs.  Preserve the original reached pin, not
+                            # merely its instance, so Phase 7 can qualify the
+                            # exact lowered VPR/Vivado endpoint.
+                            "port": endpoint["port"],
+                            "bit": endpoint["bit"],
                         }
                     )
                     continue
+                if instance_id in visited:
+                    continue
+                visited.add(instance_id)
                 for outgoing in outgoing_by_instance.get(instance_id, []):
                     downstream_cut = cut_by_net.get(outgoing["id"])
                     if (
@@ -739,7 +748,7 @@ def build_static_exact_semantic_contract(
                                 }
                             )
                         elif instance_assignment.get(sink) == sink_fpga:
-                            work.append(sink)
+                            work.append(endpoint)
 
     unique_capture_records = sorted(
         {
@@ -748,6 +757,8 @@ def build_static_exact_semantic_contract(
                 item["fpga"],
                 item["kind"],
                 item["endpoint"],
+                item.get("port"),
+                item.get("bit"),
             )
             for item in capture_records
         }
@@ -759,8 +770,13 @@ def build_static_exact_semantic_contract(
             "fpga": fpga,
             "kind": kind,
             "endpoint": endpoint,
+            **(
+                {"port": port, "bit": bit}
+                if kind == "architectural-state"
+                else {}
+            ),
         }
-        for index, (cut_net, fpga, kind, endpoint) in enumerate(
+        for index, (cut_net, fpga, kind, endpoint, port, bit) in enumerate(
             unique_capture_records
         )
     ]

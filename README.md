@@ -443,6 +443,9 @@ Phase 3--7 acceptance sequence are specified in
 The default remains sequential-only until macro-cycle equivalence, routed
 segment deadlines, and whole-design target and virtual-runtime WNS/TNS all
 pass.
+Static-exact physical evidence preserves each reached state-capture input pin
+and bit through lowering; a VTR query rejects an endpoint that is absent from
+the emitted primitive contract before physical routing begins.
 For Xilinx-mapped flip-flops, `FDRE.R` and `FDSE.S` are synchronous controls
 and are therefore legal second-round `register_input` transport boundaries,
 just like `D` and `CE`. `FDCE.CLR` and `FDPE.PRE` remain asynchronous and are

@@ -91,6 +91,10 @@ The first version is intentionally fail-closed:
   remain atomic;
 - top-level output capture and supported synchronous FF data/control inputs
   are valid terminal boundaries;
+- physical capture records preserve the reached state input pin and bit; the
+  physical query translates it to the corresponding lowered primitive pin
+  (for example VTR RAM `data1[bit]`) and rejects any absent pin before
+  physical routing starts;
 - every reconvergent predecessor is retained;
 - a source cone that reconverges transported predecessors with a local
   architectural register, memory, or primary-input launch retains both the

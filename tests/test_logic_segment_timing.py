@@ -670,6 +670,18 @@ class LogicSegmentTimingTest(unittest.TestCase):
             ),
             "i2__bit0.addr1[3]",
         )
+        self.assertEqual(
+            _vpr_atom_pin(
+                ir,
+                index,
+                {"instance": "ram", "port": "data1", "bit": 3},
+            ),
+            "i2__bit3.data1[0]",
+        )
+        with self.assertRaisesRegex(ValidationError, "DP-RAM pin ram.D"):
+            _vpr_atom_pin(
+                ir, index, {"instance": "ram", "port": "D", "bit": 0}
+            )
 
     def test_vpr_top_output_uses_eblif_packed_alias(self):
         ir = EmuIR(
