@@ -14,6 +14,7 @@ from emuflow.experiment_stages import (
     _validate_managed_phase6_checkpoint,
     _sta_path_database,
     _timing_paths,
+    validate_shared_phase1_5,
     resume_physical_lookahead,
 )
 from emuflow.experiment_upstream import (
@@ -64,6 +65,44 @@ class ExperimentStagesTest(unittest.TestCase):
                     timing / "path-database.json",
                     timing / "path-database.json",
                 ),
+            )
+
+    def test_shared_validator_passes_projected_timing_paths_to_phase4(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        platform = repository / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontend = root / "frontend"
+            run_frontend_checkpoint(
+                platform,
+                frontend,
+                yosys_json=repository / "examples/yosys/counter.json",
+                top="counter",
+                clocks=["clk"],
+            )
+            for relative in (
+                "partition/clusters.json",
+                "partition/assignment.json",
+                "partition/phase3_report.json",
+                "system-route/routes.json",
+                "system-route/phase4_report.json",
+                "tdm/schedule.json",
+                "tdm/phase5_report.json",
+            ):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                write_json(path, {})
+            projected = root / "timing/cut-timing-paths.json"
+            projected.parent.mkdir(parents=True, exist_ok=True)
+            write_json(projected, {"source": {"input_sha256": "a" * 64}})
+            with mock.patch("emuflow.experiment_stages.validate_phase3"), mock.patch(
+                "emuflow.experiment_stages.validate_phase4"
+            ) as validate_phase4, mock.patch("emuflow.experiment_stages.validate_phase5"):
+                report = validate_shared_phase1_5(root, platform)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                validate_phase4.call_args.kwargs["timing_paths_path"],
+                projected.resolve(),
             )
 
     def test_physical_timing_requires_original_database_and_projection(self) -> None:

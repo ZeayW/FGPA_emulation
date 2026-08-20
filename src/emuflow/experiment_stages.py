@@ -274,7 +274,7 @@ def validate_shared_phase1_5(root: Path, platform_path: Path) -> Dict[str, Any]:
         paths["assignment"],
         platform_path,
         paths["routes"],
-        timing_paths_path=_projected_timing_paths(root),
+        timing_paths_path=_timing_paths(root),
     )
     ratio_plan = root / "tdm/ratio_plan.json"
     validate_phase5(
