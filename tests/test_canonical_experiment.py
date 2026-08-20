@@ -454,7 +454,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"][
                     "minimum_combinational_cut_nets"
                 ],
-                1,
+                0,
             )
             self.assertEqual(
                 partition["configuration"][
@@ -471,7 +471,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                     )
                     + 1
                 ],
-                "1",
+                "0",
             )
             self.assertEqual(
                 partition["validator"][
@@ -480,7 +480,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                     )
                     + 1
                 ],
-                "1",
+                "0",
             )
             route = nodes["route"]
             self.assertEqual(
@@ -526,26 +526,33 @@ class CanonicalExperimentTest(unittest.TestCase):
                     config_path, REPOSITORY, root / "spec.json"
                 )
 
-    def test_static_exact_evidence_requires_an_actual_combinational_cut(
+    def test_static_exact_can_optionally_require_an_actual_combinational_cut(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
-            config.update(
-                {
-                    "cut_mode": "static-exact-combinational",
-                    "minimum_combinational_cut_nets": 0,
-                }
-            )
+            config["cut_mode"] = "static-exact-combinational"
             config_path.write_text(json.dumps(config), encoding="utf-8")
-            with self.assertRaisesRegex(
-                ValidationError, "minimum_combinational_cut_nets"
-            ):
-                compile_canonical_experiment_spec(
-                    config_path, REPOSITORY, root / "spec.json"
-                )
+            report = compile_canonical_experiment_spec(
+                config_path, REPOSITORY, root / "spec.json"
+            )
+            self.assertEqual(report["cut_mode"], "static-exact-combinational")
+            nodes = {
+                item["id"]: item
+                for item in json.loads((root / "spec.json").read_text())["nodes"]
+            }
+            self.assertEqual(
+                nodes["partition"]["configuration"]["minimum_combinational_cut_nets"],
+                0,
+            )
+
+            config["minimum_combinational_cut_nets"] = 1
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            compile_canonical_experiment_spec(
+                config_path, REPOSITORY, root / "exercise-spec.json"
+            )
 
             config["cut_mode"] = "sequential-only"
             config["minimum_combinational_cut_nets"] = 1

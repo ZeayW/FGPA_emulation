@@ -950,6 +950,10 @@ def validate_multi_fpga_flow_bundle(
         "observed_combinational_cut_nets": phase3_validation.get(
             "combinational_cut_nets", 0
         ),
+        "static_exact_combinational_cut_exercised": (
+            phase3_validation.get("cut_mode") == CUT_MODE_STATIC_EXACT
+            and phase3_validation.get("combinational_cut_nets", 0) > 0
+        ),
         "physical_required": require_physical,
     }
 

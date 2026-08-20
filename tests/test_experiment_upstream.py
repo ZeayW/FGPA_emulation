@@ -391,6 +391,8 @@ class ExperimentUpstreamTest(unittest.TestCase):
             validate_phase3.return_value[
                 "combinational_cut_nets"
             ] = 1
+            report["static_exact_combinational_cut_exercised"] = True
+            report_path.write_text(json.dumps(report), encoding="utf-8")
             checked = validate_partition_checkpoint(
                 frontend,
                 timing,
@@ -399,6 +401,19 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 expected_minimum_combinational_cut_nets=1,
             )
             self.assertEqual(checked["combinational_cut_nets"], 1)
+
+            report["static_exact_combinational_cut_exercised"] = False
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "exercise status disagrees"
+            ):
+                validate_partition_checkpoint(
+                    frontend,
+                    timing,
+                    platform,
+                    partition,
+                    expected_minimum_combinational_cut_nets=1,
+                )
 
     @mock.patch("emuflow.experiment_upstream.validate_phase5")
     def test_tdm_validator_binds_academic_optimization_provider(

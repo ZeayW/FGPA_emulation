@@ -213,14 +213,14 @@ annotation, Phase 5 to the exact dependency scheduler, omits ratio optimizers,
 and makes the ordinary CLI slot-refinement default zero for this mode. An
 explicit nonzero request is still rejected until that optimizer is dependency-
 qualified. The compiler produces three independently sealed physical Phase 7
-terminals. This is
-the evidence path; the one-command flow above remains a convenience path.
-Canonical exact evidence cannot set `minimum_combinational_cut_nets` below one.
-The producer records this threshold and the separately invoked Phase 3
-validator reconstructs the assignment's actual combinational-cut count before
-accepting it. Generic Phase 3 and the one-command convenience path still allow
-zero selected combinational cuts because some otherwise valid designs do not
-need one; such a run is simply not exact-cut qualification evidence.
+terminals. Canonical static-exact runs default
+`minimum_combinational_cut_nets` to zero because some real, legal partitions
+need no combinational boundary. The producer records the selected threshold,
+the separately invoked Phase 3 validator reconstructs the actual count, and
+the report records whether a combinational cut was actually exercised. A
+positive threshold is an explicit exercise contract, used by the small
+capacity-limited acceptance fixture; a zero-cut large run is compatible
+evidence, not an exercised exact-cut result.
 
 `examples/rtl/static_exact_acceptance.v` is the small real-RTL acceptance
 source. Its 33-input next-state parity needs at least seven 6-input LUTs, while

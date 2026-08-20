@@ -482,16 +482,12 @@ def compile_canonical_experiment_spec(
     )
     minimum_combinational_cut_nets = config.get(
         "minimum_combinational_cut_nets",
-        1 if cut_mode == CUT_MODE_STATIC_EXACT else 0,
+        0,
     )
     if (
         isinstance(minimum_combinational_cut_nets, bool)
         or not isinstance(minimum_combinational_cut_nets, int)
         or minimum_combinational_cut_nets < 0
-        or (
-            cut_mode == CUT_MODE_STATIC_EXACT
-            and minimum_combinational_cut_nets < 1
-        )
         or (
             cut_mode != CUT_MODE_STATIC_EXACT
             and minimum_combinational_cut_nets != 0
@@ -499,7 +495,7 @@ def compile_canonical_experiment_spec(
     ):
         raise ValidationError(
             "canonical experiment minimum_combinational_cut_nets must be "
-            "positive for static exact mode and zero otherwise"
+            "non-negative for static exact mode and zero otherwise"
         )
     if (
         cut_mode == CUT_MODE_STATIC_EXACT

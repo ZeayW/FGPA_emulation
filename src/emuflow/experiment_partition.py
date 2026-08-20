@@ -102,6 +102,10 @@ def run_partition_checkpoint(
         ),
         "comb_segment_budget_slots": comb_segment_budget_slots,
         "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
+        "static_exact_combinational_cut_exercised": (
+            cut_mode != CUT_MODE_SEQUENTIAL_ONLY
+            and phase3["validation"].get("combinational_cut_nets", 0) > 0
+        ),
         "emuir_sha256": _sha256(ir_path),
         "platform_sha256": _sha256(platform_path.resolve()),
         "weights_sha256": _sha256(weights_path),
@@ -272,6 +276,18 @@ def validate_partition_checkpoint(
         raise ValidationError(
             "partition exact-cut evidence selected fewer combinational cut "
             "nets than required"
+        )
+    expected_exercised = (
+        report.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
+        != CUT_MODE_SEQUENTIAL_ONLY
+        and actual_combinational_cut_nets > 0
+    )
+    if (
+        "static_exact_combinational_cut_exercised" in report
+        and report["static_exact_combinational_cut_exercised"] != expected_exercised
+    ):
+        raise ValidationError(
+            "partition static-exact exercise status disagrees with assignment"
         )
     cut_policy = read_json(seals["clusters_sha256"]).get("policy", {})
     independently_reconstructed = {

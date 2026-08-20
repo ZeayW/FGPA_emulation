@@ -387,17 +387,19 @@ fabricated zero delay. This is
 also reflected at the one-command CLI boundary: exact mode defaults slot
 refinement to zero, while an explicit nonzero request remains fail-closed until
 that optimizer is dependency-qualified. This is
-implemented qualification machinery; a real routed complete Phase 1--7 result
-is still pending and the mode remains opt-in.
+implemented qualification machinery. Small real-RTL physical acceptance
+exercises the exact-cut path; the mode remains opt-in while scalable
+real-design acceptance is completed.
 
-Canonical Experiment v2 static-exact runs are evidence runs, not mere mode
-smokes: their Phase 3 task and independent validator require at least one
-actually selected combinational cut (`--minimum-combinational-cut-nets 1`).
-This prevents a legal but vacuous exact-mode run from being reported as feature
-qualification. The checked-in `static_exact_acceptance` RTL and
-`static_exact_acceptance_2fpga` BoardDB are a deliberately capacity-limited
-functional/physical acceptance fixture for this gate; they are not a QoR
-benchmark and must not be mixed into benchmark-comparison tables.
+Canonical Experiment v2 defaults the static-exact combinational-cut threshold
+to zero. This permits a real design to complete the full flow when the legal
+partition happens to use only sequential boundaries; it must be reported as
+static-exact compatible, not as an exercised combinational-cut result. Set
+`--minimum-combinational-cut-nets 1` only for an explicit exercise contract.
+The checked-in `static_exact_acceptance` RTL and
+`static_exact_acceptance_2fpga` BoardDB are the deliberately capacity-limited
+functional/physical fixture for that gate; they are not a QoR benchmark and
+must not be mixed into benchmark-comparison tables.
 
 ```bash
 emuflow phase6 \
