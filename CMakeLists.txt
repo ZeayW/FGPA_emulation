@@ -179,6 +179,14 @@ if(EMUFLOW_FLEX_INCLUDE_DIR)
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
     "-DFLEX_INCLUDE_DIR=${EMUFLOW_FLEX_INCLUDE_DIR}"
   )
+  # Yosys builds through its own Makefile rather than CMake, and its generated
+  # Verilog frontend includes <FlexLexer.h> directly.  Keep that compiler
+  # include path inside the configured dependency closure instead of relying
+  # on an ambient system include directory or a release-launcher workaround.
+  list(
+    APPEND EMUFLOW_EXTERNAL_BUILD_ENV
+    "CPATH=${EMUFLOW_FLEX_INCLUDE_DIR}:$ENV{CPATH}"
+  )
 endif()
 if(EMUFLOW_BISON_PKGDATADIR)
   list(

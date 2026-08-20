@@ -21,6 +21,15 @@ class NativeToolsTest(unittest.TestCase):
         # ENABLE_TCL := 1 during configure, build, and install invocations.
         self.assertEqual(yosys_block.count("ENABLE_TCL=0"), 3)
 
+    def test_yosys_build_inherits_versioned_flex_header_path(self) -> None:
+        cmake = (Path(__file__).resolve().parents[1] / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        flex_block = cmake.split("if(EMUFLOW_FLEX_INCLUDE_DIR)", 1)[1].split(
+            "endif()", 1
+        )[0]
+        self.assertIn("CPATH=${EMUFLOW_FLEX_INCLUDE_DIR}:$ENV{CPATH}", flex_block)
+
     def test_resolves_only_configured_in_tree_install_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
