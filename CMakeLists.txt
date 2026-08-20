@@ -828,6 +828,11 @@ if(EMUFLOW_BUILD_YOSYS)
       -f "<SOURCE_DIR>/Makefile" config-gcc
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
+      # EmuFlow invokes Yosys scripts directly and does not use its optional
+      # interactive Tcl shell.  Disable it explicitly: otherwise an ambient
+      # (and potentially relocatable) tcl.pc can select headers outside the
+      # versioned build closure.
+      ENABLE_TCL=0
     BUILD_COMMAND
       "${CMAKE_COMMAND}" -E env
       ${EMUFLOW_EXTERNAL_BUILD_ENV}
@@ -836,11 +841,13 @@ if(EMUFLOW_BUILD_YOSYS)
       -j "${EMUFLOW_EXTERNAL_JOBS}"
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
+      ENABLE_TCL=0
     INSTALL_COMMAND
       "${EMUFLOW_MAKE_EXECUTABLE}" -C "<BINARY_DIR>"
       -f "<SOURCE_DIR>/Makefile"
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
+      ENABLE_TCL=0
       install
     BUILD_BYPRODUCTS
       "${EMUFLOW_INSTALL_BINDIR}/yosys"

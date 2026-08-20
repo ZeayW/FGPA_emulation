@@ -10,6 +10,17 @@ from emuflow.native_tools import resolve_native_executable
 
 
 class NativeToolsTest(unittest.TestCase):
+    def test_yosys_build_does_not_depend_on_ambient_tcl(self) -> None:
+        cmake = (Path(__file__).resolve().parents[1] / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        yosys_block = cmake.split("if(EMUFLOW_BUILD_YOSYS)", 1)[1].split(
+            "endif()\n\nif(EMUFLOW_BUILD_CUDD)", 1
+        )[0]
+        # The command-line assignment takes precedence over Yosys's default
+        # ENABLE_TCL := 1 during configure, build, and install invocations.
+        self.assertEqual(yosys_block.count("ENABLE_TCL=0"), 3)
+
     def test_resolves_only_configured_in_tree_install_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
