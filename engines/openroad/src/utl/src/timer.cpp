@@ -35,6 +35,11 @@
 
 #include "utl/timer.h"
 
+// DebugScopedTimer is passed to the Logger's spdlog/fmt formatting template.
+// Recent external fmt releases do not implicitly fall back to operator<< from
+// fmt/core.h; make the ostream formatter visible at that instantiation site.
+#include <fmt/ostream.h>
+
 namespace utl {
 
 void Timer::reset()

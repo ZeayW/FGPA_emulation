@@ -30,6 +30,13 @@ class NativeToolsTest(unittest.TestCase):
         )[0]
         self.assertIn("CPATH=${EMUFLOW_FLEX_INCLUDE_DIR}:$ENV{CPATH}", flex_block)
 
+    def test_openroad_timer_exposes_ostream_formatter_to_external_fmt(self) -> None:
+        timer = (
+            Path(__file__).resolve().parents[1]
+            / "engines/openroad/src/utl/src/timer.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("#include <fmt/ostream.h>", timer)
+
     def test_resolves_only_configured_in_tree_install_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
