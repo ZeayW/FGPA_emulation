@@ -720,10 +720,11 @@ cannot race or contaminate a clean checkout. OpenROAD likewise promotes the
 headers belonging to the exact `spdlog` package selected by CMake ahead of
 broad dependency include roots and keeps imported includes in their declared
 order; a distro copy of `spdlog` can therefore not be compiled against a
-different selected `spdlog`/`fmt` library ABI. Its utility timer also uses the
-selected external `fmt` package's explicit streamed view, so recent `fmt`
-releases can format the timer through the existing `operator<<` contract
-without depending on an implicit fallback from `fmt/core.h`.
+different selected `spdlog`/`fmt` library ABI. The public OpenROAD logger
+interface propagates external `fmt`'s ostream-compatibility definition to every
+consumer that instantiates a logging template, so streamable OpenROAD types
+continue to use their existing `operator<<` contracts with `fmt` 9; critical
+timer and guide call sites additionally use explicit streamed views.
 The Yosys external build likewise binds its parser regeneration to the
 configured versioned Bison and Flex executables (including Flex's runtime
 header) instead of assuming those tools are installed in the host `PATH`.
