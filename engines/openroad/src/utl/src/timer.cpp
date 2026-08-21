@@ -37,7 +37,7 @@
 
 // DebugScopedTimer is passed to the Logger's spdlog/fmt formatting template.
 // Recent external fmt releases do not implicitly fall back to operator<< from
-// fmt/core.h; make the ostream formatter visible at that instantiation site.
+// fmt/core.h; use fmt's explicit streamed view at the instantiation site.
 #include <fmt/ostream.h>
 
 namespace utl {
@@ -76,7 +76,12 @@ DebugScopedTimer::DebugScopedTimer(utl::Logger* logger,
 
 DebugScopedTimer::~DebugScopedTimer()
 {
-  debugPrint(logger_, tool_, group_.c_str(), level_, msg_, *this);
+  debugPrint(logger_,
+             tool_,
+             group_.c_str(),
+             level_,
+             msg_,
+             fmt::streamed(static_cast<const Timer&>(*this)));
 }
 
 }  // namespace utl
