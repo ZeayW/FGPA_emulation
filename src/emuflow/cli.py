@@ -750,6 +750,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--architecture-id", default="vtr-flagship-k6-n10-40nm"
     )
     lookahead_resume.add_argument("--route-channel-width", type=int, default=300)
+    lookahead_resume.add_argument(
+        "--reuse-validated-phase6-equivalence", action="store_true"
+    )
     lookahead_resume.add_argument("--out", type=Path, required=True)
     lookahead_validate = experiment_stage_subparsers.add_parser(
         "lookahead-validate", help="independently validate a lookahead checkpoint"
@@ -3487,6 +3490,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 architecture=args.architecture,
                 architecture_id=args.architecture_id,
                 route_channel_width=args.route_channel_width,
+                reuse_validated_phase6_equivalence=(
+                    args.reuse_validated_phase6_equivalence
+                ),
             )
         elif args.experiment_stage_command == "lookahead-validate":
             report = validate_physical_lookahead(

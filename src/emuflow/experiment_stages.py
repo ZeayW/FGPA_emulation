@@ -427,6 +427,7 @@ def resume_physical_lookahead(
     architecture: Path | None = None,
     architecture_id: str = VTR_HARD_BLOCK_PROFILE,
     route_channel_width: int = 300,
+    reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
     """Finish a lookahead checkpoint around an independently resumed physical run."""
 
@@ -459,6 +460,7 @@ def resume_physical_lookahead(
         architecture=architecture,
         architecture_id=architecture_id,
         route_channel_width=route_channel_width,
+        reuse_validated_phase6_equivalence=reuse_validated_phase6_equivalence,
     )
 
 
@@ -538,6 +540,7 @@ def _finish_physical_lookahead(
     architecture: Path | None,
     architecture_id: str,
     route_channel_width: int,
+    reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
     shared = validate_shared_phase1_5(shared_root, platform_path)
     paths = _shared_paths(shared_root)
@@ -548,7 +551,15 @@ def _finish_physical_lookahead(
     )
     if baseline_phase6_root is not None:
         baseline = validate_phase6_checkpoint(
-            baseline_phase6_root, shared_root, None, platform_path
+            baseline_phase6_root,
+            shared_root,
+            None,
+            platform_path,
+            validation_mode=(
+                "validated-checkpoint-reuse"
+                if reuse_validated_phase6_equivalence
+                else "full-replay"
+            ),
         )
         if baseline["provider"] != "baseline":
             raise ValidationError("physical lookahead requires baseline Phase 6")

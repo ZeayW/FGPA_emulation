@@ -501,12 +501,14 @@ class ExperimentStagesTest(unittest.TestCase):
                 "2",
                 "--workers",
                 "6",
+                "--reuse-validated-phase6-equivalence",
                 "--out",
                 "recovered",
             ]
         )
         self.assertEqual(args.experiment_stage_command, "lookahead-resume")
         self.assertEqual((args.seed, args.workers), (2, 6))
+        self.assertTrue(args.reuse_validated_phase6_equivalence)
 
     def test_cli_exposes_distinct_physical_timing_databases(self) -> None:
         args = _build_parser().parse_args(
@@ -551,9 +553,13 @@ class ExperimentStagesTest(unittest.TestCase):
                     seed=1,
                     workers=8,
                     region_count=4,
+                    reuse_validated_phase6_equivalence=True,
                 )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(finish.call_args.args[4], {"schema": "placeholder"})
+            self.assertTrue(
+                finish.call_args.kwargs["reuse_validated_phase6_equivalence"]
+            )
 
             (root / "unrelated").write_text("stale", encoding="utf-8")
             with self.assertRaisesRegex(Exception, "contain only physical"):
