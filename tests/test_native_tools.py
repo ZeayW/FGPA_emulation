@@ -56,6 +56,14 @@ class NativeToolsTest(unittest.TestCase):
         self.assertIn("#include <fmt/ostream.h>", timer)
         self.assertIn("fmt::streamed(static_cast<const Timer&>(*this))", timer)
 
+    def test_openroad_guide_rect_uses_explicit_streamed_formatter(self) -> None:
+        guide = (
+            Path(__file__).resolve().parents[1]
+            / "engines/openroad/src/odb/src/db/dbGuide.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("#include <fmt/ostream.h>", guide)
+        self.assertIn("fmt::streamed(box)", guide)
+
     def test_resolves_only_configured_in_tree_install_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
