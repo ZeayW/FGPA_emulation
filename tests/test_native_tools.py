@@ -30,6 +30,24 @@ class NativeToolsTest(unittest.TestCase):
         )[0]
         self.assertIn("CPATH=${EMUFLOW_FLEX_INCLUDE_DIR}:$ENV{CPATH}", flex_block)
 
+    def test_yosys_build_uses_versioned_parser_generators(self) -> None:
+        cmake = (Path(__file__).resolve().parents[1] / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        parser_setup = cmake.split("set(EMUFLOW_PARSER_CMAKE_ARGS", 1)[1].split(
+            "set(\n  EMUFLOW_EXTERNAL_JOBS", 1
+        )[0]
+        self.assertIn('"BISON=${EMUFLOW_BISON_EXECUTABLE}"', parser_setup)
+        self.assertIn("PATH=${EMUFLOW_FLEX_BIN_DIR}:$ENV{PATH}", parser_setup)
+        yosys_block = cmake.split("if(EMUFLOW_BUILD_YOSYS)", 1)[1].split(
+            "endif()\n\nif(EMUFLOW_BUILD_CUDD)", 1
+        )[0]
+        self.assertEqual(yosys_block.count("${EMUFLOW_YOSYS_MAKE_ARGS}"), 3)
+        self.assertEqual(
+            yosys_block.count("${CMAKE_COMMAND}\" -E env"),
+            2,
+        )
+
     def test_openroad_timer_uses_explicit_streamed_formatter(self) -> None:
         timer = (
             Path(__file__).resolve().parents[1]

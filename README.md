@@ -724,6 +724,9 @@ different selected `spdlog`/`fmt` library ABI. Its utility timer also uses the
 selected external `fmt` package's explicit streamed view, so recent `fmt`
 releases can format the timer through the existing `operator<<` contract
 without depending on an implicit fallback from `fmt/core.h`.
+The Yosys external build likewise binds its parser regeneration to the
+configured versioned Bison and Flex executables (including Flex's runtime
+header) instead of assuming those tools are installed in the host `PATH`.
 The CUDD external build consumes the checked-in Autotools outputs directly and
 disables timestamp-triggered regeneration. A clean clone therefore does not
 silently depend on the historical `aclocal-1.14` executable or modify imported

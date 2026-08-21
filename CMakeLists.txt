@@ -162,16 +162,32 @@ find_path(
 )
 set(EMUFLOW_PARSER_CMAKE_ARGS "")
 set(EMUFLOW_EXTERNAL_BUILD_ENV "")
+set(EMUFLOW_YOSYS_MAKE_ARGS "")
 if(EMUFLOW_BISON_EXECUTABLE)
   list(
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
     "-DBISON_EXECUTABLE=${EMUFLOW_BISON_EXECUTABLE}"
+  )
+  list(
+    APPEND EMUFLOW_YOSYS_MAKE_ARGS
+    "BISON=${EMUFLOW_BISON_EXECUTABLE}"
   )
 endif()
 if(EMUFLOW_FLEX_EXECUTABLE)
   list(
     APPEND EMUFLOW_PARSER_CMAKE_ARGS
     "-DFLEX_EXECUTABLE=${EMUFLOW_FLEX_EXECUTABLE}"
+  )
+  # Yosys invokes flex by name from its Makefile.  Put only the directory of
+  # the configured, versioned executable ahead of the ambient PATH.
+  get_filename_component(
+    EMUFLOW_FLEX_BIN_DIR
+    "${EMUFLOW_FLEX_EXECUTABLE}"
+    DIRECTORY
+  )
+  list(
+    APPEND EMUFLOW_EXTERNAL_BUILD_ENV
+    "PATH=${EMUFLOW_FLEX_BIN_DIR}:$ENV{PATH}"
   )
 endif()
 if(EMUFLOW_FLEX_INCLUDE_DIR)
@@ -841,6 +857,7 @@ if(EMUFLOW_BUILD_YOSYS)
       # (and potentially relocatable) tcl.pc can select headers outside the
       # versioned build closure.
       ENABLE_TCL=0
+      ${EMUFLOW_YOSYS_MAKE_ARGS}
     BUILD_COMMAND
       "${CMAKE_COMMAND}" -E env
       ${EMUFLOW_EXTERNAL_BUILD_ENV}
@@ -850,12 +867,16 @@ if(EMUFLOW_BUILD_YOSYS)
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
       ENABLE_TCL=0
+      ${EMUFLOW_YOSYS_MAKE_ARGS}
     INSTALL_COMMAND
+      "${CMAKE_COMMAND}" -E env
+      ${EMUFLOW_EXTERNAL_BUILD_ENV}
       "${EMUFLOW_MAKE_EXECUTABLE}" -C "<BINARY_DIR>"
       -f "<SOURCE_DIR>/Makefile"
       "PREFIX=${EMUFLOW_YOSYS_INSTALL_ROOT}"
       ENABLE_READLINE=0
       ENABLE_TCL=0
+      ${EMUFLOW_YOSYS_MAKE_ARGS}
       install
     BUILD_BYPRODUCTS
       "${EMUFLOW_INSTALL_BINDIR}/yosys"
