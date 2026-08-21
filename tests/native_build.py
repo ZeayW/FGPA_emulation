@@ -26,6 +26,7 @@ def tlr_router() -> Path:
             compiler,
             "-std=c++17",
             "-O2",
+            "-pthread",
             str(ROOT / "src" / "native" / "tlr_router.cpp"),
             "-o",
             str(executable),
