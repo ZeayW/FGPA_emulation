@@ -277,6 +277,10 @@ def prepare_validation_farm(
             raise ValidationError(
                 "validation farm SSH arguments already set UserKnownHostsFile"
             )
+        if any("UpdateHostKeys=" in item for item in ssh_arguments):
+            raise ValidationError(
+                "validation farm SSH arguments already set UpdateHostKeys"
+            )
         known_hosts = _known_hosts_binding(ssh_known_hosts_file)
         ssh_arguments = [
             *ssh_arguments,
@@ -284,6 +288,11 @@ def prepare_validation_farm(
             "StrictHostKeyChecking=yes",
             "-o",
             f"UserKnownHostsFile={known_hosts['path']}",
+            # The remote worker independently verifies this byte-sealed file.
+            # OpenSSH must therefore not append newly advertised host keys to
+            # it after the first successful connection.
+            "-o",
+            "UpdateHostKeys=no",
         ]
     elif ssh.get("known_hosts") is not None:
         known_hosts = _validate_known_hosts_binding(ssh["known_hosts"])

@@ -158,6 +158,7 @@ class ValidationFarmTest(unittest.TestCase):
             self.assertIn(
                 "StrictHostKeyChecking=yes", manifest["ssh"]["arguments"]
             )
+            self.assertIn("UpdateHostKeys=no", manifest["ssh"]["arguments"])
             known_hosts.write_text("hpc1 ssh-ed25519 replaced\n", encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "seal is broken"):
                 validate_validation_farm(farm)

@@ -1053,7 +1053,9 @@ rejects mutable `install/current` aliases and duplicate submissions.  Workers
 publish heartbeats and expiring leases. `validation-farm reconcile` probes an
 expired worker PID on its assigned node; only a confirmed-absent process
 becomes retryable, and its next execution cannot overwrite the earlier
-attempt. For example:
+attempt. When a shared `known_hosts` file is sealed into a farm, the launcher
+also disables OpenSSH host-key auto-updates so the remote worker can verify the
+same immutable binding. For example:
 
 ```json
 {
