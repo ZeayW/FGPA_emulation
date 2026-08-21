@@ -624,6 +624,91 @@ def _coalesce_timing_guard_lanes(
     return effective_groups, bundles
 
 
+def _static_guardable_entries(
+    schedule: Mapping[str, Any],
+    link_by_id: Mapping[str, Any],
+    protected_entries: set[str],
+) -> Tuple[set[str], list[Dict[str, Any]]]:
+    """Return timing-guard entries that can retain a concrete static lane.
+
+    Phase 5 may legally time-multiplex the same *shared_bidirectional*
+    BoardDB lane in opposite directions.  Chimew's electrical model, however,
+    describes static channels: materializing both directions as independently
+    fixed groups would duplicate one concrete lane.  Keep their timing weight
+    and grouping guard, but do not turn that impossible dynamic allocation into
+    a false static pin constraint.
+    """
+
+    entries = schedule.get("entries")
+    if not isinstance(entries, list):
+        raise ValidationError("academic Chimew schedule entries are malformed")
+    entries_by_id: Dict[str, Mapping[str, Any]] = {}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            raise ValidationError(
+                f"academic Chimew schedule entry {index} is malformed"
+            )
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id or entry_id in entries_by_id:
+            raise ValidationError(
+                f"academic Chimew schedule entry {index} has invalid identity"
+            )
+        entries_by_id[entry_id] = entry
+    unknown = protected_entries - set(entries_by_id)
+    if unknown:
+        raise ValidationError(
+            "academic Chimew timing guard references an unknown schedule entry"
+        )
+
+    by_shared_lane: Dict[Tuple[str, int], list[Mapping[str, Any]]] = defaultdict(list)
+    for entry_id in protected_entries:
+        entry = entries_by_id[entry_id]
+        link_id = entry.get("link")
+        lane = entry.get("lane")
+        if (
+            not isinstance(link_id, str)
+            or link_id not in link_by_id
+            or isinstance(lane, bool)
+            or not isinstance(lane, int)
+            or lane < 0
+        ):
+            raise ValidationError("academic Chimew timing guard lane is malformed")
+        if link_by_id[link_id].capacity_sharing == "shared_bidirectional":
+            by_shared_lane[(link_id, lane)].append(entry)
+
+    relaxed_entries: set[str] = set()
+    relaxed_lanes: list[Dict[str, Any]] = []
+    for (link_id, lane), lane_entries in sorted(by_shared_lane.items()):
+        directions = {
+            (entry.get("from"), entry.get("to")) for entry in lane_entries
+        }
+        if len(directions) < 2:
+            continue
+        if any(
+            not isinstance(source, str) or not isinstance(sink, str)
+            for source, sink in directions
+        ):
+            raise ValidationError("academic Chimew timing guard direction is malformed")
+        entry_ids = sorted(entry["id"] for entry in lane_entries)
+        relaxed_entries.update(entry_ids)
+        relaxed_lanes.append(
+            {
+                "link": link_id,
+                "physical_lane": lane,
+                "directions": [
+                    {"from": source, "to": sink}
+                    for source, sink in sorted(directions)
+                ],
+                "schedule_entries": entry_ids,
+                "reason": (
+                    "opposite directions share a time-multiplexed BoardDB lane; "
+                    "static Chimew channels cannot duplicate a concrete shared lane"
+                ),
+            }
+        )
+    return protected_entries - relaxed_entries, relaxed_lanes
+
+
 def materialize_academic_chimew_inputs(
     *,
     ir_path: Path,
@@ -840,6 +925,11 @@ def materialize_academic_chimew_inputs(
         if timing_source is not None
         else set()
     )
+    fixed_lane_entries, relaxed_shared_bidirectional_lanes = _static_guardable_entries(
+        schedule,
+        link_by_id,
+        protected_entries,
+    )
     if protected_entries:
         schedule["chimew_timing_guard"] = {
             "provider": CHIMEW_TIMING_GUARD_PROVIDER,
@@ -850,6 +940,11 @@ def materialize_academic_chimew_inputs(
                 timing_weights[entry_id] for entry_id in protected_entries
             ),
             "protected_entries": sorted(protected_entries),
+            "fixed_lane_entries": sorted(fixed_lane_entries),
+            "relaxed_shared_bidirectional_entries": sorted(
+                protected_entries - fixed_lane_entries
+            ),
+            "relaxed_shared_bidirectional_lanes": relaxed_shared_bidirectional_lanes,
         }
     initial = build_chimew_initial_groups(
         schedule,
@@ -860,7 +955,7 @@ def materialize_academic_chimew_inputs(
         schedule, crossings, initial, positions, executable=refiner
     )
     group_by_entry, timing_guard_lane_bundles = _coalesce_timing_guard_lanes(
-        schedule, refined, protected_entries
+        schedule, refined, fixed_lane_entries
     )
 
     grouped: Dict[Tuple[str, str, int], list[Dict[str, Any]]] = defaultdict(list)
@@ -900,7 +995,7 @@ def materialize_academic_chimew_inputs(
             schedule_by_id[entry_id]["to"],
             schedule_by_id[entry_id]["lane"],
         )
-        for entry_id in protected_entries
+        for entry_id in fixed_lane_entries
     }
     fixed_lane_by_group: Dict[Tuple[str, str, int], int] = {}
     for key, members in grouped.items():
@@ -1167,6 +1262,9 @@ def materialize_academic_chimew_inputs(
             "architecture_sha256": architecture_sha,
         },
         "timing_guard_lane_bundles": timing_guard_lane_bundles,
+        "timing_guard_relaxed_shared_bidirectional_lanes": (
+            relaxed_shared_bidirectional_lanes
+        ),
         "domains": domains,
         "bank_pairs": bank_pairs,
         "groups": group_records,
@@ -1174,6 +1272,12 @@ def materialize_academic_chimew_inputs(
             "groups": len(group_records),
             "timing_guard_fixed_lanes": len(fixed_lane_by_group),
             "timing_guard_lane_bundles": len(timing_guard_lane_bundles),
+            "timing_guard_relaxed_shared_bidirectional_lanes": len(
+                relaxed_shared_bidirectional_lanes
+            ),
+            "timing_guard_relaxed_shared_bidirectional_entries": len(
+                protected_entries - fixed_lane_entries
+            ),
             "timing_guard_coalesced_algorithmic_groups": sum(
                 len(bundle["refined_groups"])
                 for bundle in timing_guard_lane_bundles
@@ -1299,6 +1403,12 @@ def materialize_academic_chimew_inputs(
             "groups": len(group_records),
             "virtual_package_pins": len(package_records),
             "timing_guard_lane_bundles": len(timing_guard_lane_bundles),
+            "timing_guard_relaxed_shared_bidirectional_lanes": len(
+                relaxed_shared_bidirectional_lanes
+            ),
+            "timing_guard_relaxed_shared_bidirectional_entries": len(
+                protected_entries - fixed_lane_entries
+            ),
             "tdm_groups_before_chimew": len(
                 {
                     (

@@ -487,6 +487,94 @@ class AcademicChimewTest(unittest.TestCase):
                 "pass",
             )
 
+    def test_shared_bidirectional_timing_guard_relaxes_opposite_directions(
+        self,
+    ) -> None:
+        """A dynamic opposite-direction lane is never duplicated as static I/O."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir, assignment, routes, schedule = self._upstream(root)
+            platform_document = read_json(PLATFORM)
+            platform_document["links"][0][
+                "capacity_sharing"
+            ] = "shared_bidirectional"
+            shared_platform = root / "shared-platform.json"
+            write_json(shared_platform, platform_document)
+            schedule_document = read_json(schedule)
+            forward = next(
+                entry
+                for entry in schedule_document["entries"]
+                if (entry["from"], entry["to"]) == ("fpga0", "fpga1")
+            )
+            reverse = next(
+                entry
+                for entry in schedule_document["entries"]
+                if (entry["from"], entry["to"]) == ("fpga1", "fpga0")
+            )
+            # Phase 5 may use the same concrete shared lane in different
+            # TDM slots; this is precisely the static-channel boundary.
+            reverse["lane"] = forward["lane"]
+            write_json(schedule, schedule_document)
+            timing = root / "timing.json"
+            write_json(
+                timing,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": schedule_document["design"],
+                    "paths": [
+                        {
+                            "clock_period_ns": 10.0,
+                            "slack_ns": 0.0,
+                            "cut_nets": [forward["net"], reverse["net"]],
+                        }
+                    ],
+                },
+            )
+            lookahead = materialize_academic_chimew_inputs(
+                ir_path=ir,
+                schedule_path=schedule,
+                routes_path=routes,
+                platform_path=shared_platform,
+                physical_report=self._physical_report(
+                    root / "physical", assignment
+                ),
+                output_dir=root / "lookahead",
+                timing_paths_path=timing,
+                timing_path_scope="whole-net",
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+            )
+            materialized_schedule = read_json(
+                Path(lookahead["artifacts"]["schedule"]["path"])
+            )
+            timing_guard = materialized_schedule["chimew_timing_guard"]
+            self.assertEqual(
+                set(timing_guard["relaxed_shared_bidirectional_entries"]),
+                {forward["id"], reverse["id"]},
+            )
+            self.assertEqual(len(timing_guard["relaxed_shared_bidirectional_lanes"]), 1)
+            self.assertFalse(
+                {forward["id"], reverse["id"]}
+                & set(timing_guard["fixed_lane_entries"])
+            )
+            bank_input = read_json(
+                Path(lookahead["artifacts"]["bank_channel_input"]["path"])
+            )
+            electrical_map = read_json(
+                Path(lookahead["artifacts"]["electrical_map"]["path"])
+            )
+            self.assertEqual(
+                bank_input["metrics"][
+                    "timing_guard_relaxed_shared_bidirectional_lanes"
+                ],
+                1,
+            )
+            concrete_lanes = [
+                channel["physical_lane"] for channel in electrical_map["channels"]
+            ]
+            self.assertEqual(len(concrete_lanes), len(set(concrete_lanes)))
+
     def test_timing_driven_materialization_binds_projected_sta_weights(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
