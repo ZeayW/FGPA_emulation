@@ -281,6 +281,10 @@ def prepare_validation_farm(
             raise ValidationError(
                 "validation farm SSH arguments already set UpdateHostKeys"
             )
+        if any("CheckHostIP=" in item for item in ssh_arguments):
+            raise ValidationError(
+                "validation farm SSH arguments already set CheckHostIP"
+            )
         known_hosts = _known_hosts_binding(ssh_known_hosts_file)
         ssh_arguments = [
             *ssh_arguments,
@@ -293,6 +297,12 @@ def prepare_validation_farm(
             # it after the first successful connection.
             "-o",
             "UpdateHostKeys=no",
+            # A hostname alias can otherwise cause OpenSSH to append the
+            # resolved address as another known-hosts record.  This is also a
+            # mutation of the byte-sealed file, so address matching must stay
+            # disabled for a sealed farm binding.
+            "-o",
+            "CheckHostIP=no",
         ]
     elif ssh.get("known_hosts") is not None:
         known_hosts = _validate_known_hosts_binding(ssh["known_hosts"])
