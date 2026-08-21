@@ -2,7 +2,10 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-import torch
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,7 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(NUMERICAL)
 
 
+@unittest.skipIf(torch is None, "PyTorch is unavailable in this interpreter")
 class OpenParfNumericalTest(unittest.TestCase):
     def test_mask_precedes_subgradient_normalization(self) -> None:
         vector = torch.tensor([3.0, 4.0, 1000.0])
