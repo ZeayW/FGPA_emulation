@@ -720,7 +720,10 @@ cannot race or contaminate a clean checkout. OpenROAD likewise promotes the
 headers belonging to the exact `spdlog` package selected by CMake ahead of
 broad dependency include roots and keeps imported includes in their declared
 order; a distro copy of `spdlog` can therefore not be compiled against a
-different selected `spdlog`/`fmt` library ABI.
+different selected `spdlog`/`fmt` library ABI. Its utility timer also exposes
+the selected external `fmt` package's ostream formatter explicitly, so recent
+`fmt` releases can format the timer through the existing `operator<<` contract
+without depending on an implicit fallback from `fmt/core.h`.
 The CUDD external build consumes the checked-in Autotools outputs directly and
 disables timestamp-triggered regeneration. A clean clone therefore does not
 silently depend on the historical `aclocal-1.14` executable or modify imported
