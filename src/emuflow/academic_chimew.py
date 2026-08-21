@@ -501,6 +501,129 @@ def _timing_weights(
     }
 
 
+def _coalesce_timing_guard_lanes(
+    schedule: Mapping[str, Any],
+    refined: Mapping[str, Any],
+    protected_entries: set[str],
+) -> Tuple[Dict[str, int], list[Dict[str, Any]]]:
+    """Materialize each protected Phase-5 lane as one fixed external group.
+
+    The native Chimew kernels deliberately retain their paper-defined grouping
+    and refinement identities.  EmuFlow's timing guard is a separate
+    integration extension: it freezes *all* Phase-5 mux members of a critical
+    physical lane.  The position refiner may place members of that frozen lane
+    in distinct algorithmic groups (for example because their TDM slots
+    differ), but those groups cannot become separate electrical channels:
+    Phase 5 already assigned them to one physical lane.
+
+    A fresh deterministic materialization group is allocated for every
+    protected lane.  This also isolates it from an unprotected member that
+    happened to share a native group ID.  The original refinement output is
+    retained and independently checked; this helper only defines the legal
+    Phase-6 channel boundary.
+    """
+
+    schedule_entries = schedule.get("entries")
+    refined_entries = refined.get("entries")
+    if not isinstance(schedule_entries, list) or not isinstance(refined_entries, list):
+        raise ValidationError("academic Chimew timing guard inputs are malformed")
+
+    groups_by_entry: Dict[str, int] = {}
+    for index, item in enumerate(refined_entries):
+        if not isinstance(item, Mapping):
+            raise ValidationError(
+                f"academic Chimew refinement entry {index} is malformed"
+            )
+        entry_id = item.get("schedule_entry")
+        group = item.get("group")
+        if (
+            not isinstance(entry_id, str)
+            or not entry_id
+            or isinstance(group, bool)
+            or not isinstance(group, int)
+            or group < 0
+            or entry_id in groups_by_entry
+        ):
+            raise ValidationError(
+                f"academic Chimew refinement entry {index} is invalid"
+            )
+        groups_by_entry[entry_id] = group
+
+    entries_by_id: Dict[str, Mapping[str, Any]] = {}
+    for index, entry in enumerate(schedule_entries):
+        if not isinstance(entry, Mapping):
+            raise ValidationError(
+                f"academic Chimew schedule entry {index} is malformed"
+            )
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id or entry_id in entries_by_id:
+            raise ValidationError(
+                f"academic Chimew schedule entry {index} has invalid identity"
+            )
+        entries_by_id[entry_id] = entry
+
+    if set(groups_by_entry) != set(entries_by_id):
+        raise ValidationError(
+            "academic Chimew refinement does not cover the materialized schedule"
+        )
+    unknown_protected = protected_entries - set(entries_by_id)
+    if unknown_protected:
+        raise ValidationError(
+            "academic Chimew timing guard references an unknown schedule entry"
+        )
+
+    effective_groups = dict(groups_by_entry)
+    if not protected_entries:
+        return effective_groups, []
+
+    def lane_key(entry: Mapping[str, Any]) -> Tuple[str, str, str, int]:
+        link = entry.get("link")
+        source = entry.get("from")
+        sink = entry.get("to")
+        lane = entry.get("lane")
+        if (
+            not isinstance(link, str)
+            or not isinstance(source, str)
+            or not isinstance(sink, str)
+            or isinstance(lane, bool)
+            or not isinstance(lane, int)
+            or lane < 0
+        ):
+            raise ValidationError("academic Chimew timing guard lane is malformed")
+        return link, source, sink, lane
+
+    protected_lanes = {
+        lane_key(entries_by_id[entry_id]) for entry_id in protected_entries
+    }
+    members_by_lane: Dict[Tuple[str, str, str, int], list[str]] = defaultdict(list)
+    for entry_id, entry in entries_by_id.items():
+        key = lane_key(entry)
+        if key in protected_lanes:
+            members_by_lane[key].append(entry_id)
+
+    next_group = max(groups_by_entry.values(), default=-1) + 1
+    bundles = []
+    for lane in sorted(members_by_lane):
+        members = members_by_lane[lane]
+        native_groups = sorted({groups_by_entry[entry_id] for entry_id in members})
+        materialized_group = next_group
+        next_group += 1
+        for entry_id in members:
+            effective_groups[entry_id] = materialized_group
+        bundles.append(
+            {
+                "link": lane[0],
+                "from": lane[1],
+                "to": lane[2],
+                "physical_lane": lane[3],
+                "schedule_entries": members,
+                "refined_groups": native_groups,
+                "materialized_group": materialized_group,
+            }
+        )
+    return effective_groups, bundles
+
+
 def materialize_academic_chimew_inputs(
     *,
     ir_path: Path,
@@ -736,9 +859,9 @@ def materialize_academic_chimew_inputs(
     refined = refine_chimew_groups(
         schedule, crossings, initial, positions, executable=refiner
     )
-    group_by_entry = {
-        item["schedule_entry"]: item["group"] for item in refined["entries"]
-    }
+    group_by_entry, timing_guard_lane_bundles = _coalesce_timing_guard_lanes(
+        schedule, refined, protected_entries
+    )
 
     grouped: Dict[Tuple[str, str, int], list[Dict[str, Any]]] = defaultdict(list)
     for entry in schedule["entries"]:
@@ -1043,12 +1166,18 @@ def materialize_academic_chimew_inputs(
             "placement_sha256": placement_sha,
             "architecture_sha256": architecture_sha,
         },
+        "timing_guard_lane_bundles": timing_guard_lane_bundles,
         "domains": domains,
         "bank_pairs": bank_pairs,
         "groups": group_records,
         "metrics": {
             "groups": len(group_records),
             "timing_guard_fixed_lanes": len(fixed_lane_by_group),
+            "timing_guard_lane_bundles": len(timing_guard_lane_bundles),
+            "timing_guard_coalesced_algorithmic_groups": sum(
+                len(bundle["refined_groups"])
+                for bundle in timing_guard_lane_bundles
+            ),
             "signals": len(schedule["entries"]),
             "fanins": len(schedule["entries"]),
             "bank_pairs": len(bank_pairs),
@@ -1169,6 +1298,7 @@ def materialize_academic_chimew_inputs(
             "predicted_sll_crossings": total_crossings,
             "groups": len(group_records),
             "virtual_package_pins": len(package_records),
+            "timing_guard_lane_bundles": len(timing_guard_lane_bundles),
             "tdm_groups_before_chimew": len(
                 {
                     (

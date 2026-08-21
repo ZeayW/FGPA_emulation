@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.academic_chimew import (
+    _coalesce_timing_guard_lanes,
     _timing_weights,
     materialize_academic_chimew_inputs,
 )
@@ -165,6 +166,141 @@ class AcademicChimewTest(unittest.TestCase):
                 }
             )
         return {"fpgas": records}
+
+    def test_timing_guard_coalesces_the_entire_frozen_lane(self) -> None:
+        schedule = {
+            "entries": [
+                {
+                    "id": "critical-slot-0",
+                    "link": "l0",
+                    "from": "a",
+                    "to": "b",
+                    "lane": 2,
+                },
+                {
+                    "id": "critical-slot-1",
+                    "link": "l0",
+                    "from": "a",
+                    "to": "b",
+                    "lane": 2,
+                },
+                {
+                    "id": "unprotected",
+                    "link": "l0",
+                    "from": "a",
+                    "to": "b",
+                    "lane": 1,
+                },
+            ]
+        }
+        refined = {
+            "entries": [
+                {"schedule_entry": "critical-slot-0", "group": 0},
+                {"schedule_entry": "critical-slot-1", "group": 1},
+                # Deliberately share native group 0 with a different lane:
+                # the materialization group must still isolate the guard.
+                {"schedule_entry": "unprotected", "group": 0},
+            ]
+        }
+        groups, bundles = _coalesce_timing_guard_lanes(
+            schedule, refined, {"critical-slot-0"}
+        )
+        self.assertEqual(groups["unprotected"], 0)
+        self.assertEqual(groups["critical-slot-0"], 2)
+        self.assertEqual(groups["critical-slot-1"], 2)
+        self.assertEqual(
+            bundles,
+            [
+                {
+                    "link": "l0",
+                    "from": "a",
+                    "to": "b",
+                    "physical_lane": 2,
+                    "schedule_entries": ["critical-slot-0", "critical-slot-1"],
+                    "refined_groups": [0, 1],
+                    "materialized_group": 2,
+                }
+            ],
+        )
+
+    def test_materialization_coalesces_split_refinement_groups_on_guarded_lane(
+        self,
+    ) -> None:
+        """A guarded mux lane remains one electrical channel after refinement."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir, assignment, routes, schedule = self._upstream(root)
+            schedule_document = read_json(schedule)
+            critical_entry = schedule_document["entries"][0]
+            duplicate = dict(critical_entry)
+            duplicate["id"] = critical_entry["id"] + "-other-slot"
+            duplicate["slot"] = 1
+            duplicate["arrival_slot"] = 3
+            schedule_document["entries"].append(duplicate)
+            write_json(schedule, schedule_document)
+            timing = root / "timing.json"
+            write_json(
+                timing,
+                {
+                    "schema": "emuflow.sta-paths/v1",
+                    "design": schedule_document["design"],
+                    "paths": [
+                        {
+                            "clock_period_ns": 10.0,
+                            "slack_ns": 0.0,
+                            "cut_nets": [critical_entry["net"]],
+                        }
+                    ],
+                },
+            )
+
+            def split_refinement(
+                materialized_schedule: dict, *_args: object, **_kwargs: object
+            ) -> dict:
+                return {
+                    "entries": [
+                        {"schedule_entry": entry["id"], "group": index}
+                        for index, entry in enumerate(
+                            materialized_schedule["entries"]
+                        )
+                    ]
+                }
+
+            with patch(
+                "emuflow.academic_chimew.refine_chimew_groups",
+                side_effect=split_refinement,
+            ):
+                lookahead = materialize_academic_chimew_inputs(
+                    ir_path=ir,
+                    schedule_path=schedule,
+                    routes_path=routes,
+                    platform_path=PLATFORM,
+                    physical_report=self._physical_report(
+                        root / "physical", assignment
+                    ),
+                    output_dir=root / "lookahead",
+                    timing_paths_path=timing,
+                    timing_path_scope="whole-net",
+                    grouper=self.executables["grouper"],
+                    refiner=self.executables["refiner"],
+                )
+            bank_input = read_json(
+                Path(lookahead["artifacts"]["bank_channel_input"]["path"])
+            )
+            guarded_groups = [
+                group
+                for group in bank_input["groups"]
+                if {member["id"] for member in group["members"]}
+                == {critical_entry["id"], duplicate["id"]}
+            ]
+            self.assertEqual(len(guarded_groups), 1)
+            self.assertIn("timing-guard-lane", guarded_groups[0]["domain"])
+            self.assertEqual(bank_input["metrics"]["timing_guard_lane_bundles"], 1)
+            self.assertEqual(
+                bank_input["timing_guard_lane_bundles"][0]["refined_groups"],
+                [0, 2],
+            )
 
     def test_vtr_atom_indices_map_back_to_source_instances(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

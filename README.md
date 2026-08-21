@@ -593,6 +593,12 @@ and its integration, not real SLR/SLL routing or BSP electrical closure. Raw
 physical-site coordinates still drive position refinement, RUDY, and the
 two-stage distance objective. Real hardware qualification continues to
 require revision-controlled device regions and package/electrical data.
+When a timing-critical Phase-5 lane is guarded, the adapter keeps every
+existing mux member together as one fixed Phase-6 electrical group, even if
+the paper-defined position refiner assigned those members separate group IDs.
+The original refinement artifact is retained and hash-bound; this lane
+coalescing is explicitly reported as an EmuFlow timing-preservation extension,
+not attributed to Chimew.
 
 ### Phase 6 provider promotion and Phase 7 timing acceptance
 
