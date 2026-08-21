@@ -1323,6 +1323,9 @@ The migration plan reports logical and allocated size separately, plus
 `exclusive_reclaimable_bytes` after accounting for hard links outside each
 tree; deleting a second pathname to shared blocks must not be advertised as
 newly freed capacity.  Its totals also distinguish bytes reclaimable by
+retirement. Generated symlinks inside an explicitly selected legacy tree are
+sealed by their link text and are never followed; top-level symlink candidates
+remain refused, and changing an internal link target invalidates the plan.
 retiring one entry from bytes freed only when the complete inventoried root is
 retired.
 
