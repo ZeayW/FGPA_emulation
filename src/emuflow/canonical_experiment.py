@@ -449,6 +449,9 @@ def compile_canonical_experiment_spec(
         {name: float(periods[name]) for name in clocks},
     )
     workers = _positive_integer(config.get("physical_workers", 8), "physical_workers")
+    physical_peak_gib = _positive_integer(
+        config.get("physical_peak_gib", 48), "physical_peak_gib"
+    )
     route_candidate_workers = _positive_integer(
         config.get("route_candidate_workers", workers),
         "route_candidate_workers",
@@ -767,7 +770,7 @@ def compile_canonical_experiment_spec(
         [executable, "experiment-stage", "lookahead-validate", "{artifact_root}", "--shared", "{dependency:shared-phase1-5}", "--baseline-phase6", "{dependency:phase6-baseline}", "--reuse-validated-phase6-equivalence", "--platform", str(platform), "--seed", "1", "--workers", str(workers), "--region-count", str(region_count), "--architecture", str(physical_architecture), "--route-channel-width", str(channel_width)],
         [_artifact("physical", "consumer-checkpoint"), _artifact("lookahead", "consumer-checkpoint"), _artifact("experiment-lookahead-report.json", "evidence-critical")],
         inputs=("platform", "physical_architecture", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
-        configuration={"physical_seed": 1, "physical_workers": workers, "region_count": region_count, "route_channel_width": channel_width}, peak_gib=48, retained_gib=10,
+        configuration={"physical_seed": 1, "physical_workers": workers, "physical_peak_gib": physical_peak_gib, "region_count": region_count, "route_channel_width": channel_width}, peak_gib=physical_peak_gib, retained_gib=10,
     )
     phase6_research_providers = (
         ()
@@ -831,8 +834,8 @@ def compile_canonical_experiment_spec(
                     _artifact("physical", "diagnostic"),
                 ],
                 inputs=("platform", "openparf_manifest", "openparf_implementation", "tool.emuflow", "tool.yosys", "tool.vpr", "tool.architecture_importer", "tool.packed_importer", "tool.route_checker", "tool.openparf_python"),
-                configuration={"physical_backend": "open", "physical_workers": workers, "physical_seed": seed, "route_channel_width": channel_width},
-                peak_gib=48, retained_gib=8, provider=provider, physical_seed=seed,
+                configuration={"physical_backend": "open", "physical_workers": workers, "physical_peak_gib": physical_peak_gib, "physical_seed": seed, "route_channel_width": channel_width},
+                peak_gib=physical_peak_gib, retained_gib=8, provider=provider, physical_seed=seed,
             )
     phase7_ids = [
         f"phase7-{provider}-seed{seed}"

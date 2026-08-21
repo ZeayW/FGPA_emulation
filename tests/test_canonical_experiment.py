@@ -338,6 +338,40 @@ class CanonicalExperimentTest(unittest.TestCase):
                     for item in terminals
                 )
             )
+
+    def test_physical_storage_peak_override_is_sealed_and_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config["physical_peak_gib"] = 12
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            nodes = {
+                item["id"]: item
+                for item in validate_experiment_spec(json.loads(output.read_text()))[
+                    "nodes"
+                ]
+            }
+            physical = [
+                nodes["physical-lookahead"],
+                *(item for item in nodes.values() if item["stage"] == "phase7"),
+            ]
+            self.assertTrue(
+                all(
+                    item["configuration"]["physical_peak_gib"] == 12
+                    and item["storage_estimate"]["peak_bytes"] == 12 * 1024**3
+                    for item in physical
+                )
+            )
+
+            config["physical_peak_gib"] = 0
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "physical_peak_gib"):
+                compile_canonical_experiment_spec(
+                    config_path, REPOSITORY, root / "invalid-spec.json"
+                )
             comparison = nodes["qor-comparison"]
             self.assertEqual(
                 comparison["dependencies"],

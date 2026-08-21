@@ -2008,6 +2008,14 @@ same value for both sides of an A/B comparison. For a 32-FPGA run, start from a
 measured value such as 8 and raise it only after checking memory and tool-token
 pressure.
 
+Canonical Experiment v2 normally reserves a conservative 48 GiB peak for each
+physical node. Its JSON config may set a positive `physical_peak_gib` only when
+an independently validated run with the same workload, platform, backend, and
+physical options has measured a smaller peak. The selected value is sealed in
+every physical node's configuration and storage estimate; it does not alter
+the physical algorithm or QoR contract. Do not use it to bypass preflight for
+an unprofiled workload.
+
 Endpoint-complete physical timing retains the complete pre-partition
 `path-database.json` as its single original-member namespace. Canonical v3+
 checkpoints project it into Phase 4/5, use it for same-FPGA local paths, and use
