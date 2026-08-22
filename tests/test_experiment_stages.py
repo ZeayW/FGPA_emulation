@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from emuflow import experiment_dag
 from emuflow.cli import _Python38BooleanOptionalAction, _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
@@ -419,9 +420,15 @@ class ExperimentStagesTest(unittest.TestCase):
             )
             os.chmod(marker, 0o444)
             os.chmod(output, 0o555)
-            self.assertEqual(
-                _validate_managed_phase6_checkpoint(output)["stage"], "phase6"
-            )
+            with mock.patch(
+                "emuflow.experiment_dag.validate_experiment_checkpoint",
+                wraps=experiment_dag.validate_experiment_checkpoint,
+            ) as validator:
+                self.assertEqual(
+                    _validate_managed_phase6_checkpoint(output)["stage"], "phase6"
+                )
+            self.assertEqual(validator.call_count, 1)
+            self.assertFalse(validator.call_args.kwargs["verify_artifact_content"])
             os.chmod(output, 0o755)
             with self.assertRaisesRegex(Exception, "writable|immutable"):
                 _validate_managed_phase6_checkpoint(output)

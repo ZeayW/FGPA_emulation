@@ -57,10 +57,13 @@ def _sha256(path: Path) -> str:
 def _validate_managed_phase6_checkpoint(root: Path) -> Dict[str, Any]:
     """Prove that *root* is an immutable, independently validated cache object.
 
-    Experiment DAG dependency expansion already performs this check before it
-    starts a consumer.  Repeating the byte seal here keeps the stage CLI safe
-    when it is invoked directly with the explicit reuse option, without
-    rerunning the much more expensive functional-equivalence simulation.
+    Publishing a managed checkpoint performs the strong content-hash and
+    independent semantic validation.  Normal DAG reuse consequently validates
+    the sealed manifest's structure, artifact presence, immutable tree, and
+    independent certificate without rereading every multi-gigabyte artifact.
+    Explicit ``experiment-cache validate`` remains the boundary that performs
+    a fresh content hash.  This is deliberately distinct from the optional
+    Phase 6 functional-equivalence replay.
     """
 
     from .experiment_dag import (
@@ -74,7 +77,10 @@ def _validate_managed_phase6_checkpoint(root: Path) -> Dict[str, Any]:
         raise ValidationError(
             "Phase 6 equivalence reuse requires a managed checkpoint"
         )
-    checkpoint = validate_experiment_checkpoint(checkpoint_path)
+    checkpoint = validate_experiment_checkpoint(
+        checkpoint_path,
+        verify_artifact_content=False,
+    )
     if (
         checkpoint.get("schema") != "emuflow.experiment-checkpoint/v2"
         or checkpoint.get("stage") != "phase6"
