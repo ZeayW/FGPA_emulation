@@ -51,6 +51,10 @@ def _architectural_launch_endpoints(
     sink_net: str,
     fpga: str,
     transported_cut_nets: Set[str],
+    *,
+    nets: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    incoming: Optional[Mapping[str, List[str]]] = None,
 ) -> List[Mapping[str, Any]]:
     """Return every local architectural source in a cut-net fan-in cone.
 
@@ -61,14 +65,23 @@ def _architectural_launch_endpoints(
     representative path selected by the original STA database.
     """
 
-    nets = {item["id"]: item for item in ir.value["nets"]}
-    instances = {item["id"]: item for item in ir.value["instances"]}
-    incoming: Dict[str, List[str]] = defaultdict(list)
-    for net in ir.value["nets"]:
-        for endpoint in net["sinks"]:
-            instance = endpoint["instance"]
-            if instance is not None:
-                incoming[instance].append(net["id"])
+    # A physical timing query may contain tens of thousands of static-exact
+    # segments.  The net/instance/fan-in indexes describe the whole original
+    # design and must therefore be built once by the caller, not once per
+    # segment.  Keep the optional fallback for direct callers and small-unit
+    # tests, while the production path supplies the shared indexes below.
+    if nets is None:
+        nets = {item["id"]: item for item in ir.value["nets"]}
+    if instances is None:
+        instances = {item["id"]: item for item in ir.value["instances"]}
+    if incoming is None:
+        built_incoming: Dict[str, List[str]] = defaultdict(list)
+        for net in ir.value["nets"]:
+            for endpoint in net["sinks"]:
+                instance = endpoint["instance"]
+                if instance is not None:
+                    built_incoming[instance].append(net["id"])
+        incoming = built_incoming
     if sink_net not in nets:
         raise ValidationError(
             f"static exact launch sink net {sink_net!r} is absent"
@@ -526,6 +539,16 @@ def _write_logic_segment_query(
     original_nets = {
         net["id"]: net for net in original_ir.value["nets"]
     }
+    original_instances = {
+        instance["id"]: instance
+        for instance in original_ir.value["instances"]
+    }
+    incoming_nets_by_instance: Dict[str, List[str]] = defaultdict(list)
+    for net in original_ir.value["nets"]:
+        for endpoint in net["sinks"]:
+            instance = endpoint["instance"]
+            if instance is not None:
+                incoming_nets_by_instance[instance].append(net["id"])
     merged_pins = _instance_pin_inventory(merged_ir)
     eblif_top_ports = None
     if object_provider == "vpr" and eblif_report is not None:
@@ -802,6 +825,18 @@ def _write_logic_segment_query(
         transported_cut_nets = {
             item["net"] for item in exact_contract["cut_nodes"]
         }
+        entries_by_net_from: Dict[
+            Tuple[str, str], List[Mapping[str, Any]]
+        ] = defaultdict(list)
+        entries_by_net_to: Dict[
+            Tuple[str, str], List[Mapping[str, Any]]
+        ] = defaultdict(list)
+        for entry in schedule_entries:
+            entries_by_net_from[(entry["net"], entry["from"])].append(entry)
+            entries_by_net_to[(entry["net"], entry["to"])].append(entry)
+        for entries_for_endpoint in entries_by_net_from.values():
+            entries_for_endpoint.sort(key=lambda item: item["id"])
+        launches_by_sink_net: Dict[str, List[Mapping[str, Any]]] = {}
 
         def entry_endpoint(
             entry: Mapping[str, Any], kind: str
@@ -815,23 +850,15 @@ def _write_logic_segment_query(
             return endpoint_id
 
         def tx_entries(net: str, source_fpga: str) -> List[Mapping[str, Any]]:
-            result = [
-                item
-                for item in schedule_entries
-                if item["net"] == net and item["from"] == source_fpga
-            ]
+            result = entries_by_net_from.get((net, source_fpga), [])
             if not result:
                 raise ValidationError(
                     f"static exact cut {net!r} has no TX from {source_fpga!r}"
                 )
-            return sorted(result, key=lambda item: item["id"])
+            return result
 
         def rx_entry(net: str, sink_fpga: str) -> Mapping[str, Any]:
-            result = [
-                item
-                for item in schedule_entries
-                if item["net"] == net and item["to"] == sink_fpga
-            ]
+            result = entries_by_net_to.get((net, sink_fpga), [])
             if len(result) != 1:
                 raise ValidationError(
                     f"static exact cut {net!r} does not have one arrival "
@@ -952,13 +979,20 @@ def _write_logic_segment_query(
                 continue
             kind = semantic["kind"]
             if kind == "launch_to_tx":
-                starts = _architectural_launch_endpoints(
-                    original_ir,
-                    instance_assignment,
-                    semantic["sink_cut_net"],
-                    fpga,
-                    transported_cut_nets,
-                )
+                sink_cut_net = semantic["sink_cut_net"]
+                starts = launches_by_sink_net.get(sink_cut_net)
+                if starts is None:
+                    starts = _architectural_launch_endpoints(
+                        original_ir,
+                        instance_assignment,
+                        sink_cut_net,
+                        fpga,
+                        transported_cut_nets,
+                        nets=original_nets,
+                        instances=original_instances,
+                        incoming=incoming_nets_by_instance,
+                    )
+                    launches_by_sink_net[sink_cut_net] = starts
                 if not starts:
                     # A dependency-free constant cone has no timed launch
                     # endpoint.  Leave it unmeasured so deadline closure stays

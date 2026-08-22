@@ -136,6 +136,29 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 {"instance": "state", "port": "Q", "bit": 0},
             ],
         )
+        nets = {item["id"]: item for item in ir.value["nets"]}
+        instances = {
+            item["id"]: item for item in ir.value["instances"]
+        }
+        incoming = {}
+        for net in ir.value["nets"]:
+            for endpoint in net["sinks"]:
+                instance = endpoint["instance"]
+                if instance is not None:
+                    incoming.setdefault(instance, []).append(net["id"])
+        self.assertEqual(
+            _architectural_launch_endpoints(
+                ir,
+                {"state": "fpga0", "logic": "fpga0", "remote": "fpga1"},
+                "sink_cut",
+                "fpga0",
+                {"incoming_cut", "sink_cut"},
+                nets=nets,
+                instances=instances,
+                incoming=incoming,
+            ),
+            result,
+        )
 
     def test_vpr_boundary_alias_and_explicit_local_path_chain_are_checked(self):
         ir = EmuIR(
