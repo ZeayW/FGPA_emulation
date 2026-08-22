@@ -132,7 +132,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             presence, {"fabric": True, "dut": False, "cross": False}
         )
 
-    def test_runtime_sdc_preserves_long_virtual_clock_period(self):
+    def test_runtime_sdc_caps_long_virtual_clock_for_vpr_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "runtime.sdc"
             report = _write_vpr_runtime_sdc(
@@ -148,20 +148,23 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 cross_period_ns=2_237_980.0,
             )
 
-            self.assertEqual(report["periods_ns"]["dut"], 2_238_160.0)
-            self.assertEqual(report["periods_ns"]["cross"], 2_237_980.0)
+            self.assertEqual(report["requested_periods_ns"]["dut"], 2_238_160.0)
+            self.assertEqual(report["requested_periods_ns"]["cross"], 2_237_980.0)
+            self.assertEqual(report["effective_vpr_periods_ns"]["dut"], 2_000_000.0)
+            self.assertEqual(report["effective_vpr_periods_ns"]["cross"], 1_999_820.0)
+            self.assertTrue(report["vpr_sdc_time_capped"])
             self.assertEqual(report["sha256"], _sha256(path))
             self.assertEqual(
                 path.read_text(encoding="utf-8"),
                 "# EmuFlow endpoint-complete Phase 7 timing contract.\n"
                 "create_clock -name emuflow_fabric_clk -period 20.000000000 "
                 "[get_ports {fabric_clock_net}]\n"
-                "create_clock -name emuflow_dut_clk_0 -period 2238160.000000000 "
+                "create_clock -name emuflow_dut_clk_0 -period 2000000.000000000 "
                 "[get_ports {dut_clock_net}]\n"
-                "set_max_delay 2237980.000000000 -from "
+                "set_max_delay 1999820.000000000 -from "
                 "[get_clocks {emuflow_fabric_clk}] -to "
                 "[get_clocks {emuflow_dut_clk_0}]\n"
-                "set_max_delay 2237980.000000000 -from "
+                "set_max_delay 1999820.000000000 -from "
                 "[get_clocks {emuflow_dut_clk_0}] -to "
                 "[get_clocks {emuflow_fabric_clk}]\n",
             )

@@ -206,9 +206,11 @@ the route to TimingPathDB only after route selection. On the fully
 open route, the VTR architecture supplies public resource and delay data,
 OpenSTA supplies pre-partition optimization timing, OpenPARF performs
 placement, and VPR performs exact packing, detailed routing, and post-route
-timing. The bundled VPR SDC reader uses 64-bit picosecond-scaled clock-edge
-arithmetic so millisecond-scale emulation/runtime periods do not overflow
-while constructing launch/capture relationships. On the Vivado route, Vivado
+timing. VPR's SDC reader has a bounded internal time representation, so the
+open adapter records the exact virtual-runtime period separately and caps only
+its non-binding local fabric-to-DUT SDC relation below VPR's safe range. Final
+system WNS/TNS is always reconstructed from the exact runtime and routed
+endpoint data, never from that capped local SDC. On the Vivado route, Vivado
 supplies device timing and physical
 implementation for a concrete Xilinx part; Vivado itself and its device
 database are not included in this repository. Phase 7C does not compare the
@@ -781,10 +783,10 @@ LUT6/DFF plus multiplier/RAM mapping, exact VPR packing, the checked
 packed-cluster contract, OpenPARF placement, VPR placement handoff, detailed
 routing, timing analysis, independent route/RR-graph verification, and
 endpoint-keyed interface timing extracted directly from VPR's routed Tatum
-graph. The pinned VPR build keeps SDC edge arithmetic in 64 bits, so the long
-virtual DUT periods produced by large emulation frame ratios remain exact
-after VPR's nanosecond-to-picosecond scaling. Additional architecture mapping
-profiles remain open gates.
+graph. Long virtual DUT periods produced by large emulation frame ratios are
+preserved in the provider-neutral runtime and system-timing contracts; the
+VPR-only runtime SDC records its bounded effective values explicitly. Additional
+architecture mapping profiles remain open gates.
 EmuFlow does not claim an open Xilinx bitstream flow. The Vivado provider ends
 at routed checkpoints and timing reports; success there cannot satisfy the
 default open-flow completion gate or replace board-level sign-off.

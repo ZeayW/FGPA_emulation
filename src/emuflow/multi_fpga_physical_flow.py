@@ -65,6 +65,12 @@ from .yosys import import_yosys_json
 MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
 _TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
 
+# VPR stores SDC times in signed 32-bit picoseconds. Leave a deliberate
+# margin below INT_MAX so a rounded parser value cannot overflow. This only
+# affects VPR's local implementation constraint; system timing continues to
+# use the exact virtual-runtime period recorded upstream.
+_VPR_SDC_MAX_TIME_NS = 2_000_000.0
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -116,6 +122,28 @@ def _write_vpr_runtime_sdc(
     dut_clock_required: bool = True,
 ) -> Dict[str, Any]:
     """Write VPR constraints matching the provider-neutral runtime contract."""
+    for name, value in (
+        ("fabric_period_ns", fabric_period_ns),
+        ("dut_period_ns", dut_period_ns),
+        ("cross_period_ns", cross_period_ns),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValidationError(f"{name} must be finite and positive")
+    # The virtual DUT period can be much longer than a physical FPGA clock.
+    # VPR cannot represent those long SDC values (its parser scales to signed
+    # 32-bit picoseconds), while the physical implementation only needs a
+    # non-binding local relation between fabric and DUT clocks. Preserve the
+    # original slack after capping the DUT period, rather than silently
+    # changing the relation to a zero-slack constraint.
+    vpr_dut_period_ns = min(dut_period_ns, _VPR_SDC_MAX_TIME_NS)
+    dut_to_cross_slack_ns = max(0.0, dut_period_ns - cross_period_ns)
+    vpr_cross_period_ns = min(
+        cross_period_ns,
+        max(0.0, vpr_dut_period_ns - dut_to_cross_slack_ns),
+    )
+    # set_max_delay 0 is legal SDC but would make the implementation
+    # artificially infeasible. Retain a positive, bounded relation instead.
+    vpr_cross_period_ns = max(vpr_cross_period_ns, 1.0e-6)
     clock_nets = eblif_report.get("clock_nets")
     if not isinstance(clock_nets, dict) or not clock_nets:
         raise ValidationError("VTR eBLIF report has no physical clock nets")
@@ -142,12 +170,12 @@ def _write_vpr_runtime_sdc(
         clock_name = f"emuflow_dut_clk_{index}"
         dut_clocks.append(clock_name)
         lines.append(
-            f"create_clock -name {clock_name} -period {dut_period_ns:.9f} [get_ports {{{net}}}]"
+            f"create_clock -name {clock_name} -period {vpr_dut_period_ns:.9f} [get_ports {{{net}}}]"
         )
         lines.extend(
             (
-                f"set_max_delay {cross_period_ns:.9f} -from [get_clocks {{emuflow_fabric_clk}}] -to [get_clocks {{{clock_name}}}]",
-                f"set_max_delay {cross_period_ns:.9f} -from [get_clocks {{{clock_name}}}] -to [get_clocks {{emuflow_fabric_clk}}]",
+                f"set_max_delay {vpr_cross_period_ns:.9f} -from [get_clocks {{emuflow_fabric_clk}}] -to [get_clocks {{{clock_name}}}]",
+                f"set_max_delay {vpr_cross_period_ns:.9f} -from [get_clocks {{{clock_name}}}] -to [get_clocks {{emuflow_fabric_clk}}]",
             )
         )
     path.write_text("\n".join((*lines, "")), encoding="utf-8")
@@ -160,11 +188,20 @@ def _write_vpr_runtime_sdc(
         "dut_clocks": dut_clocks,
         "dut_clock_required": dut_clock_required,
         "dut_clock_present": bool(dut_clocks),
-        "periods_ns": {
+        "requested_periods_ns": {
             "fabric": fabric_period_ns,
             "dut": dut_period_ns,
             "cross": cross_period_ns,
         },
+        "effective_vpr_periods_ns": {
+            "fabric": fabric_period_ns,
+            "dut": vpr_dut_period_ns,
+            "cross": vpr_cross_period_ns,
+        },
+        "vpr_sdc_time_capped": (
+            vpr_dut_period_ns != dut_period_ns
+            or vpr_cross_period_ns != cross_period_ns
+        ),
     }
 
 
