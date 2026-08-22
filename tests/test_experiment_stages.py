@@ -16,6 +16,7 @@ from emuflow.experiment_stages import (
     _validate_managed_phase6_checkpoint,
     _sta_path_database,
     _timing_paths,
+    validate_phase6_checkpoint,
     validate_shared_phase1_5,
     resume_physical_lookahead,
 )
@@ -432,6 +433,33 @@ class ExperimentStagesTest(unittest.TestCase):
             os.chmod(output, 0o755)
             with self.assertRaisesRegex(Exception, "writable|immutable"):
                 _validate_managed_phase6_checkpoint(output)
+
+    def test_phase6_managed_reuse_skips_upstream_revalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_json(
+                root / "experiment-phase6-report.json",
+                {
+                    "schema": "emuflow.experiment-phase6-checkpoint/v1",
+                    "provider": "baseline",
+                    "equivalence": {"status": "pass"},
+                },
+            )
+            with mock.patch(
+                "emuflow.experiment_stages._validate_managed_phase6_checkpoint"
+            ) as managed, mock.patch(
+                "emuflow.experiment_stages.validate_shared_phase1_5"
+            ) as shared:
+                result = validate_phase6_checkpoint(
+                    root,
+                    root / "shared",
+                    None,
+                    root / "boarddb.json",
+                    validation_mode="validated-checkpoint-reuse",
+                )
+            managed.assert_called_once_with(root)
+            shared.assert_not_called()
+            self.assertEqual(result["provider"], "baseline")
 
     def test_cli_exposes_fine_grained_phase1_5_commands(self) -> None:
         parser = _build_parser()

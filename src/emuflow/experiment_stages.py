@@ -54,16 +54,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_managed_phase6_checkpoint(root: Path) -> Dict[str, Any]:
-    """Prove that *root* is an immutable, independently validated cache object.
+def _managed_checkpoint(
+    root: Path,
+    *,
+    expected_stage: str,
+) -> Dict[str, Any] | None:
+    """Return a sealed managed checkpoint for a routine consumer, if present.
 
     Publishing a managed checkpoint performs the strong content-hash and
     independent semantic validation.  Normal DAG reuse consequently validates
     the sealed manifest's structure, artifact presence, immutable tree, and
     independent certificate without rereading every multi-gigabyte artifact.
     Explicit ``experiment-cache validate`` remains the boundary that performs
-    a fresh content hash.  This is deliberately distinct from the optional
-    Phase 6 functional-equivalence replay.
+    a fresh content hash.  A non-managed path has no checkpoint and is left to
+    its caller's full semantic validator.
     """
 
     from .experiment_dag import (
@@ -74,23 +78,19 @@ def _validate_managed_phase6_checkpoint(root: Path) -> Dict[str, Any]:
     root = root.resolve()
     checkpoint_path = root.parent / "checkpoint.json"
     if not checkpoint_path.is_file():
-        raise ValidationError(
-            "Phase 6 equivalence reuse requires a managed checkpoint"
-        )
+        return None
     checkpoint = validate_experiment_checkpoint(
         checkpoint_path,
         verify_artifact_content=False,
     )
     if (
         checkpoint.get("schema") != "emuflow.experiment-checkpoint/v2"
-        or checkpoint.get("stage") != "phase6"
+        or checkpoint.get("stage") != expected_stage
         or checkpoint.get("storage") != "managed"
         or checkpoint.get("output_immutable") is not True
         or Path(checkpoint.get("output_dir", "")).resolve() != root
     ):
-        raise ValidationError(
-            "Phase 6 equivalence reuse requires an immutable Phase 6 checkpoint"
-        )
+        raise ValidationError("managed checkpoint contract is invalid")
     execution_key = checkpoint["execution_key"]
     certificates = []
     validation_root = root.parent / "validations"
@@ -103,14 +103,21 @@ def _validate_managed_phase6_checkpoint(root: Path) -> Dict[str, Any]:
                 "validation_key": path.stem,
                 "status": "pass",
             }:
-                raise ValidationError(
-                    "Phase 6 checkpoint validation certificate is invalid"
-                )
+                raise ValidationError("managed checkpoint validation certificate is invalid")
             certificates.append(value)
     if not certificates:
         raise ValidationError(
-            "Phase 6 equivalence reuse requires an independent validation certificate"
+            "managed checkpoint reuse requires an independent validation certificate"
         )
+    return checkpoint
+
+
+def _validate_managed_phase6_checkpoint(root: Path) -> Dict[str, Any]:
+    """Require the managed Phase 6 reuse contract selected by the caller."""
+
+    checkpoint = _managed_checkpoint(root, expected_stage="phase6")
+    if checkpoint is None:
+        raise ValidationError("Phase 6 equivalence reuse requires a managed checkpoint")
     return checkpoint
 
 
@@ -307,8 +314,43 @@ def _placement_aware_positions(
     }
 
 
-def validate_shared_phase1_5(root: Path, platform_path: Path) -> Dict[str, Any]:
+def validate_shared_phase1_5(
+    root: Path,
+    platform_path: Path,
+    *,
+    reuse_managed_checkpoint: bool = False,
+) -> Dict[str, Any]:
     root = root.resolve()
+    if reuse_managed_checkpoint:
+        checkpoint = _managed_checkpoint(root, expected_stage="shared")
+        if checkpoint is not None:
+            report = read_json(_require_file(root, "experiment-shared-report.json"))
+            if (
+                report.get("schema") != "emuflow.experiment-shared-phase1-5/v1"
+                or report.get("status") != "pass"
+                or report.get("platform_sha256") != _sha256(platform_path.resolve())
+            ):
+                raise ValidationError("managed shared checkpoint contract is invalid")
+            artifacts = report.get("artifacts")
+            if not isinstance(artifacts, dict):
+                raise ValidationError("managed shared checkpoint artifact table is invalid")
+            required = {
+                "ir": "frontend/phase1/design.emuir.json",
+                "assignment": "partition/assignment.json",
+                "routes": "system-route/routes.json",
+                "schedule": "tdm/schedule.json",
+            }
+            hashes = {}
+            for label, relative in required.items():
+                record = artifacts.get(relative)
+                if not isinstance(record, dict) or not isinstance(record.get("sha256"), str):
+                    raise ValidationError("managed shared checkpoint artifact seal is invalid")
+                hashes[label] = record["sha256"]
+            return {
+                "status": "pass",
+                "platform": Platform.load(platform_path).name,
+                "phase1_5_sha256": hashes,
+            }
     paths = _shared_paths(root)
     platform_path = platform_path.resolve()
     validate_phase3(paths["ir"], platform_path, paths["clusters"], paths["assignment"])
@@ -359,7 +401,9 @@ def run_physical_lookahead(
     route_channel_width: int = 300,
     reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
-    shared = validate_shared_phase1_5(shared_root, platform_path)
+    shared = validate_shared_phase1_5(
+        shared_root, platform_path, reuse_managed_checkpoint=True
+    )
     paths = _shared_paths(shared_root)
     split_root = (
         baseline_phase6_root / "split"
@@ -548,7 +592,9 @@ def _finish_physical_lookahead(
     route_channel_width: int,
     reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
-    shared = validate_shared_phase1_5(shared_root, platform_path)
+    shared = validate_shared_phase1_5(
+        shared_root, platform_path, reuse_managed_checkpoint=True
+    )
     paths = _shared_paths(shared_root)
     split_root = (
         baseline_phase6_root / "split"
@@ -655,7 +701,9 @@ def validate_physical_lookahead(
     expected_route_channel_width: int | None = None,
     reuse_validated_phase6_equivalence: bool = False,
 ) -> Dict[str, Any]:
-    validate_shared_phase1_5(shared_root, platform_path)
+    validate_shared_phase1_5(
+        shared_root, platform_path, reuse_managed_checkpoint=True
+    )
     split_root = (
         baseline_phase6_root / "split"
         if baseline_phase6_root is not None
@@ -777,7 +825,9 @@ def run_phase6_checkpoint(
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
         raise ValidationError("experiment Phase 6 provider is invalid")
-    shared = validate_shared_phase1_5(shared_root, platform_path)
+    shared = validate_shared_phase1_5(
+        shared_root, platform_path, reuse_managed_checkpoint=True
+    )
     if provider == "baseline":
         lookahead = None
     else:
@@ -902,6 +952,20 @@ def validate_phase6_checkpoint(
         raise ValidationError("experiment Phase 6 validation mode is invalid")
     if validation_mode == "validated-checkpoint-reuse":
         _validate_managed_phase6_checkpoint(root)
+        report = read_json(_require_file(root, "experiment-phase6-report.json"))
+        provider = report.get("provider")
+        if (
+            report.get("schema") != EXPERIMENT_PHASE6_SCHEMA
+            or provider not in _PROVIDERS
+        ):
+            raise ValidationError("managed Phase 6 checkpoint report is invalid")
+        if expected_provider is not None and provider != expected_provider:
+            raise ValidationError("managed Phase 6 provider contract disagrees")
+        return {
+            "status": "pass",
+            "provider": provider,
+            "equivalence": report["equivalence"],
+        }
     validate_shared_phase1_5(shared_root, platform_path)
     report = read_json(_require_file(root, "experiment-phase6-report.json"))
     provider = report.get("provider")
