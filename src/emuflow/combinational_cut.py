@@ -801,11 +801,16 @@ def build_static_exact_semantic_contract(
                     "kind": "launch_to_tx",
                     "fpga": cut_by_net[net_id]["source_fpgas"][0],
                     "sink_cut_net": net_id,
-                    "budget_slots": (
-                        comb_segment_budget_slots
-                        if nets[net_id]["cut_class"] != "register_output"
-                        else 0
-                    ),
+                    # A register output is an architectural launch, not a
+                    # value that is already stable at fabric slot zero.  The
+                    # virtual-DUT edge occurs at the prior frame commit, so
+                    # its routed clock-to-Q, local net, and TX-input delay
+                    # must consume the same explicit settle budget as an
+                    # ordinary local launch cone.  Giving register outputs a
+                    # zero budget can schedule their TX in slot zero and
+                    # falsely pass Phase 5 before routed Phase 7 rejects the
+                    # physical launch-to-TX segment.
+                    "budget_slots": comb_segment_budget_slots,
                     "evidence": "contract-budget-provisional",
                 }
             )

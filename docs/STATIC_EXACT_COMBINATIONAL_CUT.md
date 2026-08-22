@@ -38,6 +38,10 @@ All exact-mode artifacts use `fabric-rising-edge-current-slot/v1`:
   combinational budget of `B` slots is first eligible for downstream sampling
   at edge `E+B`. Consequently a one-slot relay budget requires
   `next_tx_slot >= arrival_slot + 1`.
+- A cross-FPGA `register_output` is an architectural launch under this rule:
+  its routed clock-to-Q, local net, and TX-input path consume the configured
+  launch-to-TX budget. It therefore cannot be scheduled for TX in slot zero
+  merely because its driver is a register.
 - The virtual DUT commits at the rising edge whose pre-edge slot is
   `frame_slots-1`. A capture value may become ready at that edge; its physical
   delay budget must include setup/uncertainty, so no unmodelled setup window is

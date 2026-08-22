@@ -1380,6 +1380,68 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "certificate"):
             validate_tdm_schedule(routes, self.platform, tampered)
 
+    def test_register_output_launch_reserves_configured_settle_budget(self):
+        """A cross-FPGA FF output cannot be sampled by TX in slot zero."""
+        clusters = build_clusters(
+            self.ir,
+            self.constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+            max_cross_fpga_dependency_depth=1,
+            comb_segment_budget_slots=1,
+            frame_slots=16,
+        )
+        cluster_for = {
+            instance: cluster["id"]
+            for cluster in clusters["clusters"]
+            for instance in cluster["instances"]
+        }
+        targets = {
+            cluster_for["q0"]: "fpga0",
+            cluster_for["l0"]: "fpga1",
+            cluster_for["l1"]: "fpga1",
+            cluster_for["l2"]: "fpga1",
+            cluster_for["q1"]: "fpga1",
+        }
+        assignment = build_partition_assignment(
+            self.ir,
+            self.platform,
+            clusters,
+            self.constraints,
+            targets,
+            provider="test-static-exact-register-launch-v1",
+            seed=0,
+        )
+        node = next(
+            item
+            for item in assignment["semantic_contract"]["cut_nodes"]
+            if item["net"] == "q"
+        )
+        segments = {
+            item["id"]: item
+            for item in assignment["semantic_contract"]["logic_segments"]
+        }
+        launch = segments[node["source_segment_ids"][0]]
+        self.assertEqual(launch["kind"], "launch_to_tx")
+        self.assertEqual(launch["budget_slots"], 1)
+
+        routes = self._exact_routes(assignment)
+        schedule = build_tdm_schedule(routes, self.platform)
+        readiness = next(
+            item
+            for item in schedule["schedule_dependency_certificate"]
+            ["demand_readiness"]
+            if item["net"] == "q"
+        )
+        self.assertEqual(readiness["source_ready_slot"], 1)
+        self.assertGreaterEqual(
+            min(item["slot"] for item in schedule["entries"] if item["net"] == "q"),
+            1,
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, schedule)["status"],
+            "pass",
+        )
+
     def test_phase5_cli_writes_and_revalidates_exact_schedule(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
         routes = self._exact_routes(assignment)
