@@ -5,6 +5,8 @@ BoardDB and partition-assignment artifacts are execution adapters for EmuFlow;
 the normalized contest instance remains the source of truth for scoring.
 """
 
+from __future__ import annotations
+
 import math
 import shutil
 import subprocess

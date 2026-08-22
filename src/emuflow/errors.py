@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 class EmuFlowError(Exception):
     """Base class for actionable user-facing flow errors."""
 
