@@ -6,6 +6,33 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
+
+class _Python38BooleanOptionalAction(argparse.Action):
+    """Python 3.8 equivalent of :class:`argparse.BooleanOptionalAction`."""
+
+    def __init__(self, option_strings, dest, default=None, **kwargs):
+        expanded = []
+        for option in option_strings:
+            expanded.append(option)
+            if option.startswith("--"):
+                expanded.append("--no-" + option[2:])
+        super().__init__(
+            option_strings=expanded,
+            dest=dest,
+            default=default,
+            nargs=0,
+            **kwargs,
+        )
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, not option_string.startswith("--no-"))
+
+
+_BooleanOptionalAction = getattr(
+    argparse, "BooleanOptionalAction", _Python38BooleanOptionalAction
+)
+
+
 from .archive import (
     DEFAULT_MAX_COPY_BYTES,
     cleanup_validation_source,
@@ -604,7 +631,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--seed-attempts", type=int)
     partition_validate.add_argument(
         "--repair-balance",
-        action=argparse.BooleanOptionalAction,
+        action=_BooleanOptionalAction,
         default=None,
     )
     partition_validate.add_argument(
@@ -1624,7 +1651,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--partition-repair-balance",
-        action=argparse.BooleanOptionalAction,
+        action=_BooleanOptionalAction,
         default=True,
         help=(
             "legalize a best-effort assignment against independently "
@@ -1651,7 +1678,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--timing-driven",
-        action=argparse.BooleanOptionalAction,
+        action=_BooleanOptionalAction,
         default=True,
         help=(
             "use the always-generated TimingPathDB to optimize partitioning, "

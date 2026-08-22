@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import os
 import tempfile
@@ -5,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.cli import _build_parser
+from emuflow.cli import _Python38BooleanOptionalAction, _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
     _physical_timing_databases,
@@ -26,6 +27,19 @@ from emuflow.pin_planning import SIGNAL_POSITION_HINTS_SCHEMA
 
 
 class ExperimentStagesTest(unittest.TestCase):
+    def test_python38_boolean_optional_action_supports_both_spelling(self) -> None:
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "--repair-balance",
+            action=_Python38BooleanOptionalAction,
+            default=None,
+        )
+        self.assertTrue(parser.parse_args(["--repair-balance"]).repair_balance)
+        self.assertFalse(
+            parser.parse_args(["--no-repair-balance"]).repair_balance
+        )
+        self.assertIsNone(parser.parse_args([]).repair_balance)
+
     def test_shared_timing_uses_partition_projected_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
